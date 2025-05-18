@@ -4,11 +4,16 @@ from pydantic import BaseModel
 from typing import List, Tuple, Dict
 from collections import Counter
 
-app = FastAPI()
+# ↓ 这里把 servers URL 填成你在 Render 上看到的域名，不要带 /openapi.json
+app = FastAPI(
+    title="Coco Scratch-Card Analyzer",
+    openapi_url="/openapi.json",
+    servers=[{"url": "https://coco-3clu.onrender.com"}]
+)
 
 class AnalyzeRequest(BaseModel):
-    cards: List[List[List[int]]]      # 13 张卡的矩阵列表
-    new_card: List[List[int]] = None  # 可选，实战新卡
+    cards: List[List[List[int]]]      # 13 张历史卡的二维矩阵列表
+    new_card: List[List[int]] = None  # 可选：使用者提供的待分析新卡
     base: int                         # 基准号码
     targets: List[int]                # 目标号码列表
 
@@ -76,6 +81,6 @@ def analyze(req: AnalyzeRequest):
     return {
         "offsets": offset_table,
         "recommendations": recs,
-        "tail_resonance": {d:cnt for d,cnt in tail_info.items() if cnt > len(req.cards)/2},
+        "tail_resonance": {d: cnt for d, cnt in tail_info.items() if cnt > len(req.cards)/2},
         "avg_adjacency_density": avg_adj
     }
