@@ -74,6 +74,7 @@ def analyze(req: AnalyzeRequest):
                 {"pos": (r0+dr, c0+dc), "freq": freq}
                 for (dr, dc), freq in off
                 if 0 <= r0+dr < len(req.new_card) and 0 <= c0+dc < len(req.new_card[0])
+                                                  and not req.new_card[r0+dr][c0+dc]
             ]
     # 3. 尾数共鸣与邻号密度
     tail_info = {d: tail_resonance(req.cards, d) for d in range(10)}
