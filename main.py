@@ -1,4 +1,4 @@
-
+print( >>>>已進入簡化版 <<<<<
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
