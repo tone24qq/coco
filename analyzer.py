@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Tuple, Dict
-import traceback
+from typing import List, Dict
 import numpy as np
+import traceback
 
 app = FastAPI()
 
@@ -51,6 +51,7 @@ def evaluate_stability(grid, r, c, val):
 def analyze(req: AnalyzeRequest):
     try:
         results = {}
+
         for target in req.targets:
             results[target] = []
 
@@ -68,8 +69,8 @@ def analyze(req: AnalyzeRequest):
                         )
                         results[target].append({
                             "pos": [r + 1, c + 1],
-                            "score": round(score, 4),
-                            "py_guide": f"{guide}:{'+'.join(str(r) for r in reasons) if reasons else '穩定'}"
+                            "score": score,
+                            "py_guide": f"{guide}:{'+'.join(reasons) if reasons else '穩定'}"
                         })
 
             results[target] = sorted(results[target], key=lambda x: -x["score"])[:3]
