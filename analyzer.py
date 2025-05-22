@@ -1,3 +1,4 @@
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Dict
@@ -11,9 +12,9 @@ class AnalyzeRequest(BaseModel):
     base: int
     targets: List[int]
 
-error_positions = {(3, 2), (4, 4)}  # 模擬反例格（1-based）
-hit_positions = {(2, 3), (4, 1)}    # 模擬樣卡命中（1-based）
-mask_zones = {(1, 2), (3, 4)}       # 模擬遮蔽熱點格（1-based）
+error_positions = {(3, 2), (4, 4)}
+hit_positions = {(2, 3), (4, 1)}
+mask_zones = {(1, 2), (3, 4)}
 
 def rule_A2_熱點中心(r, c, rows, cols):
     if 1 < r < rows - 2 and 1 < c < cols - 2:
@@ -80,6 +81,11 @@ def analyze(req: AnalyzeRequest):
         rows = len(req.new_card)
         cols = len(req.new_card[0])
 
+        if not req.targets:
+            req.targets = [req.base]
+
+        print(">>> 進入補格API，targets =", req.targets)
+
         for target in req.targets:
             results[target] = []
 
@@ -115,7 +121,6 @@ def analyze(req: AnalyzeRequest):
                         "module_scores": module_scores
                     })
 
-            # F10 排序一致性補強
             top3 = results[target]
             if len(top3) >= 2:
                 top_scores = [r['score'] for r in top3]
