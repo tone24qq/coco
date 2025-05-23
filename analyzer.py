@@ -211,6 +211,7 @@ def build_and_solve_cp(grid: np.ndarray, candidates: List[Tuple[int,int,int]], l
 @app.post("/analyze")
 def analyze(req: AnalyzeRequest):
     try:
+        # ======= 這裡開始全部主體邏輯 =======
         grid = np.array(req.new_card, dtype=int)
         legal_values = get_legal_values(grid)
         candidates = []
@@ -222,9 +223,10 @@ def analyze(req: AnalyzeRequest):
                 candidates.append((r, c, v))
         if not candidates:
             raise HTTPException(400, "没有合法可选候选")
-        best = build_and_solve_cp(grid, candidates, legal_values)
+        best, detail_log = build_and_solve_cp(grid, candidates, legal_values)
         if best:
             r, c, v, s, tensor = max(best, key=lambda x: x[3])
+            detail_item = next(item for item in detail_log if item["pos"] == [r, c] and item["value"] == v)
             return {
                 "status": "success",
                 "result": {
@@ -232,10 +234,23 @@ def analyze(req: AnalyzeRequest):
                     "value": v,
                     "score": round(s, 4),
                     "tensor_flow_score": round(tensor, 4),
-                }
+                    "plugin_detail": detail_item["plugin_detail"],
+                    "tensor_flow_detail": detail_item["tensor_flow_detail"],
+                    "mem_score": detail_item["mem_score"],
+                    "total_score": detail_item["total_score"]
+                },
+                "all_candidates_detail": detail_log
             }
         else:
-            return {"status": "fail", "result": None}
+            return {"status": "fail", "result": None, "all_candidates_detail": detail_log}
+        # ======= 這裡結束全部主體邏輯 =======
+    except Exception as e:
+        # 這裡會直接把詳細錯誤原因顯示給你
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+: "fail", "result": None}
     except Exception as e:
         # 這裡會直接把詳細錯誤原因顯示給你
         return {"status": "error", "message": str(e)}
