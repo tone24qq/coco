@@ -1,131 +1,150 @@
-# analyzer.py
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-from dataclasses import dataclass
-from typing import List, Tuple, Dict, Callable
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List
 import numpy as np
-import concurrent.futures
 
-app = FastAPI(title="ScratchCard Analyzer")
-
-# —— 数据模型 —— #
-@dataclass
-class EvalContext:
-    grid: np.ndarray      # 整张表
-    row: int              # 候选行
-    col: int              # 候选列
-    val: int              # 候选数字
-    rows: int             # 行数
-    cols: int             # 列数
-    max_val: int          # 最大数字（rows*cols）
-    used: set             # 已出现数字集合
+app = FastAPI()
 
 class ProposedValue(BaseModel):
-    pos: Tuple[int,int]               # (row, col)，0-base
+    pos: List[int]
     value: int
     score: float
-    rationale: str                    # 各模块打分概要
-    modules: Dict[str, float]         # 每个模块的加权得分
+    py_guide: str
 
-class AnalyzeRequest(BaseModel):
-    new_card: List[List[int]]         # -1 表示空格
-    top_k: int = Field(3, ge=1, le=20)  # 返回前K名
+class SimplifiedAnalyzeRequest(BaseModel):
+    new_card: List[List[int]]
+    proposed_values: List[ProposedValue]
 
-class AnalyzeResponse(BaseModel):
-    status: str
-    visual_grid: str
-    results: List[ProposedValue]
-
-# —— 可视化表格 —— #
 def visualize_grid(grid: List[List[int]]) -> str:
-    R = len(grid); C = len(grid[0]) if R else 0
-    col_labels = "   " + "".join(f" C{c+1:<3}" for c in range(C)) + "\n"
-    sep = "  +" + "+".join("----" for _ in range(C)) + "+\n"
+    rows, cols = len(grid), len(grid[0]) if grid else 0
+    header = "   " + "".join(f" C{c+1:<3}" for c in range(cols)) + "\n"
+    sep = "  +" + "+".join("----" for _ in range(cols)) + "+\n"
     body = ""
-    for r,row in enumerate(grid):
-        cells = "|".join(f"{(str(v) if v>=0 else ''):>3} " for v in row)
-        body += f"R{r+1:<2}|{cells}|\n" + sep
-    return "```lua\n" + col_labels + sep + body + "```"
+    for r, row in enumerate(grid):
+        vals = "|".join(f"{v if v!=-1 else '':>3} " for v in row)
+        body += f"R{r+1:<2}|{vals}|\n" + sep
+    return "```lua\n" + header + sep + body + "```"
 
-# —— 规则字典：name → (fn(ctx)->float, weight) —— #
-# 返回值是 0.0–1.0 分数，最后乘以 weight
-RULES: Dict[str, Tuple[Callable[[EvalContext], float], float]] = {
-    "A6_fixed_empty":    (lambda ctx: 1.0 if ctx.grid[ctx.row,ctx.col] == -1 else 0.0, 1.0),
-    "M3_interval":       (lambda ctx: min([abs(ctx.col-i) for i,v in enumerate(ctx.grid[ctx.row]) if v==ctx.val], default=0)/max(ctx.cols-1,1), 1.2),
-    "A9_diagonal":       (lambda ctx: 1.0 if ctx.row==ctx.col and ctx.grid[ctx.row,ctx.col]==ctx.val else 0.0, 0.8),
-    "M5_row_incr":       (lambda ctx: 1.0 if all(x<y for x,y in zip([v for v in ctx.grid[ctx.row] if v>=0],[w for w in ctx.grid[ctx.row] if w>=0][1:])) else 0.0, 1.1),
-    "M10_edge":          (lambda ctx: 1.0 if ctx.row in (0,ctx.rows-1) or ctx.col in (0,ctx.cols-1) else 0.0, 0.7),
-    "M13_center_diag":   (lambda ctx: 1.0 if abs(ctx.row-ctx.rows//2)==abs(ctx.col-ctx.cols//2) else 0.0, 0.9),
-    "M14_mirror_gap":    (lambda ctx: 1.0 if abs(ctx.val - int(ctx.grid[ctx.row,ctx.cols-1-ctx.col] or -999))<=2 else 0.0, 0.6),
-    "M15_parity_block":  (lambda ctx: 1.0 if ((ctx.val%2==0) == ((ctx.row+ctx.col)%2==0)) else 0.0, 0.5),
-    # …… 更多自定义规则放这里
-}
+# —— ① 原有死逻辑模块 —— #
+def a6_fixed_position(grid, pos, value):          return grid[pos[0]][pos[1]] == -1
+def m3_interval_consistency(grid, pos, value):
+    r,c=pos; ints=[abs(c-i) for i in range(len(grid[r])) if grid[r][i]==value]
+    return ints[0] if ints else -1
+def a9_diagonal_symmetry(grid,pos,value):         r,c=pos; return r==c and grid[r][c]==value
+def m5_sequence_direction(grid,pos,value):
+    row=[v for v in grid[pos[0]] if v!=-1]
+    return all(x<y for x,y in zip(row,row[1:]))
+def m10_edge_prediction(grid,pos,value):
+    r,c=pos; R,C=len(grid),len(grid[0])
+    return r in (0,R-1) or c in (0,C-1)
+def m11_jump_zone(grid,pos,value):                r,c=pos; return (r+c)%2==0
+def m12_diagonal_repeat(grid,pos,value):          r,c=pos; return r==c and grid[r][c]==value
+def m13_center_rotation(grid,pos,value):
+    R,C=len(grid),len(grid[0]); cr,cc=R//2,C//2; r,c=pos
+    return abs(r-cr)==abs(c-cc)
+def m14_mirror_diff(grid,pos,value):
+    R,C=len(grid),len(grid[0]); r,c=pos; mc=C-1-c
+    return (mc>=0 and grid[r][mc]!=-1 and abs(grid[r][c]-grid[r][mc])<=2)
+def m15_parity_block(grid,pos,value):             r,c=pos; return (value%2==0)==((r+c)%2==0)
+def m16_upper_lower_ratio(grid,pos,value):        return pos[0]<len(grid)//2
+def m17_column_mirror_reverse(grid,pos,value):
+    R,C=len(grid),len(grid[0]); r,c=pos
+    return grid[r][c]==grid[r][C-1-c]
+def m18_horizontal_delta(grid,pos,value):
+    r,c=pos; C=len(grid[0])
+    if 0<c<C-1:
+        a,b=grid[r][c-1],grid[r][c+1]
+        return a!=-1 and b!=-1 and abs(a-b)<=2
+    return False
+def m19_arc_shape(grid,pos,value):                r,c=pos; return abs(r-c)<=1
 
-def _fallback_ilp(ctx: EvalContext) -> float:
-    """
-    ILP / OR-Tools 精确求解占位：
-    将全局问题建模后返回一个综合得分，暂返回0。
-    """
-    return 0.0
+ORIG_RULES = [
+    ("A6", a6_fixed_position),
+    ("M3", m3_interval_consistency),
+    ("A9", a9_diagonal_symmetry),
+    ("M5_row_inc", m5_sequence_direction),
+    ("M10_edge", m10_edge_prediction),
+    ("M11_jump", m11_jump_zone),
+    ("M12_diag_rep", m12_diagonal_repeat),
+    ("M13_ctr_rot", m13_center_rotation),
+    ("M14_mirror", m14_mirror_diff),
+    ("M15_parity", m15_parity_block),
+    ("M16_uratio", m16_upper_lower_ratio),
+    ("M17_col_mir", m17_column_mirror_reverse),
+    ("M18_hdelta", m18_horizontal_delta),
+    ("M19_arc", m19_arc_shape),
+]
 
-# —— 分析主函数 —— #
-@app.post("/analyze", response_model=AnalyzeResponse)
-def analyze(req: AnalyzeRequest):
-    # 转 numpy
-    try:
-        grid = np.array(req.new_card, dtype=int)
-    except:
-        raise HTTPException(400, "new_card 无法转为整数字阵")
+# —— ② 公式探测模块 —— #
+def detect_linear_mod(grid: np.ndarray):
+    pts, vals = [], []
+    R,C = grid.shape
+    for r in range(R):
+        for c in range(C):
+            v = grid[r,c]
+            if v!=-1:
+                pts.append([r,c,1]); vals.append(v)
+    if len(pts)<3: return None
+    A = np.array(pts, float); y = np.array(vals, float)
+    coeffs,*_ = np.linalg.lstsq(A,y,rcond=None)
+    pred = A.dot(coeffs)
+    if np.allclose(pred,y,1e-6):
+        return ("linear", coeffs)
+    rounded = np.round(pred).astype(int)
+    for M in range(2, R*C+1):
+        if np.all(rounded % M == y.astype(int)):
+            return ("linear_mod", coeffs, M)
+    return None
 
-    if grid.ndim!=2:
-        raise HTTPException(400, "new_card 需为二维列表")
-    rows, cols = grid.shape
-    max_val = rows * cols
+@app.post("/analyze")
+def analyze(req: SimplifiedAnalyzeRequest):
+    # 校验
+    if not req.new_card or not req.proposed_values:
+        return {"status":"error","message":"缺少必要欄位"}
+    if any(len(r)!=len(req.new_card[0]) for r in req.new_card):
+        return {"status":"error","message":"表格列長度不一致"}
 
-    # 边界检查
-    if any(len(row)!=cols for row in req.new_card):
-        raise HTTPException(400, "表格列长不一致")
-    used = set(grid.flatten()) - {-1}
+    grid = req.new_card
+    # 1) 应用原有规则给初始 score 小幅打分
+    for name, fn in ORIG_RULES:
+        for pv in req.proposed_values:
+            try:
+                if fn(grid, pv.pos, pv.value):
+                    pv.score += 1.0
+                    pv.py_guide += f",{name}"
+            except:
+                pass
 
-    # 生成所有候选 (r,c,val)
-    tasks: List[EvalContext] = []
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r,c] != -1: continue
-            for v in range(1, max_val+1):
-                if v in used: continue
-                tasks.append(EvalContext(grid, r, c, v, rows, cols, max_val, used))
+    # 2) 公式探测叠加  +5 分大幅提升
+    npg = np.array(grid, int)
+    fm = detect_linear_mod(npg)
+    if fm:
+        kind = fm[0]
+        if kind=="linear":
+            a,b,c0 = fm[1]
+            for pv in req.proposed_values:
+                r,c = pv.pos
+                if abs(a*r + b*c + c0 - pv.value)<1e-6:
+                    pv.score += 5.0
+                    pv.py_guide += ",FORMULA(linear)"
+        else:
+            a,b,c0,M = fm[1], fm[2]
+            a,b,c0 = a
+            for pv in req.proposed_values:
+                r,c = pv.pos
+                if int(round(a*r + b*c + c0))%M == pv.value:
+                    pv.score += 5.0
+                    pv.py_guide += f",FORMULA(mod{M})"
 
-    # 并发评估
-    results: List[ProposedValue] = []
-    def eval_one(ctx: EvalContext) -> ProposedValue:
-        total = 0.0; details = {}
-        for name,(fn,wt) in RULES.items():
-            sc = fn(ctx) * wt
-            total += sc
-            details[name] = sc
-        # ILP 占位
-        ilp_sc = _fallback_ilp(ctx) * 1.5
-        total += ilp_sc
-        details["ILP"] = ilp_sc
-
-        # 归一化
-        score = total / (len(RULES) + 1)
-        # 理由串
-        rationale = ",".join(f"{n}={details[n]:.2f}" for n in details if details[n]>0)
-        return ProposedValue(pos=(ctx.row,ctx.col), value=ctx.val, score=score,
-                             modules=details, rationale=rationale)
-
-    with concurrent.futures.ThreadPoolExecutor() as exe:
-        for pv in exe.map(eval_one, tasks):
-            results.append(pv)
-
-    # 选 TopK
-    results.sort(key=lambda x: -x.score)
-    topk = results[:req.top_k]
-
-    return AnalyzeResponse(
-        status="success",
-        visual_grid=visualize_grid(req.new_card),
-        results=topk
-    )
+    # 3) 最终 Top3
+    top3 = sorted(req.proposed_values, key=lambda x:-x.score)[:3]
+    return {
+        "status":"success",
+        "visual_grid": visualize_grid(grid),
+        "results": {
+            top3[0].value: [
+                {"pos":pv.pos, "score":round(pv.score,4), "py_guide":pv.py_guide}
+                for pv in top3
+            ]
+        }
+    }
