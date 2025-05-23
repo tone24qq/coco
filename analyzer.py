@@ -1,159 +1,113 @@
-# analyzer.py
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import os
-import json
-import time
-import logging
-from typing import List, Optional, Tuple, Callable, Dict, Any
+app = FastAPI()
 
-import numpy as np
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
-
-# -------------------------
-# 配置和初始化
-# -------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("analyzer")
-
-app = FastAPI(title="Grid Analyzer API")
-
-# 默认从环境变量或本地文件加载记忆样本
-MEMORY_FILE = os.getenv("MEMORY_CARDS_FILE", "memory_cards.json")
-try:
-    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
-        _mem = json.load(f).get("memory_cards", [])
-        MEMORY_CARDS = np.array(_mem, dtype=int)
-        logger.info(f"Loaded memory cards: shape={MEMORY_CARDS.shape}")
-except Exception as e:
-    logger.warning(f"Cannot load memory cards ({MEMORY_FILE}): {e}")
-    MEMORY_CARDS = np.empty((0,))
-
-# -------------------------
-# 数据模型
-# -------------------------
 class ProposedValue(BaseModel):
-    pos: List[int] = Field(..., description="[row, col], 0-based")
-    value: int = Field(..., ge=1, description="预测数字")
-    score: float = Field(..., ge=0, description="置信分")
-    py_guide: str = Field(..., description="本地推理说明")
+    pos: List[int]       # [row, col]
+    value: int
+    score: float = 0.0   # 會動態計算
+    py_guide: str = ""   # 模組命中記錄
 
-class AnalyzeRequest(BaseModel):
-    new_card: List[List[int]] = Field(..., description="待补全的 NxM 矩阵，空格用 -1")
-    targets: Optional[List[int]] = Field(
-        None, description="要预测的行索引列表，默认所有含 -1 的行"
-    )
-    memory_override: Optional[List[List[List[int]]]] = Field(
-        None, description="可选：临时覆盖记忆样本"
-    )
+class SimplifiedAnalyzeRequest(BaseModel):
+    new_card: List[List[int]]        # -1 表示空格
+    proposed_values: List[ProposedValue]
 
-class AnalyzeResponse(BaseModel):
-    status: str
-    visual_grid: str
-    results: Dict[int, List[ProposedValue]]
-
-# -------------------------
-# 工具函数
-# -------------------------
-def to_numpy(grid: List[List[int]]) -> np.ndarray:
-    arr = np.array(grid, dtype=int)
-    if arr.ndim != 2 or arr.size == 0:
-        raise ValueError("new_card 必须为 2D 非空矩阵")
-    return arr
-
-def visualize_grid(arr: np.ndarray) -> str:
-    rows, cols = arr.shape
-    # 列标签
-    header = "    " + " ".join(f"C{c+1:>3}" for c in range(cols)) + "\n"
-    sep = "   +" + "+".join(["----"] * cols) + "+\n"
+def visualize_grid(grid: List[List[int]]) -> str:
+    # 保留原始視覺化函式，不動
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+    col_labels = "   " + "".join(f" C{c+1:<3}" for c in range(cols)) + "\n"
+    sep = "  +" + "+".join("----" for _ in range(cols)) + "+\n"
     body = ""
-    for r in range(rows):
-        row_vals = "".join(f"|{arr[r, c]:>3}" if arr[r, c] != -1 else "|   " for c in range(cols))
-        body += f"R{r+1:>2} {row_vals}|\n" + sep
-    return "```text\n" + header + sep + body + "```"
+    for r, row in enumerate(grid):
+        row_vals = "|".join(f"{str(v) if v!=-1 else '':>3} " for v in row)
+        body += f"R{r+1:<2}|{row_vals}|\n" + sep
+    return "```lua\n" + col_labels + sep + body + "```"
 
-# -------------------------
-# 模块化逻辑函数（示例）
-# -------------------------
-# 所有函数签名统一： (grid, pos, value) -> score_or_bool
-def m1_fixed_empty(grid: np.ndarray, pos: Tuple[int,int], value: int) -> float:
-    # 如果该格本来就空，打分 1，否则 0
-    return 1.0 if grid[pos] == -1 else 0.0
+@app.post("/analyze")
+def analyze(req: SimplifiedAnalyzeRequest):
+    # 1) 基本檢查
+    if not req.new_card or not req.proposed_values:
+        return {"status":"error","message":"缺少 new_card 或 proposed_values"}
+    if any(len(r)!=len(req.new_card[0]) for r in req.new_card):
+        return {"status":"error","message":"表格列長度不一致"}
 
-def m2_interval_consistency(grid: np.ndarray, pos: Tuple[int,int], value: int) -> float:
-    r, c = pos
-    row = grid[r, :]
-    # 找同值间距，越小越符合
-    idx = np.where(row == value)[0]
-    if idx.size == 0:
-        return 0.0
-    dist = np.min(np.abs(idx - c))
-    return 1.0 / (1 + dist)
+    # 2) 懶載入、一次轉 ndarray 並量化 dtype
+    import numpy as np
+    grid = np.array(req.new_card, dtype=np.int16)
+    rows, cols = grid.shape
+    center = (rows//2, cols//2)
 
-def m3_no_repeat(grid: np.ndarray, pos: Tuple[int,int], value: int) -> float:
-    # 整卡不允许重复
-    return 1.0 if not np.any(grid == value) else 0.0
+    # 3) 定義各模組的向量化/快速檢查
+    def eval_pv(pv: ProposedValue):
+        r, c = pv.pos
+        v = pv.value
+        sc = 0.0
+        guides = []
 
-# … 这里可继续添加更多模块 …
-MODULES: List[Tuple[str, Callable[[np.ndarray, Tuple[int,int], int], float]]] = [
-    ("fixed_empty", m1_fixed_empty),
-    ("interval", m2_interval_consistency),
-    ("no_repeat", m3_no_repeat),
-    # ("adj_density", m4_adj_density), ...
-]
+        # A6: fixed position 必須原本是空
+        if grid[r, c] == -1:
+            sc += 1.0; guides.append("A6")
 
-# -------------------------
-# 主分析逻辑
-# -------------------------
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(req: AnalyzeRequest):
-    t0 = time.time()
-    # 转 numpy，校验
-    try:
-        grid = to_numpy(req.new_card)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # M5: row 遞增序列
+        row_vals = grid[r, grid[r]!=-1]
+        if row_vals.size>1 and np.all(np.diff(row_vals)>0):
+            sc += 1.0; guides.append("M5")
 
-    # 选择记忆样本
-    memory = (
-        np.array(req.memory_override, dtype=int)
-        if req.memory_override is not None
-        else MEMORY_CARDS
-    )
+        # M3: interval consistency (越靠近越優)
+        same_cols = np.where(grid[r]==v)[0]
+        if same_cols.size>0:
+            dist = abs(c - same_cols[0])
+            sc += max(0.0, 1.0 - dist/cols)
+            guides.append(f"M3(d={dist})")
 
-    # 默认 targets：所有含 -1 的行
-    if req.targets:
-        targets = req.targets
-    else:
-        targets = list({r for r, row in enumerate(grid) if np.any(row == -1)})
+        # M10: border
+        if r==0 or r==rows-1 or c==0 or c==cols-1:
+            sc += 0.5; guides.append("M10")
 
-    results: Dict[int, List[ProposedValue]] = {}
+        # M11: chess-zone
+        if (r+c)%2==0:
+            sc += 0.2; guides.append("M11")
 
-    # 对每个目标行，遍历所有可能候选值
-    for r in targets:
-        empties = list(zip(*np.where(grid[r, :] == -1)))
-        for c in empties:
-            candidates = set(range(1, grid.size + 1)) - set(grid.flatten())
-            scored: List[Tuple[int,float,str]] = []
-            for v in candidates:
-                # 每个模块打分并求加权和（目前平均）
-                scores = [fn(grid, (r,c), v) for _, fn in MODULES]
-                avg_score = float(np.mean(scores))
-                guide = ",".join(f"{name}:{s:.2f}" for (name,_), s in zip(MODULES, scores))
-                scored.append((v, avg_score, guide))
-            # 取 Top3
-            top3 = sorted(scored, key=lambda x: -x[1])[:3]
-            results.setdefault(r, []).extend([
-                ProposedValue(pos=[r, c[1]], value=v, score=s, py_guide=g)
-                for v, s, g in top3
-            ])
+        # M13: diagonal from center
+        if abs(r-center[0])==abs(c-center[1]):
+            sc += 0.5; guides.append("M13")
 
-    visual = visualize_grid(grid)
-    elapsed = (time.time() - t0) * 1000
-    logger.info(f"analyze done in {elapsed:.1f}ms")
+        # M14: mirror diff <=2
+        mc = cols-1-c
+        if 0<=mc<cols and grid[r,c]!=-1 and grid[r,mc]!=-1 and abs(int(grid[r,c])-int(grid[r,mc]))<=2:
+            sc += 0.5; guides.append("M14")
 
-    return AnalyzeResponse(
-        status="success",
-        visual_grid=visual,
-        results=results
-    )
+        # M15: parity block
+        if (v%2==0)==((r+c)%2==0):
+            sc += 0.2; guides.append("M15")
+
+        pv.score = sc
+        pv.py_guide = ",".join(guides)
+        return pv
+
+    # 4) 使用 ThreadPoolExecutor(2) 並行計算（手機端發熱最小化）
+    with ThreadPoolExecutor(max_workers=2) as exe:
+        futures = [exe.submit(eval_pv, pv) for pv in req.proposed_values]
+        evaluated = [f.result() for f in as_completed(futures)]
+
+    # 5) 取前 3 名
+    top3 = sorted(evaluated, key=lambda x: -x.score)[:3]
+    visual = visualize_grid(req.new_card)
+
+    # 6) 回傳
+    return {
+        "status": "success",
+        "visual_grid": visual,
+        "results": [
+            {
+                "value": pv.value,
+                "pos": pv.pos,
+                "score": round(pv.score, 4),
+                "py_guide": pv.py_guide
+            } for pv in top3
+        ]
+    }
