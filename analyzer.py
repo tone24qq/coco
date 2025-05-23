@@ -1,3 +1,5 @@
+# main.py
+
 import json
 import os
 from fastapi import FastAPI, HTTPException
@@ -5,19 +7,18 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, validator
 from typing import List, Dict, Tuple, Callable
 import numpy as np
-from ortools.sat.python import cp_model
+from celery.result import AsyncResult
+from celery_worker import solve_task  # 請確保 celery_worker.py 在同目錄
 
 app = FastAPI(title="Plug-in權重 + 張量流 + 自動數字範圍", version="3.1")
 
-# —— numpy向量化規則 —— #
-
+# 以下是 numpy 向量化規則（精簡示範）
 def a6_fixed_position_vec(grid: np.ndarray) -> np.ndarray:
     return grid == -1
 
 def m3_interval_consistency_vec_full(grid: np.ndarray) -> np.ndarray:
     R, C = grid.shape
     result = np.full((R, C), False, dtype=bool)
-
     for r in range(R):
         row = grid[r]
         vals = np.unique(row[row != -1])
@@ -26,8 +27,7 @@ def m3_interval_consistency_vec_full(grid: np.ndarray) -> np.ndarray:
             if len(positions) < 2:
                 continue
             intervals = np.diff(positions)
-            min_interval = intervals.min()
-            if min_interval <= 3:
+            if intervals.min() <= 3:
                 for pos in positions:
                     result[r, pos] = True
     return result
@@ -95,8 +95,6 @@ def tensor_flow_score_vec_all(grid: np.ndarray) -> np.ndarray:
         except Exception:
             pass
     return total_score
-
-# 其他原生功能保持不變
 
 def get_card_max_value(grid):
     return max(v for row in grid for v in row if v != -1)
@@ -173,8 +171,7 @@ def build_and_solve_cp_vec(grid: np.ndarray, candidates: List[Tuple[int,int,int]
     tensor_scores = []
 
     for i, (r, c, v) in enumerate(candidates):
-        score = 0.0
-        score += scores[r, c]
+        score = scores[r, c]
         score += 5.0 * mem_score(r, c, v, legal_values)
         tensor_scores.append(scores[r, c])
         weights.append(int(score * 1000))
