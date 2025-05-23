@@ -1,164 +1,159 @@
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List, Dict, Callable
+# analyzer.py
 
-app = FastAPI()
+import os
+import json
+import time
+import logging
+from typing import List, Optional, Tuple, Callable, Dict, Any
 
-# ── Models ────────────────────────────────────────────────────────────────────
+import numpy as np
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
+# -------------------------
+# 配置和初始化
+# -------------------------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("analyzer")
+
+app = FastAPI(title="Grid Analyzer API")
+
+# 默认从环境变量或本地文件加载记忆样本
+MEMORY_FILE = os.getenv("MEMORY_CARDS_FILE", "memory_cards.json")
+try:
+    with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+        _mem = json.load(f).get("memory_cards", [])
+        MEMORY_CARDS = np.array(_mem, dtype=int)
+        logger.info(f"Loaded memory cards: shape={MEMORY_CARDS.shape}")
+except Exception as e:
+    logger.warning(f"Cannot load memory cards ({MEMORY_FILE}): {e}")
+    MEMORY_CARDS = np.empty((0,))
+
+# -------------------------
+# 数据模型
+# -------------------------
 class ProposedValue(BaseModel):
-    pos: List[int]      # [row, col]
-    value: int
-    score: float
-    py_guide: str
+    pos: List[int] = Field(..., description="[row, col], 0-based")
+    value: int = Field(..., ge=1, description="预测数字")
+    score: float = Field(..., ge=0, description="置信分")
+    py_guide: str = Field(..., description="本地推理说明")
 
-class SimplifiedAnalyzeRequest(BaseModel):
-    new_card: List[List[int]]
-    proposed_values: List[ProposedValue]
-    weight_base: float = 0.7   # 原始 API 分数权重
-    weight_meta: float = 0.3   # 死逻辑模块打分权重
+class AnalyzeRequest(BaseModel):
+    new_card: List[List[int]] = Field(..., description="待补全的 NxM 矩阵，空格用 -1")
+    targets: Optional[List[int]] = Field(
+        None, description="要预测的行索引列表，默认所有含 -1 的行"
+    )
+    memory_override: Optional[List[List[List[int]]]] = Field(
+        None, description="可选：临时覆盖记忆样本"
+    )
 
-# ── Visualization ─────────────────────────────────────────────────────────────
+class AnalyzeResponse(BaseModel):
+    status: str
+    visual_grid: str
+    results: Dict[int, List[ProposedValue]]
 
-def visualize_grid(grid: List[List[int]]) -> str:
-    rows = len(grid)
-    cols = len(grid[0]) if rows else 0
-    col_labels = "   " + "".join(f" C{c+1:<3}" for c in range(cols)) + "\n"
-    sep = "  +" + "+".join("----" for _ in range(cols)) + "+\n"
+# -------------------------
+# 工具函数
+# -------------------------
+def to_numpy(grid: List[List[int]]) -> np.ndarray:
+    arr = np.array(grid, dtype=int)
+    if arr.ndim != 2 or arr.size == 0:
+        raise ValueError("new_card 必须为 2D 非空矩阵")
+    return arr
+
+def visualize_grid(arr: np.ndarray) -> str:
+    rows, cols = arr.shape
+    # 列标签
+    header = "    " + " ".join(f"C{c+1:>3}" for c in range(cols)) + "\n"
+    sep = "   +" + "+".join(["----"] * cols) + "+\n"
     body = ""
-    for r, row in enumerate(grid):
-        vals = "|".join(f"{str(v) if v != -1 else '':>3} " for v in row)
-        body += f"R{r+1:<2}|{vals}|\n" + sep
-    return "```lua\n" + col_labels + sep + body + "```"
+    for r in range(rows):
+        row_vals = "".join(f"|{arr[r, c]:>3}" if arr[r, c] != -1 else "|   " for c in range(cols))
+        body += f"R{r+1:>2} {row_vals}|\n" + sep
+    return "```text\n" + header + sep + body + "```"
 
-# ── Dead‐logic Modules ────────────────────────────────────────────────────────
+# -------------------------
+# 模块化逻辑函数（示例）
+# -------------------------
+# 所有函数签名统一： (grid, pos, value) -> score_or_bool
+def m1_fixed_empty(grid: np.ndarray, pos: Tuple[int,int], value: int) -> float:
+    # 如果该格本来就空，打分 1，否则 0
+    return 1.0 if grid[pos] == -1 else 0.0
 
-def a6_fixed_position(grid, pos, value):      return grid[pos[0]][pos[1]] == -1
-def m3_interval_consistency(grid, pos, value):
+def m2_interval_consistency(grid: np.ndarray, pos: Tuple[int,int], value: int) -> float:
     r, c = pos
-    ints = [abs(c - j) for j, v in enumerate(grid[r]) if v == value]
-    return ints[0] if ints else -1
-def a9_diagonal_symmetry(grid, pos, value):    return pos[0] == pos[1] and grid[pos[0]][pos[1]] == value
-def m5_sequence_direction(grid, pos, value):
-    row = [v for v in grid[pos[0]] if v != -1]
-    return all(x < y for x, y in zip(row, row[1:]))
-def m10_edge_prediction(grid, pos, value):
-    r, c = pos; R, C = len(grid), len(grid[0])
-    return r in (0, R-1) or c in (0, C-1)
-def m11_jump_zone(grid, pos, value):          return (pos[0] + pos[1]) % 2 == 0
-def m12_diagonal_repeat(grid, pos, value):    return a9_diagonal_symmetry(grid, pos, value)
-def m13_center_rotation(grid, pos, value):
-    R, C = len(grid), len(grid[0]); cr, cc = R//2, C//2
-    return abs(pos[0]-cr) == abs(pos[1]-cc)
-def m14_mirror_diff(grid, pos, value):
-    r, c = pos; C = len(grid[0]); mc = C-1-c
-    if 0 <= mc < C and grid[r][mc] != -1:
-        return abs(grid[r][c] - grid[r][mc]) <= 2
-    return False
-def m15_parity_block(grid, pos, value):       return (value % 2 == 0) == ((pos[0] + pos[1]) % 2 == 0)
-def m16_upper_lower_ratio(grid, pos, value):  return pos[0] < (len(grid)//2)
-def m17_column_mirror_reverse(grid, pos, value):
-    C = len(grid[0]); r, c = pos
-    return grid[r][c] == grid[r][C-1-c]
-def m18_horizontal_delta(grid, pos, value):
-    r, c = pos; C = len(grid[0])
-    if 0 < c < C-1 and grid[r][c-1] != -1 and grid[r][c+1] != -1:
-        return abs(grid[r][c-1] - grid[r][c+1]) <= 2
-    return False
-def m19_arc_shape(grid, pos, value):          return abs(pos[0] - pos[1]) <= 1
+    row = grid[r, :]
+    # 找同值间距，越小越符合
+    idx = np.where(row == value)[0]
+    if idx.size == 0:
+        return 0.0
+    dist = np.min(np.abs(idx - c))
+    return 1.0 / (1 + dist)
 
-# 模块工厂映射
-MODULE_FUNCS: Dict[str, Callable] = {
-    "A6": a6_fixed_position,
-    "M3": m3_interval_consistency,
-    "A9": a9_diagonal_symmetry,
-    "M5": m5_sequence_direction,
-    "M10": m10_edge_prediction,
-    "M11": m11_jump_zone,
-    "M12": m12_diagonal_repeat,
-    "M13": m13_center_rotation,
-    "M14": m14_mirror_diff,
-    "M15": m15_parity_block,
-    "M16": m16_upper_lower_ratio,
-    "M17": m17_column_mirror_reverse,
-    "M18": m18_horizontal_delta,
-    "M19": m19_arc_shape,
-}
+def m3_no_repeat(grid: np.ndarray, pos: Tuple[int,int], value: int) -> float:
+    # 整卡不允许重复
+    return 1.0 if not np.any(grid == value) else 0.0
 
-# ── 权重 & 二阶模块 ────────────────────────────────────────────────────────────
+# … 这里可继续添加更多模块 …
+MODULES: List[Tuple[str, Callable[[np.ndarray, Tuple[int,int], int], float]]] = [
+    ("fixed_empty", m1_fixed_empty),
+    ("interval", m2_interval_consistency),
+    ("no_repeat", m3_no_repeat),
+    # ("adj_density", m4_adj_density), ...
+]
 
-MODULE_WEIGHTS = {
-    "A6": 1.0, "M3": 1.2, "A9": 1.0, "M5": 1.1,
-    "M10": 0.9, "M11": 0.8, "M12": 1.0, "M13": 1.0,
-    "M14": 1.0, "M15": 1.1, "M16": 0.7, "M17": 1.0,
-    "M18": 0.9, "M19": 0.8,
-}
+# -------------------------
+# 主分析逻辑
+# -------------------------
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(req: AnalyzeRequest):
+    t0 = time.time()
+    # 转 numpy，校验
+    try:
+        grid = to_numpy(req.new_card)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-SECONDARY_MODULES: Dict[str, Callable[[Dict[str,bool]], bool]] = {
-    "M3∧M5": lambda mr: mr["M3"] and mr["M5"],
-    "M10⊕M11": lambda mr: mr["M10"] ^ mr["M11"],
-}
+    # 选择记忆样本
+    memory = (
+        np.array(req.memory_override, dtype=int)
+        if req.memory_override is not None
+        else MEMORY_CARDS
+    )
 
-def aggregate_module_score(mr: Dict[str,bool]) -> float:
-    return sum(MODULE_WEIGHTS.get(name, 1.0) * (1.0 if passed else 0.0)
-               for name, passed in mr.items())
+    # 默认 targets：所有含 -1 的行
+    if req.targets:
+        targets = req.targets
+    else:
+        targets = list({r for r, row in enumerate(grid) if np.any(row == -1)})
 
-def aggregate_with_secondary(mr: Dict[str,bool]) -> float:
-    score = aggregate_module_score(mr)
-    for extra, fn in SECONDARY_MODULES.items():
-        if fn(mr):
-            score += 0.5
-    return score
+    results: Dict[int, List[ProposedValue]] = {}
 
-# ── 分析 Endpoint ────────────────────────────────────────────────────────────
+    # 对每个目标行，遍历所有可能候选值
+    for r in targets:
+        empties = list(zip(*np.where(grid[r, :] == -1)))
+        for c in empties:
+            candidates = set(range(1, grid.size + 1)) - set(grid.flatten())
+            scored: List[Tuple[int,float,str]] = []
+            for v in candidates:
+                # 每个模块打分并求加权和（目前平均）
+                scores = [fn(grid, (r,c), v) for _, fn in MODULES]
+                avg_score = float(np.mean(scores))
+                guide = ",".join(f"{name}:{s:.2f}" for (name,_), s in zip(MODULES, scores))
+                scored.append((v, avg_score, guide))
+            # 取 Top3
+            top3 = sorted(scored, key=lambda x: -x[1])[:3]
+            results.setdefault(r, []).extend([
+                ProposedValue(pos=[r, c[1]], value=v, score=s, py_guide=g)
+                for v, s, g in top3
+            ])
 
-@app.post("/analyze")
-def analyze(req: SimplifiedAnalyzeRequest):
-    # 基本校验
-    if not req.new_card or not req.proposed_values:
-        return {"status": "error", "message": "缺少必要字段"}
-    if any(len(row) != len(req.new_card[0]) for row in req.new_card):
-        return {"status": "error", "message": "表格列长度不一致"}
+    visual = visualize_grid(grid)
+    elapsed = (time.time() - t0) * 1000
+    logger.info(f"analyze done in {elapsed:.1f}ms")
 
-    items = []
-    for pv in req.proposed_values:
-        # 1) 模块结果
-        mod_results = {
-            name: func(req.new_card, pv.pos, pv.value)
-            for name, func in MODULE_FUNCS.items()
-        }
-        # 2) 计算 meta_score
-        meta = aggregate_with_secondary(mod_results)
-        # 3) 融合原始 score 与 meta_score
-        combined = req.weight_base * pv.score + req.weight_meta * meta
-
-        items.append({
-            "pv": pv,
-            "modules": mod_results,
-            "meta_score": round(meta, 4),
-            "combined_score": round(combined, 4),
-        })
-
-    # 排序取 Top3
-    top3 = sorted(items, key=lambda x: -x["combined_score"])[:3]
-    visual = visualize_grid(req.new_card)
-
-    # 组织返回
-    results = []
-    for it in top3:
-        pv = it["pv"]
-        results.append({
-            "pos": pv.pos,
-            "value": pv.value,
-            "base_score": round(pv.score, 4),
-            "meta_score": it["meta_score"],
-            "combined_score": it["combined_score"],
-            "modules": it["modules"],
-            "py_guide": pv.py_guide
-        })
-
-    return {
-        "status": "success",
-        "visual_grid": visual,
-        "results": results
-    }
+    return AnalyzeResponse(
+        status="success",
+        visual_grid=visual,
+        results=results
+    )
