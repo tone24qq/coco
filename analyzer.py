@@ -6,9 +6,9 @@ from typing import List, Dict, Tuple, Callable
 import numpy as np
 from ortools.sat.python import cp_model
 
-app = FastAPI(title="Plug-in權重 + 張量流補格AI", version="3.0")
+app = FastAPI(title="Plug-in權重 + 張量流 + 自動數字範圍", version="3.1")
 
-# —— Plug-in 規則（Module Functions & Weights）——#
+# —— Plug-in規則 ——#
 def a6_fixed_position(grid, pos, value):      return grid[pos[0]][pos[1]] == -1
 def m3_interval_consistency(grid, pos, value):
     r, c = pos
@@ -66,9 +66,8 @@ MODULE_WEIGHTS = {
     "M18": 0.9, "M19": 0.8,
 }
 
-# —— 張量流：全圖模組加權得分（Tensor Flow Scoring）——#
 def tensor_flow_score(grid, pos, value):
-    new_grid = [row[:] for row in grid]  # 深拷貝，模擬補格
+    new_grid = [row[:] for row in grid]  # 補格後新張量
     new_grid[pos[0]][pos[1]] = value
     score = 0.0
     for r in range(len(new_grid)):
@@ -83,7 +82,11 @@ def tensor_flow_score(grid, pos, value):
                     pass
     return score
 
-# —— API模型、記憶體共鳴等（跟你的主流程保持一致）——#
+# ——— 自動調適最大值 ——— #
+def get_card_max_value(grid):
+    return max(v for row in grid for v in row if v != -1)
+
+# —— API模型 —— #
 class ProposedValue(BaseModel):
     pos: List[int]
     value: int
@@ -107,11 +110,13 @@ class AnalyzeRequest(BaseModel):
             r, c = pv.pos
             if not (0 <= r < rows and 0 <= c < cols):
                 raise ValueError(f"pos 越界：{pv.pos}")
-            if pv.value < 1 or pv.value > N:
-                raise ValueError(f"value 超出合法范围：1~{N}")
+            # 嚴格只收小於等於卡片最大值的數字
+            card_max = get_card_max_value(grid)
+            if pv.value < 1 or pv.value > card_max:
+                raise ValueError(f"value 超出卡片最大值範圍：1~{card_max}")
         return pv
 
-# 記憶體分數（跟主流程一致）
+# 記憶體分數（照舊）
 MEM_PATH = os.path.join(os.path.dirname(__file__), "memory_cards.json")
 _memory_freq: Dict[Tuple[int,int,int], int] = {}
 _total_samples = 0
@@ -124,18 +129,20 @@ if os.path.exists(MEM_PATH):
                     _memory_freq[(r, c, v)] = _memory_freq.get((r, c, v), 0) + 1
                     _total_samples += 1
 
-def get_legal_values(grid):
-    N = grid.shape[0] * grid.shape[1]
-    used = set(grid.flatten()[grid.flatten() != -1])
-    return set(v for v in range(1, N+1) if v not in used)
-
 def mem_score(r, c, v, legal_values):
     if v not in legal_values:
         return 0.0
     cnt = _memory_freq.get((r, c, v), 0)
     return cnt / _total_samples if _total_samples else 0.0
 
-# —— Build & Solve (Plug-in + 張量流) ——#
+def get_legal_values(grid):
+    card_max = get_card_max_value(grid)
+    N = grid.shape[0] * grid.shape[1]
+    used = set(grid.flatten()[grid.flatten() != -1])
+    # 嚴格限制：1~card_max 並未被用過
+    return set(v for v in range(1, card_max+1) if v not in used)
+
+# —— Build & Solve (Plug-in + 張量流 + 自動範圍) ——#
 def build_and_solve_cp(grid: np.ndarray, candidates: List[Tuple[int,int,int]], legal_values):
     model = cp_model.CpModel()
     rows, cols = grid.shape
@@ -148,77 +155,4 @@ def build_and_solve_cp(grid: np.ndarray, candidates: List[Tuple[int,int,int]], l
             model.Add(x[i] == 0)
     for i in range(len(candidates)):
         vi = candidates[i][2]
-        for j in range(i+1, len(candidates)):
-            vj = candidates[j][2]
-            if vi == vj:
-                model.Add(x[i] + x[j] <= 1)
-
-    weights = []
-    tensor_scores = []
-    for i, (r, c, v) in enumerate(candidates):
-        score = 0.0
-        # Plug-in模組加權
-        for name, func in MODULE_FUNCS.items():
-            try:
-                if func(grid, (r, c), v):
-                    score += MODULE_WEIGHTS.get(name, 1.0)
-            except Exception:
-                pass
-        # 張量流（全圖補完後再全模組一遍）
-        tensor_score = tensor_flow_score(grid, (r, c), v)
-        tensor_scores.append(tensor_score)
-        # 你可以設置張量流分數的全局權重，例：1.0（可自定）
-        score += tensor_score * 1.0
-
-        # 你還能加記憶體分數
-        score += 5.0 * mem_score(r, c, v, legal_values)
-        weights.append(int(score * 1000))
-
-    obj = sum(x[i] * weights[i] for i in range(len(candidates)))
-    model.Maximize(obj)
-
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 0.5
-    solver.parameters.num_search_workers = 4
-    status = solver.Solve(model)
-    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return []
-
-    best = []
-    for i in range(len(candidates)):
-        if solver.Value(x[i]):
-            best.append((candidates[i][0], candidates[i][1], candidates[i][2], weights[i] / 1000.0, tensor_scores[i]))
-    return best
-
-@app.post("/analyze")
-def analyze(req: AnalyzeRequest):
-    grid = np.array(req.new_card, dtype=int)
-    legal_values = get_legal_values(grid)
-    candidates = []
-    for pv in req.proposed_values:
-        r, c, v = pv.pos[0], pv.pos[1], pv.value
-        if grid[r, c] != -1:
-            continue
-        if v in legal_values:
-            candidates.append((r, c, v))
-    if not candidates:
-        raise HTTPException(400, "没有合法可选候选")
-
-    best = build_and_solve_cp(grid, candidates, legal_values)
-    if best:
-        r, c, v, s, tensor = max(best, key=lambda x: x[3])
-        return {
-            "status": "success",
-            "result": {
-                "pos": [r, c],
-                "value": v,
-                "score": round(s, 4),
-                "tensor_flow_score": round(tensor, 4),
-                # 若要回傳 plug-in 詳細分數，可在上面 weights 迴圈保存
-            }
-        }
-    else:
-        return {
-            "status": "fail",
-            "result": None
-        }
+        for j in range(i+1, len(c
