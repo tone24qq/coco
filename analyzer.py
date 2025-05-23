@@ -156,3 +156,94 @@ def build_and_solve_cp(grid: np.ndarray, candidates: List[Tuple[int,int,int]], l
     for i in range(len(candidates)):
         vi = candidates[i][2]
         for j in range(i+1, len(c
+        def build_and_solve_cp(grid: np.ndarray, candidates: List[Tuple[int,int,int]], legal_values):
+    model = cp_model.CpModel()
+    rows, cols = grid.shape
+    used = set(grid.flatten()[grid.flatten() != -1])
+    x = [model.NewBoolVar(f"x_{i}") for i in range(len(candidates))]
+    model.Add(sum(x) == 1)
+
+    for i, (r, c, v) in enumerate(candidates):
+        if v in used or v not in legal_values:
+            model.Add(x[i] == 0)
+    for i in range(len(candidates)):
+        vi = candidates[i][2]
+        for j in range(i+1, len(candidates)):
+            vj = candidates[j][2]
+            if vi == vj:
+                model.Add(x[i] + x[j] <= 1)
+
+    weights = []
+    tensor_scores = []
+    for i, (r, c, v) in enumerate(candidates):
+        score = 0.0
+        # Plug-in模組加權
+        for name, func in MODULE_FUNCS.items():
+            try:
+                if func(grid, (r, c), v):
+                    score += MODULE_WEIGHTS.get(name, 1.0)
+            except Exception:
+                pass
+        # 張量流分數
+        tensor_score = tensor_flow_score(grid, (r, c), v)
+        tensor_scores.append(tensor_score)
+        score += tensor_score * 1.0
+        # 記憶體共鳴分數
+        score += 5.0 * mem_score(r, c, v, legal_values)
+        weights.append(int(score * 1000))
+
+    obj = sum(x[i] * weights[i] for i in range(len(candidates)))
+    model.Maximize(obj)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 0.5
+    solver.parameters.num_search_workers = 4
+    status = solver.Solve(model)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return []
+
+    best = []
+    for i in range(len(candidates)):
+        if solver.Value(x[i]):
+            best.append((candidates[i][0], candidates[i][1], candidates[i][2], weights[i] / 1000.0, tensor_scores[i]))
+    return best
+
+@app.post("/analyze")
+def analyze(req: AnalyzeRequest):
+    try:
+        grid = np.array(req.new_card, dtype=int)
+        legal_values = get_legal_values(grid)
+        candidates = []
+        for pv in req.proposed_values:
+            r, c, v = pv.pos[0], pv.pos[1], pv.value
+            if grid[r, c] != -1:
+                continue
+            if v in legal_values:
+                candidates.append((r, c, v))
+        if not candidates:
+            raise HTTPException(400, "没有合法可选候选")
+        best = build_and_solve_cp(grid, candidates, legal_values)
+        if best:
+            r, c, v, s, tensor = max(best, key=lambda x: x[3])
+            return {
+                "status": "success",
+                "result": {
+                    "pos": [r, c],
+                    "value": v,
+                    "score": round(s, 4),
+                    "tensor_flow_score": round(tensor, 4),
+                }
+            }
+        else:
+            return {"status": "fail", "result": None}
+    except Exception as e:
+        # 這裡會直接把詳細錯誤原因顯示給你
+        return {"status": "error", "message": str(e)}
+
+        }
+    else:
+        return {
+            "status": "fail",
+            "result": None
+        }
+
