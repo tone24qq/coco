@@ -1,113 +1,109 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import List
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Tuple
+import numpy as np
 
 app = FastAPI()
 
 class ProposedValue(BaseModel):
     pos: List[int]       # [row, col]
-    value: int
-    score: float = 0.0   # 會動態計算
-    py_guide: str = ""   # 模組命中記錄
+    value: int           # 要填的数字
+    score: float = 0.0   # 规则评分
+    py_guide: str = ""   # 规则名称和参数
 
 class SimplifiedAnalyzeRequest(BaseModel):
-    new_card: List[List[int]]        # -1 表示空格
+    new_card: List[List[int]]
     proposed_values: List[ProposedValue]
 
+# ─── 模组规则实现 ───────────────────────────────────────────────────────────
+def A6(g: np.ndarray, r: int, c: int, v: int) -> Tuple[float,str]:
+    """固定空位"""
+    return (1.0, "A6") if g[r, c] == -1 else (0.0, "")
+
+def M3(g: np.ndarray, r: int, c: int, v: int) -> Tuple[float,str]:
+    """同行已有时距一致性，越近越高"""
+    row = g[r]
+    idx = np.where(row == v)[0]
+    if idx.size:
+        d = abs(c - idx[0])
+        score = max(0.0, 1 - d / g.shape[1])
+        return (score, f"M3(d={d})")
+    return (0.0, "")
+
+def M5(g: np.ndarray, r: int, c: int, v: int) -> Tuple[float,str]:
+    """同列/同排数字递增序列"""
+    row = g[r][g[r] != -1]
+    if row.size > 1 and np.all(np.diff(row) > 0):
+        return (1.0, "M5")
+    return (0.0, "")
+
+# …可继续添加其他规则…
+RULES = {
+    "A6": A6,
+    "M3": M3,
+    "M5": M5,
+    # "A9": A9, "M10": M10, …
+}
+
+# ─── 视图化表格 ───────────────────────────────────────────────────────────
 def visualize_grid(grid: List[List[int]]) -> str:
-    # 保留原始視覺化函式，不動
     rows = len(grid)
     cols = len(grid[0]) if rows else 0
     col_labels = "   " + "".join(f" C{c+1:<3}" for c in range(cols)) + "\n"
     sep = "  +" + "+".join("----" for _ in range(cols)) + "+\n"
     body = ""
     for r, row in enumerate(grid):
-        row_vals = "|".join(f"{str(v) if v!=-1 else '':>3} " for v in row)
-        body += f"R{r+1:<2}|{row_vals}|\n" + sep
+        vals = "|".join(f"{str(v) if v != -1 else '':>3} " for v in row)
+        body += f"R{r+1:<2}|{vals}|\n" + sep
     return "```lua\n" + col_labels + sep + body + "```"
 
+# ─── 主分析接口 ───────────────────────────────────────────────────────────
 @app.post("/analyze")
 def analyze(req: SimplifiedAnalyzeRequest):
-    # 1) 基本檢查
-    if not req.new_card or not req.proposed_values:
-        return {"status":"error","message":"缺少 new_card 或 proposed_values"}
-    if any(len(r)!=len(req.new_card[0]) for r in req.new_card):
-        return {"status":"error","message":"表格列長度不一致"}
-
-    # 2) 懶載入、一次轉 ndarray 並量化 dtype
-    import numpy as np
-    grid = np.array(req.new_card, dtype=np.int16)
+    # 转成 numpy 数组
+    try:
+        grid = np.array(req.new_card, dtype=int)
+    except Exception:
+        raise HTTPException(status_code=400, detail="new_card 必须是二维整数列表")
+    if grid.ndim != 2:
+        raise HTTPException(status_code=400, detail="new_card 必须是二维结构")
     rows, cols = grid.shape
-    center = (rows//2, cols//2)
+    max_val = rows * cols
 
-    # 3) 定義各模組的向量化/快速檢查
-    def eval_pv(pv: ProposedValue):
+    # 验证每行长度一致
+    if any(len(row) != cols for row in req.new_card):
+        raise HTTPException(status_code=400, detail="表格列长度不一致")
+
+    evaluated: List[ProposedValue] = []
+    for pv in req.proposed_values:
         r, c = pv.pos
         v = pv.value
-        sc = 0.0
-        guides = []
+        # 越界 & 数值范围检测
+        if not (0 <= r < rows and 0 <= c < cols):
+            raise HTTPException(status_code=400, detail=f"pos 越界: {pv.pos}")
+        if not (1 <= v <= max_val):
+            raise HTTPException(status_code=400, detail=f"value 必须在1~{max_val}之间: {v}")
 
-        # A6: fixed position 必須原本是空
-        if grid[r, c] == -1:
-            sc += 1.0; guides.append("A6")
+        # 执行所有规则累加评分
+        total, tags = 0.0, []
+        for name, fn in RULES.items():
+            inc, tag = fn(grid, r, c, v)
+            if inc > 0:
+                total += inc
+                if tag:
+                    tags.append(tag)
+        pv.score = total
+        pv.py_guide = ",".join(tags)
+        evaluated.append(pv)
 
-        # M5: row 遞增序列
-        row_vals = grid[r, grid[r]!=-1]
-        if row_vals.size>1 and np.all(np.diff(row_vals)>0):
-            sc += 1.0; guides.append("M5")
-
-        # M3: interval consistency (越靠近越優)
-        same_cols = np.where(grid[r]==v)[0]
-        if same_cols.size>0:
-            dist = abs(c - same_cols[0])
-            sc += max(0.0, 1.0 - dist/cols)
-            guides.append(f"M3(d={dist})")
-
-        # M10: border
-        if r==0 or r==rows-1 or c==0 or c==cols-1:
-            sc += 0.5; guides.append("M10")
-
-        # M11: chess-zone
-        if (r+c)%2==0:
-            sc += 0.2; guides.append("M11")
-
-        # M13: diagonal from center
-        if abs(r-center[0])==abs(c-center[1]):
-            sc += 0.5; guides.append("M13")
-
-        # M14: mirror diff <=2
-        mc = cols-1-c
-        if 0<=mc<cols and grid[r,c]!=-1 and grid[r,mc]!=-1 and abs(int(grid[r,c])-int(grid[r,mc]))<=2:
-            sc += 0.5; guides.append("M14")
-
-        # M15: parity block
-        if (v%2==0)==((r+c)%2==0):
-            sc += 0.2; guides.append("M15")
-
-        pv.score = sc
-        pv.py_guide = ",".join(guides)
-        return pv
-
-    # 4) 使用 ThreadPoolExecutor(2) 並行計算（手機端發熱最小化）
-    with ThreadPoolExecutor(max_workers=2) as exe:
-        futures = [exe.submit(eval_pv, pv) for pv in req.proposed_values]
-        evaluated = [f.result() for f in as_completed(futures)]
-
-    # 5) 取前 3 名
+    # 排序并取 Top3
     top3 = sorted(evaluated, key=lambda x: -x.score)[:3]
-    visual = visualize_grid(req.new_card)
 
-    # 6) 回傳
     return {
         "status": "success",
-        "visual_grid": visual,
+        "visual_grid": visualize_grid(req.new_card),
         "results": [
-            {
-                "value": pv.value,
-                "pos": pv.pos,
-                "score": round(pv.score, 4),
-                "py_guide": pv.py_guide
-            } for pv in top3
+            {"pos": p.pos, "value": p.value, "score": p.score, "py_guide": p.py_guide}
+            for p in top3
         ]
     }
