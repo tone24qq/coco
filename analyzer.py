@@ -1,20 +1,21 @@
 # analyzer.py
 import json
+import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, validator
-from typing import List, Tuple, Dict, Callable
+from typing import List, Dict, Tuple
 from dataclasses import dataclass
 import numpy as np
-import os
 
-app = FastAPI(title="极限补格AI分析器", version="1.0")
+# **新增**：OR-Tools CP-SAT
+from ortools.sat.python import cp_model
 
-# —— 1. 数据模型 ——#
+app = FastAPI(title="极限补格AI分析器（CP-SAT 版）", version="2.0")
+
+# —— 1. 输入/输出 数据模型 ——#
 class ProposedValue(BaseModel):
     pos: List[int]      # [row, col]
     value: int
-    score: float = 0.0
-    py_guide: str = ""
 
 class AnalyzeRequest(BaseModel):
     new_card: List[List[int]]
@@ -34,20 +35,16 @@ class AnalyzeRequest(BaseModel):
             r, c = pv.pos
             if not (0 <= r < rows and 0 <= c < cols):
                 raise ValueError(f"pos 越界：{pv.pos}")
-            if pv.value < 1 or pv.value > rows * cols:
+            if pv.value < 1 or pv.value > rows*cols:
                 raise ValueError(f"value 超出合法范围：1~{rows*cols}")
         return pv
 
-# —— 2. EvalContext & 记忆样本 ——#
+# —— 2. 记忆样本（M0）加载 ——#
 @dataclass(frozen=True)
 class EvalContext:
     grid: np.ndarray
-    row: int
-    col: int
-    val: int
     rows: int
     cols: int
-    used: set
 
 MEM_PATH = os.path.join(os.path.dirname(__file__), "memory_cards.json")
 _memory_freq: Dict[Tuple[int,int,int], int] = {}
@@ -61,128 +58,122 @@ if os.path.exists(MEM_PATH):
                     _memory_freq[(r,c,v)] = _memory_freq.get((r,c,v),0) + 1
                     _total_samples += 1
 
-def M0_memory_freq(ctx: EvalContext) -> Tuple[float,str]:
-    cnt = _memory_freq.get((ctx.row,ctx.col,ctx.val),0)
-    score = cnt / _total_samples if _total_samples else 0.0
-    return score, f"M0_mem({cnt}/{_total_samples})"
+def mem_score(r,c,v):
+    cnt = _memory_freq.get((r,c,v), 0)
+    return cnt / _total_samples if _total_samples else 0.0
 
-# —— 3. 规则辞典 ——#
-def A6(ctx):   return (1.0, "A6_empty") if ctx.grid[ctx.row,ctx.col] == -1 else (0.0, "")
-def M3(ctx):
-    row = ctx.grid[ctx.row]
-    matches = np.where(row == ctx.val)[0]
-    if matches.size:
-        d = np.min(np.abs(matches - ctx.col))
-        return (1.0/(1+d), f"M3_d{d}")
-    return (0.0, "")
-def A9(ctx):   return (1.0, "A9_diag") if ctx.row==ctx.col and ctx.val==ctx.grid[ctx.row,ctx.col] else (0.0, "")
-def M5_row_inc(ctx):
-    seq = ctx.grid[ctx.row][ctx.grid[ctx.row]!=-1]
-    return (1.0, "M5_row_inc") if seq.size==0 or np.all(seq[:-1]<seq[1:]) else (0.0, "")
-def M10_edge(ctx):
-    return (1.0, "M10_edge") if (ctx.row in (0,ctx.rows-1) or ctx.col in (0,ctx.cols-1)) else (0.0, "")
-def M11_jump(ctx):
-    return (1.0, "M11_jump") if ((ctx.row+ctx.col)%2==0) == (ctx.val%2==0) else (0.0, "")
-def M12_diag_rep(ctx):
-    return (1.0, "M12_diag_rep") if ctx.row==ctx.col and ctx.grid[ctx.row,ctx.col]==ctx.val else (0.0, "")
-def M13_ctr_rot(ctx):
-    cent = ((ctx.rows-1)/2, (ctx.cols-1)/2)
-    return (1.0, "M13_ctr_rot") if abs(ctx.row-cent[0])==abs(ctx.col-cent[1]) else (0.0, "")
-def M14_mirror(ctx):
-    mc = ctx.cols-1-ctx.col
-    if ctx.grid[ctx.row,mc] != -1:
-        diff = abs(ctx.val-ctx.grid[ctx.row,mc])
-        return ((2-diff)/2, f"M14_mirror({ctx.grid[ctx.row,mc]})") if diff<=2 else (0.0,"")
-    return (0.0,"")
-def M15_parity(ctx):
-    return (1.0, "M15_parity") if (ctx.val%2)==((ctx.row+ctx.col)%2) else (0.0,"")
-def M16_uratio(ctx):
-    return (1.0, "M16_upper") if ctx.row<ctx.rows//2 else (0.0,"")
-def M17_col_mir(ctx):
-    mc = ctx.cols-1-ctx.col
-    return (1.0, "M17_col_mir") if ctx.grid[ctx.row,mc]==ctx.val else (0.0,"")
-def M18_hdelta(ctx):
-    r,c=ctx.row,ctx.col
-    left  = ctx.grid[r,c-1] if c>0 else -1
-    right = ctx.grid[r,c+1] if c<ctx.cols-1 else -1
-    if left!=-1 and right!=-1:
-        diff = abs(left-right)
-        return ((2-diff)/2, f"M18_hdelta({left},{right})") if diff<=2 else (0.0,"")
-    return (0.0,"")
-def M19_arc(ctx):
-    return (1.0, "M19_arc") if abs(ctx.row-ctx.col)<=1 else (0.0,"")
+# —— 3. 约束 & 打分函数 ——#
+def build_and_solve_cp(grid: np.ndarray, candidates: List[Tuple[int,int,int]]):
+    """
+    构建 CP-SAT 模型：
+    - 变量 x[i] = True 表示选中 candidates[i]
+    - 每个位置只能选一个值
+    - 保证所有已定值 + 新选的值互不重复
+    - 尽量最大化记忆频率 + 位置规则打分
+    """
+    model = cp_model.CpModel()
+    rows, cols = grid.shape
+    N = rows * cols
 
-RULES: Dict[str, Callable[[EvalContext], Tuple[float,str]]] = {
-    "M0": M0_memory_freq, "A6": A6, "M3": M3, "A9": A9,
-    "M5": M5_row_inc, "M10": M10_edge, "M11": M11_jump,
-    "M12": M12_diag_rep, "M13": M13_ctr_rot, "M14": M14_mirror,
-    "M15": M15_parity, "M16": M16_uratio, "M17": M17_col_mir,
-    "M18": M18_hdelta, "M19": M19_arc,
-}
+    # 已经填好的数字集合
+    used = set(grid.flatten()[grid.flatten() != -1])
 
-# —— 4. 分析逻辑 ——#
+    # Bool 变量
+    x = [model.NewBoolVar(f"x_{i}") for i in range(len(candidates))]
+
+    # 1) 每个候选 (r,c,v) 只能选一次
+    #    但我们要选 TOP K，比如选最多1个（你也可以改成选3个一起返回）
+    model.Add(sum(x) == 1)
+
+    # 2) 唯一性约束：选中的值不能跟 used 冲突，也不能彼此冲突
+    #    例如若有 (r1,c1,v1) 和 (r2,c2,v2) ，v1≠v2
+    for i,(r,c,v) in enumerate(candidates):
+        # 值已存在则禁止
+        if v in used:
+            model.Add(x[i] == 0)
+    # 互斥（值重复）
+    for i in range(len(candidates)):
+        ri,ci,vi = candidates[i]
+        for j in range(i+1, len(candidates)):
+            rj,cj,vj = candidates[j]
+            if vi == vj:
+                model.Add(x[i] + x[j] <= 1)
+
+    # 3) 构建目标：记忆打分 + 位置启发式
+    #    记忆频率 M0, 越靠近中心加分 M13, 边缘加分 M10, 行递增 M5……
+    weights = []
+    for i,(r,c,v) in enumerate(candidates):
+        score = 0.0
+        # M0
+        score += 5.0 * mem_score(r,c,v)
+        # M10 边缘
+        if r in (0,rows-1) or c in (0,cols-1):
+            score += 0.5
+        # M5 行递增
+        seq = grid[r][grid[r]!=-1]
+        if seq.size==0 or np.all(seq[:-1] < seq[1:]):
+            score += 0.3
+        # M16 偏上
+        if r < rows//2:
+            score += 0.2
+        # M13 中心对角
+        cent_r, cent_c = (rows-1)/2, (cols-1)/2
+        if abs(r-cent_r)==abs(c-cent_c):
+            score += 0.2
+        # M3 同行距离
+        dist_matches = np.where(grid[r]==v)[0]
+        if dist_matches.size:
+            d = np.min(np.abs(dist_matches - c))
+            score += 0.4/(1+d)
+        # ……你可以在这里任意加
+        # 最后乘上一个放大系数
+        weights.append(int(score * 1000))
+
+    obj = sum(x[i] * weights[i] for i in range(len(candidates)))
+    model.Maximize(obj)
+
+    # 求解
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 0.5  # 手机版要限速
+    solver.parameters.num_search_workers = 4     # 并行
+    status = solver.Solve(model)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return []
+
+    # 返回选中的候选
+    best = []
+    for i in range(len(candidates)):
+        if solver.Value(x[i]):
+            best.append((candidates[i][0], candidates[i][1], candidates[i][2],
+                         weights[i]/1000.0))
+    return best
+
+# —— 4. API 逻辑 ——#
 @app.post("/analyze")
 def analyze(req: AnalyzeRequest):
     grid = np.array(req.new_card, dtype=int)
     rows, cols = grid.shape
-    max_val = rows * cols
-    used = set(grid.flatten()[grid.flatten() != -1])
 
-    # —— 关键：提前过滤所有超范围的候选值 ——#
-    req.proposed_values = [
-        pv for pv in req.proposed_values
-        if 1 <= pv.value <= max_val
-    ]
-
-    results = []
+    # 收集所有可行的 (r,c,v)
+    candidates = []
+    used = set(grid.flatten()[grid.flatten()!=-1])
     for pv in req.proposed_values:
-        ctx = EvalContext(
-            grid=grid, row=pv.pos[0], col=pv.pos[1],
-            val=pv.value, rows=rows, cols=cols, used=used
-        )
-        # 重复值直接跳过
-        if pv.value in used:
-            pv.score = 0.0
-            pv.py_guide = "INVALID_DUP"
-            results.append(pv)
+        r,c,v = pv.pos[0], pv.pos[1], pv.value
+        if grid[r,c] != -1:
             continue
+        if 1 <= v <= rows*cols:
+            candidates.append((r,c,v))
+    if not candidates:
+        raise HTTPException(400, "没有可选候选")
 
-        total_score = 0.0
-        guides = []
-        # 逐规则打分
-        for name, fn in RULES.items():
-            sc, g = fn(ctx)
-            if sc:
-                total_score += sc
-                guides.append(f"{name}:{g}")
-
-        # 归一并记录
-        pv.score = total_score / len(RULES)
-        pv.py_guide = ",".join(guides)
-        results.append(pv)
-
-    # 取 Top3
-    top3 = sorted(results, key=lambda x: -x.score)[:3]
-
-    # 可视化网格
-    def viz(g):
-        header = "   " + " ".join(f"C{c+1:>3}" for c in range(g.shape[1])) + "\n"
-        sep = "  +" + "----"*g.shape[1] + "+\n"
-        body = ""
-        for r in range(g.shape[0]):
-            row = "|".join(f"{'' if g[r,c]==-1 else g[r,c]:>3}" for c in range(g.shape[1]))
-            body += f"R{r+1:>2}|{row}|\n" + sep
-        return "```lua\n" + header + sep + body + "```"
+    best = build_and_solve_cp(grid, candidates)
+    # 返回 top3
+    best = sorted(best, key=lambda x: -x[3])[:3]
 
     return {
         "status": "success",
-        "visual_grid": viz(grid),
-        "results": {
-            int(pv.value): {
-                "pos": pv.pos,
-                "score": round(pv.score, 4),
-                "py_guide": pv.py_guide
-            }
-            for pv in top3
-        }
+        "results": [
+            {"pos":[r,c], "value":v, "score":round(s,4)}
+            for r,c,v,s in best
+        ]
     }
