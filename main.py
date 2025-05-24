@@ -46,22 +46,26 @@ def add_positional_encoding(grid: np.ndarray) -> np.ndarray:
 
 def build_feature_tensor(grid: np.ndarray) -> np.ndarray:
     """
-    將 grid (H×W) 轉成 feature tensor (H×W×C)
-    C = 1 + len(MODULE_FUNCS_VEC) + 2
+    最簡版張量：讓 AI 看懂每格是什麼數字、是不是空格、在哪一行哪一列
+    共 4 通道：
+    - 通道0：數字值（空格記為0）
+    - 通道1：是否為空格（1或0）
+    - 通道2：row index
+    - 通道3：col index
     """
     H, W = grid.shape
-    features = []
-    # 1. 原始號碼通道
-    features.append(grid.astype(float))
-    # 2. 各延伸模組通道
-    for func in MODULE_FUNCS_VEC.values():
-        features.append(func(grid).astype(float))
-    # 3. 位置編碼通道
-    pe = add_positional_encoding(grid)
-    features.append(pe[:,:,0])
-    features.append(pe[:,:,1])
-    # Stack 成 (H, W, C)
-    return np.stack(features, axis=-1)
+    tensor = np.zeros((H, W, 4), dtype=float)
+
+    for r in range(H):
+        for c in range(W):
+            val = grid[r, c]
+            tensor[r, c, 0] = val if val != -1 else 0  # 數字值
+            tensor[r, c, 1] = 1 if val == -1 else 0    # 是否為空格
+            tensor[r, c, 2] = r                        # 行座標
+            tensor[r, c, 3] = c                        # 列座標
+
+    return tensor
+
 
 
 # ── 3. 記憶模組 & 其他輔助函數（不动） ─────────────────────────
