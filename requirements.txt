@@ -1,6 +1,6 @@
 fastapi
-uvicorn[standard]
-pydantic
+uvicorn
 numpy
 celery
-ortools
+ortools==9.7.2996
+pydantic
