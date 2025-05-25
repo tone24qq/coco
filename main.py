@@ -721,7 +721,53 @@ def l3_pattern_block_rotation_analysis_vec(grid: np.ndarray, **kwargs) -> np.nda
                     if grid[r+dr,c+dc]==-1:
                         score[r+dr,c+dc]=max(score[r+dr,c+dc], val)
     return score*(grid==-1)
+     
++# -----------------------------------------------------------------------------
+# F10 公平排序一致性檢查模組
+# -----------------------------------------------------------------------------
+def f10_consistency_gate_vec(
+    grid: np.ndarray,
+    module_scores: Dict[str, np.ndarray],
+    **kwargs
+) -> np.ndarray:
+    H, W = grid.shape
+    score_map = np.zeros((H, W), dtype=float)
+    empty = (grid == -1)
 
+    # 1) 計算每個空格被多少模組響應
+    resonance = np.zeros((H, W), dtype=float)
+    for name, m_map in module_scores.items():
+        resonance[empty] += (m_map[empty] > 0).astype(float)
+
+    # 2) 正規化到 [0,1]
+    maxr = resonance.max() if empty.any() else 0.0
+    if maxr > 0:
+        score_map[empty] = resonance[empty] / maxr
+
+    return score_map * empty
++# -----------------------------------------------------------------------------  
++# F10 公平排序一致性檢查模組  
++# -----------------------------------------------------------------------------  
++def f10_consistency_gate_vec(
++    grid: np.ndarray,
++    module_scores: Dict[str, np.ndarray],
++    **kwargs
++) -> np.ndarray:
++    H, W = grid.shape
++    score_map = np.zeros((H, W), dtype=float)
++    empty = (grid == -1)
++
++    # 1) 計算每個空格被多少模組響應
++    resonance = np.zeros((H, W), dtype=float)
++    for name, m_map in module_scores.items():
++        resonance[empty] += (m_map[empty] > 0).astype(float)
++
++    # 2) 正規化到 [0,1]
++    maxr = resonance.max() if empty.any() else 0.0
++    if maxr > 0:
++        score_map[empty] = resonance[empty] / maxr
++
++    return score_map * empty
 # -----------------------------------------------------------------------------
 # 5. MODULE_FUNCS_VEC Registration (含新模組)
 # -----------------------------------------------------------------------------
