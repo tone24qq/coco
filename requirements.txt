@@ -5,3 +5,4 @@ celery
 ortools==9.7.2996
 pydantic
 tabulate
+pandas
