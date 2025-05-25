@@ -721,8 +721,7 @@ def l3_pattern_block_rotation_analysis_vec(grid: np.ndarray, **kwargs) -> np.nda
                     if grid[r+dr,c+dc]==-1:
                         score[r+dr,c+dc]=max(score[r+dr,c+dc], val)
     return score*(grid==-1)
-     
-+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # F10 公平排序一致性檢查模組
 # -----------------------------------------------------------------------------
 def f10_consistency_gate_vec(
@@ -730,44 +729,27 @@ def f10_consistency_gate_vec(
     module_scores: Dict[str, np.ndarray],
     **kwargs
 ) -> np.ndarray:
+    """
+    F10 公平排序一致性模組：
+    - 同一號碼若在多個候選格均有其他模組「共鳴」（非零分）→ 只保留「共鳴最多」的那格
+    - 其餘同號格縮減分數，但不歸零，保留公平性可能
+    """
     H, W = grid.shape
     score_map = np.zeros((H, W), dtype=float)
     empty = (grid == -1)
 
-    # 1) 計算每個空格被多少模組響應
+    # 計算每個空格被多少模組「響應」
     resonance = np.zeros((H, W), dtype=float)
     for name, m_map in module_scores.items():
+        # 只要該模組對此格有大於零的分，就算一次共鳴
         resonance[empty] += (m_map[empty] > 0).astype(float)
 
-    # 2) 正規化到 [0,1]
+    # 正規化到 [0,1]
     maxr = resonance.max() if empty.any() else 0.0
     if maxr > 0:
         score_map[empty] = resonance[empty] / maxr
 
     return score_map * empty
-+# -----------------------------------------------------------------------------  
-+# F10 公平排序一致性檢查模組  
-+# -----------------------------------------------------------------------------  
-+def f10_consistency_gate_vec(
-+    grid: np.ndarray,
-+    module_scores: Dict[str, np.ndarray],
-+    **kwargs
-+) -> np.ndarray:
-+    H, W = grid.shape
-+    score_map = np.zeros((H, W), dtype=float)
-+    empty = (grid == -1)
-+
-+    # 1) 計算每個空格被多少模組響應
-+    resonance = np.zeros((H, W), dtype=float)
-+    for name, m_map in module_scores.items():
-+        resonance[empty] += (m_map[empty] > 0).astype(float)
-+
-+    # 2) 正規化到 [0,1]
-+    maxr = resonance.max() if empty.any() else 0.0
-+    if maxr > 0:
-+        score_map[empty] = resonance[empty] / maxr
-+
-+    return score_map * empty
 # -----------------------------------------------------------------------------
 # 5. MODULE_FUNCS_VEC Registration (含新模組)
 # -----------------------------------------------------------------------------
@@ -835,6 +817,8 @@ MODULE_FUNCS_VEC: Dict[str, Callable[..., np.ndarray]] = {
     # L 系列
     "L1": l1_heatmap_diffusion_logic_vec,
     "L3": l3_pattern_block_rotation_analysis_vec,
++    # F10 排序一致性檢查
++    "F10": f10_consistency_gate_vec,
 }
 
 # -----------------------------------------------------------------------------
@@ -861,46 +845,48 @@ def tensor_flow_score_vec_all(
     domain_aware_heuristic_names = {"H_ARITHMETIC", "H_MEMORY"}
     empty_cell_mask = (grid == -1) # Cache this mask
 
-    for name, heuristic_func in MODULE_FUNCS_VEC.items():
-        configured_weight = MODULE_WEIGHTS.get(name, 0.0)
-        
-        if configured_weight == 0.0 and not fair_mode:
-            continue
-            
-        try:
-            kwargs_for_func = {}
-            if name in domain_aware_heuristic_names:
-                kwargs_for_func['value_domain_min'] = value_domain_min
-                kwargs_for_func['value_domain_max'] = value_domain_max
-            
-            raw_score_map = heuristic_func(grid.copy(), **kwargs_for_func).astype(float)
-            if raw_score_map.shape != grid.shape:
-                logger.error(f"啟發式模組 {name} 返回形狀 {raw_score_map.shape} 與預期 {grid.shape} 不符。跳過。")
-                continue
+    # --- F10 整合後的 scoring 流程 ---
+module_scores: Dict[str, np.ndarray] = {}
 
-            relevant_raw = raw_score_map[empty_cell_mask]
-            if fair_mode:
-                # Min-Max normalization
-                if relevant_raw.size > 0:
-                    mn, mx = relevant_raw.min(), relevant_raw.max()
-                    if mx > mn:
-                        norm = (relevant_raw - mn) / (mx - mn)
-                    else:
-                        norm = np.full_like(relevant_raw, 0.5)
-                else:
-                    norm = relevant_raw
-                eff_w = max(configured_weight, min_weight_floor)
-                cont = norm * eff_w
-            else:
-                cont = relevant_raw * configured_weight
+# 1) 先跑除 F10 之外的所有模組
+for name, heuristic_func in MODULE_FUNCS_VEC.items():
+    if name == "F10":
+        continue
 
-            contrib_map = np.zeros_like(grid, dtype=float)
-            contrib_map[empty_cell_mask] = cont
-            total_score_map += contrib_map
+    w = MODULE_WEIGHTS.get(name, 0.0)
+    if w == 0.0 and not fair_mode:
+        continue
 
-        except Exception as e:
-            logger.error(f"執行模組 {name} 時出錯: {e}", exc_info=True)
-    return total_score_map
+    kwargs_for_func = {}
+    if name in {"H_ARITHMETIC", "H_MEMORY"}:
+        kwargs_for_func['value_domain_min'] = value_domain_min
+        kwargs_for_func['value_domain_max'] = value_domain_max
+
+    raw_map = heuristic_func(grid.copy(), **kwargs_for_func).astype(float)
+    relevant = raw_map[empty_cell_mask]
+
+    if fair_mode:
+        mn, mx = (relevant.min(), relevant.max()) if relevant.size > 0 else (0, 1)
+        norm = ((relevant - mn) / (mx - mn)) if mx > mn else np.full_like(relevant, 0.5)
+        cont = norm * max(w, min_weight_floor)
+    else:
+        cont = relevant * w
+
+    cm = np.zeros_like(grid, dtype=float)
+    cm[empty_cell_mask] = cont
+    total_score_map += cm
+    module_scores[name] = cm
+
+# 2) 再跑 F10 並累加它的分數
+if MODULE_WEIGHTS.get("F10", 0.0) > 0:
+    try:
+        f10_map = MODULE_FUNCS_VEC["F10"](grid, module_scores=module_scores)
+        total_score_map += f10_map * MODULE_WEIGHTS["F10"]
+    except Exception as e:
+        logger.error(f"執行 F10 時出錯: {e}", exc_info=True)
+
+# 3) 回傳最終分數
+return total_score_map
 
 # -----------------------------------------------------------------------------
 # 7. Pydantic models & CP-SAT solve step
