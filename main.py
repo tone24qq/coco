@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI, HTTPException, BackgroundTasks # <--- 載入 BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, validator
-from typing import List, Dict, Tuple, Callable, Any 
+from typing import List, Dict, Tuple, Callable, Any
 import numpy as np
 from ortools.sat.python import cp_model
 from tabulate import tabulate
@@ -44,7 +44,7 @@ def format_data_as_table(data_to_format: Any, headers_option: Any = None, tablef
         actual_tabulate_headers = []
     else:
         actual_tabulate_headers = current_headers
-        
+
     try:
         return tabulate(final_data, headers=actual_tabulate_headers, tablefmt=tablefmt, floatfmt=floatfmt if floatfmt else None)
     except Exception as e:
@@ -54,7 +54,6 @@ def format_data_as_table(data_to_format: Any, headers_option: Any = None, tablef
 app = FastAPI(title="Plug-in權重 + 張量流 + 多強化 (背景存檔優化版)", version="4.2")
 
 # ── 1. 原本的向量化模組函數們 ────────────────────────────────────
-# (此處程式碼與前一版本相同，為節省篇幅，暫時省略)
 def a6_fixed_position_vec(grid: np.ndarray) -> np.ndarray:
     return grid == -1
 
@@ -90,12 +89,11 @@ def tensor_flow_score_vec_all(grid: np.ndarray) -> np.ndarray:
     return total_score_map
 
 # ── 2. 增強版特徵張量 ────────────────────────────────────────────
-# (此處程式碼與前一版本相同，為節省篇幅，暫時省略)
 def build_feature_tensor(grid: np.ndarray) -> np.ndarray:
     H, W = grid.shape
     valid_values = grid[grid != -1]
-    maxv = int(np.max(valid_values)) if valid_values.size > 0 else 1 
-    C = 4 + maxv 
+    maxv = int(np.max(valid_values)) if valid_values.size > 0 else 1
+    C = 4 + maxv
     tensor = np.zeros((H, W, C), dtype=float)
     for r in range(H):
         for c in range(W):
@@ -111,7 +109,7 @@ def build_feature_tensor(grid: np.ndarray) -> np.ndarray:
 
 def calculate_scores_from_tensor(feature_tensor: np.ndarray, grid: np.ndarray) -> np.ndarray:
     num_channels = feature_tensor.shape[-1]
-    weights = np.ones(num_channels, dtype=float) 
+    weights = np.ones(num_channels, dtype=float)
     return np.tensordot(feature_tensor, weights, axes=([2], [0]))
 
 # ── 3. 轻量记忆模块 ────────────────────────────────────────────
@@ -145,24 +143,22 @@ def _make_board_id(grid: np.ndarray) -> str:
 def get_legal_values(grid: np.ndarray) -> List[int]:
     valid_numbers = grid[grid != -1]
     if valid_numbers.size == 0:
-        return [1] 
+        return [1]
     max_val = int(np.max(valid_numbers))
     return list(range(1, max_val + 1))
 
-# --- update_memory 保持不變，因為存檔操作已移至 analyze 端點 ---
 def update_memory(grid: np.ndarray, r: int, c: int, v: int, score: float) -> None:
     board_id = _make_board_id(grid)
     action_key = f"{r}_{c}_{v}" # More descriptive key part
-    
+
     if board_id not in _memory:
         _memory[board_id] = {}
-    
+
     entry = _memory[board_id].setdefault(action_key, {"count": 0, "total_score": 0.0})
-    
+
     entry["count"] = entry.get("count",0) + 1
     entry["total_score"] = entry.get("total_score", 0.0) + score
     # logger.debug(f"Updated memory for {board_id} - {action_key}: {entry}")
-
 
 def _save_memory() -> None: # _save_memory 本身不需改變
     try:
@@ -173,20 +169,35 @@ def _save_memory() -> None: # _save_memory 本身不需改變
         logger.error(f"Failed to save memory to {MEM_PATH}: {e}", exc_info=True)
 
 @app.on_event("shutdown")
-async def on_shutdown_event(): 
+async def on_shutdown_event():
     logger.info("Application shutting down. Performing final save of memory...")
     _save_memory() # 保留 shutdown 時的最終存檔
 
+# --- 新增 mem_score 函數 ---
+def mem_score(grid: np.ndarray, r: int, c: int, v: int) -> float:
+    """
+    Retrieves the average score for a given action (r, c, v) on a specific board state from memory.
+    Returns 0.0 if the board state or action is not found, or if the action has not been performed.
+    """
+    board_id = _make_board_id(grid)
+    action_key = f"{r}_{c}_{v}"
+
+    if board_id in _memory and action_key in _memory[board_id]:
+        entry = _memory[board_id][action_key]
+        if "count" in entry and entry["count"] > 0 and "total_score" in entry:
+            # Return average score
+            return entry["total_score"] / entry["count"]
+    return 0.0 # Return 0 if no memory or action not found or count is zero
+
 # ── 4. CP-SAT 解算 ────────────────────────────────────────────
-# (此處程式碼與前一版本相同，為節省篇幅，暫時省略)
 def build_and_solve_cp_vec(grid: np.ndarray, candidates: List[Tuple[int,int,int]], _: List[int]):
     t_start_total = time.time()
     CP_SOLVER_TIME_LIMIT_SECONDS = 5.0
-    SCORE_NORMALIZATION_FACTOR = 10000 
+    SCORE_NORMALIZATION_FACTOR = 10000
     t0_ft = time.time()
     feature_tensor = build_feature_tensor(grid)
     t1_ft = time.time()
-    tf_scores = calculate_scores_from_tensor(feature_tensor, grid) 
+    tf_scores = calculate_scores_from_tensor(feature_tensor, grid)
     t2_score_calc = time.time()
     logger.info(f"TensorFlow scores (tf_scores) for grid {grid.shape}:\n{format_data_as_table(tf_scores, floatfmt='.3f', generate_default_headers_if_numpy_2d_and_no_headers=True)}")
     logger.info(f"Time - Feature Tensor build: {t1_ft - t0_ft:.4f}s, TF Score calculation: {t2_score_calc - t1_ft:.4f}s")
@@ -197,10 +208,14 @@ def build_and_solve_cp_vec(grid: np.ndarray, candidates: List[Tuple[int,int,int]
     num_candidates = len(candidates)
     chosen_idx_var = model.NewIntVar(0, num_candidates - 1, "chosen_idx")
     candidate_tf_scores_int = [int(tf_scores[r, c] * SCORE_NORMALIZATION_FACTOR) for r, c, v_cand in candidates]
+
+    # --- 修改此處以包含 mem_score ---
     candidate_total_scores_int = [
-        int((tf_scores[r, c] + mem_score(grid, r, c, v_cand)) * SCORE_NORMALIZATION_FACTOR)
-        for r, c, v_cand in candidates
+        int((tf_scores[r_cand, c_cand] + mem_score(grid, r_cand, c_cand, v_cand)) * SCORE_NORMALIZATION_FACTOR)
+        for r_cand, c_cand, v_cand in candidates
     ]
+    # --- --- --- --- --- --- ---
+
     min_total_score = min(candidate_total_scores_int) if candidate_total_scores_int else 0
     max_total_score = max(candidate_total_scores_int) if candidate_total_scores_int else 0
     objective_var = model.NewIntVar(min_total_score, max_total_score, "objective_score")
@@ -212,8 +227,8 @@ def build_and_solve_cp_vec(grid: np.ndarray, candidates: List[Tuple[int,int,int]
     model.Maximize(objective_var)
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = CP_SOLVER_TIME_LIMIT_SECONDS
-    solver.parameters.num_workers = os.cpu_count() or 1 
-    solver.parameters.log_search_progress = False 
+    solver.parameters.num_workers = os.cpu_count() or 1
+    solver.parameters.log_search_progress = False
     t_before_solve = time.time()
     status = solver.Solve(model)
     t_after_solve = time.time()
@@ -235,7 +250,7 @@ def build_and_solve_cp_vec(grid: np.ndarray, candidates: List[Tuple[int,int,int]
 
 # ── 5. /analyze API ────────────────────────────────────────────
 class ProposedValue(BaseModel):
-    pos: List[int] 
+    pos: List[int]
     value: int
 
     @validator("pos")
@@ -256,7 +271,7 @@ class AnalyzeRequest(BaseModel):
             raise ValueError("new_card cannot be empty")
         if not isinstance(grid_list, list) or not all(isinstance(row, list) for row in grid_list):
             raise ValueError("new_card must be a list of lists")
-        if not grid_list[0]: 
+        if not grid_list[0]:
              raise ValueError("new_card rows cannot be empty; grid must have columns")
         first_row_len = len(grid_list[0])
         if not all(len(row) == first_row_len for row in grid_list):
@@ -265,27 +280,26 @@ class AnalyzeRequest(BaseModel):
 
     @validator("proposed_values", each_item=True)
     def _check_proposed_value_bounds(cls, pv: ProposedValue, values: Dict[str, Any]) -> ProposedValue:
-        grid_list = values.get("new_card") 
-        if grid_list and isinstance(grid_list, list) and grid_list: 
+        grid_list = values.get("new_card")
+        if grid_list and isinstance(grid_list, list) and grid_list:
             try:
-                grid_np = np.array(grid_list, dtype=int) 
+                grid_np = np.array(grid_list, dtype=int)
                 rows, cols = grid_np.shape
                 r, c = pv.pos
                 if not (0 <= r < rows and 0 <= c < cols):
                     raise ValueError(f"Proposed position [{r},{c}] is out of bounds for grid {rows}x{cols}")
-                legal_game_vals = get_legal_values(grid_np) 
-                if grid_np[r,c] != -1: 
+                legal_game_vals = get_legal_values(grid_np)
+                if grid_np[r,c] != -1:
                      raise ValueError(f"Proposed position [{r},{c}] is not empty (current value: {grid_np[r,c]}).")
                 if pv.value not in legal_game_vals:
                      raise ValueError(f"Proposed value {pv.value} is not a legal value {legal_game_vals} for the current grid state.")
-            except Exception as e: 
+            except Exception as e:
                 logger.error(f"Error during proposed_values validation with grid: {e}")
                 raise ValueError(f"Invalid grid data encountered while validating proposed_values: {e}") from e
         return pv
 
-# --- 修改 analyze 端點以使用 BackgroundTasks ---
 @app.post("/analyze")
-async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks): # <--- 加入 background_tasks
+async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     try:
         grid = np.array(req.new_card, dtype=int)
     except ValueError as ve:
@@ -301,7 +315,7 @@ async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks): # <--
     for pv_item in req.proposed_values:
         r, c = pv_item.pos[0], pv_item.pos[1]
         v = pv_item.value
-        if 0 <= r < grid.shape[0] and 0 <= c < grid.shape[1]: # 增加邊界檢查以防萬一
+        if 0 <= r < grid.shape[0] and 0 <= c < grid.shape[1]:
             if grid[r, c] == -1 and v in current_legal_game_values:
                 valid_candidates.append((r, c, v))
             else:
@@ -315,15 +329,15 @@ async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks): # <--
         return {"status": "no_valid_candidates", "result": None, "message": "No valid candidates to process after filtering."}
 
     best_move_info_list = await run_in_threadpool(build_and_solve_cp_vec, grid, valid_candidates, current_legal_game_values)
-    
+
     if not best_move_info_list:
         logger.warning("CP-SAT Solver returned no solution.")
         return {"status": "solver_fail", "result": None, "message": "Solver did not find a solution."}
 
     r_best, c_best, v_best, final_total_score, final_tf_score = best_move_info_list[0]
-    
+
     update_memory(grid, r_best, c_best, v_best, final_total_score)
-    background_tasks.add_task(_save_memory)  # <--- 非同步呼叫存檔
+    background_tasks.add_task(_save_memory)
 
     return {
         "status": "success",
@@ -334,11 +348,9 @@ async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks): # <--
             "tensor_flow_score": round(final_tf_score, 4)
         }
     }
-# --- --- --- --- --- --- --- --- --- ---
 
 # Example of running the server (for local testing)
 if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Uvicorn server for local testing: http://127.0.0.1:8000")
     uvicorn.run(app, host="127.0.0.1", port=8000)
-
