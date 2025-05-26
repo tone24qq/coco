@@ -1,5 +1,3 @@
-# main.py
-
 import logging
 import math
 import time
@@ -13,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Body, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from starlette.concurrency import run_in_threadpool
+from numba import njit # Numba import
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 0. Logging & Config
@@ -99,24 +98,25 @@ class InternalBoardState:
 
         # 构建 float32 数组，NaN 表示空
         arr = np.full((self.rows, self.cols), np.nan, dtype=np.float32)
-        for r in range(self.rows):
-            for c in range(self.cols):
-                v = src.cells[r][c]
+        for r_idx in range(self.rows):
+            for c_idx in range(self.cols):
+                v = src.cells[r_idx][c_idx]
                 if v is not None:
-                    arr[r, c] = v
-        self._board = arr
+                    arr[r_idx, c_idx] = v
+        self._board: np.ndarray = arr # Type hint for clarity
         # 固定格标记
-        self._fixed = ~np.isnan(arr)
+        self._fixed: np.ndarray = ~np.isnan(arr) # Type hint for clarity
         # 已有数字集合
-        self.fixed_values = {v for row in src.cells for v in row if v is not None}
+        self.fixed_values: set = {v for row in src.cells for v in row if v is not None}
 
         # 活跃模块集合
-        self.active_modules = set(src.active_modules or [])
+        self.active_modules: set = set(src.active_modules or [])
 
     def is_fixed(self, r: int, c: int) -> bool:
         return self._fixed[r, c]
 
-    def get_value(self, r: int, c: int, proposed: Optional[Tuple[int,int,int]] = None) -> float:
+    # This method is Python-based, Numba functions will need direct array access or specialized helpers
+    def get_value_py(self, r: int, c: int, proposed: Optional[Tuple[int,int,int]] = None) -> float:
         if proposed and (r, c) == (proposed[0], proposed[1]):
             return float(proposed[2])
         return self._board[r, c]
@@ -154,14 +154,113 @@ class M1_BaseScoreModule(LogicModule):
     name = "基础位置权重"
     description = "使用 logic_code_weights 提供的基础权重"
 
-    def analyze(self, state, cell, pv):
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: int) -> float:
         r, c = cell
         code = state.logic_code(r, c)
         return state.src.logic_code_weights.get(code, 0.1)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. M4: 轴对称模块
+# 6. M4: 轴对称模块 (Numba Optimized Helper)
 # ──────────────────────────────────────────────────────────────────────────────
+
+@njit(cache=True, nogil=True) # Numba JIT compilation for performance
+def _m4_analyze_numba(board: np.ndarray, rows: int, cols: int, r_proposed: int, c_proposed: int, pv_proposed: float) -> float:
+    match_count = 0
+    total_comparisons = 0
+
+    # Helper function to get value considering the proposed move
+    # This is inlined or made simple for Numba
+    def get_val(r_check: int, c_check: int) -> float:
+        if r_check == r_proposed and c_check == c_proposed:
+            return pv_proposed
+        return board[r_check, c_check]
+
+    # Horizontal symmetry check (around the proposed cell's row)
+    # This logic differs slightly from original, which checked symmetry for all rows/cols.
+    # The report focuses on symmetry around the proposed placement.
+    # Let's refine to check symmetry of the *entire board* if pv is placed.
+    # For a given (r_current, c_current):
+    #  v1 = value at (r_current, c_current) considering pv
+    #  v2 = value at (r_current, cols - 1 - c_current) considering pv
+
+    # Horizontal symmetry for the whole board with pv placed
+    for r_iter in range(rows):
+        for c_iter in range(cols // 2): # Iterate half, comparing to other half
+            val1 = get_val(r_iter, c_iter)
+            val2 = get_val(r_iter, cols - 1 - c_iter)
+
+            if not np.isnan(val1) and not np.isnan(val2):
+                if val1 == val2:
+                    match_count += 1
+                total_comparisons +=1
+        # If odd number of columns, the middle column element is symmetric with itself if not NaN
+        if cols % 2 == 1:
+            val_mid = get_val(r_iter, cols // 2)
+            if not np.isnan(val_mid):
+                # match_count +=1 # A single element is always symmetric with itself
+                total_comparisons +=1
+
+
+    # Vertical symmetry for the whole board with pv placed
+    for c_iter in range(cols):
+        for r_iter in range(rows // 2): # Iterate half
+            val1 = get_val(r_iter, c_iter)
+            val2 = get_val(rows - 1 - r_iter, c_iter)
+
+            if not np.isnan(val1) and not np.isnan(val2):
+                if val1 == val2:
+                    match_count += 1
+                total_comparisons +=1
+        # If odd number of rows, the middle row element is symmetric with itself
+        if rows % 2 == 1:
+            val_mid = get_val(rows // 2, c_iter)
+            if not np.isnan(val_mid):
+                # match_count +=1
+                total_comparisons +=1
+
+    # The original code sums matches from two separate full iterations (horizontal and vertical focused on proposed cell's line)
+    # The report (source 201, 205-212) implies global symmetry after hypothetical placement.
+    # The current Numba helper calculates global symmetry matches.
+    # The previous Python code was:
+    # # Horizontal (around proposed cell's row r)
+    # for col_idx in range(state.cols):
+    #     v1 = state.get_value_py(r_proposed, col_idx, (r_proposed, c_proposed, pv_proposed))
+    #     v2 = state.get_value_py(r_proposed, state.cols - 1 - col_idx, (r_proposed, c_proposed, pv_proposed))
+    #     if not np.isnan(v1) and not np.isnan(v2):
+    #         match_count += (v1 == v2)
+    #         total_comparisons += 1
+    # # Vertical (around proposed cell's col c)
+    # for row_idx in range(state.rows):
+    #     v1 = state.get_value_py(row_idx, c_proposed, (r_proposed, c_proposed, pv_proposed))
+    #     v2 = state.get_value_py(state.rows - 1 - row_idx, c_proposed, (r_proposed, c_proposed, pv_proposed))
+    #     if not np.isnan(v1) and not np.isnan(v2):
+    #         match_count += (v1 == v2)
+    #         total_comparisons += 1
+    # This interpretation (local symmetry lines) is simpler and closer to original `main.py`. Let's use that.
+
+    # --- Re-implementing based on original main.py logic for M4 for closer parity ---
+    match_count = 0
+    total_comparisons = 0
+    # Horizontal symmetry check FOR THE PROPOSED ROW r_proposed
+    for c_check in range(cols):
+        v1 = get_val(r_proposed, c_check)
+        v2 = get_val(r_proposed, cols - 1 - c_check)
+        if not np.isnan(v1) and not np.isnan(v2):
+            if v1 == v2:
+                match_count += 1
+            total_comparisons += 1
+    
+    # Vertical symmetry check FOR THE PROPOSED COLUMN c_proposed
+    for r_check in range(rows):
+        v1 = get_val(r_check, c_proposed)
+        v2 = get_val(rows - 1 - r_check, c_proposed)
+        if not np.isnan(v1) and not np.isnan(v2):
+            if v1 == v2:
+                match_count += 1
+            total_comparisons += 1
+            
+    return float(match_count) / total_comparisons if total_comparisons > 0 else 0.0
+
 
 @register_module
 class M4_SymmetryAxialModule(LogicModule):
@@ -169,28 +268,25 @@ class M4_SymmetryAxialModule(LogicModule):
     name = "轴对称性"
     description = "统计水平/垂直轴对称匹配率"
 
-    def analyze(self, state, cell, pv):
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: int) -> float:
         r, c = cell
-        match = 0; total = 0
-        # 水平
-        for col in range(state.cols):
-            v1 = state.get_value(r, col, (*cell, pv))
-            v2 = state.get_value(r, state.cols-1-col, (*cell, pv))
-            if not np.isnan(v1) and not np.isnan(v2):
-                match += (v1 == v2)
-                total += 1
-        # 垂直
-        for row in range(state.rows):
-            v1 = state.get_value(row, c, (*cell, pv))
-            v2 = state.get_value(state.rows-1-row, c, (*cell, pv))
-            if not np.isnan(v1) and not np.isnan(v2):
-                match += (v1 == v2)
-                total += 1
-        return float(match) / total if total > 0 else 0.0
+        # Call the Numba-optimized helper function
+        return _m4_analyze_numba(state._board, state.rows, state.cols, r, c, float(pv))
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7. M5: 段差分析模块
+# 7. M5: 段差分析模块 (Numba Optimized Helper)
 # ──────────────────────────────────────────────────────────────────────────────
+
+@njit(cache=True, nogil=True) # Numba JIT compilation for performance
+def _m5_score_seq_numba(seq: np.ndarray) -> float:
+    if seq.size < 3:
+        return 0.0
+    # Numba supports np.diff and np.var directly on NumPy arrays
+    diffs = np.diff(seq)
+    if diffs.size == 0: # Should not happen if seq.size >= 3, but defensive
+        return 0.0
+    var = np.var(diffs)
+    return 1.0 / (1.0 + var)
 
 @register_module
 class M5_SegmentDiffModule(LogicModule):
@@ -198,41 +294,43 @@ class M5_SegmentDiffModule(LogicModule):
     name = "段差分析"
     description = "行/列方向 diff 方差倒数"
 
-    def analyze(self, state, cell, pv):
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: int) -> float:
         r, c = cell
+        pv_float = float(pv)
 
-        # 行
-        row = state._board[r, :]
-        hypo_row = np.where(np.arange(state.cols)==c, pv, row)
-        seq = hypo_row[~np.isnan(hypo_row)]
-        score_row = self._score_seq(seq)
+        # 行分析
+        # Extract the original row directly (it's a view, efficient)
+        original_row_view = state._board[r, :]
+        # Create a temporary copy FOR THE ROW ONLY to place the hypothetical pv
+        hypo_row = original_row_view.copy() 
+        hypo_row[c] = pv_float 
+        # Extract non-NaN values (vectorized)
+        seq_row = hypo_row[~np.isnan(hypo_row)]
+        score_row = self._score_seq(seq_row)
 
-        # 列
-        col = state._board[:, c]
-        hypo_col = np.where(np.arange(state.rows)==r, pv, col)
-        seq2 = hypo_col[~np.isnan(hypo_col)]
-        score_col = self._score_seq(seq2)
-
+        # 列分析
+        original_col_view = state._board[:, c]
+        hypo_col = original_col_view.copy()
+        hypo_col[r] = pv_float
+        seq_col = hypo_col[~np.isnan(hypo_col)]
+        score_col = self._score_seq(seq_col)
+        
         return max(score_row, score_col)
 
     @staticmethod
+    # Link to the Numba-optimized static method
     def _score_seq(seq: np.ndarray) -> float:
-        if seq.size < 3:
-            return 0.0
-        diffs = np.diff(seq)
-        var = np.var(diffs)
-        return 1.0 / (1.0 + var)
+        return _m5_score_seq_numba(seq)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 8. InferenceEngine：统一加权聚合
 # ──────────────────────────────────────────────────────────────────────────────
 
-# 默认模块贡献权重，可从文件或环境加载
 GLOBAL_MODULE_WEIGHTS = {
     "M1_BaseScore": 1.0,
     "M4_SymmetryAxial": 0.8,
     "M5_SegmentDiff": 0.7,
-    # … 其他模块
 }
 
 class InferenceEngine:
@@ -243,36 +341,44 @@ class InferenceEngine:
         results: List[ValuePrediction] = []
         warnings: List[str] = []
 
-        # 合并权重
         weights = GLOBAL_MODULE_WEIGHTS.copy()
         if state.src.module_weights:
             weights.update(state.src.module_weights)
 
-        for pv in state.src.proposed_values:
-            if pv in state.fixed_values:
-                warnings.append(f"Value {pv} 已存在于盘面，跳过。")
-                results.append(ValuePrediction(proposed_value=pv, top_n_positions=[]))
+        for pv_val in state.src.proposed_values:
+            if pv_val in state.fixed_values: # Efficient check
+                warnings.append(f"Value {pv_val} 已存在于盘面，跳过。")
+                results.append(ValuePrediction(proposed_value=pv_val, top_n_positions=[]))
                 continue
 
-            scores: List[Tuple[str,float]] = []
-            for r in range(state.rows):
-                for c in range(state.cols):
-                    if state.is_fixed(r, c):
+            scores_for_pv: List[Tuple[str,float]] = []
+            for r_idx in range(state.rows):
+                for c_idx in range(state.cols):
+                    if state.is_fixed(r_idx, c_idx):
                         continue
-                    agg = 0.0; wsum = 0.0
-                    for mid, mod in self.registry.items():
-                        if state.active_modules and mid not in state.active_modules:
-                            continue
-                        w = weights.get(mid, 1.0)
-                        s = mod.analyze(state, (r, c), pv)
-                        agg += s * w
-                        wsum += w
-                    final = agg / wsum if wsum else 0.0
-                    scores.append((state.logic_code(r,c), final))
+                    
+                    aggregated_score = 0.0
+                    total_weight = 0.0
+                    current_cell = (r_idx, c_idx)
 
-            top = sorted(scores, key=lambda x: x[1], reverse=True)[: state.src.top_n_count]
-            ps = [PositionScore(position_code=code, score=round(sc,4)) for code, sc in top]
-            results.append(ValuePrediction(proposed_value=pv, top_n_positions=ps))
+                    for mod_id, mod_instance in self.registry.items():
+                        if state.active_modules and mod_id not in state.active_modules:
+                            continue
+                        
+                        module_weight = weights.get(mod_id, 1.0)
+                        # Critical: Module analyze methods are called here.
+                        # Their performance directly impacts overall speed.
+                        individual_score = mod_instance.analyze(state, current_cell, pv_val) 
+                        
+                        aggregated_score += individual_score * module_weight
+                        total_weight += module_weight
+                    
+                    final_cell_score = aggregated_score / total_weight if total_weight > 0 else 0.0
+                    scores_for_pv.append((state.logic_code(r_idx,c_idx), final_cell_score))
+
+            top_n = sorted(scores_for_pv, key=lambda x: x[1], reverse=True)[:state.src.top_n_count]
+            position_scores = [PositionScore(position_code=code, score=round(sc,4)) for code, sc in top_n]
+            results.append(ValuePrediction(proposed_value=pv_val, top_n_positions=position_scores))
 
         return results, warnings
 
@@ -283,20 +389,30 @@ class InferenceEngine:
 app = FastAPI(title="自适应盘面推理系统", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-def get_engine(): return InferenceEngine()
+def get_engine(): 
+    return InferenceEngine()
 
 @app.post("/infer", response_model=InferenceResponse, summary="运行推理")
 async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends(get_engine)):
-    start = time.perf_counter()
+    start_time = time.perf_counter()
     try:
-        state = InternalBoardState(board)
-    except Exception as e:
+        # BoardInput validation happens here via Pydantic
+        internal_state = InternalBoardState(board)
+    except ValueError as e: # Catch Pydantic validation errors or others
         raise HTTPException(status_code=422, detail=str(e))
-    preds, warns = await run_in_threadpool(engine.run_inference, state)
-    dt = (time.perf_counter() - start) * 1000
-    return InferenceResponse(predictions=preds, processing_time_ms=round(dt,2), warnings=warns or None)
+    
+    # Offload CPU-bound task to thread pool
+    predictions, warnings_list = await run_in_threadpool(engine.run_inference, internal_state)
+    
+    processing_duration_ms = (time.perf_counter() - start_time) * 1000
+    return InferenceResponse(
+        predictions=predictions, 
+        processing_time_ms=round(processing_duration_ms, 2), 
+        warnings=warnings_list if warnings_list else None
+    )
 
 @app.get("/config/modules", response_model=List[ModuleInfo], summary="可用模块列表")
-def list_modules():
+def list_modules_info():
     return [ModuleInfo(module_id=m.module_id, name=m.name, description=m.description)
             for m in modules.values()]
+
