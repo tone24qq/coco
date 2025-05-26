@@ -37,7 +37,7 @@ class BoardInput(BaseModel):
         ..., description="要推理的目标数字列表"
     )
     active_modules: Optional[List[str]] = Field(
-        None, description="要启用的模块ID列表，None或空表示启用所有模块"
+        None, description="要启用的模块ID列表，None或空表示启用所有已注册模块"
     )
     module_weights: Optional[Dict[str, float]] = Field(
         None, description="模块贡献权重，覆盖全局设置"
@@ -50,7 +50,7 @@ class BoardInput(BaseModel):
     def validate_cells_shape(cls, v, values):
         rows = values.get("rows")
         cols = values.get("cols")
-        if not rows or not cols: 
+        if not rows or not cols:
             return v
         if len(v) != rows or any(len(row) != cols for row in v):
             raise ValueError(f"cells 应为 {rows}×{cols} 的列表")
@@ -69,6 +69,8 @@ class InferenceResponse(BaseModel):
     predictions: List[ValuePrediction]
     processing_time_ms: Optional[float] = None
     warnings: Optional[List[str]] = None
+    # Optional: to include detailed contributions if needed for debugging
+    # detail_contributions: Optional[Dict[str, List[Dict[str, Any]]]] = None 
 
 class ModuleInfo(BaseModel):
     module_id: str
@@ -109,6 +111,8 @@ class InternalBoardState:
         self.fixed_values: set = {
             float(v) for row in src.cells for v in row if v is not None
         }
+        # If active_modules is None or empty list in input, this will be an empty set.
+        # InferenceEngine will interpret empty set as "run all registered modules".
         self.active_modules: set = set(src.active_modules or [])
         self._m1_max_logic_score = None
 
@@ -116,7 +120,7 @@ class InternalBoardState:
     def get_m1_max_logic_score(self) -> float:
         if self._m1_max_logic_score is None:
             all_positive_scores = [
-                s for s in self.src.logic_code_weights.values() 
+                s for s in self.src.logic_code_weights.values()
                 if isinstance(s, (int, float)) and s > 0
             ]
             if not all_positive_scores:
@@ -154,6 +158,7 @@ modules: Dict[str, LogicModule] = {}
 def register_module(cls):
     inst = cls()
     modules[inst.module_id] = inst
+    logger.info(f"Registered module: {inst.module_id} - {inst.name}")
     return cls
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -177,18 +182,16 @@ class M1_BaseScoreModule(LogicModule):
             if current_raw_score > 0:
                 return current_raw_score / max_possible_score
             else:
-                return 0.0 
+                return 0.0
         else:
             return 0.0
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. M4: 轴对称模块 (Numba Optimized Helper - GLOBAL SYMMETRY)
+# 6. M4: 轴对称模块 (GLOBAL SYMMETRY) - Corresponds to user's "A6"
 # ──────────────────────────────────────────────────────────────────────────────
 
 @njit(cache=True, nogil=True)
 def _m4_analyze_numba_global_symmetry(board: np.ndarray, rows: int, cols: int, r_proposed: int, c_proposed: int, pv_proposed: float) -> float:
-    
-    # Helper to get value from board, considering the hypothetical placement
     def get_val(r_check: int, c_check: int) -> float:
         if r_check == r_proposed and c_check == c_proposed:
             return pv_proposed
@@ -196,63 +199,48 @@ def _m4_analyze_numba_global_symmetry(board: np.ndarray, rows: int, cols: int, r
 
     h_matches = 0
     h_comparisons = 0
-    # Global Horizontal symmetry: Compare each cell (r, c) with its horizontal counterpart (r, cols - 1 - c)
-    # This method iterates over all cells and sums matches where both cell and its counterpart are numbers.
     for r_iter in range(rows):
         for c_iter in range(cols):
             val_orig = get_val(r_iter, c_iter)
-            # Find the symmetric counterpart for val_orig
-            # For horizontal symmetry, it's (r_iter, cols - 1 - c_iter)
             val_flipped = get_val(r_iter, cols - 1 - c_iter)
-            
             if not np.isnan(val_orig) and not np.isnan(val_flipped):
                 if val_orig == val_flipped:
                     h_matches += 1
                 h_comparisons += 1
-    # Normalize by the number of valid comparison points
     h_score = float(h_matches) / h_comparisons if h_comparisons > 0 else 0.0
 
     v_matches = 0
     v_comparisons = 0
-    # Global Vertical symmetry: Compare each cell (r, c) with its vertical counterpart (rows - 1 - r, c)
     for r_iter in range(rows):
         for c_iter in range(cols):
             val_orig = get_val(r_iter, c_iter)
-            # For vertical symmetry, it's (rows - 1 - r_iter, c_iter)
             val_flipped = get_val(rows - 1 - r_iter, c_iter)
-
             if not np.isnan(val_orig) and not np.isnan(val_flipped):
                 if val_orig == val_flipped:
                     v_matches += 1
                 v_comparisons += 1
     v_score = float(v_matches) / v_comparisons if v_comparisons > 0 else 0.0
     
-    # Combine scores: average the horizontal and vertical symmetry scores.
-    # If one dimension has no valid comparisons (e.g., a 1x1 board for one of the sub-calcs, though unlikely here),
-    # rely on the other, or if both are valid, average them.
     if h_comparisons > 0 and v_comparisons > 0:
-      # If board is 1 row, v_score will be 1.0. If 1 col, h_score will be 1.0.
-      # This seems acceptable as it reflects perfect symmetry along the degenerate axis.
       return (h_score + v_score) / 2.0
-    elif h_comparisons > 0: # e.g. single row board
+    elif h_comparisons > 0:
       return h_score
-    elif v_comparisons > 0: # e.g. single col board
+    elif v_comparisons > 0:
       return v_score
-    return 0.0 # No valid comparisons possible
+    return 0.0
 
 @register_module
-class M4_SymmetryAxialModule(LogicModule):
+class M4_SymmetryAxialModule(LogicModule): # This is user's "A6"
     module_id = "M4_SymmetryAxial"
-    name = "全局轴对称性" # Updated name to reflect change
-    description = "评估整个盘面在假设落子后的全局水平和垂直对称性" # Updated description
+    name = "全局轴对称性 (A6)"
+    description = "评估整个盘面在假设落子后的全局水平和垂直对称性"
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
         r, c = cell
-        # Call the Numba-optimized helper function for global symmetry
         return _m4_analyze_numba_global_symmetry(state._board, state.rows, state.cols, r, c, pv)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 7. M5: 段差分析模块 (Numba Optimized Helper)
+# 7. M5: 段差分析模块
 # ──────────────────────────────────────────────────────────────────────────────
 
 @njit(cache=True, nogil=True)
@@ -260,11 +248,11 @@ def _m5_score_seq_numba(seq: np.ndarray) -> float:
     if seq.size < 3:
         return 0.0
     diffs = np.diff(seq)
-    if diffs.size == 0: 
+    if diffs.size == 0:
         return 0.0
     var = np.var(diffs)
     denominator = 1.0 + var
-    return 1.0 / denominator if denominator != 0 else 0.0 # Avoid division by zero for safety
+    return 1.0 / denominator if denominator != 0 else 0.0
 
 @register_module
 class M5_SegmentDiffModule(LogicModule):
@@ -275,7 +263,7 @@ class M5_SegmentDiffModule(LogicModule):
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
         r, c = cell
         original_row_view = state._board[r, :]
-        hypo_row = original_row_view.copy() 
+        hypo_row = original_row_view.copy()
         hypo_row[c] = pv
         seq_row = hypo_row[~np.isnan(hypo_row)]
         score_row = self._score_seq(seq_row)
@@ -293,25 +281,89 @@ class M5_SegmentDiffModule(LogicModule):
         return _m5_score_seq_numba(seq)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 8. InferenceEngine：统一加权聚合
+# 8. 新增占位符模块 (A5, M2, M8, R1, R2)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@register_module
+class A5_PlaceholderModule(LogicModule):
+    module_id = "A5_Placeholder"
+    name = "A5 占位符模块"
+    description = "这是一个A5模块的占位符实现，返回固定值0.5。"
+
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
+        # 未来实现具体逻辑
+        return 0.5 # Dummy score
+
+@register_module
+class M2_PlaceholderModule(LogicModule):
+    module_id = "M2_Placeholder"
+    name = "M2 占位符模块"
+    description = "这是一个M2模块的占位符实现，返回固定值0.3。"
+
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
+        # 未来实现具体逻辑
+        return 0.3 # Dummy score
+
+@register_module
+class M8_PlaceholderModule(LogicModule):
+    module_id = "M8_Placeholder"
+    name = "M8 占位符模块"
+    description = "这是一个M8模块的占位符实现，返回固定值0.4。"
+
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
+        # 未来实现具体逻辑
+        return 0.4 # Dummy score
+
+@register_module
+class R1_SequenceRuleModule(LogicModule):
+    module_id = "R1_SequenceRule"
+    name = "R1 序列规则模块"
+    description = "R1模块，检查特定序列规则的占位符，返回固定值0.6。"
+
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
+        # 未来实现具体逻辑
+        # 例如: 检查 (r,c) 周围是否形成特定序列 (等差、等比等)
+        return 0.6 # Dummy score
+
+@register_module
+class R2_RelativePositionModule(LogicModule):
+    module_id = "R2_RelativePosition"
+    name = "R2 相对位置模块"
+    description = "R2模块，评估与现有数字相对位置关系的占位符，返回固定值0.2。"
+
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
+        # 未来实现具体逻辑
+        # 例如: 检查 pv 与 (r,c) 上下左右固定数字的关系
+        return 0.2 # Dummy score
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. InferenceEngine：统一加权聚合
 # ──────────────────────────────────────────────────────────────────────────────
 
 GLOBAL_MODULE_WEIGHTS = {
     "M1_BaseScore": 1.0,
-    "M4_SymmetryAxial": 0.8, # Weight for the new Global Symmetry module
+    "M4_SymmetryAxial": 0.8, # A6
     "M5_SegmentDiff": 0.7,
+    "A5_Placeholder": 0.5,   # Default weight for new module
+    "M2_Placeholder": 0.5,   # Default weight for new module
+    "M8_Placeholder": 0.5,   # Default weight for new module
+    "R1_SequenceRule": 0.6,  # Default weight for new module
+    "R2_RelativePosition": 0.4, # Default weight for new module
 }
 
 class InferenceEngine:
     def __init__(self):
-        self.registry = modules
+        self.registry = modules # Populated by @register_module
 
     def run_inference(self, state: InternalBoardState) -> Tuple[List[ValuePrediction], List[str]]:
         results: List[ValuePrediction] = []
         warnings: List[str] = []
-        weights = GLOBAL_MODULE_WEIGHTS.copy()
-        if state.src.module_weights:
-            weights.update(state.src.module_weights)
+        # For detailed contributions, if you add it to InferenceResponse
+        # detail_contributions_response: Dict[str, List[Dict[str, Any]]] = {} 
+
+        effective_weights = GLOBAL_MODULE_WEIGHTS.copy()
+        if state.src.module_weights: # Allow request to override global weights
+            effective_weights.update(state.src.module_weights)
 
         for pv_val_int in state.src.proposed_values:
             pv_val_float = float(pv_val_int)
@@ -321,6 +373,9 @@ class InferenceEngine:
                 continue
 
             scores_for_pv: List[Tuple[str,float]] = []
+            # For detailed contributions
+            # current_pv_contributions: List[Dict[str, Any]] = []
+
             for r_idx in range(state.rows):
                 for c_idx in range(state.cols):
                     if state.is_fixed(r_idx, c_idx):
@@ -329,45 +384,63 @@ class InferenceEngine:
                     aggregated_score = 0.0
                     total_weight = 0.0
                     current_cell = (r_idx, c_idx)
+                    position_code = state.logic_code(r_idx,c_idx)
 
-                    active_module_keys = state.active_modules
-                    # If active_modules is empty in state, it means use all from registry
-                    # Otherwise, use only the ones specified in active_modules
-                    modules_to_run = self.registry.items()
-                    if active_module_keys: # if set is not empty
-                        modules_to_run = [(mid, mod) for mid, mod in self.registry.items() if mid in active_module_keys]
+                    # Determine which modules to run
+                    modules_to_iterate: List[Tuple[str, LogicModule]]
+                    if not state.active_modules: # Empty set means run all registered modules
+                        modules_to_iterate = list(self.registry.items())
+                    else:
+                        modules_to_iterate = [
+                            (mid, mod) for mid, mod in self.registry.items() 
+                            if mid in state.active_modules
+                        ]
                     
-                    if not modules_to_run and self.registry:
-                        # This case implies active_modules was specified but none matched registered modules.
-                        # Or, if active_modules was empty, but registry is also empty (though unlikely).
-                        # For safety, if no modules are to be run for a cell, score is 0.
-                        # However, the outer logic for active_modules in InternalBoardState (empty set means use all)
-                        # means this check might be more about an empty registry.
-                        # The current logic iterates `modules_to_run`. If it's empty, loop doesn't run, score remains 0.
-                        pass
+                    # For detailed contributions for this cell
+                    # cell_contributions_detail: List[Dict[str, Any]] = []
 
-
-                    for mod_id, mod_instance in modules_to_run:
-                        # The check `if state.active_modules and mid not in state.active_modules:`
-                        # is implicitly handled by how `modules_to_run` is constructed.
+                    for mod_id, mod_instance in modules_to_iterate:
+                        module_weight = effective_weights.get(mod_id, 1.0) # Default weight is 1.0 if not specified
                         
-                        module_weight = weights.get(mod_id, 1.0) # Default weight if not in custom weights
-                        individual_score = mod_instance.analyze(state, current_cell, pv_val_float) 
+                        individual_score = mod_instance.analyze(state, current_cell, pv_val_float)
                         
-                        aggregated_score += individual_score * module_weight
+                        weighted_score = individual_score * module_weight
+                        aggregated_score += weighted_score
                         total_weight += module_weight
+                        
+                        # For detailed contributions
+                        # cell_contributions_detail.append({
+                        #     "module_id": mod_id,
+                        #     "raw_score": round(individual_score, 4),
+                        #     "weight": round(module_weight, 4),
+                        #     "weighted_score": round(weighted_score, 4)
+                        # })
                     
                     final_cell_score = aggregated_score / total_weight if total_weight > 0 else 0.0
-                    scores_for_pv.append((state.logic_code(r_idx,c_idx), final_cell_score))
+                    scores_for_pv.append((position_code, final_cell_score))
+                    
+                    # For detailed contributions
+                    # if cell_contributions_detail: # Only add if there were contributions
+                    #    current_pv_contributions.append({
+                    #        "position_code": position_code,
+                    #        "final_score": round(final_cell_score, 4),
+                    #        "module_breakdown": cell_contributions_detail
+                    #    })
+
+            # For detailed contributions
+            # if current_pv_contributions:
+            #    detail_contributions_response[str(pv_val_int)] = current_pv_contributions
 
             top_n = sorted(scores_for_pv, key=lambda x: x[1], reverse=True)[:state.src.top_n_count]
             position_scores = [PositionScore(position_code=code, score=round(sc,4)) for code, sc in top_n]
             results.append(ValuePrediction(proposed_value=pv_val_int, top_n_positions=position_scores))
 
+        # If returning detailed contributions:
+        # return results, warnings, detail_contributions_response 
         return results, warnings
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 9. FastAPI App & 路由
+# 10. FastAPI App & 路由
 # ──────────────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="自适应盘面推理系统", version="1.0")
@@ -386,14 +459,18 @@ async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     
+    # Modify if InferenceEngine returns more data like detail_contributions
     predictions, warnings_list = await run_in_threadpool(engine.run_inference, internal_state)
     
     processing_duration_ms = (time.perf_counter() - start_time) * 1000
-    return InferenceResponse(
-        predictions=predictions, 
-        processing_time_ms=round(processing_duration_ms, 2), 
-        warnings=warnings_list if warnings_list else None
-    )
+    
+    response_data = {
+        "predictions": predictions,
+        "processing_time_ms": round(processing_duration_ms, 2),
+        "warnings": warnings_list if warnings_list else None,
+        # "detail_contributions": detail_contributions # if you enable this
+    }
+    return InferenceResponse(**response_data)
 
 @app.get("/config/modules", response_model=List[ModuleInfo], summary="可用模块列表")
 def list_modules_info():
