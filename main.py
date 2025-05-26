@@ -392,18 +392,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 def get_engine(): 
     return InferenceEngine()
 
-@app.post("/infer", response_model=InferenceResponse, summary="运行推理")
-async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends(get_engine)):
+@app.post("/analyze", response_model=InferenceResponse, summary="运行推理")
+async def analyze(board: BoardInput = Body(...), engine: InferenceEngine = Depends(get_engine)):
     start_time = time.perf_counter()
     try:
-        # BoardInput validation happens here via Pydantic
         internal_state = InternalBoardState(board)
-    except ValueError as e: # Catch Pydantic validation errors or others
+    except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    
-    # Offload CPU-bound task to thread pool
     predictions, warnings_list = await run_in_threadpool(engine.run_inference, internal_state)
-    
     processing_duration_ms = (time.perf_counter() - start_time) * 1000
     return InferenceResponse(
         predictions=predictions, 
