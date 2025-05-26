@@ -823,11 +823,12 @@ MODULE_FUNCS_VEC: Dict[str, Callable[..., np.ndarray]] = {
 
 
 # -----------------------------------------------------------------------------
-# 6. Combined score function with Normalization and Fair Mode
+# -----------------------------------------------------------------------------
+# 6. Combined score function with Normalization and Fair Mode (MODIFIED)
 # -----------------------------------------------------------------------------
 def tensor_flow_score_vec_all(
     grid: np.ndarray,
-    proposed_values: List[ProposedValue],
+    proposed_values: List[ProposedValue], # Added proposed_values to match definition
     value_domain_min: int,
     value_domain_max: int,
     fair_mode: bool = False,
@@ -836,18 +837,26 @@ def tensor_flow_score_vec_all(
     """
     計算所有啟發式模組的加權總分。
     在 'fair_mode' 下，各模組結果先做 min-max 歸一，並應用最低權重下限。
+    修改：當 fair_mode 下模組輸出平坦時，其歸一化貢獻設為 0.0，避免引入統一的0.5層。
     最後對累積分數做全局 min-max 歸一並返回。
     """
-    # 基本檢查
     if grid.ndim != 2:
         logger.error("輸入的 grid 必須是二維陣列，返回零分圖。")
-        return np.zeros_like(grid, dtype=float)
+        # Ensure the return shape matches expected output even with error
+        return np.zeros_like(grid, dtype=float) if grid.size > 0 else np.array([[]], dtype=float)
     if grid.size == 0:
-        return np.zeros_like(grid, dtype=float)
+        # Consistent return for empty grid
+        return np.array([[]], dtype=float)
 
     H, W = grid.shape
     total_score_map = np.zeros((H, W), dtype=float)
     empty_cell_mask = (grid == -1)
+    
+    # 如果沒有空格，直接返回零分圖，避免後續計算出錯
+    if not empty_cell_mask.any():
+        logger.info("No empty cells to score.")
+        return total_score_map
+
     module_scores: Dict[str, np.ndarray] = {}
 
     # 1) 先跑除 F10 之外的所有模組
@@ -856,54 +865,126 @@ def tensor_flow_score_vec_all(
             continue
 
         w = MODULE_WEIGHTS.get(name, 0.0)
-        if w == 0.0 and not fair_mode:
+        # 如果權重為0且不是fair_mode (fair_mode下有min_weight_floor可能仍需計算)
+        if w == 0.0 and not fair_mode: 
+            # logger.debug(f"Skipping module {name} due to zero weight and not in fair_mode.")
+            continue
+        # 如果權重為0但在fair_mode下，但min_weight_floor也為0，則跳過
+        if w == 0.0 and fair_mode and min_weight_floor == 0.0:
+            # logger.debug(f"Skipping module {name} in fair_mode due to zero weight and zero min_weight_floor.")
             continue
 
+
         kwargs: Dict[str, Any] = {}
-        if name in {"H_ARITHMETIC", "H_MEMORY"}:
+        # 確保 H_ARITHMETIC 和 H_MEMORY 有正確的參數
+        if name in {"H_ARITHMETIC", "H_MEMORY", "D1", "D5"}: # D1, D5 也依賴這些
             kwargs["value_domain_min"] = value_domain_min
             kwargs["value_domain_max"] = value_domain_max
+            # logger.debug(f"Passing value_domain to {name}: min={value_domain_min}, max={value_domain_max}")
 
-        raw = func(grid.copy(), **kwargs).astype(float)
+
+        try:
+            raw = func(grid.copy(), **kwargs).astype(float)
+        except Exception as e:
+            logger.error(f"Error calling module {name}: {e}", exc_info=True)
+            continue # 跳過出錯的模組
+
+        # 確保 raw 的形狀與 grid 一致
+        if raw.shape != grid.shape:
+            logger.warning(f"Module {name} output shape {raw.shape} mismatch with grid shape {grid.shape}. Skipping.")
+            continue
+
         vals = raw[empty_cell_mask]
 
-        if fair_mode:
-            mn, mx = (vals.min(), vals.max()) if vals.size > 0 else (0.0, 1.0)
-            norm = (vals - mn) / (mx - mn) if mx > mn else np.full_like(vals, 0.0)
-            cont = norm * max(w, min_weight_floor)
-        else:
-            cont = vals * w
+        # 如果沒有空格的分數 (vals為空)，則此模組對空格無貢獻
+        if vals.size == 0:
+            # logger.debug(f"Module {name} produced no scores for empty cells.")
+            module_scores[name] = np.zeros_like(grid, dtype=float) # 記錄一個零分圖
+            continue
 
-        cm = np.zeros_like(grid, dtype=float)
-        cm[empty_cell_mask] = cont
-        total_score_map += cm
-        module_scores[name] = cm
+        current_module_contribution_map = np.zeros_like(grid, dtype=float)
+
+        if fair_mode:
+            mn, mx = vals.min(), vals.max()
+            if mx > mn: # 有差異，正常歸一化
+                norm_vals = (vals - mn) / (mx - mn)
+            else: # 分數平坦 (mx <= mn)，不應貢獻統一的0.5，改為0.0
+                # logger.info(f"Module {name} in fair_mode has flat scores (min={mn}, max={mx}). Normalizing to 0.0 contribution.")
+                norm_vals = np.zeros_like(vals, dtype=float)
+            
+            # 應用權重 (權重本身或最低權重下限)
+            effective_weight = max(w, min_weight_floor)
+            cont_vals = norm_vals * effective_weight
+        else: # 非 fair_mode
+            cont_vals = vals * w
+
+        current_module_contribution_map[empty_cell_mask] = cont_vals
+        total_score_map += current_module_contribution_map
+        module_scores[name] = current_module_contribution_map # 儲存此模組的實際貢獻圖
+
+        # logger.info(f"Module {name} (W:{w:.2f}): RawMinMax({vals.min():.2f},{vals.max():.2f}), ContribMinMax({cont_vals.min():.2f},{cont_vals.max():.2f}) if vals.size > 0 else (0,0)")
+
 
     # 2) 再跑 F10 並累加它的分數
-    if MODULE_WEIGHTS.get("F10", 0.0) > 0:
-        try:
-            f10_map = MODULE_FUNCS_VEC["F10"](
-                grid,
-                module_scores=module_scores,
-                proposed_values=proposed_values,
-            )
-            total_score_map += f10_map * MODULE_WEIGHTS["F10"]
-        except Exception as e:
-            logger.error(f"執行 F10 時出錯：{e}", exc_info=True)
+    f10_weight = MODULE_WEIGHTS.get("F10", 0.0)
+    if f10_weight > 0: # 只有權重大於0才執行F10
+        # logger.info(f"Running F10 module with weight {f10_weight}.")
+        if "F10" in MODULE_FUNCS_VEC:
+            try:
+                # F10需要module_scores，其中應包含之前模組的加權分數
+                # F10本身輸出的是一個0-1之間的map，然後再乘以F10的權重
+                f10_map_raw = MODULE_FUNCS_VEC["F10"](
+                    grid.copy(), # 傳遞 grid 的副本
+                    module_scores=module_scores, # 傳遞之前模組的貢獻圖
+                    proposed_values=proposed_values, # 傳遞 proposed_values
+                )
+                if f10_map_raw.shape != grid.shape:
+                     logger.warning(f"F10 output shape {f10_map_raw.shape} mismatch. Skipping F10.")
+                else:
+                    total_score_map += f10_map_raw * f10_weight
+                    # logger.info(f"F10 contribution added. Map MinMax ({f10_map_raw.min():.2f}, {f10_map_raw.max():.2f}) * W:{f10_weight:.2f}")
+            except Exception as e:
+                logger.error(f"執行 F10 時出錯：{e}", exc_info=True)
+        else:
+            logger.warning("F10 weight is > 0 but F10 function not found in MODULE_FUNCS_VEC.")
+    # else:
+        # logger.info("Skipping F10 module due to zero weight.")
 
-    # **调试：打印 raw 累积分数（未做全局归一）**
-    print("👉 raw total_score_map =\n", total_score_map)
+    # 调试：打印 raw 累积分数（未做全局归一）
+    # logger.info("Raw total_score_map before global normalization:\n" + format_data_as_table(total_score_map, generate_default_headers_if_numpy_2d_and_no_headers=True))
+    # print("👉 raw total_score_map (sum of all modules) before global normalization =\n", total_score_map)
+
 
     # 3) 全局 Min–Max 归一，保留差异
-    mn, mx = total_score_map.min(), total_score_map.max()
-    eps = 1e-6
-    if mx - mn > eps:
-        total_score_map = (total_score_map - mn) / (mx - mn)
-    else:
-        total_score_map = np.zeros_like(total_score_map)
+    # 只對空格的分數進行歸一化參考，然後應用到總圖
+    scores_on_empty_cells = total_score_map[empty_cell_mask]
+    
+    final_score_map = np.zeros_like(total_score_map, dtype=float)
+
+    if scores_on_empty_cells.size > 0:
+        min_val = scores_on_empty_cells.min()
+        max_val = scores_on_empty_cells.max()
+        eps = 1e-6 # 非常小的數，用於比較浮點數
+
+        if max_val - min_val > eps: # 確保分母不為零或太小
+            normalized_scores_on_empty = (scores_on_empty_cells - min_val) / (max_val - min_val)
+            final_score_map[empty_cell_mask] = normalized_scores_on_empty
+        elif scores_on_empty_cells.size > 0 : # 所有空格分數都一樣 (但至少有一個空格)
+            # 如果所有空格分數都一樣，可以都設為0.5 (表示中性) 或 1.0 (如果這是唯一選項)
+            # 設為0可能更符合預期，因為沒有差異。
+            # 但若只有一個空格，它應該是1.0
+            if scores_on_empty_cells.size == 1:
+                 final_score_map[empty_cell_mask] = 1.0
+            else:
+                 final_score_map[empty_cell_mask] = 0.0 # 如果多個空格分數一樣，表示無差異，設為0
+            # logger.info(f"All empty cells have same score ({max_val:.2f}) before global norm. Setting them to 0.0 (or 1.0 if single empty cell).")
+
+    # logger.info("Final score_map after global normalization for empty cells:\n" + format_data_as_table(final_score_map, generate_default_headers_if_numpy_2d_and_no_headers=True))
+    # print("✅ Final total_score_map after global normalization for empty cells =\n", final_score_map)
 
     # 4) 回傳最終分數
-    return total_score_map
+    return final_score_map
+
 
 # -----------------------------------------------------------------------------
 # 7. Pydantic models & CP-SAT solve step
