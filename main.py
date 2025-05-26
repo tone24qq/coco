@@ -50,7 +50,7 @@ class BoardInput(BaseModel):
     def validate_cells_shape(cls, v, values):
         rows = values.get("rows")
         cols = values.get("cols")
-        if not rows or not cols: # Should be caught by gt=0, but good for robustness
+        if not rows or not cols: 
             return v
         if len(v) != rows or any(len(row) != cols for row in v):
             raise ValueError(f"cells 应为 {rows}×{cols} 的列表")
@@ -103,20 +103,18 @@ class InternalBoardState:
             for c_idx in range(self.cols):
                 v = src.cells[r_idx][c_idx]
                 if v is not None:
-                    arr[r_idx, c_idx] = float(v) # Ensure float for consistency
+                    arr[r_idx, c_idx] = float(v)
         self._board: np.ndarray = arr
         self._fixed: np.ndarray = ~np.isnan(arr)
         self.fixed_values: set = {
             float(v) for row in src.cells for v in row if v is not None
         }
         self.active_modules: set = set(src.active_modules or [])
-
-        # Cache for M1's max score to avoid recomputing it many times for the same request
         self._m1_max_logic_score = None
 
 
     def get_m1_max_logic_score(self) -> float:
-        if self._m1_max_logic_score is None: # Calculate and cache if not already done
+        if self._m1_max_logic_score is None:
             all_positive_scores = [
                 s for s in self.src.logic_code_weights.values() 
                 if isinstance(s, (int, float)) and s > 0
@@ -132,7 +130,7 @@ class InternalBoardState:
 
     def get_value_py(self, r: int, c: int, proposed: Optional[Tuple[int,int,float]] = None) -> float:
         if proposed and (r, c) == (proposed[0], proposed[1]):
-            return proposed[2] # pv is already float
+            return proposed[2]
         return self._board[r, c]
 
     def logic_code(self, r: int, c: int) -> str:
@@ -148,7 +146,7 @@ class LogicModule(ABC):
     description: str
 
     @abstractmethod
-    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float: # pv changed to float
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
         ...
 
 modules: Dict[str, LogicModule] = {}
@@ -171,83 +169,87 @@ class M1_BaseScoreModule(LogicModule):
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
         r, c = cell
         code = state.logic_code(r, c)
-        
         current_raw_score = state.src.logic_code_weights.get(code, 0.0)
-        if not isinstance(current_raw_score, (int, float)): # Ensure numeric
+        if not isinstance(current_raw_score, (int, float)):
             current_raw_score = 0.0
-
-        max_possible_score = state.get_m1_max_logic_score() # Use cached max score from state
-
+        max_possible_score = state.get_m1_max_logic_score()
         if max_possible_score > 0:
-            if current_raw_score > 0: # Normalize only positive raw scores
+            if current_raw_score > 0:
                 return current_raw_score / max_possible_score
-            else: # Non-positive raw scores become 0
+            else:
                 return 0.0 
-        else: # No positive scores in logic_code_weights at all
+        else:
             return 0.0
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. M4: 轴对称模块 (Numba Optimized Helper)
+# 6. M4: 轴对称模块 (Numba Optimized Helper - GLOBAL SYMMETRY)
 # ──────────────────────────────────────────────────────────────────────────────
 
 @njit(cache=True, nogil=True)
-def _m4_analyze_numba(board: np.ndarray, rows: int, cols: int, r_proposed: int, c_proposed: int, pv_proposed: float) -> float:
-    match_count = 0
-    total_comparisons = 0
-
+def _m4_analyze_numba_global_symmetry(board: np.ndarray, rows: int, cols: int, r_proposed: int, c_proposed: int, pv_proposed: float) -> float:
+    
+    # Helper to get value from board, considering the hypothetical placement
     def get_val(r_check: int, c_check: int) -> float:
         if r_check == r_proposed and c_check == c_proposed:
             return pv_proposed
         return board[r_check, c_check]
 
-    # Horizontal symmetry check FOR THE PROPOSED ROW r_proposed
-    for c_check in range(cols): # Iterate through all columns in the proposed row
-        # If we are at the axis of symmetry for this pair, avoid double counting later (or ensure pair logic is correct)
-        # For a cell (r_proposed, c_check), its symmetric partner is (r_proposed, cols - 1 - c_check)
-        # Only compare if c_check <= (cols - 1 - c_check) to process each pair once
-        if c_check > cols - 1 - c_check: 
-            continue
-
-        v1 = get_val(r_proposed, c_check)
-        v2 = get_val(r_proposed, cols - 1 - c_check)
-
-        if not np.isnan(v1) and not np.isnan(v2):
-            if c_check == cols - 1 - c_check : # Element on the axis of symmetry
-                 # A single element is symmetric with itself if it's part of the consideration
-                 # The report's (source 201) `arr == np.fliplr(arr)` implies comparison of each cell with its counterpart.
-                 # If an element is on the axis, it's compared with itself.
-                 # The sum of (arr == flipped_arr) / count_of_non_nan_in_comparison
-                 # Here, we sum matches and valid comparisons.
-                match_count += 1 # Always matches itself
-            elif v1 == v2: # Pair off-axis
-                match_count += 2 # Counts for two cells matching
-            total_comparisons += 2 if c_check != (cols - 1 - c_check) else 1
-    
-    # Vertical symmetry check FOR THE PROPOSED COLUMN c_proposed
-    for r_check in range(rows):
-        if r_check > rows - 1 - r_check:
-            continue
-        
-        v1 = get_val(r_check, c_proposed)
-        v2 = get_val(rows - 1 - r_check, c_proposed)
-        if not np.isnan(v1) and not np.isnan(v2):
-            if r_check == rows - 1 - r_check:
-                match_count += 1
-            elif v1 == v2:
-                match_count += 2
-            total_comparisons += 2 if r_check != (rows - 1 - r_check) else 1
+    h_matches = 0
+    h_comparisons = 0
+    # Global Horizontal symmetry: Compare each cell (r, c) with its horizontal counterpart (r, cols - 1 - c)
+    # This method iterates over all cells and sums matches where both cell and its counterpart are numbers.
+    for r_iter in range(rows):
+        for c_iter in range(cols):
+            val_orig = get_val(r_iter, c_iter)
+            # Find the symmetric counterpart for val_orig
+            # For horizontal symmetry, it's (r_iter, cols - 1 - c_iter)
+            val_flipped = get_val(r_iter, cols - 1 - c_iter)
             
-    return float(match_count) / total_comparisons if total_comparisons > 0 else 0.0
+            if not np.isnan(val_orig) and not np.isnan(val_flipped):
+                if val_orig == val_flipped:
+                    h_matches += 1
+                h_comparisons += 1
+    # Normalize by the number of valid comparison points
+    h_score = float(h_matches) / h_comparisons if h_comparisons > 0 else 0.0
+
+    v_matches = 0
+    v_comparisons = 0
+    # Global Vertical symmetry: Compare each cell (r, c) with its vertical counterpart (rows - 1 - r, c)
+    for r_iter in range(rows):
+        for c_iter in range(cols):
+            val_orig = get_val(r_iter, c_iter)
+            # For vertical symmetry, it's (rows - 1 - r_iter, c_iter)
+            val_flipped = get_val(rows - 1 - r_iter, c_iter)
+
+            if not np.isnan(val_orig) and not np.isnan(val_flipped):
+                if val_orig == val_flipped:
+                    v_matches += 1
+                v_comparisons += 1
+    v_score = float(v_matches) / v_comparisons if v_comparisons > 0 else 0.0
+    
+    # Combine scores: average the horizontal and vertical symmetry scores.
+    # If one dimension has no valid comparisons (e.g., a 1x1 board for one of the sub-calcs, though unlikely here),
+    # rely on the other, or if both are valid, average them.
+    if h_comparisons > 0 and v_comparisons > 0:
+      # If board is 1 row, v_score will be 1.0. If 1 col, h_score will be 1.0.
+      # This seems acceptable as it reflects perfect symmetry along the degenerate axis.
+      return (h_score + v_score) / 2.0
+    elif h_comparisons > 0: # e.g. single row board
+      return h_score
+    elif v_comparisons > 0: # e.g. single col board
+      return v_score
+    return 0.0 # No valid comparisons possible
 
 @register_module
 class M4_SymmetryAxialModule(LogicModule):
     module_id = "M4_SymmetryAxial"
-    name = "轴对称性"
-    description = "统计水平/垂直轴对称匹配率 (沿提案行列)"
+    name = "全局轴对称性" # Updated name to reflect change
+    description = "评估整个盘面在假设落子后的全局水平和垂直对称性" # Updated description
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
         r, c = cell
-        return _m4_analyze_numba(state._board, state.rows, state.cols, r, c, pv)
+        # Call the Numba-optimized helper function for global symmetry
+        return _m4_analyze_numba_global_symmetry(state._board, state.rows, state.cols, r, c, pv)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 7. M5: 段差分析模块 (Numba Optimized Helper)
@@ -260,8 +262,9 @@ def _m5_score_seq_numba(seq: np.ndarray) -> float:
     diffs = np.diff(seq)
     if diffs.size == 0: 
         return 0.0
-    var = np.var(diffs) # Numba handles np.var
-    return 1.0 / (1.0 + var) if (1.0 + var) != 0 else 0.0 # Avoid division by zero if var is -1 (unlikely for np.var)
+    var = np.var(diffs)
+    denominator = 1.0 + var
+    return 1.0 / denominator if denominator != 0 else 0.0 # Avoid division by zero for safety
 
 @register_module
 class M5_SegmentDiffModule(LogicModule):
@@ -271,7 +274,6 @@ class M5_SegmentDiffModule(LogicModule):
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
         r, c = cell
-
         original_row_view = state._board[r, :]
         hypo_row = original_row_view.copy() 
         hypo_row[c] = pv
@@ -296,7 +298,7 @@ class M5_SegmentDiffModule(LogicModule):
 
 GLOBAL_MODULE_WEIGHTS = {
     "M1_BaseScore": 1.0,
-    "M4_SymmetryAxial": 0.8,
+    "M4_SymmetryAxial": 0.8, # Weight for the new Global Symmetry module
     "M5_SegmentDiff": 0.7,
 }
 
@@ -307,13 +309,12 @@ class InferenceEngine:
     def run_inference(self, state: InternalBoardState) -> Tuple[List[ValuePrediction], List[str]]:
         results: List[ValuePrediction] = []
         warnings: List[str] = []
-
         weights = GLOBAL_MODULE_WEIGHTS.copy()
         if state.src.module_weights:
             weights.update(state.src.module_weights)
 
-        for pv_val_int in state.src.proposed_values: # pv from input is int
-            pv_val_float = float(pv_val_int) # Convert to float for internal use
+        for pv_val_int in state.src.proposed_values:
+            pv_val_float = float(pv_val_int)
             if pv_val_float in state.fixed_values:
                 warnings.append(f"Value {pv_val_int} 已存在于盘面，跳过。")
                 results.append(ValuePrediction(proposed_value=pv_val_int, top_n_positions=[]))
@@ -329,11 +330,28 @@ class InferenceEngine:
                     total_weight = 0.0
                     current_cell = (r_idx, c_idx)
 
-                    for mod_id, mod_instance in self.registry.items():
-                        if state.active_modules and mod_id not in state.active_modules:
-                            continue
+                    active_module_keys = state.active_modules
+                    # If active_modules is empty in state, it means use all from registry
+                    # Otherwise, use only the ones specified in active_modules
+                    modules_to_run = self.registry.items()
+                    if active_module_keys: # if set is not empty
+                        modules_to_run = [(mid, mod) for mid, mod in self.registry.items() if mid in active_module_keys]
+                    
+                    if not modules_to_run and self.registry:
+                        # This case implies active_modules was specified but none matched registered modules.
+                        # Or, if active_modules was empty, but registry is also empty (though unlikely).
+                        # For safety, if no modules are to be run for a cell, score is 0.
+                        # However, the outer logic for active_modules in InternalBoardState (empty set means use all)
+                        # means this check might be more about an empty registry.
+                        # The current logic iterates `modules_to_run`. If it's empty, loop doesn't run, score remains 0.
+                        pass
+
+
+                    for mod_id, mod_instance in modules_to_run:
+                        # The check `if state.active_modules and mid not in state.active_modules:`
+                        # is implicitly handled by how `modules_to_run` is constructed.
                         
-                        module_weight = weights.get(mod_id, 1.0)
+                        module_weight = weights.get(mod_id, 1.0) # Default weight if not in custom weights
                         individual_score = mod_instance.analyze(state, current_cell, pv_val_float) 
                         
                         aggregated_score += individual_score * module_weight
@@ -355,9 +373,6 @@ class InferenceEngine:
 app = FastAPI(title="自适应盘面推理系统", version="1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# This instance will be shared if multiple requests come in quickly,
-# so module-level caches need to be reset or handled per-call if state varies.
-# The current M1 cache is on InternalBoardState, which is per-request.
 engine_instance = InferenceEngine() 
 
 def get_engine(): 
@@ -367,7 +382,7 @@ def get_engine():
 async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends(get_engine)):
     start_time = time.perf_counter()
     try:
-        internal_state = InternalBoardState(board) # New state for each request
+        internal_state = InternalBoardState(board)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     
