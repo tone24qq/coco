@@ -1,4 +1,4 @@
-import logging
+mport logging
 import math
 import time
 import os
@@ -17,7 +17,7 @@ from numba import njit # Numba import
 # 0. Logging & Config
 # ──────────────────────────────────────────────────────────────────────────────
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -368,12 +368,17 @@ class InferenceEngine:
                         module_weight = weights.get(mod_id, 1.0)
                         # Critical: Module analyze methods are called here.
                         # Their performance directly impacts overall speed.
-                        individual_score = mod_instance.analyze(state, current_cell, pv_val) 
+                        individual_score = mod_instance.analyze(state, current_cell, pv_val)
+                        logger.debug(f"[DEBUG] {mod_id} @ {state.logic_code(r_idx,c_idx)} PV={pv_val} → {individual_score:.4f}")
+ 
                         
                         aggregated_score += individual_score * module_weight
                         total_weight += module_weight
                     
                     final_cell_score = aggregated_score / total_weight if total_weight > 0 else 0.0
+                    
+                    logger.debug(f"[DEBUG] Cell {state.logic_code(r_idx,c_idx)} PV={pv_val} aggregated={aggregated_score:.4f} / total_w={total_weight:.4f} => {final_cell_score:.4f}")
+
                     scores_for_pv.append((state.logic_code(r_idx,c_idx), final_cell_score))
 
             top_n = sorted(scores_for_pv, key=lambda x: x[1], reverse=True)[:state.src.top_n_count]
