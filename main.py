@@ -16,6 +16,11 @@ from tabulate import tabulate
 from collections import Counter
 from scipy.signal import convolve2d # For L1 heatmap diffusion
 
+
+from typing import Dict, List
+from collections import defaultdict
+from your_models import ProposedValue
+
 # --- Logging configuration ---
 logging.basicConfig(
     level=logging.INFO,
@@ -724,32 +729,32 @@ def l3_pattern_block_rotation_analysis_vec(grid: np.ndarray, **kwargs) -> np.nda
 # -----------------------------------------------------------------------------
 # F10 公平排序一致性檢查模組
 # -----------------------------------------------------------------------------
+def from collections import defaultdict
+
 def f10_consistency_gate_vec(
     grid: np.ndarray,
     module_scores: Dict[str, np.ndarray],
-    **kwargs
+    proposed_values: List[ProposedValue]
 ) -> np.ndarray:
-    """
-    F10 公平排序一致性模組：
-    - 同一號碼若在多個候選格均有其他模組「共鳴」（非零分）→ 只保留「共鳴最多」的那格
-    - 其餘同號格縮減分數，但不歸零，保留公平性可能
-    """
     H, W = grid.shape
     score_map = np.zeros((H, W), dtype=float)
-    empty = (grid == -1)
 
-    # 計算每個空格被多少模組「響應」
-    resonance = np.zeros((H, W), dtype=float)
-    for name, m_map in module_scores.items():
-        # 只要該模組對此格有大於零的分，就算一次共鳴
-        resonance[empty] += (m_map[empty] > 0).astype(float)
+    # 1) 按 value 分組
+    groups = defaultdict(list)
+    for pv in proposed_values:
+        groups[pv.value].append(tuple(pv.pos))
 
-    # 正規化到 [0,1]
-    maxr = resonance.max() if empty.any() else 0.0
-    if maxr > 0:
-        score_map[empty] = resonance[empty] / maxr
+    # 2) 同組裡比「共鳴次數」
+    for positions in groups.values():
+        counts = [
+            sum(module_scores[n][r, c] > 0 for n in module_scores)
+            for (r, c) in positions
+        ]
+        mx = max(counts)
+        for (r, c), cnt in zip(positions, counts):
+            score_map[r, c] = 1.0 if cnt == mx else 0.5
 
-    return score_map * empty
+    return score_map
 # -----------------------------------------------------------------------------
 # 5. MODULE_FUNCS_VEC Registration (含新模組)
 # -----------------------------------------------------------------------------
@@ -880,7 +885,11 @@ for name, heuristic_func in MODULE_FUNCS_VEC.items():
 # 2) 再跑 F10 並累加它的分數
 if MODULE_WEIGHTS.get("F10", 0.0) > 0:
     try:
-        f10_map = MODULE_FUNCS_VEC["F10"](grid, module_scores=module_scores)
+        f10_map = MODULE_FUNCS_VEC["F10"](
+            grid,
+            module_scores=module_scores,
+            proposed_values=proposed_values,
+        )
         total_score_map += f10_map * MODULE_WEIGHTS["F10"]
     except Exception as e:
         logger.error(f"執行 F10 時出錯: {e}", exc_info=True)
