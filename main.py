@@ -1,4 +1,4 @@
-mport logging
+import logging
 import math
 import time
 import os
@@ -420,4 +420,3 @@ async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends
 def list_modules_info():
     return [ModuleInfo(module_id=m.module_id, name=m.name, description=m.description)
             for m in modules.values()]
-
