@@ -167,15 +167,15 @@ def _load_module_weights() -> None:
         "M4": 0.5, "M5": 0.5, "M6": 0.5, "M7": 0.5, "M8": 0.5, "M9": 0.6, "M10": 0.5,
         "M11": 0.5, "F2": 0.5, "F3": 0.5, "R2": 0.5, "R7": 0.5, "D3": 0.7,
         "H_ARITHMETIC": 0.8, "H_MEMORY": 0.5,
-        "F5": 0.5, "F6": 0.5, "F7": 0.4, "F8": 0.4, "R5": 0.6, "R8": 0.7,
+        "F5": 0.5, "F6": 0.0, "F7": 0.4, "F8": 0.4, "R5": 0.6, "R8": 0.7,
         "P1": 0.7, "P2": 0.6, "P4": 0.5, "L1": 0.6, "L3": 0.5,"F10": 1.0,
         # --- 以下為新增預設權重，可按需要在 module_weights.json 中覆蓋 ---
         "A1": 0.6, "A3": 0.6, "A4": 0.6, "A7": 0.6,
         "M12": 0.5,
-        "D1": 0.7, "D2": 0.7, "D4": 0.7, "D5": 0.7,
-        "F1": 0.5, "F4": 0.5, "F9": 0.5,
+        "D1": 0.7, "D2": 0.0, "D4": 0.0, "D5": 0.7,
+        "F1": 0.5, "F4": 0.5, "F9": 0.0,
         "R1": 0.6, "R3": 0.6, "R4": 0.6, "R6": 0.6, "R9": 0.6,
-        "P3": 0.6, "P5": 0.6, "P6": 0.6, "P7": 0.6, "P8": 0.6,
+        "P3": 0.0, "P5": 0.6, "P6": 0.6, "P7": 0.6, "P8": 0.6,
     }
     if os.path.exists(MODULE_WEIGHTS_PATH):
         try:
@@ -869,7 +869,7 @@ def tensor_flow_score_vec_all(
 
         if fair_mode:
             mn, mx = (vals.min(), vals.max()) if vals.size > 0 else (0.0, 1.0)
-            norm = (vals - mn) / (mx - mn) if mx > mn else np.full_like(vals, 0.5)
+            norm = (vals - mn) / (mx - mn) if mx > mn else np.full_like(vals, 0.0)
             cont = norm * max(w, min_weight_floor)
         else:
             cont = vals * w
