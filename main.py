@@ -413,6 +413,7 @@ async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends
 
 @app.get("/config/modules", response_model=List[ModuleInfo], summary="可用模块列表")
 def list_modules_info():
+    console_debug_logger.debug("GET /config/modules request received.") # 调试日志
     return [ModuleInfo(module_id=m.module_id, name=m.name, description=m.description)
             for m in modules.values()]
 
