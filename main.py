@@ -69,8 +69,6 @@ class InferenceResponse(BaseModel):
     predictions: List[ValuePrediction]
     processing_time_ms: Optional[float] = None
     warnings: Optional[List[str]] = None
-    # Optional: to include detailed contributions if needed for debugging
-    # detail_contributions: Optional[Dict[str, List[Dict[str, Any]]]] = None 
 
 class ModuleInfo(BaseModel):
     module_id: str
@@ -111,8 +109,6 @@ class InternalBoardState:
         self.fixed_values: set = {
             float(v) for row in src.cells for v in row if v is not None
         }
-        # If active_modules is None or empty list in input, this will be an empty set.
-        # InferenceEngine will interpret empty set as "run all registered modules".
         self.active_modules: set = set(src.active_modules or [])
         self._m1_max_logic_score = None
 
@@ -187,57 +183,58 @@ class M1_BaseScoreModule(LogicModule):
             return 0.0
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 6. M4: 轴对称模块 (GLOBAL SYMMETRY) - Corresponds to user's "A6"
+# 6. M4: 轴对称模块 (GLOBAL SYMMETRY) - 用户称之为 "A6" - ## 此模块已移除/注释 ##
 # ──────────────────────────────────────────────────────────────────────────────
 
-@njit(cache=True, nogil=True)
-def _m4_analyze_numba_global_symmetry(board: np.ndarray, rows: int, cols: int, r_proposed: int, c_proposed: int, pv_proposed: float) -> float:
-    def get_val(r_check: int, c_check: int) -> float:
-        if r_check == r_proposed and c_check == c_proposed:
-            return pv_proposed
-        return board[r_check, c_check]
+# @njit(cache=True, nogil=True)
+# def _m4_analyze_numba_global_symmetry(board: np.ndarray, rows: int, cols: int, r_proposed: int, c_proposed: int, pv_proposed: float) -> float:
+#     def get_val(r_check: int, c_check: int) -> float:
+#         if r_check == r_proposed and c_check == c_proposed:
+#             return pv_proposed
+#         return board[r_check, c_check]
 
-    h_matches = 0
-    h_comparisons = 0
-    for r_iter in range(rows):
-        for c_iter in range(cols):
-            val_orig = get_val(r_iter, c_iter)
-            val_flipped = get_val(r_iter, cols - 1 - c_iter)
-            if not np.isnan(val_orig) and not np.isnan(val_flipped):
-                if val_orig == val_flipped:
-                    h_matches += 1
-                h_comparisons += 1
-    h_score = float(h_matches) / h_comparisons if h_comparisons > 0 else 0.0
+#     h_matches = 0
+#     h_comparisons = 0
+#     for r_iter in range(rows):
+#         for c_iter in range(cols):
+#             val_orig = get_val(r_iter, c_iter)
+#             val_flipped = get_val(r_iter, cols - 1 - c_iter)
+#             if not np.isnan(val_orig) and not np.isnan(val_flipped):
+#                 if val_orig == val_flipped:
+#                     h_matches += 1
+#                 h_comparisons += 1
+#     h_score = float(h_matches) / h_comparisons if h_comparisons > 0 else 0.0
 
-    v_matches = 0
-    v_comparisons = 0
-    for r_iter in range(rows):
-        for c_iter in range(cols):
-            val_orig = get_val(r_iter, c_iter)
-            val_flipped = get_val(rows - 1 - r_iter, c_iter)
-            if not np.isnan(val_orig) and not np.isnan(val_flipped):
-                if val_orig == val_flipped:
-                    v_matches += 1
-                v_comparisons += 1
-    v_score = float(v_matches) / v_comparisons if v_comparisons > 0 else 0.0
+#     v_matches = 0
+#     v_comparisons = 0
+#     for r_iter in range(rows):
+#         for c_iter in range(cols):
+#             val_orig = get_val(r_iter, c_iter)
+#             val_flipped = get_val(rows - 1 - r_iter, c_iter)
+#             if not np.isnan(val_orig) and not np.isnan(val_flipped):
+#                 if val_orig == val_flipped:
+#                     v_matches += 1
+#                 v_comparisons += 1
+#     v_score = float(v_matches) / v_comparisons if v_comparisons > 0 else 0.0
     
-    if h_comparisons > 0 and v_comparisons > 0:
-      return (h_score + v_score) / 2.0
-    elif h_comparisons > 0:
-      return h_score
-    elif v_comparisons > 0:
-      return v_score
-    return 0.0
+#     if h_comparisons > 0 and v_comparisons > 0:
+#       return (h_score + v_score) / 2.0
+#     elif h_comparisons > 0:
+#       return h_score
+#     elif v_comparisons > 0:
+#       return v_score
+#     return 0.0
 
-@register_module
-class M4_SymmetryAxialModule(LogicModule): # This is user's "A6"
-    module_id = "M4_SymmetryAxial"
-    name = "全局轴对称性 (A6)"
-    description = "评估整个盘面在假设落子后的全局水平和垂直对称性"
+# @register_module  # ## M4 已注释掉，不再注册 ##
+# class M4_SymmetryAxialModule(LogicModule): 
+#     module_id = "M4_SymmetryAxial"
+#     name = "全局轴对称性 (A6) ## 已移除 ##"
+#     description = "评估整个盘面在假设落子后的全局水平和垂直对称性"
 
-    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
-        r, c = cell
-        return _m4_analyze_numba_global_symmetry(state._board, state.rows, state.cols, r, c, pv)
+#     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
+#         r, c = cell
+#         # return _m4_analyze_numba_global_symmetry(state._board, state.rows, state.cols, r, c, pv)
+#         return 0.0 # Since it's "removed", return 0 if somehow called. Or ensure it's not called.
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 7. M5: 段差分析模块
@@ -291,8 +288,7 @@ class A5_PlaceholderModule(LogicModule):
     description = "这是一个A5模块的占位符实现，返回固定值0.5。"
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
-        # 未来实现具体逻辑
-        return 0.5 # Dummy score
+        return 0.5
 
 @register_module
 class M2_PlaceholderModule(LogicModule):
@@ -301,8 +297,7 @@ class M2_PlaceholderModule(LogicModule):
     description = "这是一个M2模块的占位符实现，返回固定值0.3。"
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
-        # 未来实现具体逻辑
-        return 0.3 # Dummy score
+        return 0.3
 
 @register_module
 class M8_PlaceholderModule(LogicModule):
@@ -311,8 +306,7 @@ class M8_PlaceholderModule(LogicModule):
     description = "这是一个M8模块的占位符实现，返回固定值0.4。"
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
-        # 未来实现具体逻辑
-        return 0.4 # Dummy score
+        return 0.4
 
 @register_module
 class R1_SequenceRuleModule(LogicModule):
@@ -321,9 +315,7 @@ class R1_SequenceRuleModule(LogicModule):
     description = "R1模块，检查特定序列规则的占位符，返回固定值0.6。"
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
-        # 未来实现具体逻辑
-        # 例如: 检查 (r,c) 周围是否形成特定序列 (等差、等比等)
-        return 0.6 # Dummy score
+        return 0.6
 
 @register_module
 class R2_RelativePositionModule(LogicModule):
@@ -332,9 +324,7 @@ class R2_RelativePositionModule(LogicModule):
     description = "R2模块，评估与现有数字相对位置关系的占位符，返回固定值0.2。"
 
     def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: float) -> float:
-        # 未来实现具体逻辑
-        # 例如: 检查 pv 与 (r,c) 上下左右固定数字的关系
-        return 0.2 # Dummy score
+        return 0.2
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 9. InferenceEngine：统一加权聚合
@@ -342,27 +332,24 @@ class R2_RelativePositionModule(LogicModule):
 
 GLOBAL_MODULE_WEIGHTS = {
     "M1_BaseScore": 1.0,
-    "M4_SymmetryAxial": 0.8, # A6
+    # "M4_SymmetryAxial": 0.8, # M4/A6 已移除
     "M5_SegmentDiff": 0.7,
-    "A5_Placeholder": 0.5,   # Default weight for new module
-    "M2_Placeholder": 0.5,   # Default weight for new module
-    "M8_Placeholder": 0.5,   # Default weight for new module
-    "R1_SequenceRule": 0.6,  # Default weight for new module
-    "R2_RelativePosition": 0.4, # Default weight for new module
+    "A5_Placeholder": 0.5,
+    "M2_Placeholder": 0.5,
+    "M8_Placeholder": 0.5,
+    "R1_SequenceRule": 0.6,
+    "R2_RelativePosition": 0.4,
 }
 
 class InferenceEngine:
     def __init__(self):
-        self.registry = modules # Populated by @register_module
+        self.registry = modules
 
     def run_inference(self, state: InternalBoardState) -> Tuple[List[ValuePrediction], List[str]]:
         results: List[ValuePrediction] = []
         warnings: List[str] = []
-        # For detailed contributions, if you add it to InferenceResponse
-        # detail_contributions_response: Dict[str, List[Dict[str, Any]]] = {} 
-
         effective_weights = GLOBAL_MODULE_WEIGHTS.copy()
-        if state.src.module_weights: # Allow request to override global weights
+        if state.src.module_weights:
             effective_weights.update(state.src.module_weights)
 
         for pv_val_int in state.src.proposed_values:
@@ -373,9 +360,6 @@ class InferenceEngine:
                 continue
 
             scores_for_pv: List[Tuple[str,float]] = []
-            # For detailed contributions
-            # current_pv_contributions: List[Dict[str, Any]] = []
-
             for r_idx in range(state.rows):
                 for c_idx in range(state.cols):
                     if state.is_fixed(r_idx, c_idx):
@@ -386,9 +370,8 @@ class InferenceEngine:
                     current_cell = (r_idx, c_idx)
                     position_code = state.logic_code(r_idx,c_idx)
 
-                    # Determine which modules to run
                     modules_to_iterate: List[Tuple[str, LogicModule]]
-                    if not state.active_modules: # Empty set means run all registered modules
+                    if not state.active_modules: 
                         modules_to_iterate = list(self.registry.items())
                     else:
                         modules_to_iterate = [
@@ -396,47 +379,19 @@ class InferenceEngine:
                             if mid in state.active_modules
                         ]
                     
-                    # For detailed contributions for this cell
-                    # cell_contributions_detail: List[Dict[str, Any]] = []
-
                     for mod_id, mod_instance in modules_to_iterate:
-                        module_weight = effective_weights.get(mod_id, 1.0) # Default weight is 1.0 if not specified
-                        
-                        individual_score = mod_instance.analyze(state, current_cell, pv_val_float)
-                        
-                        weighted_score = individual_score * module_weight
-                        aggregated_score += weighted_score
+                        module_weight = effective_weights.get(mod_id, 1.0)
+                        individual_score = mod_instance.analyze(state, current_cell, pv_val_float) 
+                        aggregated_score += individual_score * module_weight
                         total_weight += module_weight
-                        
-                        # For detailed contributions
-                        # cell_contributions_detail.append({
-                        #     "module_id": mod_id,
-                        #     "raw_score": round(individual_score, 4),
-                        #     "weight": round(module_weight, 4),
-                        #     "weighted_score": round(weighted_score, 4)
-                        # })
                     
                     final_cell_score = aggregated_score / total_weight if total_weight > 0 else 0.0
                     scores_for_pv.append((position_code, final_cell_score))
-                    
-                    # For detailed contributions
-                    # if cell_contributions_detail: # Only add if there were contributions
-                    #    current_pv_contributions.append({
-                    #        "position_code": position_code,
-                    #        "final_score": round(final_cell_score, 4),
-                    #        "module_breakdown": cell_contributions_detail
-                    #    })
-
-            # For detailed contributions
-            # if current_pv_contributions:
-            #    detail_contributions_response[str(pv_val_int)] = current_pv_contributions
-
+            
             top_n = sorted(scores_for_pv, key=lambda x: x[1], reverse=True)[:state.src.top_n_count]
             position_scores = [PositionScore(position_code=code, score=round(sc,4)) for code, sc in top_n]
             results.append(ValuePrediction(proposed_value=pv_val_int, top_n_positions=position_scores))
 
-        # If returning detailed contributions:
-        # return results, warnings, detail_contributions_response 
         return results, warnings
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -459,7 +414,6 @@ async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     
-    # Modify if InferenceEngine returns more data like detail_contributions
     predictions, warnings_list = await run_in_threadpool(engine.run_inference, internal_state)
     
     processing_duration_ms = (time.perf_counter() - start_time) * 1000
@@ -468,7 +422,6 @@ async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends
         "predictions": predictions,
         "processing_time_ms": round(processing_duration_ms, 2),
         "warnings": warnings_list if warnings_list else None,
-        # "detail_contributions": detail_contributions # if you enable this
     }
     return InferenceResponse(**response_data)
 
