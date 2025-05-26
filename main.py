@@ -1,1147 +1,647 @@
-# ------------------- dependencies -------------------
-# pip install fastapi uvicorn ortools tabulate numpy scipy
-
-import os
-import json
 import logging
-import uuid
-import numpy as np
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from typing import List, Dict
-from collections import Counter, defaultdict
-from ortools.sat.python import cp_model
-from tabulate import tabulate
-from scipy.signal import convolve2d  # For L1 heatmap diffusion
+from typing import List, Optional, Dict, Tuple, Any, Type
+from abc import ABC, abstractmethod
+import math
+import time
+import os # Added for file paths
+import json # Added for JSON operations
 
-from typing import Dict, List
-from collections import defaultdict
-from your_models import ProposedValue
+from fastapi import FastAPI, HTTPException, Body, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, validator
 
 # --- Logging configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s"
-)
-logger = logging.getLogger(__name__
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# --- File paths ---
+# -----------------------------------------------------------------------------
+# 0. Configuration & File Paths
+# -----------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MEM_PATH = os.path.join(BASE_DIR, "memory_cards.json")
-REASONING_LOG_PATH = os.path.join(BASE_DIR, "reasoning_log.jsonl")
-MODULE_WEIGHTS_PATH = os.path.join(BASE_DIR, "module_weights.json")
-
-# --- Global Configuration for Fair Mode & Weights ---
-DEFAULT_MIN_WEIGHT_FLOOR = 0.1 # 最低權重地板值
-
-# --- Table formatting utility ---
-def format_data_as_table(
-    data_to_format: Any,
-    headers_option: Any = None,
-    tablefmt: str = "grid",
-    floatfmt: str = ".2f",
-    generate_default_headers_if_numpy_2d_and_no_headers: bool = False
-) -> str:
-    headers = headers_option
-    if isinstance(data_to_format, np.ndarray):
-        data = data_to_format.tolist()
-        if generate_default_headers_if_numpy_2d_and_no_headers and headers in (None, []) and data_to_format.ndim == 2:
-            cols = data_to_format.shape[1]
-            headers = [f"Col {i+1}" for i in range(cols)]
-    elif isinstance(data_to_format, list):
-        data = data_to_format
-    else:
-        logger.warning(f"Unsupported data type for table formatting: {type(data_to_format)}")
-        return "Unsupported data type for table formatting."
-    if not data or (isinstance(data, list) and all(not row for row in data)):
-        return "No data to format."
-    actual_headers = headers if headers is not None else []
-    try:
-        return tabulate(data, headers=actual_headers, tablefmt=tablefmt, floatfmt=floatfmt)
-    except Exception as e:
-        logger.error(f"Error during table formatting: {e}", exc_info=True)
-        return f"Error formatting table: {e}"
-
-app = FastAPI(
-    title="MetaCognitive Scratch Card Solver (v1.3 - Fair Scoring)",
-    version="1.3"
-)
-
-# -----------------------------------------------------------------------------
-# 1. Memory module
-# -----------------------------------------------------------------------------
-_memory: Dict[str, Dict[str, Any]] = {}
-
-def _make_board_id(grid: np.ndarray) -> str:
-    H, W = grid.shape
-    empty_count = int(np.sum(grid == -1))
-    filled_part_tuple = tuple(map(tuple, grid.tolist()))
-    grid_hash = hash(filled_part_tuple)
-    return f"{H}x{W}_empty{empty_count}_hash{grid_hash}"
-
-def _load_memory() -> None:
-    global _memory
-    if os.path.exists(MEM_PATH):
-        try:
-            with open(MEM_PATH, "r", encoding="utf-8") as f:
-                _memory = json.load(f)
-            logger.info(f"Loaded memory ({len(_memory)}) from {MEM_PATH}")
-        except Exception as e:
-            logger.error(f"Failed to load memory: {e}", exc_info=True)
-            _memory = {}
-    else:
-        _memory = {}
-        logger.info("No memory file found; starting fresh.")
-
-def _save_memory() -> None:
-    try:
-        with open(MEM_PATH, "w", encoding="utf-8") as f:
-            json.dump(_memory, f, indent=2, sort_keys=True)
-        logger.info(f"Saved memory ({len(_memory)}) to {MEM_PATH}")
-    except Exception as e:
-        logger.error(f"Failed to save memory: {e}", exc_info=True)
-
-def update_memory(grid: np.ndarray, r: int, c: int, v: int, score: float, success: bool) -> None:
-    bid = _make_board_id(grid)
-    key = f"{r}_{c}_{v}"
-    if bid not in _memory:
-        _memory[bid] = {}
-    entry = _memory[bid].setdefault(key, {"count": 0, "total_score": 0.0, "success_count": 0})
-    entry["count"] += 1
-    entry["total_score"] += score
-    if success:
-        entry["success_count"] += 1
-
-def mem_score(grid_id: str, r: int, c: int, v: int) -> Tuple[float, int]:
-    key = f"{r}_{c}_{v}"
-    if grid_id in _memory and key in _memory[grid_id]:
-        entry = _memory[grid_id][key]
-        count = entry.get("count", 0)
-        if count > 0:
-            success_rate = entry.get("success_count", 0) / count
-            avg_heuristic_score = entry["total_score"] / count
-            return avg_heuristic_score * success_rate, count
-    return 0.0, 0
-
-_load_memory()
-
-# -----------------------------------------------------------------------------
-# 2. Meta-cognition log
-# -----------------------------------------------------------------------------
-class MetaCognitionLog:
-    def __init__(self, path: str):
-        self.path = path
-        self.buffer: List[Dict[str, Any]] = []
-
-    def log_event(self, event: Dict[str, Any]):
-        event["log_id"] = str(uuid.uuid4())
-        event["timestamp"] = time.time()
-        for k, v_val in list(event.items()): 
-            if isinstance(v_val, np.integer): event[k] = int(v_val)
-            elif isinstance(v_val, np.floating): event[k] = float(v_val)
-            elif isinstance(v_val, np.ndarray): event[k] = v_val.tolist()
-            elif isinstance(v_val, tuple): event[k] = list(v_val)
-        self.buffer.append(event)
-
-    def flush(self):
-        if not self.buffer: return
-        try:
-            with open(self.path, "a", encoding="utf-8") as f:
-                for ev in self.buffer:
-                    f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-            logger.info(f"Flushed {len(self.buffer)} events to {self.path}")
-            self.buffer.clear()
-        except Exception as e:
-            logger.error(f"Failed to flush log: {e}", exc_info=True)
-
-meta_logger = MetaCognitionLog(REASONING_LOG_PATH)
-
-# -----------------------------------------------------------------------------
-# 3. Module weights management
-# -----------------------------------------------------------------------------
-MODULE_WEIGHTS: Dict[str, float] = {} 
-
-def _load_module_weights() -> None:
-    global MODULE_WEIGHTS
-    defaults = {
-        "A2": 0.7, "A5": 0.8, "A6": 0.0, "A8": 0.5, "M1": 0.6, "M2": 0.8, "M3": 0.9,
-        "M4": 0.5, "M5": 0.5, "M6": 0.5, "M7": 0.5, "M8": 0.5, "M9": 0.6, "M10": 0.5,
-        "M11": 0.5, "F2": 0.5, "F3": 0.5, "R2": 0.5, "R7": 0.5, "D3": 0.7,
-        "H_ARITHMETIC": 0.8, "H_MEMORY": 0.5,
-        "F5": 0.5, "F6": 0.0, "F7": 0.4, "F8": 0.4, "R5": 0.6, "R8": 0.7,
-        "P1": 0.7, "P2": 0.6, "P4": 0.5, "L1": 0.6, "L3": 0.5,"F10": 1.0,
-        # --- 以下為新增預設權重，可按需要在 module_weights.json 中覆蓋 ---
-        "A1": 0.6, "A3": 0.6, "A4": 0.6, "A7": 0.6,
-        "M12": 0.5,
-        "D1": 0.7, "D2": 0.0, "D4": 0.0, "D5": 0.7,
-        "F1": 0.5, "F4": 0.5, "F9": 0.0,
-        "R1": 0.6, "R3": 0.6, "R4": 0.6, "R6": 0.6, "R9": 0.6,
-        "P3": 0.0, "P5": 0.6, "P6": 0.6, "P7": 0.6, "P8": 0.6,
-    }
-    if os.path.exists(MODULE_WEIGHTS_PATH):
-        try:
-            with open(MODULE_WEIGHTS_PATH, "r", encoding="utf-8") as f:
-                loaded = json.load(f) 
-            MODULE_WEIGHTS = {**defaults, **loaded}
-            for key, value in defaults.items():
-                MODULE_WEIGHTS.setdefault(key, value)
-            logger.info(f"Loaded module weights from {MODULE_WEIGHTS_PATH}")
-        except Exception as e:
-            logger.error(f"Error loading weights: {e}. Using default weights.", exc_info=True)
-            MODULE_WEIGHTS = defaults.copy()
-    else:
-        MODULE_WEIGHTS = defaults.copy()
-        logger.info(f"Module weights file not found at {MODULE_WEIGHTS_PATH}. Using default weights and creating file.")
-    _save_module_weights()
-
-def _save_module_weights() -> None: 
-    try:
-        with open(MODULE_WEIGHTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(MODULE_WEIGHTS, f, indent=2, sort_keys=True)
-        logger.info(f"Saved module weights to {MODULE_WEIGHTS_PATH}")
-    except Exception as e:
-        logger.error(f"Failed to save module weights: {e}", exc_info=True)
-
-_load_module_weights()
-
-# -----------------------------------------------------------------------------
-# 4. Heuristic functions 
-# -----------------------------------------------------------------------------
-# --- Existing Heuristics (A/M/D series and original F/R) ---
-def a2_center_radial_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A2 中心徑向向量: 評估儲存格到中心點的距離，越近分數越高。"""
-    H, W = grid.shape
-    if H == 0 or W == 0: return np.zeros_like(grid, dtype=float) * (grid == -1)
-    center = np.array([(H - 1) / 2.0, (W - 1) / 2.0])
-    rows, cols = np.ogrid[:H, :W]
-    dist_sq = (rows - center[0])**2 + (cols - center[1])**2
-    dist = np.sqrt(dist_sq)
-    max_dist = np.sqrt(((H - 1) / 2.0)**2 + ((W - 1) / 2.0)**2) 
-    norm = max_dist if max_dist > 0 else 1.0
-    score = 1.0 - (dist / norm)
-    return score * (grid == -1)
-
-def a5_adj_density_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A5 相鄰密度向量: 評估儲存格周圍已填數字的密度。"""
-    if grid.size == 0: return np.zeros_like(grid, dtype=float) * (grid == -1)
-    padded = np.pad(grid != -1, ((1, 1), (1, 1)), 'constant', constant_values=0)
-    dens = (
-        padded[:-2, 1:-1] + padded[2:, 1:-1] +
-        padded[1:-1, :-2] + padded[1:-1, 2:] 
-    ) / 4.0 
-    return dens * (grid == -1)
-
-def a6_fixed_position_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A6 固定位置向量: 給予所有空格一個基礎分數。"""
-    return (grid == -1).astype(float)
-
-def a8_symmetry_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A8 對稱向量: 評估盤面與其水平翻轉後的對稱性。空位相對應空位得分。"""
-    if grid.size == 0: return np.zeros_like(grid, dtype=float) * (grid == -1)
-    flip = np.fliplr(grid)
-    return ((grid == flip).astype(float)) * (grid == -1)
-
-def m1_uni_gap_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M1 單一間隔向量: 評估每行已填數字間隔的均勻度。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    if W == 0: return score * (grid == -1)
-    for i in range(H):
-        filled_indices = np.where(grid[i] != -1)[0]
-        if len(filled_indices) > 1:
-            gaps = np.diff(filled_indices)
-            if len(gaps) > 0:
-                mean_gap = np.mean(gaps)
-                current_score = 1.0 - np.std(gaps) / (mean_gap if mean_gap > 0 else W)
-                score[i, :] = max(0.0, current_score)
-            else: 
-                score[i, :] = 1.0
-    return score * (grid == -1)
-
-def m2_seq_pattern_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M2 序列模式向量: 評估行和列中已填數字序列是否接近等差。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    for i in range(H):
-        row_values = np.sort(grid[i][grid[i] != -1])
-        if len(row_values) > 2: 
-            diffs = np.diff(row_values)
-            if len(diffs) > 1: score[i, :] += 1.0 / (1.0 + np.std(diffs))
-            elif len(diffs) == 1: score[i, :] += 1.0 
-    for j in range(W):
-        col_values = np.sort(grid[:, j][grid[:, j] != -1])
-        if len(col_values) > 2:
-            diffs = np.diff(col_values)
-            if len(diffs) > 1: score[:, j] += 1.0 / (1.0 + np.std(diffs))
-            elif len(diffs) == 1: score[:, j] += 1.0
-    return score * (grid == -1)
-
-def m3_diff_band_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M3 差值區間向量: 評估空格周圍鄰居數字絕對值的平均是否在特定範圍 [5, 20]。"""
-    H, W = grid.shape
-    score_map = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r, c] == -1:
-                neighbor_abs_vals = []
-                for dr_dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = r + dr_dc[0], c + dr_dc[1]
-                    if 0 <= nr < H and 0 <= nc < W and grid[nr, nc] != -1:
-                        neighbor_abs_vals.append(abs(grid[nr, nc]))
-                if neighbor_abs_vals:
-                    mean_abs_val = np.mean(neighbor_abs_vals)
-                    score_map[r, c] = 1.0 if 5 <= mean_abs_val <= 20 else 0.3
-    return score_map
-
-def m4_biaxial_stat_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M4 雙軸統計向量: 評估空格所在行列的填充密度是否在特定理想範圍 (0.5-0.8)。"""
-    H, W = grid.shape
-    score_map = np.zeros_like(grid, dtype=float)
-    if H == 0 or W == 0: return score_map * (grid == -1)
-
-    row_densities = np.sum(grid != -1, axis=1, dtype=float) / W
-    col_densities = np.sum(grid != -1, axis=0, dtype=float) / H
-    
-    empty_mask = (grid == -1)
-    for r in range(H):
-        is_row_ideal = (0.5 < row_densities[r] < 0.8)
-        for c in range(W):
-            if empty_mask[r, c] and is_row_ideal and (0.5 < col_densities[c] < 0.8):
-                score_map[r, c] = 1.0
-    return score_map
-
-def m5_bar_focus_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M5 長條聚焦向量: 如果某行或列已填數字超過一半，則該行或列的空格得分。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    if W > 0:
-        for r in range(H):
-            if np.sum(grid[r, :] != -1) > W // 2:
-                score[r, :] += 1.0
-    if H > 0:
-        for c in range(W):
-            if np.sum(grid[:, c] != -1) > H // 2:
-                score[:, c] += 1.0
-    return score * (grid == -1)
-
-def m6_neighbor_cycle_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M6 相鄰循環向量: 計算空格的已填鄰居比例。"""
-    H, W = grid.shape
-    score_map = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r, c] == -1:
-                filled_neighbors_count = 0
-                total_valid_neighbors = 0
-                for dr_dc in [(-1,0),(1,0),(0,-1),(0,1)]:
-                    nr, nc = r + dr_dc[0], c + dr_dc[1]
-                    if 0 <= nr < H and 0 <= nc < W:
-                        total_valid_neighbors += 1
-                        if grid[nr, nc] != -1:
-                            filled_neighbors_count += 1
-                if total_valid_neighbors > 0:
-                    score_map[r, c] = filled_neighbors_count / total_valid_neighbors
-    return score_map
-
-def m7_bisec_zone_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M7 二分區域向量: 評估行列填充數量的標準差，標準差小（分佈均勻）則分數高。"""
-    H, W = grid.shape
-    if H == 0 or W == 0:
-        return np.zeros_like(grid, dtype=float) * (grid == -1)
-    row_fill_counts = np.sum(grid != -1, axis=1)
-    col_fill_counts = np.sum(grid != -1, axis=0)
-    denominator = H + W if (H + W) > 0 else 1
-    std_rows = np.std(row_fill_counts) if row_fill_counts.size > 0 else 0
-    std_cols = np.std(col_fill_counts) if col_fill_counts.size > 0 else 0
-    combined_std_metric = (std_rows + std_cols) / denominator
-    score_val = 1.0 / (1.0 + combined_std_metric)
-    return np.full_like(grid, score_val, dtype=float) * (grid == -1)
-
-def m8_repeat_gap_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M8 重複間隔向量: 評估每行已填數字間隔的重複性（標準差相對於平均間隔）。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    if W == 0: return score * (grid == -1)
-    for i in range(H):
-        filled_indices = np.where(grid[i] != -1)[0]
-        if len(filled_indices) > 2: 
-            gaps = np.diff(filled_indices)
-            mean_gaps = np.mean(gaps) if gaps.size>0 else W
-            current_score = 1.0 - (np.std(gaps) / (mean_gaps if mean_gaps > 0 else W))
-            score[i, :] = max(0.0, current_score)
-        elif len(filled_indices) == 2: 
-            score[i, :] = 1.0
-    return score * (grid == -1)
-
-def m9_double_rule_overlap_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M9 雙規則重疊向量: 評估空格是否有潛力與左右鄰居形成連接。"""
-    H, W = grid.shape
-    score_map = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r, c] == -1:
-                if c > 0 and grid[r, c - 1] != -1: score_map[r, c] += 0.5
-                if c < W - 1 and grid[r, c + 1] != -1: score_map[r, c] += 0.5
-    return score_map
-
-def m10_seq_order_match_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M10 序列順序匹配向量: 如果某行已填數字為嚴格遞增或遞減，則該行空格得分。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    for i in range(H):
-        row_vals = grid[i][grid[i] != -1]
-        diffs = np.diff(row_vals) if row_vals.size>1 else np.array([])
-        if diffs.size>0 and (np.all(diffs>0) or np.all(diffs<0)):
-            score[i, :] = 1.0
-    return score * (grid == -1)
-
-def m11_block_match_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M11 區塊匹配向量: 將盤面分塊，空格分數基於其所在區塊的填充密度。"""
-    H, W = grid.shape
-    score_map = np.zeros_like(grid, dtype=float)
-    if H == 0 or W == 0: return score_map * (grid == -1)
-    blk_h = max(1, H//4 if H>=8 else 2)
-    blk_w = max(1, W//4 if W>=8 else 2)
-    for rs in range(0, H, blk_h):
-        for cs in range(0, W, blk_w):
-            re, ce = min(rs+blk_h, H), min(cs+blk_w, W)
-            block = grid[rs:re, cs:ce]
-            density = np.sum(block != -1)/block.size if block.size>0 else 0
-            for r in range(rs, re):
-                for c in range(cs, ce):
-                    if grid[r,c]==-1:
-                        score_map[r,c] = max(score_map[r,c], density)
-    return score_map * (grid == -1)
-
-def f2_row_rotate_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """F2 行旋轉向量: 評估上一行末尾與本行開頭的連接潛力。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    if W>0:
-        for r in range(1,H):
-            if grid[r-1,W-1]!=-1 and grid[r,0]==-1:
-                score[r,0]=1.0
-    return score * (grid == -1)
-
-def f3_col_rotate_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """F3 列旋轉向量: 評估上一列末尾與本列開頭的連接潛力。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    if H>0:
-        for c in range(1,W):
-            if grid[H-1,c-1]!=-1 and grid[0,c]==-1:
-                score[0,c]=1.0
-    return score * (grid == -1)
-
-def r2_rev_diff_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R2 反向差分向量: 如果某行已填數字為嚴格遞減，則該行空格得分。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    for i in range(H):
-        vals = grid[i][grid[i]!=-1]
-        diffs = np.diff(vals) if vals.size>1 else np.array([])
-        if diffs.size>0 and np.all(diffs<0):
-            score[i,:]=1.0
-    return score * (grid == -1)
-
-def r7_odd_even_dist_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R7 奇偶分佈向量: 評估盤面上奇偶數分佈的均衡性。"""
-    filled = grid[grid!=-1]
-    score_val=0.5
-    if filled.size>0:
-        nums=[]
-        for x in filled:
-            try: nums.append(int(x))
-            except: pass
-        if nums:
-            arr=np.array(nums)
-            o=np.sum(arr%2!=0); e=np.sum(arr%2==0); tot=o+e
-            if tot>0:
-                ir=abs(o-e)/tot
-                score_val = 1.0-ir if ir<0.3 else 0.1
-    return np.full_like(grid, score_val, dtype=float)*(grid==-1)
-
-def d3_pair_freq_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """D3 對頻率向量: 評估空格與其左右鄰居（絕對值為1,9,10）形成連接的潛力。"""
-    H, W = grid.shape
-    sm = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1:
-                if c<W-1 and grid[r,c+1]!=-1 and abs(grid[r,c+1]) in [1,9,10]: sm[r,c]+=0.5
-                if c>0 and grid[r,c-1]!=-1 and abs(grid[r,c-1]) in [1,9,10]: sm[r,c]+=0.5
-    return sm
-
-# --- Value-Aware Heuristics ---
-def h_arithmetic_progression_potential(grid: np.ndarray, value_domain_min: int, value_domain_max: int, **kwargs) -> np.ndarray:
-    """H_ARITHMETIC 等差數列潛力: 評估在空格填入數字後，形成等差數列的最大潛力。"""
-    H, W = grid.shape
-    sm = np.zeros_like(grid, dtype=float)
-    if value_domain_max<value_domain_min: return sm*(grid==-1)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1:
-                best=0.0
-                for v in range(value_domain_min, value_domain_max+1):
-                    sc=0.0
-                    # horizontal
-                    if c>0 and c<W-1 and grid[r,c-1]!=-1 and grid[r,c+1]!=-1:
-                        if v-grid[r,c-1]==grid[r,c+1]-v: sc+=1.0
-                    # vertical
-                    if r>0 and r<H-1 and grid[r-1,c]!=-1 and grid[r+1,c]!=-1:
-                        if v-grid[r-1,c]==grid[r+1,c]-v: sc+=1.0
-                    best=max(best, sc)
-                sm[r,c]=best
-    return sm*(grid==-1)
-
-def h_memory_based_score(grid: np.ndarray, value_domain_min: int, value_domain_max: int, **kwargs) -> np.ndarray:
-    """H_MEMORY 記憶啟發分數: 利用歷史記憶評估在空格填入不同值的最大成功調整後平均分。"""
-    H, W = grid.shape
-    sm = np.zeros_like(grid, dtype=float)
-    gid = _make_board_id(grid)
-    if value_domain_max<value_domain_min: return sm*(grid==-1)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1:
-                best=0.0
-                for v in range(value_domain_min, value_domain_max+1):
-                    avg,count = mem_score(gid, r,c,v)
-                    if count>0 and avg>best: best=avg
-                sm[r,c]=best
-    return sm*(grid==-1)
-
-# ────────────────────────── 新增 22 支模組 開始 ──────────────────────────
-
-# --- A 系列（鄰接與對稱邏輯模組）---
-def a1_horizontal_adj_pattern_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A1 橫向鄰格模式比對: 分析同一列中相鄰格子的數字模式，預測空格可能的數值。"""
-    H, W = grid.shape
-    score_map = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1:
-                left = grid[r, c-1] if c-1>=0 else -1
-                right = grid[r, c+1] if c+1<W else -1
-                if left!=-1 and right!=-1 and left==right:
-                    score_map[r,c] = 1.0
-                elif left!=-1 or right!=-1:
-                    score_map[r,c] = 0.5
-    return score_map
-
-def a3_diagonal_symmetry_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A3 斜對角對稱偵測: 檢測表格中斜對角線上的對稱性，推斷空格的填入數字。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1:
-                opp_r, opp_c = W-1-c, H-1-r
-                if 0<=opp_r<H and 0<=opp_c<W and grid[opp_c, opp_r]!=-1:
-                    score[r,c]=1.0
-    return score
-
-def a4_mirror_reflection_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A4 數字鏡像反射分析: 利用數字在表格中的鏡像對稱性，推測空格的可能數值。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    flip = np.fliplr(grid)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1 and flip[r,c]!=-1:
-                score[r,c]=1.0
-    return score
-
-def a7_multi_adj_fusion_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """A7 多重鄰接模式融合: 結合橫向、縱向、斜向多種鄰接模式進行綜合分析。"""
-    # 簡單平均 A1、A2、M3 三種原始鄰接度量
-    a1 = a1_horizontal_adj_pattern_vec(grid)
-    # 直向鄰接 (A1 轉行列)
-    a1_vert = a1_horizontal_adj_pattern_vec(grid.T).T
-    a3 = a3_diagonal_symmetry_vec(grid)
-    fused = (a1 + a1_vert + a3) / 3.0
-    return fused * (grid==-1)
-
-# --- M 系列（數列與規律模組）---
-def m12_multi_level_seq_pattern_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """M12 多階層數列規律分析: 分析遞增、遞減、交替等多層次規律。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        vals = grid[r][grid[r]!=-1]
-        if len(vals)>=3:
-            diffs = np.diff(vals)
-            inc = np.all(diffs>0)
-            dec = np.all(diffs<0)
-            alt = np.all(diffs[:-1]*diffs[1:]<0)
-            score[r,:] = float(inc or dec or alt)
-    return score * (grid==-1)
-
-# --- D 系列（記憶與反例模組）---
-def d1_history_mem_compare_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """D1 歷史填格記憶比對: 利用過去填格記錄，找出相似模式預測空格。"""
-    # 簡化: 對應 H_MEMORY
-    return h_memory_based_score(grid, kwargs.get('value_domain_min',1), kwargs.get('value_domain_max',1)) 
-
-def d2_counterexample_exclusion_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """D2 反例模式排除: 識別與當前模式不符的歷史案例，排除不可能數值。"""
-    H, W = grid.shape
-    sb = np.ones_like(grid, dtype=float)
-    # 完全排除空格 (0 分) 表示所有值都不行；實際邏輯需更多資料，這裡給定中性 0.5
-    sb[grid==-1] = 0.5
-    return sb*(grid==-1)
-
-def d4_memory_conflict_detect_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """D4 記憶衝突檢測: 檢測當前預測與歷史記憶衝突，避免錯誤填入。"""
-    H, W = grid.shape
-    score = np.ones_like(grid, dtype=float)*1.0
-    return score*(grid==-1)
-
-def d5_memory_weight_adjust_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """D5 記憶權重調整: 根據歷史記憶可靠性，調整預測中的權重。"""
-    return h_memory_based_score(grid, kwargs.get('value_domain_min',1), kwargs.get('value_domain_max',1))
-
-# --- F 系列（結構與頻率模組）---
-def f1_value_frequency_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """F1 數字出現頻率分析: 統計已填數字頻率，預測空格可能數值。"""
-    H, W = grid.shape
-    cnt = Counter(grid[grid!=-1])
-    total = sum(cnt.values()) or 1
-    rarity = {v:1 - (cnt[v]/total) for v in cnt}
-    # 簡化：相鄰罕見度平均
-    score = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1:
-                neigh = []
-                for dr in [-1,0,1]:
-                    for dc in [-1,0,1]:
-                        if dr==0 and dc==0: continue
-                        nr, nc = r+dr, c+dc
-                        if 0<=nr<H and 0<=nc<W and grid[nr,nc]!=-1:
-                            neigh.append(rarity.get(grid[nr,nc],0.0))
-                if neigh:
-                    score[r,c]=sum(neigh)/len(neigh)
-    return score
-
-def f4_block_structure_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """F4 區塊結構模式識別: 分析區塊中的填充結構，推斷空格數值。"""
-    # 簡化：沿用 m11 分塊密度
-    return m11_block_match_vec(grid)
-
-def f9_high_freq_predict_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """F9 高頻數字預測: 根據高頻數字，預測空格可能數值。"""
-    H, W = grid.shape
-    cnt = Counter(grid[grid!=-1])
-    if not cnt: return np.zeros_like(grid)
-    most = cnt.most_common(1)[0][0]
-    score = np.zeros_like(grid, dtype=float)
-    score[grid==-1] = 1.0
-    return score
-
-# --- R 系列（行列與區域模組）---
-def r1_rowcol_global_pattern_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R1 行列整體模式分析: 分析整行/列模式，預測空格。"""
-    return m2_seq_pattern_vec(grid)
-
-def r3_region_distribution_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R3 區域數字分布檢測: 檢測區域內分布情況，推斷空格。"""
-    # 簡化：同 F9
-    return f9_high_freq_predict_vec(grid)
-
-def r4_rowcol_symmetry_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R4 行列對稱性分析: 分析行與列之間的對稱性，預測空格。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    for r in range(H):
-        for c in range(W):
-            if grid[r,c]==-1 and grid[r,W-1-c]!=-1:
-                score[r,c]=1.0
-    return score
-
-def r6_region_internal_pattern_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R6 區域內部規律識別: 識別區域內數字規律，推斷空格。"""
-    # 簡化：同 m12
-    return m12_multi_level_seq_pattern_vec(grid)
-
-def r9_rowcol_cross_analysis_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """R9 行列交叉分析: 結合行與列資訊，進行交叉分析。"""
-    a = r1_rowcol_global_pattern_vec(grid)
-    b = r4_rowcol_symmetry_vec(grid)
-    fused = (a + b) / 2.0
-    return fused * (grid==-1)
-
-# --- P 系列（機率與模式模組）---
-def p3_probability_model_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """P3 機率模型預測: 利用簡單機率模型，預測空格可能數值。"""
-    # 簡化：均勻分配
-    return np.full_like(grid, 1.0, dtype=float) * (grid==-1)
-
-def p5_pattern_match_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """P5 模式匹配分析: 匹配表格中已知模式，推斷空格。"""
-    return a7_multi_adj_fusion_vec(grid)
-
-def p6_probability_adjust_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """P6 機率分布調整: 根據分布調整預測結果。"""
-    return f1_value_frequency_vec(grid)
-
-def p7_pattern_variation_detect_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """P7 模式變異檢測: 檢測數字模式的變異情況，預測空格。"""
-    return m8_repeat_gap_vec(grid)
-
-def p8_prob_pattern_fusion_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """P8 機率與模式融合分析: 結合機率與模式分析。"""
-    a = p3_probability_model_vec(grid)
-    b = p5_pattern_match_vec(grid)
-    fused = (a + b) / 2.0
-    return fused * (grid==-1)
-
-# --- L Series (熱區圖形邏輯) ---
-def l1_heatmap_diffusion_logic_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """L1 熱區轉換擴散邏輯: 已填儲存格為熱源，向周圍空格擴散。"""
-    if grid.size == 0: return np.zeros_like(grid, dtype=float)*(grid==-1)
-    kernel = np.array([[0.5,1.0,0.5],[1.0,0.0,1.0],[0.5,1.0,0.5]])
-    kernel /= kernel.sum()
-    src = (grid!=-1).astype(float)
-    diff = convolve2d(src, kernel, mode='same', boundary='symm')
-    return (diff/ diff.max())*(grid==-1) if diff.max()>0 else diff
-
-def l3_pattern_block_rotation_analysis_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
-    """L3 圖形分塊輪替分析: 檢查2x2區塊的旋轉對稱性或均一性。"""
-    H, W = grid.shape
-    score = np.zeros_like(grid, dtype=float)
-    if H<2 or W<2: return score*(grid==-1)
-    for r in range(H-1):
-        for c in range(W-1):
-            blk = (grid[r:r+2, c:c+2]!=-1).astype(int)
-            if np.array_equal(blk, np.rot90(blk)):
-                val=0.7
-            elif np.unique(blk).size==1:
-                val=1.0
-            else: val=0.1
-            for dr in [0,1]:
-                for dc in [0,1]:
-                    if grid[r+dr,c+dc]==-1:
-                        score[r+dr,c+dc]=max(score[r+dr,c+dc], val)
-    return score*(grid==-1)
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# F10 公平排序一致性檢查模組
-# -----------------------------------------------------------------------------
-def f10_consistency_gate_vec(
-    grid: np.ndarray,
-    module_scores: Dict[str, np.ndarray],
-    proposed_values: List[ProposedValue]
-) -> np.ndarray:
-    H, W = grid.shape
-    score_map = np.zeros((H, W), dtype=float)
-
-    # 1) 按 value 分組
-    groups = defaultdict(list)
-    for pv in proposed_values:
-        groups[pv.value].append(tuple(pv.pos))
-
-    # 2) 同組裡比「共鳴次數」
-    for positions in groups.values():
-        counts = [
-            sum(module_scores[n][r, c] > 0 for n in module_scores)
-            for (r, c) in positions
-        ]
-        mx = max(counts)
-        for (r, c), cnt in zip(positions, counts):
-            score_map[r, c] = 1.0 if cnt == mx else 0.5
-
-    return score_map
-# -----------------------------------------------------------------------------
-# 5. MODULE_FUNCS_VEC Registration (含新模組)
-# -----------------------------------------------------------------------------
-MODULE_FUNCS_VEC: Dict[str, Callable[..., np.ndarray]] = {
-    # A 系列
-    "A1": a1_horizontal_adj_pattern_vec,
-    "A2": a2_center_radial_vec,
-    "A3": a3_diagonal_symmetry_vec,
-    "A4": a4_mirror_reflection_vec,
-    "A5": a5_adj_density_vec,
-    "A6": a6_fixed_position_vec,
-    "A7": a7_multi_adj_fusion_vec,
-    "A8": a8_symmetry_vec,
-    # M 系列
-    "M1": m1_uni_gap_vec,
-    "M2": m2_seq_pattern_vec,
-    "M3": m3_diff_band_vec,
-    "M4": m4_biaxial_stat_vec,
-    "M5": m5_bar_focus_vec,
-    "M6": m6_neighbor_cycle_vec,
-    "M7": m7_bisec_zone_vec,
-    "M8": m8_repeat_gap_vec,
-    "M9": m9_double_rule_overlap_vec,
-    "M10": m10_seq_order_match_vec,
-    "M11": m11_block_match_vec,
-    "M12": m12_multi_level_seq_pattern_vec,
-    # D 系列
-    "D1": d1_history_mem_compare_vec,
-    "D2": d2_counterexample_exclusion_vec,
-    "D3": d3_pair_freq_vec,
-    "D4": d4_memory_conflict_detect_vec,
-    "D5": d5_memory_weight_adjust_vec,
-    # F 系列
-    "F1": f1_value_frequency_vec,
-    "F2": f2_row_rotate_vec,
-    "F3": f3_col_rotate_vec,
-    "F4": f4_block_structure_vec,
-    "F5": f5_row_density_stats_vec,
-    "F6": f6_col_density_stats_vec,
-    "F7": f7_horizontal_value_variance_vec,
-    "F8": f8_vertical_value_variance_vec,
-    "F9": f9_high_freq_predict_vec,
-    # R 系列
-    "R1": r1_rowcol_global_pattern_vec,
-    "R2": r2_rev_diff_vec,
-    "R3": r3_region_distribution_vec,
-    "R4": r4_rowcol_symmetry_vec,
-    "R5": r5_appearance_order_stats_vec,
-    "R6": r6_region_internal_pattern_vec,
-    "R7": r7_odd_even_dist_vec,
-    "R8": r8_frequency_weighted_integration_vec,
-    "R9": r9_rowcol_cross_analysis_vec,
-    # P 系列
-    "P1": p1_similar_memory_comparison_vec,
-    "P2": p2_structural_feature_vector_matching_vec,
-    "P3": p3_probability_model_vec,
-    "P4": p4_local_structure_residual_analysis_vec,
-    "P5": p5_pattern_match_vec,
-    "P6": p6_probability_adjust_vec,
-    "P7": p7_pattern_variation_detect_vec,
-    "P8": p8_prob_pattern_fusion_vec,
-    # Value-Aware Heuristics
-    "H_ARITHMETIC": h_arithmetic_progression_potential,
-    "H_MEMORY": h_memory_based_score,
-    # L 系列
-    "L1": l1_heatmap_diffusion_logic_vec,
-    "L3": l3_pattern_block_rotation_analysis_vec,
-+    # F10 排序一致性檢查
-+    "F10": f10_consistency_gate_vec,
+MODULE_CONTRIBUTION_WEIGHTS_PATH = os.path.join(BASE_DIR, "module_contribution_weights.json")
+LOCAL_HISTORICAL_MEMORY_PATH = os.path.join(BASE_DIR, "local_historical_memory.json")
+
+# --- Global Configuration for Weights ---
+# Default module contribution weights (used if file not found or key missing)
+DEFAULT_MODULE_CONTRIBUTION_WEIGHTS: Dict[str, float] = {
+    "M1_BaseScore": 1.0,
+    "M2_VectorAP": 1.0, # Increased default weight for implemented module
+    "M3_VectorGP": 0.7,
+    "M4_SymmetryAxial": 0.6,
+    "M5_SegmentDiff": 0.5,
+    "M6_Historical": 1.2,
+    "M10_BridgeChain": 0.7,
+    "M11_GridLinearGrowth": 0.7,
+    "M14_SymmetryFill": 0.6,
+    "M17_CenterCompletion": 0.7,
+    "M21_EndSegmentMean": 0.6,
+    "M6_MemorySimilarity": 1.0,
 }
 
+# Current module contribution weights (loaded from file or defaults)
+CURRENT_MODULE_CONTRIBUTION_WEIGHTS: Dict[str, float] = {}
 
-# -----------------------------------------------------------------------------
-# -----------------------------------------------------------------------------
-# 6. Combined score function with Normalization and Fair Mode (MODIFIED)
-# -----------------------------------------------------------------------------
-def tensor_flow_score_vec_all(
-    grid: np.ndarray,
-    proposed_values: List[ProposedValue], # Added proposed_values to match definition
-    value_domain_min: int,
-    value_domain_max: int,
-    fair_mode: bool = False,
-    min_weight_floor: float = DEFAULT_MIN_WEIGHT_FLOOR,
-) -> np.ndarray:
-    """
-    計算所有啟發式模組的加權總分。
-    在 'fair_mode' 下，各模組結果先做 min-max 歸一，並應用最低權重下限。
-    修改：當 fair_mode 下模組輸出平坦時，其歸一化貢獻設為 0.0，避免引入統一的0.5層。
-    最後對累積分數做全局 min-max 歸一並返回。
-    """
-    if grid.ndim != 2:
-        logger.error("輸入的 grid 必須是二維陣列，返回零分圖。")
-        # Ensure the return shape matches expected output even with error
-        return np.zeros_like(grid, dtype=float) if grid.size > 0 else np.array([[]], dtype=float)
-    if grid.size == 0:
-        # Consistent return for empty grid
-        return np.array([[]], dtype=float)
+DEFAULT_LOGIC_CODE_WEIGHT_IF_MISSING: float = 0.1
+DEFAULT_MODULE_CONTRIBUTION_WEIGHT_IF_MISSING: float = 0.5
 
-    H, W = grid.shape
-    total_score_map = np.zeros((H, W), dtype=float)
-    empty_cell_mask = (grid == -1)
-    
-    # 如果沒有空格，直接返回零分圖，避免後續計算出錯
-    if not empty_cell_mask.any():
-        logger.info("No empty cells to score.")
-        return total_score_map
-
-    module_scores: Dict[str, np.ndarray] = {}
-
-    # 1) 先跑除 F10 之外的所有模組
-    for name, func in MODULE_FUNCS_VEC.items():
-        if name == "F10":
-            continue
-
-        w = MODULE_WEIGHTS.get(name, 0.0)
-        # 如果權重為0且不是fair_mode (fair_mode下有min_weight_floor可能仍需計算)
-        if w == 0.0 and not fair_mode: 
-            # logger.debug(f"Skipping module {name} due to zero weight and not in fair_mode.")
-            continue
-        # 如果權重為0但在fair_mode下，但min_weight_floor也為0，則跳過
-        if w == 0.0 and fair_mode and min_weight_floor == 0.0:
-            # logger.debug(f"Skipping module {name} in fair_mode due to zero weight and zero min_weight_floor.")
-            continue
-
-
-        kwargs: Dict[str, Any] = {}
-        # 確保 H_ARITHMETIC 和 H_MEMORY 有正確的參數
-        if name in {"H_ARITHMETIC", "H_MEMORY", "D1", "D5"}: # D1, D5 也依賴這些
-            kwargs["value_domain_min"] = value_domain_min
-            kwargs["value_domain_max"] = value_domain_max
-            # logger.debug(f"Passing value_domain to {name}: min={value_domain_min}, max={value_domain_max}")
-
-
+# --- Weight Management Functions ---
+def load_module_contribution_weights() -> None:
+    global CURRENT_MODULE_CONTRIBUTION_WEIGHTS
+    if os.path.exists(MODULE_CONTRIBUTION_WEIGHTS_PATH):
         try:
-            raw = func(grid.copy(), **kwargs).astype(float)
+            with open(MODULE_CONTRIBUTION_WEIGHTS_PATH, "r", encoding="utf-8") as f:
+                loaded_weights = json.load(f)
+            # Merge with defaults: defaults provide baseline, file overrides
+            CURRENT_MODULE_CONTRIBUTION_WEIGHTS = {**DEFAULT_MODULE_CONTRIBUTION_WEIGHTS, **loaded_weights}
+            logger.info(f"Loaded module contribution weights from {MODULE_CONTRIBUTION_WEIGHTS_PATH}")
         except Exception as e:
-            logger.error(f"Error calling module {name}: {e}", exc_info=True)
-            continue # 跳過出錯的模組
-
-        # 確保 raw 的形狀與 grid 一致
-        if raw.shape != grid.shape:
-            logger.warning(f"Module {name} output shape {raw.shape} mismatch with grid shape {grid.shape}. Skipping.")
-            continue
-
-        vals = raw[empty_cell_mask]
-
-        # 如果沒有空格的分數 (vals為空)，則此模組對空格無貢獻
-        if vals.size == 0:
-            # logger.debug(f"Module {name} produced no scores for empty cells.")
-            module_scores[name] = np.zeros_like(grid, dtype=float) # 記錄一個零分圖
-            continue
-
-        current_module_contribution_map = np.zeros_like(grid, dtype=float)
-
-        if fair_mode:
-            mn, mx = vals.min(), vals.max()
-            if mx > mn: # 有差異，正常歸一化
-                norm_vals = (vals - mn) / (mx - mn)
-            else: # 分數平坦 (mx <= mn)，不應貢獻統一的0.5，改為0.0
-                # logger.info(f"Module {name} in fair_mode has flat scores (min={mn}, max={mx}). Normalizing to 0.0 contribution.")
-                norm_vals = np.zeros_like(vals, dtype=float)
-            
-            # 應用權重 (權重本身或最低權重下限)
-            effective_weight = max(w, min_weight_floor)
-            cont_vals = norm_vals * effective_weight
-        else: # 非 fair_mode
-            cont_vals = vals * w
-
-        current_module_contribution_map[empty_cell_mask] = cont_vals
-        total_score_map += current_module_contribution_map
-        module_scores[name] = current_module_contribution_map # 儲存此模組的實際貢獻圖
-
-        # logger.info(f"Module {name} (W:{w:.2f}): RawMinMax({vals.min():.2f},{vals.max():.2f}), ContribMinMax({cont_vals.min():.2f},{cont_vals.max():.2f}) if vals.size > 0 else (0,0)")
-
-
-    # 2) 再跑 F10 並累加它的分數
-    f10_weight = MODULE_WEIGHTS.get("F10", 0.0)
-    if f10_weight > 0: # 只有權重大於0才執行F10
-        # logger.info(f"Running F10 module with weight {f10_weight}.")
-        if "F10" in MODULE_FUNCS_VEC:
-            try:
-                # F10需要module_scores，其中應包含之前模組的加權分數
-                # F10本身輸出的是一個0-1之間的map，然後再乘以F10的權重
-                f10_map_raw = MODULE_FUNCS_VEC["F10"](
-                    grid.copy(), # 傳遞 grid 的副本
-                    module_scores=module_scores, # 傳遞之前模組的貢獻圖
-                    proposed_values=proposed_values, # 傳遞 proposed_values
-                )
-                if f10_map_raw.shape != grid.shape:
-                     logger.warning(f"F10 output shape {f10_map_raw.shape} mismatch. Skipping F10.")
-                else:
-                    total_score_map += f10_map_raw * f10_weight
-                    # logger.info(f"F10 contribution added. Map MinMax ({f10_map_raw.min():.2f}, {f10_map_raw.max():.2f}) * W:{f10_weight:.2f}")
-            except Exception as e:
-                logger.error(f"執行 F10 時出錯：{e}", exc_info=True)
-        else:
-            logger.warning("F10 weight is > 0 but F10 function not found in MODULE_FUNCS_VEC.")
-    # else:
-        # logger.info("Skipping F10 module due to zero weight.")
-
-    # 调试：打印 raw 累积分数（未做全局归一）
-    # logger.info("Raw total_score_map before global normalization:\n" + format_data_as_table(total_score_map, generate_default_headers_if_numpy_2d_and_no_headers=True))
-    # print("👉 raw total_score_map (sum of all modules) before global normalization =\n", total_score_map)
-
-
-    # 3) 全局 Min–Max 归一，保留差异
-    # 只對空格的分數進行歸一化參考，然後應用到總圖
-    scores_on_empty_cells = total_score_map[empty_cell_mask]
-    
-    final_score_map = np.zeros_like(total_score_map, dtype=float)
-
-    if scores_on_empty_cells.size > 0:
-        min_val = scores_on_empty_cells.min()
-        max_val = scores_on_empty_cells.max()
-        eps = 1e-6 # 非常小的數，用於比較浮點數
-
-        if max_val - min_val > eps: # 確保分母不為零或太小
-            normalized_scores_on_empty = (scores_on_empty_cells - min_val) / (max_val - min_val)
-            final_score_map[empty_cell_mask] = normalized_scores_on_empty
-        elif scores_on_empty_cells.size > 0 : # 所有空格分數都一樣 (但至少有一個空格)
-            # 如果所有空格分數都一樣，可以都設為0.5 (表示中性) 或 1.0 (如果這是唯一選項)
-            # 設為0可能更符合預期，因為沒有差異。
-            # 但若只有一個空格，它應該是1.0
-            if scores_on_empty_cells.size == 1:
-                 final_score_map[empty_cell_mask] = 1.0
-            else:
-                 final_score_map[empty_cell_mask] = 0.0 # 如果多個空格分數一樣，表示無差異，設為0
-            # logger.info(f"All empty cells have same score ({max_val:.2f}) before global norm. Setting them to 0.0 (or 1.0 if single empty cell).")
-
-    # logger.info("Final score_map after global normalization for empty cells:\n" + format_data_as_table(final_score_map, generate_default_headers_if_numpy_2d_and_no_headers=True))
-    # print("✅ Final total_score_map after global normalization for empty cells =\n", final_score_map)
-
-    # 4) 回傳最終分數
-    return final_score_map
-
-
-# -----------------------------------------------------------------------------
-# 7. Pydantic models & CP-SAT solve step
-# -----------------------------------------------------------------------------
-class GridInput(BaseModel):
-    grid: List[List[int]] = Field(..., description="Current grid, -1 for empty")
-    num_to_place: int = Field(1, gt=0, description="How many cells to fill")
-    value_domain_min: int = Field(1, description="Min value for filling cells")
-    value_domain_max: int = Field(20, description="Max value for filling cells")
-    fair_mode: bool = Field(False, description="Enable fair mode for heuristic scoring (normalization + weight floor)")
-    min_weight_floor_override: Optional[float] = Field(None, ge=0, le=1, description="Override global min_weight_floor if in fair_mode. Default: " + str(DEFAULT_MIN_WEIGHT_FLOOR))
-
-    @validator("grid")
-    def check_grid_is_valid(cls, v_grid: List[List[int]]):
-        if not v_grid: raise ValueError("Grid cannot be empty list.")
-        if not isinstance(v_grid[0], list): raise ValueError("Grid must be a list of lists.")
-        first_row_len = len(v_grid[0])
-        if len(v_grid) == 1 and first_row_len == 0: return v_grid # Allow [[]]
-        if not all(len(row) == first_row_len for row in v_grid):
-            raise ValueError("Grid must be rectangular (all rows same length).")
-        return v_grid
-
-    @validator("value_domain_max")
-    def check_value_domain_max_ge_min(cls, v_max: int, values: Dict[str, Any]):
-        v_min = values.get("value_domain_min")
-        if v_min is not None and v_max < v_min:
-            raise ValueError("value_domain_max must be >= value_domain_min.")
-        return v_max
-
-class SolveStepResponse(BaseModel):
-    new_grid: List[List[int]]
-    chosen_cells: List[Tuple[int,int,int]]
-    solver_log: str
-    status: str
-    computed_scores_table: Optional[str] = None
-    meta_log_event_id: Optional[str] = None
-    active_fair_mode: bool 
-
-@app.post("/solve_step", response_model=SolveStepResponse)
-async def solve_step_endpoint(grid_input: GridInput, background_tasks: BackgroundTasks):
-    grid_np_original = np.array(grid_input.grid)
-    grid_np_current = grid_np_original.copy()
-    
-    H, W = grid_np_current.shape
-    empty_coords = list(zip(*np.where(grid_np_current == -1)))
-    num_req = grid_input.num_to_place
-    if not empty_coords:
-        return SolveStepResponse(new_grid=grid_np_current.tolist(), chosen_cells=[], solver_log="No empty cells.", status="NO_EMPTY", active_fair_mode=grid_input.fair_mode)
-    if num_req > len(empty_coords):
-        num_req = len(empty_coords)
-    if num_req == 0:
-        return SolveStepResponse(new_grid=grid_np_current.tolist(), chosen_cells=[], solver_log="Num to place is 0.", status="NO_ACTION", active_fair_mode=grid_input.fair_mode)
-
-    min_floor = grid_input.min_weight_floor_override if grid_input.min_weight_floor_override is not None else DEFAULT_MIN_WEIGHT_FLOOR
-    combined = await run_in_threadpool(tensor_flow_score_vec_all, grid_np_current.copy(), grid_input.value_domain_min, grid_input.value_domain_max, grid_input.fair_mode, min_floor)
-    raw_scores = [combined[r,c] for r,c in empty_coords]
-    scaled = [int(s*1000) for s in raw_scores]
-    mn, mx = (min(scaled), max(scaled)) if scaled else (0,1)
-    if mn==mx: mx=mn+1
-
-    table_log = format_data_as_table([[r,c, raw_scores[i], scaled[i]] for i,(r,c) in enumerate(empty_coords)],
-                                     headers_option=["Row","Col","EffScore","Scaled"], tablefmt="pipe")
-    model = cp_model.CpModel()
-    idx_vars = [model.NewIntVar(0,len(empty_coords)-1,f"idx_{i}") for i in range(num_req)]
-    val_vars = [model.NewIntVar(grid_input.value_domain_min, grid_input.value_domain_max, f"val_{i}") for i in range(num_req)]
-    if num_req>1:
-        model.AddAllDifferent(idx_vars)
-        model.AddAllDifferent(val_vars)
-    terms=[]
-    for i in range(num_req):
-        term = model.NewIntVar(mn,mx,f"term_{i}")
-        model.AddElement(idx_vars[i], scaled, term)
-        terms.append(term)
-    if terms: model.Maximize(sum(terms))
-    solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 10.0
-    st = solver.Solve(model)
-
-    final_grid = grid_np_current.copy()
-    actions=[]
-    log_msg=f"Status: {solver.StatusName(st)} (Fair={grid_input.fair_mode})\n"
-    if terms and st in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        log_msg+=f"Obj(scaled): {solver.ObjectiveValue()}\n"
-        for i in range(num_req):
-            sel = solver.Value(idx_vars[i])
-            r,c = empty_coords[sel]
-            v = solver.Value(val_vars[i])
-            final_grid[r,c]=v
-            actions.append((r,c,v))
-            update_memory(grid_np_original, r, c, v, raw_scores[sel], True)
-        background_tasks.add_task(_save_memory)
-        log_msg+="Decisions: "+str(actions)+"\n"
+            logger.error(f"Failed to load module contribution weights: {e}. Using defaults.", exc_info=True)
+            CURRENT_MODULE_CONTRIBUTION_WEIGHTS = DEFAULT_MODULE_CONTRIBUTION_WEIGHTS.copy()
     else:
-        log_msg+="No solution or no terms.\n"
-    log_msg+="\nScores Table:\n"+table_log
-    meta_event = {
-        "request_grid_id": _make_board_id(grid_np_original),
-        "fair_mode": grid_input.fair_mode,
-        "min_floor": min_floor if grid_input.fair_mode else None,
-        "num_req": grid_input.num_to_place,
-        "num_act": num_req,
-        "value_domain": [grid_input.value_domain_min, grid_input.value_domain_max],
-        "status": solver.StatusName(st),
-        "actions": actions,
-        "raw_scores": raw_scores,
-        "weights": MODULE_WEIGHTS.copy()
-    }
-    meta_logger.log_event(meta_event)
-    background_tasks.add_task(meta_logger.flush)
+        logger.info(f"Module contribution weights file not found at {MODULE_CONTRIBUTION_WEIGHTS_PATH}. Using defaults and creating file.")
+        CURRENT_MODULE_CONTRIBUTION_WEIGHTS = DEFAULT_MODULE_CONTRIBUTION_WEIGHTS.copy()
+        save_module_contribution_weights() # Create the file with defaults
 
-    return SolveStepResponse(
-        new_grid=final_grid.tolist(),
-        chosen_cells=actions,
-        solver_log=log_msg,
-        status=solver.StatusName(st),
-        computed_scores_table=table_log,
-        meta_log_event_id=meta_event["log_id"],
-        active_fair_mode=grid_input.fair_mode
+def save_module_contribution_weights() -> None:
+    try:
+        with open(MODULE_CONTRIBUTION_WEIGHTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(CURRENT_MODULE_CONTRIBUTION_WEIGHTS, f, indent=2, sort_keys=True)
+        logger.info(f"Saved module contribution weights to {MODULE_CONTRIBUTION_WEIGHTS_PATH}")
+    except Exception as e:
+        logger.error(f"Failed to save module contribution weights: {e}", exc_info=True)
+
+# Load weights at startup
+load_module_contribution_weights()
+
+# -----------------------------------------------------------------------------
+# 1. Pydantic Models for API Request/Response (Unchanged from previous)
+# -----------------------------------------------------------------------------
+class BoardInput(BaseModel):
+    new_card: List[Optional[int]] = Field(
+        ...,
+        description="一維列表，盤面內容 (null 代表遮蔽格)。Row-major order.",
+        example=[None, 2, None, 5, None, 6, 7, 8, None, 10, 11, None]
+    )
+    proposed_values: List[int] = Field(
+        ...,
+        description="要推理的目標數字列表。",
+        example=[3, 9]
+    )
+    cols: int = Field(
+        ...,
+        gt=0,
+        description="盤面的欄數，用於還原盤面形狀並推導行數。"
+    )
+    position_codes: Optional[List[str]] = Field(
+        default=None,
+        description="可選，每格代號列表，長度需等於 new_card。若不提供，系統將自動生成。"
+    )
+    logic_code_weights: Optional[Dict[str, float]] = Field(
+        default_factory=dict,
+        description="將邏輯代碼映射到其基礎權重的字典 (M1_BaseScore 的輸入)。"
+    )
+    active_modules: Optional[List[str]] = Field(
+        default=None,
+        description="要啟用的特定邏輯模組ID列表。若為None或空，則啟用所有已註冊模組。"
+    )
+    module_weights: Optional[Dict[str, float]] = Field( # User can override loaded/default weights per request
+        default=None,
+        description="各邏輯模組的貢獻權重。若提供，將覆蓋從文件加載的當前請求的權重。"
+    )
+    top_n_count: int = Field(
+        default=3,
+        gt=0,
+        description="每個提議數值返回的最佳位置數量上限。"
+    )
+    historical_api_endpoint: Optional[str] = Field(
+        default=None,
+        description="外部歷史數據API的端點URL (用於 M6_Historical)。"
     )
 
-@app.post("/analyze_scores")
-async def analyze_scores_endpoint(grid_input: GridInput):
-    grid_np = np.array(grid_input.grid)
-    if grid_np.size==0 and not(grid_input.grid and isinstance(grid_input.grid[0],list) and not grid_input.grid[0]):
-        return {"message":"Empty grid.","scores_table":"No data.","raw_score_map":[[]],"active_fair_mode":grid_input.fair_mode}
-    min_floor = grid_input.min_weight_floor_override if grid_input.min_weight_floor_override is not None else DEFAULT_MIN_WEIGHT_FLOOR
-    smap = await run_in_threadpool(tensor_flow_score_vec_all, grid_np.copy(), grid_input.value_domain_min, grid_input.value_domain_max, grid_input.fair_mode, min_floor)
-    empties = list(zip(*np.where(grid_np==-1)))
-    data = [[r,c,smap[r,c]] for r,c in empties]
-    tbl = format_data_as_table(data, headers_option=["Row","Col","Score"], tablefmt="pipe")
-    return {"message":"Scores computed","scores_table":tbl,"raw_score_map":smap.tolist(),"active_fair_mode":grid_input.fair_mode}
+    @validator('position_codes')
+    def validate_position_codes_length(cls, v, values):
+        if v is not None and 'new_card' in values:
+            if len(v) != len(values['new_card']):
+                raise ValueError("position_codes 長度必須與 new_card 長度一致。")
+        return v
 
-class FeedbackRequest(BaseModel):
-    meta_log_event_id: str = Field(..., description="Log event ID")
-    is_correct_overall: bool = Field(..., description="Good or not")
-    custom_notes: Optional[str] = None
+    @validator('cols')
+    def validate_cols_and_new_card_length(cls, v, values):
+        if 'new_card' in values and v > 0: # v is cols
+            if len(values['new_card']) > 0 and len(values['new_card']) % v != 0:
+                raise ValueError(f"new_card 的長度 ({len(values['new_card'])}) 必須能被 cols ({v}) 整除。")
+        return v
 
-@app.post("/feedback")
-async def feedback_endpoint(req: FeedbackRequest, background_tasks: BackgroundTasks):
-    fb = {
-        "feedback_for_event_id": req.meta_log_event_id,
-        "is_correct": req.is_correct_overall,
-        "custom_notes": req.custom_notes
-    }
-    meta_logger.log_event(fb)
-    background_tasks.add_task(meta_logger.flush)
-    logger.info(f"Feedback recorded for {req.meta_log_event_id}.")
-    return {"status":"feedback_recorded","meta_log_event_id":req.meta_log_event_id}
+class PositionScore(BaseModel):
+    position_code: str = Field(..., description="盤格的邏輯代碼。")
+    score: float = Field(..., description="該位置對於提議數值的綜合評分。")
+
+class ValuePrediction(BaseModel):
+    proposed_value: int = Field(..., description="提議的數值。")
+    top_n_positions: List[PositionScore] = Field(..., description="該數值最可能的Top-N位置及其評分。")
+
+class InferenceResponse(BaseModel):
+    predictions: List[ValuePrediction] = Field(..., description="所有提議數值的預測結果列表。")
+    processing_time_ms: Optional[float] = Field(default=None, description="處理請求耗時（毫秒）。")
+    warnings: Optional[List[str]] = Field(default=None, description="處理過程中的警告信息。")
+
+class ModuleInfo(BaseModel):
+    module_id: str
+    name: str
+    description: str
+
+# -----------------------------------------------------------------------------
+# 2. Internal Data Structures (Unchanged from previous)
+# -----------------------------------------------------------------------------
+class InternalBoardCell:
+    def __init__(self, row: int, col: int, logic_code: str, value: Optional[int], is_fixed: bool, base_score: float):
+        self.row = row
+        self.col = col
+        self.logic_code = logic_code
+        self.value = value
+        self.is_fixed = is_fixed
+        self.base_score = base_score
+
+class InternalBoardState:
+    def __init__(self, board_input: BoardInput):
+        self.source_input = board_input
+        self.rows: int
+        self.cols: int = board_input.cols
+        
+        if self.cols <= 0: self.rows = 0
+        elif not board_input.new_card: self.rows = 0
+        else:
+            if len(board_input.new_card) % self.cols != 0:
+                raise ValueError("InternalBoardState: new_card length not divisible by cols.")
+            self.rows = len(board_input.new_card) // self.cols
+
+        self.grid_1d: List[Optional[int]] = board_input.new_card
+        self.logic_codes_1d: List[str] = []
+        self.board: List[List[InternalBoardCell]] = []
+        self._initialize_board()
+
+    def _initialize_board(self):
+        if not self.grid_1d and self.cols > 0 and self.rows == 0:
+            self.logic_codes_1d = []; self.board = []; return
+
+        if self.source_input.position_codes:
+            if len(self.source_input.position_codes) != len(self.grid_1d):
+                 raise ValueError("Provided position_codes length does not match new_card length.")
+            self.logic_codes_1d = self.source_input.position_codes
+        else:
+            self.logic_codes_1d = self._generate_default_logic_codes(self.rows, self.cols)
+        
+        if self.grid_1d and len(self.logic_codes_1d) != len(self.grid_1d):
+             raise ValueError("Critical error in logic code and grid alignment.")
+
+        idx_1d = 0
+        for r in range(self.rows):
+            row_cells: List[InternalBoardCell] = []
+            for c in range(self.cols):
+                value = self.grid_1d[idx_1d] if self.grid_1d else None
+                logic_code = self.logic_codes_1d[idx_1d] if self.logic_codes_1d else f"ERR{r}{c}"
+                is_fixed = value is not None
+                
+                base_cell_score = (self.source_input.logic_code_weights.get(logic_code, DEFAULT_LOGIC_CODE_WEIGHT_IF_MISSING)
+                                   if self.source_input.logic_code_weights
+                                   else DEFAULT_LOGIC_CODE_WEIGHT_IF_MISSING)
+
+                cell_state = InternalBoardCell(r, c, logic_code, value, is_fixed, base_cell_score)
+                row_cells.append(cell_state)
+                idx_1d += 1
+            self.board.append(row_cells)
+
+    def _get_col_letter(self, n: int) -> str:
+        string = ""; temp_n = n
+        while temp_n >= 0:
+            string = chr(ord('A') + temp_n % 26) + string
+            temp_n = temp_n // 26 - 1
+        return string if string else ("A" if n==0 else "")
+
+    def _generate_default_logic_codes(self, num_rows: int, num_cols: int) -> List[str]:
+        codes = []
+        if num_rows == 0 or num_cols == 0: return []
+        for r_idx in range(num_rows):
+            for c_idx in range(num_cols):
+                codes.append(f"{self._get_col_letter(c_idx)}{r_idx + 1}")
+        return codes
+
+    def get_cell(self, row: int, col: int) -> Optional[InternalBoardCell]:
+        if 0 <= row < self.rows and 0 <= col < self.cols: return self.board[row][col]
+        return None
+
+    def get_board_id(self) -> str:
+        """Creates a unique identifier for the current board state (excluding proposed values)."""
+        # Simplified version inspired by user's _make_board_id
+        # Uses the 1D grid and dimensions for hashing.
+        # None is replaced with a special marker for hashing consistency.
+        # Ensure that the order of elements in grid_1d is fixed (row-major).
+        filled_part_tuple = tuple(val if val is not None else -999 for val in self.grid_1d)
+        grid_hash = hash((self.rows, self.cols, filled_part_tuple))
+        empty_count = self.grid_1d.count(None)
+        return f"{self.rows}x{self.cols}_empty{empty_count}_hash{grid_hash}"
+
+# -----------------------------------------------------------------------------
+# 3. Logic Module Framework (Strategy Pattern)
+# -----------------------------------------------------------------------------
+class LogicModule(ABC): # (Unchanged from previous)
+    def __init__(self, module_id: str, name: str, description: str):
+        self.module_id = module_id; self.name = name; self.description = description
+    @abstractmethod
+    def analyze(self, board_state: InternalBoardState, cell_to_evaluate: Tuple[int, int], proposed_value: int) -> float: pass
+    def get_info(self) -> ModuleInfo: return ModuleInfo(module_id=self.module_id, name=self.name, description=self.description)
+
+class M1_BaseScoreModule(LogicModule): # (Unchanged from previous)
+    def __init__(self): super().__init__("M1_BaseScore", "基礎位置權重模組", "...")
+    def analyze(self, board_state: InternalBoardState, cell_to_evaluate: Tuple[int, int], pv: int) -> float:
+        cell = board_state.get_cell(cell_to_evaluate[0], cell_to_evaluate[1])
+        return cell.base_score if cell else DEFAULT_LOGIC_CODE_WEIGHT_IF_MISSING
+
+class M2_VectorAPModule(LogicModule): # (Unchanged from previous, using the implemented version)
+    def __init__(self): super().__init__("M2_VectorAP", "等差向量推理", "判斷新值是否與周圍形成等差數列（橫、直、斜）。")
+    def _get_value_at(self, r: int, c: int, board_state: InternalBoardState) -> Optional[int]:
+        if 0 <= r < board_state.rows and 0 <= c < board_state.cols:
+            cell = board_state.board[r][c]
+            if cell and cell.is_fixed: return cell.value
+        return None
+    def _check_ap(self, Nums: List[Optional[int]]) -> bool:
+        actual_values = [v for v in Nums if v is not None]
+        if len(actual_values) < 3: return False
+        diff = actual_values[1] - actual_values[0]
+        for i in range(2, len(actual_values)):
+            if actual_values[i] - actual_values[i-1] != diff: return False
+        return True
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        r_eval, c_eval = cell_eval; max_ap_score = 0.0
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        score_map_bridge = {3: 0.7}; score_map_extend = {3: 0.6, 4: 0.85, 5: 1.0}
+        for dr, dc in directions:
+            val_m1 = self._get_value_at(r_eval - dr, c_eval - dc, board_state)
+            val_p1 = self._get_value_at(r_eval + dr, c_eval + dc, board_state)
+            if val_m1 is not None and val_p1 is not None:
+                if self._check_ap([val_m1, pv, val_p1]): max_ap_score = max(max_ap_score, score_map_bridge[3])
+            val_m2 = self._get_value_at(r_eval - 2*dr, c_eval - 2*dc, board_state)
+            if val_m2 is not None and val_m1 is not None:
+                if self._check_ap([val_m2, val_m1, pv]): max_ap_score = max(max_ap_score, score_map_extend[3])
+            val_p2 = self._get_value_at(r_eval + 2*dr, c_eval + 2*dc, board_state)
+            if val_p1 is not None and val_p2 is not None:
+                if self._check_ap([pv, val_p1, val_p2]): max_ap_score = max(max_ap_score, score_map_extend[3])
+            if val_m2 is not None and val_m1 is not None and val_p1 is not None:
+                if self._check_ap([val_m2, val_m1, pv, val_p1]): max_ap_score = max(max_ap_score, score_map_extend[4])
+            if val_m1 is not None and val_p1 is not None and val_p2 is not None:
+                if self._check_ap([val_m1, pv, val_p1, val_p2]): max_ap_score = max(max_ap_score, score_map_extend[4])
+            if val_m2 is not None and val_m1 is not None and val_p1 is not None and val_p2 is not None:
+                 if self._check_ap([val_m2, val_m1, pv, val_p1, val_p2]): max_ap_score = max(max_ap_score, score_map_extend[5])
+        logger.debug(f"M2_VectorAPModule for cell ({r_eval},{c_eval}), PV {pv}: final score={max_ap_score:.4f}")
+        return max_ap_score
+
+class M3_VectorGPModule(LogicModule):
+    def __init__(self): super().__init__("M3_VectorGP", "等比向量", "判斷新值是否與周圍形成等比數列")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. Algo ideas in user's file.")
+        return 0.3
+
+class M4_SymmetryAxialModule(LogicModule):
+    def __init__(self): super().__init__("M4_SymmetryAxial", "軸對稱性", "判斷盤面左右/上下/對角是否因新值更對稱")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. Algo ideas (a3,a4,a8_symmetry_vec) in user's file.")
+        return 0.3
+
+class M5_SegmentDiffModule(LogicModule):
+    def __init__(self): super().__init__("M5_SegmentDiff", "段差推理", "分析局部區塊的數值變化趨勢，一致性強加分")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. Algo ideas (m1,m2_seq_pattern_vec) in user's file.")
+        return 0.3
+
+class M6_HistoricalModule(LogicModule):
+    def __init__(self):
+        super().__init__("M6_Historical", "歷史記憶", "呼叫 API 或本地JSON查詢歷史卡片相似格")
+        self._local_memory_cache: Dict[str, Any] = {}
+        self._load_local_memory()
+
+    def _load_local_memory(self):
+        if os.path.exists(LOCAL_HISTORICAL_MEMORY_PATH):
+            try:
+                with open(LOCAL_HISTORICAL_MEMORY_PATH, "r", encoding="utf-8") as f:
+                    self._local_memory_cache = json.load(f)
+                logger.info(f"Loaded local historical memory from {LOCAL_HISTORICAL_MEMORY_PATH}")
+            except Exception as e:
+                logger.error(f"Failed to load local historical memory: {e}", exc_info=True)
+                self._local_memory_cache = {}
+        else:
+            logger.info(f"Local historical memory file not found at {LOCAL_HISTORICAL_MEMORY_PATH}. Will be empty.")
+            self._local_memory_cache = {}
+            # Optionally create an empty file:
+            # with open(LOCAL_HISTORICAL_MEMORY_PATH, "w", encoding="utf-8") as f: json.dump({}, f)
+
+    def analyze(self, board_state: InternalBoardState, cell_to_evaluate: Tuple[int, int], proposed_value: int) -> float:
+        r, c = cell_to_evaluate
+        api_endpoint = board_state.source_input.historical_api_endpoint
+        
+        if api_endpoint:
+            logger.debug(f"{self.module_id} @ ({r},{c}) for PV {proposed_value} - Placeholder for API call to {api_endpoint}")
+            # Actual API call logic (e.g., using httpx) would go here
+            # try:
+            #     response = httpx.post(api_endpoint, json={...})
+            #     return response.json().get("score", 0.5)
+            # except Exception as e:
+            #     logger.error(f"{self.module_id} API call failed: {e}")
+            #     return 0.2 # Low score on error
+            return 0.5  # Placeholder if API call is not implemented
+        else:
+            # Fallback to local JSON memory
+            board_id = board_state.get_board_id()
+            cell = board_state.get_cell(r, c)
+            if not cell: return 0.0 # Should not happen
+            
+            memory_key = f"{cell.logic_code}_{proposed_value}"
+            board_memory = self._local_memory_cache.get(board_id, {})
+            entry = board_memory.get(memory_key)
+
+            if entry and isinstance(entry, dict) and "score" in entry:
+                score = entry["score"]
+                count = entry.get("count", 1) # Assume count if not present
+                logger.debug(f"{self.module_id} @ ({r},{c}) for PV {proposed_value} - Found in local memory: score={score}, count={count} (BoardID: {board_id}, Key: {memory_key})")
+                return max(0.0, min(1.0, float(score))) # Ensure normalization
+            else:
+                logger.debug(f"{self.module_id} @ ({r},{c}) for PV {proposed_value} - Not found in local memory (BoardID: {board_id}, Key: {memory_key})")
+                return 0.4 # Neutral-low score if not in local memory
+
+# Placeholder modules from user's list (with hints to user's file)
+class M10_BridgeChainModule(LogicModule):
+    def __init__(self): super().__init__("M10_BridgeChain", "搭橋邏輯", "...")
+    def analyze(self, board_state: InternalBoardState, c_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({c_eval[0]},{c_eval[1]}) for PV {pv} - Placeholder. Consider adapting logic for bridging gaps.")
+        return 0.3
+# ... (Other placeholder modules M11, M14, M17, M21, M6_MemorySimilarity should be similarly updated with logging and comments) ...
+class M11_GridLinearGrowthModule(LogicModule):
+    def __init__(self): super().__init__("M11_GridLinearGrowth", "格位遞增", "檢查格位編號與值是否呈線性關係")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. Your file has 'M10_seq_order_match_vec' which is related to sequence order.")
+        return 0.3
+class M14_SymmetryFillModule(LogicModule):
+    def __init__(self): super().__init__("M14_SymmetryFill", "對稱填補", "對稱位置有數時預測缺值位置")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. Your file's a3, a4, a8 are related.")
+        return 0.3
+class M17_CenterCompletionModule(LogicModule):
+    def __init__(self): super().__init__("M17_CenterCompletion", "中央延伸", "中央已知數值向兩邊推理延伸數列")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder.")
+        return 0.3
+class M21_EndSegmentMeanModule(LogicModule):
+    def __init__(self): super().__init__("M21_EndSegmentMean", "行尾均差補格", "行尾/列尾的數列趨勢延伸補值")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. Your file's m1, m2, m8 are related to sequence/gap analysis.")
+        return 0.3
+class M6_MemorySimilarityModule(LogicModule):
+    def __init__(self): super().__init__("M6_MemorySimilarity", "本地樣本記憶", "根據已記錄的樣本卡片比對相似盤面來推補值")
+    def analyze(self, board_state: InternalBoardState, cell_eval: Tuple[int, int], pv: int) -> float:
+        logger.debug(f"{self.module_id} @ ({cell_eval[0]},{cell_eval[1]}) for PV {pv} - Placeholder. This could use similar local JSON memory as M6_Historical or your file's 'mem_score' logic.")
+        # This might be very similar to M6_Historical's local memory path if not distinguished.
+        # For now, let it be a placeholder. It could use a different JSON file or a different section in the same file.
+        return 0.3
+
+# -----------------------------------------------------------------------------
+# 4. Module Registration and Management (Unchanged from previous)
+# -----------------------------------------------------------------------------
+class ModuleRegistry:
+    def __init__(self):
+        self._modules: Dict[str, LogicModule] = {}; self._register_default_modules()
+    def _register_default_modules(self):
+        self.register_module(M1_BaseScoreModule()); self.register_module(M2_VectorAPModule())
+        self.register_module(M3_VectorGPModule()); self.register_module(M4_SymmetryAxialModule())
+        self.register_module(M5_SegmentDiffModule()); self.register_module(M6_HistoricalModule())
+        self.register_module(M10_BridgeChainModule()); self.register_module(M11_GridLinearGrowthModule())
+        self.register_module(M14_SymmetryFillModule()); self.register_module(M17_CenterCompletionModule())
+        self.register_module(M21_EndSegmentMeanModule()); self.register_module(M6_MemorySimilarityModule())
+    def register_module(self, module_instance: LogicModule):
+        if module_instance.module_id in self._modules: logger.warning(f"Module ID '{module_instance.module_id}' already registered.")
+        self._modules[module_instance.module_id] = module_instance
+    def get_module(self, module_id: str) -> Optional[LogicModule]: return self._modules.get(module_id)
+    def get_all_modules(self) -> List[LogicModule]: return list(self._modules.values())
+    def get_module_infos(self) -> List[ModuleInfo]: return [m.get_info() for m in self._modules.values()]
+
+module_registry = ModuleRegistry()
+
+# -----------------------------------------------------------------------------
+# 5. Inference Engine
+# -----------------------------------------------------------------------------
+class InferenceEngine: # Modified to use CURRENT_MODULE_CONTRIBUTION_WEIGHTS and request overrides
+    def __init__(self, registry: ModuleRegistry = Depends(lambda: module_registry)):
+        self.registry = registry
+
+    def run_inference(self, board_state: InternalBoardState) -> Tuple[List[ValuePrediction], List[str]]:
+        all_value_predictions: List[ValuePrediction] = []
+        warnings_log: List[str] = []
+        active_module_ids_input = board_state.source_input.active_modules
+        
+        active_logic_modules: List[LogicModule] = []
+        if active_module_ids_input is None or not active_module_ids_input:
+            active_logic_modules = self.registry.get_all_modules()
+            logger.info("No active_modules specified, using all registered modules.")
+        else:
+            for mod_id in active_module_ids_input:
+                module = self.registry.get_module(mod_id)
+                if module: active_logic_modules.append(module)
+                else: warnings_log.append(f"Requested active module ID '{mod_id}' not found.")
+            logger.info(f"Using specified active modules: {[m.module_id for m in active_logic_modules]}")
+        
+        is_only_m1_active_explicitly = (active_module_ids_input and "M1_BaseScore" in active_module_ids_input and len(active_module_ids_input) == 1)
+
+        if not active_logic_modules and not (is_only_m1_active_explicitly and board_state.source_input.logic_code_weights):
+            warnings_log.append("No effective logic modules selected or found. Inference results may be uniform or zero.")
+
+        # Use global weights as base, override with request-specific weights if provided
+        effective_module_contrib_weights = CURRENT_MODULE_CONTRIBUTION_WEIGHTS.copy()
+        if board_state.source_input.module_weights is not None: # Check for None explicitly
+            effective_module_contrib_weights.update(board_state.source_input.module_weights)
+            logger.info("Overriding global module contribution weights with request-specific weights.")
+
+        for proposed_val in board_state.source_input.proposed_values:
+            position_candidates: List[Tuple[InternalBoardCell, float]] = []
+            is_pv_on_board = any(c.value == proposed_val for r_list in board_state.board for c in r_list if c.is_fixed)
+            if is_pv_on_board:
+                warnings_log.append(f"Proposed value {proposed_val} is already on the board. Skipping.")
+                all_value_predictions.append(ValuePrediction(proposed_value=proposed_val, top_n_positions=[]))
+                continue
+
+            for r in range(board_state.rows):
+                for c_idx in range(board_state.cols):
+                    cell_state = board_state.get_cell(r, c_idx)
+                    if not cell_state or cell_state.is_fixed: continue
+                    numerator, denominator = 0.0, 0.0
+                    
+                    m1_module = self.registry.get_module("M1_BaseScore")
+                    is_m1_active = (active_module_ids_input is None or not active_module_ids_input or "M1_BaseScore" in active_module_ids_input)
+
+                    if m1_module and is_m1_active:
+                        raw_m1 = m1_module.analyze(board_state, (r,c_idx), proposed_val)
+                        norm_m1 = max(0.0, min(1.0, raw_m1))
+                        m1_w = effective_module_contrib_weights.get("M1_BaseScore", DEFAULT_MODULE_CONTRIBUTION_WEIGHT_IF_MISSING)
+                        numerator += norm_m1 * m1_w; denominator += m1_w
+                        logger.debug(f"Cell ({r},{c_idx})='{cell_state.logic_code}', PV {proposed_val}: M1_BaseScore score={norm_m1:.2f}, weight={m1_w:.2f}")
+
+                    for module_inst in active_logic_modules:
+                        if module_inst.module_id == "M1_BaseScore": continue
+                        raw_mod = module_inst.analyze(board_state, (r, c_idx), proposed_val)
+                        norm_mod = max(0.0, min(1.0, raw_mod))
+                        mod_w = effective_module_contrib_weights.get(module_inst.module_id, DEFAULT_MODULE_CONTRIBUTION_WEIGHT_IF_MISSING)
+                        numerator += norm_mod * mod_w; denominator += mod_w
+                        logger.debug(f"Cell({r},{c_idx})='{cell_state.logic_code}',PV {proposed_val}:{module_inst.module_id} score={norm_mod:.2f},weight={mod_w:.2f}")
+
+                    final_score = (numerator / denominator) if denominator > 0 else 0.0
+                    logger.info(f"Cell ({r},{c_idx})='{cell_state.logic_code}', PV {proposed_val}: Final Score = {final_score:.4f}")
+                    position_candidates.append((cell_state, final_score))
+
+            position_candidates.sort(key=lambda item: item[1], reverse=True)
+            top_n = [PositionScore(position_code=cs.logic_code, score=round(s, 4)) for cs, s in position_candidates[:board_state.source_input.top_n_count]]
+            all_value_predictions.append(ValuePrediction(proposed_value=proposed_val, top_n_positions=top_n))
+        return all_value_predictions, warnings_log
+
+# -----------------------------------------------------------------------------
+# 6. FastAPI Application Setup
+# -----------------------------------------------------------------------------
+app = FastAPI(title="可自適應盤面補格系統 V1.2", version="1.2.0", description="...", openapi_tags=[...]) # Details omitted for brevity
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+def get_inference_engine(): return InferenceEngine(module_registry)
+
+@app.post("/analyze", response_model=InferenceResponse, summary="...", tags=["Inference"])
+async def analyze_board(board_input: BoardInput = Body(...), engine: InferenceEngine = Depends(get_inference_engine)):
+    start_proc_time = time.perf_counter()
+    try: internal_board = InternalBoardState(board_input)
+    except ValueError as e: logger.error(f"Error init board: {e}"); raise HTTPException(status_code=422, detail=str(e))
+    if internal_board.rows == 0 and internal_board.cols > 0:
+        proc_time = round((time.perf_counter() - start_proc_time) * 1000, 2)
+        return InferenceResponse(predictions=[], processing_time_ms=proc_time, warnings=["Board has 0 cells."])
+    predictions, warnings = engine.run_inference(internal_board)
+    proc_time = round((time.perf_counter() - start_proc_time) * 1000, 2)
+    return InferenceResponse(predictions=predictions, processing_time_ms=proc_time, warnings=warnings if warnings else None)
+
+@app.get("/config/logic_modules", response_model=List[ModuleInfo], summary="...", tags=["Configuration"])
+async def get_available_logic_modules(registry: ModuleRegistry = Depends(lambda: module_registry)): return registry.get_module_infos()
+
+@app.get("/config/module_weights", response_model=Dict[str, float], summary="獲取當前模組貢獻權重", tags=["Configuration"])
+async def get_current_module_weights():
+    """返回當前服務端加載的模組貢獻權重。"""
+    return CURRENT_MODULE_CONTRIBUTION_WEIGHTS
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    logger.info("Shutting down: saving memory, logs, weights")
-    _save_memory()
-    meta_logger.flush()
-    _save_module_weights()
+    logger.info("Shutting down: saving module contribution weights...")
+    save_module_contribution_weights()
+    # Note: Local historical memory is read-only for now, so no save needed on shutdown for it.
+    # If it were updated, it would be saved elsewhere (e.g., after specific operations or via a feedback mechanism).
 
+# -----------------------------------------------------------------------------
+# 7. Main execution for local development & Test Case (Unchanged from previous)
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
+    # --- Test Case for M2_VectorAPModule (and now checks M6 local memory fallback) ---
+    print("--- Running M2_VectorAPModule & M6_Historical (Local Mem) Test Case ---")
+    
+    # Create a dummy local_historical_memory.json for testing M6 fallback
+    dummy_local_mem = {
+        "4x5_empty15_hash-1234567890": { # Replace with actual hash if known, or generate one
+            "A2_3": {"score": 0.9, "count": 5}, # High score for A2 with value 3 on this board
+            "B1_8": {"score": 0.75, "count": 2}
+        }
+    }
+    # Create a board_id for our test_card_data to use in dummy_local_mem
+    # For simplicity, we'll manually construct a plausible one. In real use, InternalBoardState.get_board_id() would be used.
+    # Our test_card_data has 15 empty cells in a 4x5 grid.
+    # Hash depends on content, let's use a placeholder string.
+    test_board_id_placeholder = "4x5_empty15_hashSAMPLE" # You'd generate this properly from test_card_data
+
+    dummy_local_mem[test_board_id_placeholder] = {
+         "A2_3": {"score": 0.92, "count": 3}, # Test score for M6 local memory
+    }
+
+    try:
+        with open(LOCAL_HISTORICAL_MEMORY_PATH, "w", encoding="utf-8") as f_mem:
+            json.dump(dummy_local_mem, f_mem, indent=2)
+        logger.info(f"Created dummy local historical memory at {LOCAL_HISTORICAL_MEMORY_PATH} for test.")
+    except Exception as e:
+        logger.error(f"Could not create dummy local memory for test: {e}")
+
+
+    test_card_data = [1, None, 5, None, None, None, 4, None, None, None, None, None, 7, None, 13, None, None, None, None, None]
+    test_cols = 5
+    test_logic_code_weights = {"A1": 0.5, "A2": 0.8, "A3": 0.5, "B2": 0.5, "C3": 0.5, "C5": 0.5}
+
+    test_board_input_m2 = BoardInput(
+        new_card=test_card_data, proposed_values=[3], cols=test_cols,
+        logic_code_weights=test_logic_code_weights,
+        active_modules=["M1_BaseScore", "M2_VectorAP"],
+        module_weights={"M1_BaseScore": 1.0, "M2_VectorAP": 1.0}
+    )
+    test_board_input_m6_local = BoardInput(
+        new_card=test_card_data, proposed_values=[3], cols=test_cols,
+        logic_code_weights=test_logic_code_weights, # Need this for M1
+        active_modules=["M1_BaseScore", "M6_Historical"], # Test M6 local fallback
+        module_weights={"M1_BaseScore": 0.2, "M6_Historical": 1.0}, # Give M6 more weight here
+        historical_api_endpoint=None # Ensure local memory is used
+    )
+    
+    try:
+        # Test M2
+        print("\n--- Testing M2_VectorAP Module Logic ---")
+        test_internal_board_m2 = InternalBoardState(test_board_input_m2)
+        m2_module_instance = module_registry.get_module("M2_VectorAP")
+        cell_to_eval_coords = (0, 1); pv_to_test = 3
+        print(f"Board ID for M2 test: {test_internal_board_m2.get_board_id()} (Note: this might differ from placeholder if content hash changes)")
+        if m2_module_instance:
+            m2_score = m2_module_instance.analyze(test_internal_board_m2, cell_to_eval_coords, pv_to_test)
+            print(f"M2_VectorAPModule score for A2 with PV={pv_to_test}: {m2_score:.4f} (Expected around 0.7)")
+        
+        # Test M6 Local Memory Fallback
+        print("\n--- Testing M6_Historical Module (Local Memory Fallback) ---")
+        test_internal_board_m6 = InternalBoardState(test_board_input_m6_local)
+        # IMPORTANT: To match the dummy_local_mem key, we need the *exact* board_id.
+        # Let's overwrite the generated one with our placeholder for this specific test.
+        # This is a hack for testing; in reality, the board_id would be consistently generated.
+        original_board_id_m6 = test_internal_board_m6.get_board_id()
+        print(f"Generated Board ID for M6 test: {original_board_id_m6}")
+        print(f"Manually created local_historical_memory.json uses key: {test_board_id_placeholder}")
+        print("To make test work, M6 will look for this key in the dummy JSON.")
+        
+        # Hack: We cannot easily change the board_id *inside* InternalBoardState after creation.
+        # For a robust test, the dummy_local_mem should use the *actual* generated board_id.
+        # Let's log what the actual ID is, and assume the dummy file was created with it.
+        # For this run, we will simulate M6 looking up the pre-set key from dummy_local_mem.
+        
+        # Re-create dummy_local_mem with the ACTUAL board_id generated by this test run
+        actual_test_board_id = test_internal_board_m6.get_board_id()
+        dummy_local_mem_corrected = {
+            actual_test_board_id: { # Use the actual generated board_id
+                 "A2_3": {"score": 0.92, "count": 3}, 
+            }
+        }
+        with open(LOCAL_HISTORICAL_MEMORY_PATH, "w", encoding="utf-8") as f_mem_corr:
+            json.dump(dummy_local_mem_corrected, f_mem_corr, indent=2)
+        logger.info(f"Re-created dummy local historical memory with actual board_id: {actual_test_board_id}")
+
+
+        m6_module_instance = module_registry.get_module("M6_Historical")
+        if m6_module_instance and isinstance(m6_module_instance, M6_HistoricalModule):
+            m6_module_instance._load_local_memory() # Ensure it re-reads the corrected dummy file
+            m6_score = m6_module_instance.analyze(test_internal_board_m6, cell_to_eval_coords, pv_to_test)
+            print(f"M6_Historical (local) score for A2 with PV={pv_to_test}: {m6_score:.4f} (Expected from dummy file: 0.92)")
+
+        # Test full inference engine with M6 local
+        print("\n--- Running Inference Engine with Test Case (M1 & M6 local active) ---")
+        engine = InferenceEngine(module_registry)
+        predictions_test_m6, warnings_test_m6 = engine.run_inference(test_internal_board_m6)
+        for pred in predictions_test_m6:
+            print(f"Proposed Value: {pred.proposed_value}")
+            for pos_score in pred.top_n_positions:
+                print(f"  - Position: {pos_score.position_code}, Score: {pos_score.score}")
+        if warnings_test_m6: print(f"Warnings: {warnings_test_m6}")
+
+    except ValueError as e: print(f"Error during test case setup: {e}")
+    except Exception as e: print(f"Unexpected error: {e}"); import traceback; traceback.print_exc()
+
+    print("\n--- Starting Uvicorn server for API ---")
     import uvicorn
-    logger.info("Running FastAPI server.")
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=8000)
+
