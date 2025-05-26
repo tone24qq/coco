@@ -1,21 +1,17 @@
 # ------------------- dependencies -------------------
 # pip install fastapi uvicorn ortools tabulate numpy scipy
 
-import json
 import os
-import time
+import json
 import logging
 import uuid
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, validator, Field
-from typing import List, Dict, Tuple, Callable, Any, Optional
 import numpy as np
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from typing import List, Dict
+from collections import Counter, defaultdict
 from ortools.sat.python import cp_model
 from tabulate import tabulate
-from collections import Counter
-from scipy.signal import convolve2d # For L1 heatmap diffusion
-
+from scipy.signal import convolve2d  # For L1 heatmap diffusion
 
 from typing import Dict, List
 from collections import defaultdict
@@ -26,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d - %(message)s"
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__
 
 # --- File paths ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -826,6 +822,7 @@ MODULE_FUNCS_VEC: Dict[str, Callable[..., np.ndarray]] = {
 +    "F10": f10_consistency_gate_vec,
 }
 
+
 # -----------------------------------------------------------------------------
 # 6. Combined score function with Normalization and Fair Mode
 # -----------------------------------------------------------------------------
@@ -847,55 +844,52 @@ def tensor_flow_score_vec_all(
         return np.array([[]], dtype=float) if grid.ndim == 2 else np.array([], dtype=float)
 
     total_score_map = np.zeros(grid.shape, dtype=float)
-    domain_aware_heuristic_names = {"H_ARITHMETIC", "H_MEMORY"}
-    empty_cell_mask = (grid == -1) # Cache this mask
+    empty_cell_mask = (grid == -1)  # Cache this mask
+    module_scores: Dict[str, np.ndarray] = {}
 
-    # --- F10 整合後的 scoring 流程 ---
-module_scores: Dict[str, np.ndarray] = {}
+    # 1) 先跑除 F10 之外的所有模組
+    for name, func in MODULE_FUNCS_VEC.items():
+        if name == "F10":
+            continue
 
-# 1) 先跑除 F10 之外的所有模組
-for name, heuristic_func in MODULE_FUNCS_VEC.items():
-    if name == "F10":
-        continue
+        w = MODULE_WEIGHTS.get(name, 0.0)
+        if w == 0.0 and not fair_mode:
+            continue
 
-    w = MODULE_WEIGHTS.get(name, 0.0)
-    if w == 0.0 and not fair_mode:
-        continue
+        kwargs = {}
+        if name in {"H_ARITHMETIC", "H_MEMORY"}:
+            kwargs['value_domain_min'] = value_domain_min
+            kwargs['value_domain_max'] = value_domain_max
 
-    kwargs_for_func = {}
-    if name in {"H_ARITHMETIC", "H_MEMORY"}:
-        kwargs_for_func['value_domain_min'] = value_domain_min
-        kwargs_for_func['value_domain_max'] = value_domain_max
+        raw = func(grid.copy(), **kwargs).astype(float)
+        relevant = raw[empty_cell_mask]
 
-    raw_map = heuristic_func(grid.copy(), **kwargs_for_func).astype(float)
-    relevant = raw_map[empty_cell_mask]
+        if fair_mode:
+            mn, mx = (relevant.min(), relevant.max()) if relevant.size > 0 else (0, 1)
+            norm = ((relevant - mn) / (mx - mn)) if mx > mn else np.full_like(relevant, 0.5)
+            cont = norm * max(w, min_weight_floor)
+        else:
+            cont = relevant * w
 
-    if fair_mode:
-        mn, mx = (relevant.min(), relevant.max()) if relevant.size > 0 else (0, 1)
-        norm = ((relevant - mn) / (mx - mn)) if mx > mn else np.full_like(relevant, 0.5)
-        cont = norm * max(w, min_weight_floor)
-    else:
-        cont = relevant * w
+        cm = np.zeros_like(grid, dtype=float)
+        cm[empty_cell_mask] = cont
+        total_score_map += cm
+        module_scores[name] = cm
 
-    cm = np.zeros_like(grid, dtype=float)
-    cm[empty_cell_mask] = cont
-    total_score_map += cm
-    module_scores[name] = cm
+    # 2) 再跑 F10 並累加它的分數
+    if MODULE_WEIGHTS.get("F10", 0.0) > 0:
+        try:
+            f10_map = MODULE_FUNCS_VEC["F10"](
+                grid,
+                module_scores=module_scores,
+                proposed_values=proposed_values,
+            )
+            total_score_map += f10_map * MODULE_WEIGHTS["F10"]
+        except Exception as e:
+            logger.error(f"執行 F10 時出錯: {e}", exc_info=True)
 
-# 2) 再跑 F10 並累加它的分數
-if MODULE_WEIGHTS.get("F10", 0.0) > 0:
-    try:
-        f10_map = MODULE_FUNCS_VEC["F10"](
-            grid,
-            module_scores=module_scores,
-            proposed_values=proposed_values,
-        )
-        total_score_map += f10_map * MODULE_WEIGHTS["F10"]
-    except Exception as e:
-        logger.error(f"執行 F10 時出錯: {e}", exc_info=True)
-
-# 3) 回傳最終分數
-return total_score_map
+    # 3) 回傳最終分數
+    return total_score_map
 
 # -----------------------------------------------------------------------------
 # 7. Pydantic models & CP-SAT solve step
