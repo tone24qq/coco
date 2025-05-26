@@ -410,7 +410,13 @@ async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends
         processing_time_ms=round(processing_duration_ms, 2), 
         warnings=warnings_list if warnings_list else None
     )
-
+@app.post("/analyze", include_in_schema=False)
+async def analyze_alias(
+    board: BoardInput = Body(...),
+    engine: InferenceEngine = Depends(get_engine)
+):
+    # 复用 infer 的逻辑
+    return await infer(board, engine)
 @app.get("/config/modules", response_model=List[ModuleInfo], summary="可用模块列表")
 def list_modules_info():
     console_debug_logger.debug("GET /config/modules request received.") # 调试日志
