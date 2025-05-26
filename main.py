@@ -723,10 +723,9 @@ def l3_pattern_block_rotation_analysis_vec(grid: np.ndarray, **kwargs) -> np.nda
                         score[r+dr,c+dc]=max(score[r+dr,c+dc], val)
     return score*(grid==-1)
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # F10 公平排序一致性檢查模組
 # -----------------------------------------------------------------------------
-def from collections import defaultdict
-
 def f10_consistency_gate_vec(
     grid: np.ndarray,
     module_scores: Dict[str, np.ndarray],
@@ -828,24 +827,27 @@ MODULE_FUNCS_VEC: Dict[str, Callable[..., np.ndarray]] = {
 # -----------------------------------------------------------------------------
 def tensor_flow_score_vec_all(
     grid: np.ndarray,
-    proposed_values: List[ProposedValue],  # ← 新增
-    value_domain_min: int, 
+    proposed_values: List[ProposedValue],
+    value_domain_min: int,
     value_domain_max: int,
-    fair_mode: bool = False, 
-    min_weight_floor: float = DEFAULT_MIN_WEIGHT_FLOOR 
+    fair_mode: bool = False,
+    min_weight_floor: float = DEFAULT_MIN_WEIGHT_FLOOR,
 ) -> np.ndarray:
     """
     計算所有啟發式模組的加權總分。
-    在 'fair_mode' 下，分數會進行歸一化，並應用最低權重下限。
+    在 'fair_mode' 下，各模組結果先做 min-max 歸一，並應用最低權重下限。
+    最後對累積分數做全局 min-max 歸一並返回。
     """
+    # 基本檢查
     if grid.ndim != 2:
-        logger.error("輸入的 grid 必須是二維陣列。返回零分圖。")
-        return np.zeros_like(grid, dtype=float) if isinstance(grid, np.ndarray) and grid.ndim == 2 else np.array([[]], dtype=float)
+        logger.error("輸入的 grid 必須是二維陣列，返回零分圖。")
+        return np.zeros_like(grid, dtype=float)
     if grid.size == 0:
-        return np.array([[]], dtype=float) if grid.ndim == 2 else np.array([], dtype=float)
+        return np.zeros_like(grid, dtype=float)
 
-    total_score_map = np.zeros(grid.shape, dtype=float)
-    empty_cell_mask = (grid == -1)  # Cache this mask
+    H, W = grid.shape
+    total_score_map = np.zeros((H, W), dtype=float)
+    empty_cell_mask = (grid == -1)
     module_scores: Dict[str, np.ndarray] = {}
 
     # 1) 先跑除 F10 之外的所有模組
@@ -857,20 +859,20 @@ def tensor_flow_score_vec_all(
         if w == 0.0 and not fair_mode:
             continue
 
-        kwargs = {}
+        kwargs: Dict[str, Any] = {}
         if name in {"H_ARITHMETIC", "H_MEMORY"}:
-            kwargs['value_domain_min'] = value_domain_min
-            kwargs['value_domain_max'] = value_domain_max
+            kwargs["value_domain_min"] = value_domain_min
+            kwargs["value_domain_max"] = value_domain_max
 
         raw = func(grid.copy(), **kwargs).astype(float)
-        relevant = raw[empty_cell_mask]
+        vals = raw[empty_cell_mask]
 
         if fair_mode:
-            mn, mx = (relevant.min(), relevant.max()) if relevant.size > 0 else (0, 1)
-            norm = ((relevant - mn) / (mx - mn)) if mx > mn else np.full_like(relevant, 0.5)
+            mn, mx = (vals.min(), vals.max()) if vals.size > 0 else (0.0, 1.0)
+            norm = (vals - mn) / (mx - mn) if mx > mn else np.full_like(vals, 0.5)
             cont = norm * max(w, min_weight_floor)
         else:
-            cont = relevant * w
+            cont = vals * w
 
         cm = np.zeros_like(grid, dtype=float)
         cm[empty_cell_mask] = cont
@@ -887,12 +889,12 @@ def tensor_flow_score_vec_all(
             )
             total_score_map += f10_map * MODULE_WEIGHTS["F10"]
         except Exception as e:
-            logger.error(f"執行 F10 時出錯: {e}", exc_info=True)
+            logger.error(f"執行 F10 時出錯：{e}", exc_info=True)
 
- # **在这里打印 raw 分数**  
+    # **调试：打印 raw 累积分数（未做全局归一）**
     print("👉 raw total_score_map =\n", total_score_map)
-    
-        # 3) 全局 Min–Max 归一，保留差异
+
+    # 3) 全局 Min–Max 归一，保留差异
     mn, mx = total_score_map.min(), total_score_map.max()
     eps = 1e-6
     if mx - mn > eps:
