@@ -162,7 +162,7 @@ MODULE_WEIGHTS: Dict[str, float] = {}
 def _load_module_weights() -> None:
     global MODULE_WEIGHTS
     defaults = {
-        "A2": 0.7, "A5": 0.8, "A6": 0.6, "A8": 0.5, "M1": 0.6, "M2": 0.8, "M3": 0.9,
+        "A2": 0.7, "A5": 0.8, "A6": 0.0, "A8": 0.5, "M1": 0.6, "M2": 0.8, "M3": 0.9,
         "M4": 0.5, "M5": 0.5, "M6": 0.5, "M7": 0.5, "M8": 0.5, "M9": 0.6, "M10": 0.5,
         "M11": 0.5, "F2": 0.5, "F3": 0.5, "R2": 0.5, "R7": 0.5, "D3": 0.7,
         "H_ARITHMETIC": 0.8, "H_MEMORY": 1.0,
