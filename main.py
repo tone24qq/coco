@@ -827,7 +827,8 @@ MODULE_FUNCS_VEC: Dict[str, Callable[..., np.ndarray]] = {
 # 6. Combined score function with Normalization and Fair Mode
 # -----------------------------------------------------------------------------
 def tensor_flow_score_vec_all(
-    grid: np.ndarray, 
+    grid: np.ndarray,
+    proposed_values: List[ProposedValue],  # ← 新增
     value_domain_min: int, 
     value_domain_max: int,
     fair_mode: bool = False, 
@@ -888,7 +889,18 @@ def tensor_flow_score_vec_all(
         except Exception as e:
             logger.error(f"執行 F10 時出錯: {e}", exc_info=True)
 
-    # 3) 回傳最終分數
+ # **在这里打印 raw 分数**  
+    print("👉 raw total_score_map =\n", total_score_map)
+    
+        # 3) 全局 Min–Max 归一，保留差异
+    mn, mx = total_score_map.min(), total_score_map.max()
+    eps = 1e-6
+    if mx - mn > eps:
+        total_score_map = (total_score_map - mn) / (mx - mn)
+    else:
+        total_score_map = np.zeros_like(total_score_map)
+
+    # 4) 回傳最終分數
     return total_score_map
 
 # -----------------------------------------------------------------------------
