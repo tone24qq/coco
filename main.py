@@ -1,101 +1,64 @@
+# main.py
+
 import logging
-from typing import List, Optional, Dict, Tuple, Any
-from abc import ABC, abstractmethod
+import math
 import time
 import os
 import json
+from typing import List, Optional, Dict, Tuple
+from abc import ABC, abstractmethod
 
-import numpy as np  # For vectorized operations
+import numpy as np
 from fastapi import FastAPI, HTTPException, Body, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
+from starlette.concurrency import run_in_threadpool
 
-# --- Logging configuration ---
+# ──────────────────────────────────────────────────────────────────────────────
+# 0. Logging & Config
+# ──────────────────────────────────────────────────────────────────────────────
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------------------------------
-# 0. Configuration & File Paths
-# -----------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODULE_CONTRIBUTION_WEIGHTS_PATH = os.path.join(BASE_DIR, "module_contribution_weights.json")
-LOCAL_HISTORICAL_MEMORY_PATH = os.path.join(BASE_DIR, "local_historical_memory.json")
+# ──────────────────────────────────────────────────────────────────────────────
+# 1. Pydantic 模型定义
+# ──────────────────────────────────────────────────────────────────────────────
 
-# --- Global Configuration for Weights ---
-DEFAULT_MODULE_CONTRIBUTION_WEIGHTS: Dict[str, float] = {
-    "M1_BaseScore": 1.0,
-    "M2_VectorAP": 1.0,
-    "M3_VectorGP": 0.7,
-    "M4_SymmetryAxial": 0.6,
-    "M5_SegmentDiff": 0.5,
-    "M6_Historical": 1.2,
-    "M10_BridgeChain": 0.7,
-    "M11_GridLinearGrowth": 0.7,
-    "M14_SymmetryFill": 0.6,
-    "M17_CenterCompletion": 0.7,
-    "M21_EndSegmentMean": 0.6,
-    "M6_MemorySimilarity": 1.0,
-}
-CURRENT_MODULE_CONTRIBUTION_WEIGHTS: Dict[str, float] = {}
-DEFAULT_LOGIC_CODE_WEIGHT_IF_MISSING = 0.1
-DEFAULT_MODULE_CONTRIBUTION_WEIGHT_IF_MISSING = 0.5
-
-def load_module_contribution_weights() -> None:
-    global CURRENT_MODULE_CONTRIBUTION_WEIGHTS
-    if os.path.exists(MODULE_CONTRIBUTION_WEIGHTS_PATH):
-        try:
-            with open(MODULE_CONTRIBUTION_WEIGHTS_PATH, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            CURRENT_MODULE_CONTRIBUTION_WEIGHTS = {**DEFAULT_MODULE_CONTRIBUTION_WEIGHTS, **loaded}
-            logger.info("Loaded module weights from file.")
-        except Exception:
-            logger.exception("Failed loading module weights, using defaults.")
-            CURRENT_MODULE_CONTRIBUTION_WEIGHTS = DEFAULT_MODULE_CONTRIBUTION_WEIGHTS.copy()
-    else:
-        logger.info("Module weights file not found; creating with defaults.")
-        CURRENT_MODULE_CONTRIBUTION_WEIGHTS = DEFAULT_MODULE_CONTRIBUTION_WEIGHTS.copy()
-        save_module_contribution_weights()
-
-def save_module_contribution_weights() -> None:
-    try:
-        with open(MODULE_CONTRIBUTION_WEIGHTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(CURRENT_MODULE_CONTRIBUTION_WEIGHTS, f, indent=2, sort_keys=True)
-        logger.info("Saved module weights to file.")
-    except Exception:
-        logger.exception("Failed saving module weights.")
-
-load_module_contribution_weights()
-
-# -----------------------------------------------------------------------------
-# 1. Pydantic Models
-# -----------------------------------------------------------------------------
 class BoardInput(BaseModel):
-    new_card: List[Optional[int]] = Field(..., description="1D list row-major; None=masked")
-    proposed_values: List[int]
-    cols: int = Field(..., gt=0)
-    position_codes: Optional[List[str]] = None
-    logic_code_weights: Optional[Dict[str, float]] = Field(default_factory=dict)
-    active_modules: Optional[List[str]] = None
-    module_weights: Optional[Dict[str, float]] = None
-    top_n_count: int = Field(default=3, gt=0)
-    historical_api_endpoint: Optional[str] = None
+    rows: int = Field(..., gt=0, description="盘面行数")
+    cols: int = Field(..., gt=0, description="盘面列数")
+    cells: List[List[Optional[int]]] = Field(
+        ..., description="二维列表，None 表示空格"
+    )
+    logic_code_weights: Dict[str, float] = Field(
+        ..., description="逻辑代码的基础权重，如 {'A1':0.8, ...}"
+    )
+    proposed_values: List[int] = Field(
+        ..., description="要推理的目标数字列表"
+    )
+    active_modules: Optional[List[str]] = Field(
+        None, description="要启用的模块ID列表，None或空表示启用所有模块"
+    )
+    module_weights: Optional[Dict[str, float]] = Field(
+        None, description="模块贡献权重，覆盖全局设置"
+    )
+    top_n_count: int = Field(
+        3, gt=0, description="每个目标数字返回的Top-N数量"
+    )
 
-    @validator('position_codes')
-    def check_pos_codes(cls, v, values):
-        if v is not None and len(v) != len(values.get('new_card', [])):
-            raise ValueError("position_codes length must match new_card")
-        return v
-
-    @validator('cols')
-    def check_cols_divides(cls, v, values):
-        grid = values.get('new_card', [])
-        if grid and len(grid) % v != 0:
-            raise ValueError("new_card length must be divisible by cols")
+    @validator("cells")
+    def validate_cells_shape(cls, v, values):
+        rows = values.get("rows")
+        cols = values.get("cols")
+        if len(v) != rows or any(len(row) != cols for row in v):
+            raise ValueError(f"cells 应为 {rows}×{cols} 的列表")
         return v
 
 class PositionScore(BaseModel):
     position_code: str
     score: float
+    confidence: Optional[float] = None
 
 class ValuePrediction(BaseModel):
     proposed_value: int
@@ -103,276 +66,237 @@ class ValuePrediction(BaseModel):
 
 class InferenceResponse(BaseModel):
     predictions: List[ValuePrediction]
-    processing_time_ms: Optional[float]
-    warnings: Optional[List[str]]
+    processing_time_ms: Optional[float] = None
+    warnings: Optional[List[str]] = None
 
 class ModuleInfo(BaseModel):
     module_id: str
     name: str
     description: str
 
-# -----------------------------------------------------------------------------
-# 2. Internal Board Structures
-# -----------------------------------------------------------------------------
-class InternalBoardCell:
-    def __init__(self, row:int, col:int, logic_code:str, value:Optional[int], is_fixed:bool, base_score:float):
-        self.row, self.col = row, col
-        self.logic_code = logic_code
-        self.value = value
-        self.is_fixed = is_fixed
-        self.base_score = base_score
+# ──────────────────────────────────────────────────────────────────────────────
+# 2. 工具函数：逻辑代码生成
+# ──────────────────────────────────────────────────────────────────────────────
+
+def get_col_letter(n: int) -> str:
+    s = ""
+    while n >= 0:
+        s = chr(ord("A") + (n % 26)) + s
+        n = n // 26 - 1
+    return s
+
+def generate_logic_code(r: int, c: int) -> str:
+    return f"{get_col_letter(c)}{r+1}"
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 3. InternalBoardState：共享 NumPy 视图 + 假设查询
+# ──────────────────────────────────────────────────────────────────────────────
 
 class InternalBoardState:
-    def __init__(self, inp: BoardInput):
-        self.source_input = inp
-        self.cols = inp.cols
-        self.grid_1d = inp.new_card
-        self.rows = len(self.grid_1d) // self.cols if self.cols else 0
-        self.logic_codes_1d = inp.position_codes or self._generate_default_codes()
-        self.board: List[List[InternalBoardCell]] = []
-        self._build_board()
+    def __init__(self, src: BoardInput):
+        self.src = src
+        self.rows, self.cols = src.rows, src.cols
 
-    def _generate_default_codes(self) -> List[str]:
-        def col_letter(n):
-            s=""
-            while n>=0:
-                s=chr(ord('A')+n%26)+s
-                n=n//26-1
-            return s
-        L=[]
+        # 构建 float32 数组，NaN 表示空
+        arr = np.full((self.rows, self.cols), np.nan, dtype=np.float32)
         for r in range(self.rows):
             for c in range(self.cols):
-                L.append(f"{col_letter(c)}{r+1}")
-        return L
+                v = src.cells[r][c]
+                if v is not None:
+                    arr[r, c] = v
+        self._board = arr
+        # 固定格标记
+        self._fixed = ~np.isnan(arr)
+        # 已有数字集合
+        self.fixed_values = {v for row in src.cells for v in row if v is not None}
 
-    def _build_board(self):
-        idx=0
-        for r in range(self.rows):
-            row=[]
-            for c in range(self.cols):
-                val = self.grid_1d[idx]
-                code = self.logic_codes_1d[idx]
-                base = self.source_input.logic_code_weights.get(code, DEFAULT_LOGIC_CODE_WEIGHT_IF_MISSING)
-                cell = InternalBoardCell(r, c, code, val, val is not None, base)
-                row.append(cell)
-                idx+=1
-            self.board.append(row)
+        # 活跃模块集合
+        self.active_modules = set(src.active_modules or [])
 
-    def as_numpy(self) -> np.ndarray:
-        """Return a 2D float array with np.nan for masked."""
-        arr = np.full((self.rows, self.cols), np.nan, dtype=float)
-        for r in range(self.rows):
-            for c in range(self.cols):
-                v = self.board[r][c].value
-                arr[r, c] = float(v) if v is not None else np.nan
-        return arr
+    def is_fixed(self, r: int, c: int) -> bool:
+        return self._fixed[r, c]
 
-    def get_cell(self, r:int, c:int) -> InternalBoardCell:
-        return self.board[r][c]
+    def get_value(self, r: int, c: int, proposed: Optional[Tuple[int,int,int]] = None) -> float:
+        if proposed and (r, c) == (proposed[0], proposed[1]):
+            return float(proposed[2])
+        return self._board[r, c]
 
-    def get_board_id(self) -> str:
-        tup = tuple(-999 if v is None else v for v in self.grid_1d)
-        h = hash((self.rows,self.cols,tup))
-        empties = self.grid_1d.count(None)
-        return f"{self.rows}x{self.cols}_empty{empties}_hash{h}"
+    def logic_code(self, r: int, c: int) -> str:
+        return generate_logic_code(r, c)
 
-# -----------------------------------------------------------------------------
-# 3. Logic Module Framework
-# -----------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# 4. 模块注册机制
+# ──────────────────────────────────────────────────────────────────────────────
+
 class LogicModule(ABC):
-    def __init__(self, module_id:str, name:str, description:str):
-        self.module_id, self.name, self.description = module_id, name, description
+    module_id: str
+    name: str
+    description: str
 
     @abstractmethod
-    def analyze(self, board_state:InternalBoardState, cell:Tuple[int,int], pv:int) -> float: ...
+    def analyze(self, state: InternalBoardState, cell: Tuple[int,int], pv: int) -> float:
+        ...
 
-    def get_info(self) -> ModuleInfo:
-        return ModuleInfo(module_id=self.module_id, name=self.name, description=self.description)
+modules: Dict[str, LogicModule] = {}
 
+def register_module(cls):
+    inst = cls()
+    modules[inst.module_id] = inst
+    return cls
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 5. M1: 基础得分模块
+# ──────────────────────────────────────────────────────────────────────────────
+
+@register_module
 class M1_BaseScoreModule(LogicModule):
-    def __init__(self):
-        super().__init__("M1_BaseScore", "Base Score", "Uses logic_code_weights")
-    def analyze(self, bs, cell, pv):
-        c = bs.get_cell(*cell)
-        return c.base_score
+    module_id = "M1_BaseScore"
+    name = "基础位置权重"
+    description = "使用 logic_code_weights 提供的基础权重"
 
-class M2_VectorAPModule(LogicModule):
-    # unchanged...
-    ...
+    def analyze(self, state, cell, pv):
+        r, c = cell
+        code = state.logic_code(r, c)
+        return state.src.logic_code_weights.get(code, 0.1)
 
-class M3_VectorGPModule(LogicModule):
-    # unchanged...
-    ...
+# ──────────────────────────────────────────────────────────────────────────────
+# 6. M4: 轴对称模块
+# ──────────────────────────────────────────────────────────────────────────────
 
+@register_module
 class M4_SymmetryAxialModule(LogicModule):
-    def __init__(self):
-        super().__init__("M4_SymmetryAxial", "Axial Symmetry", "Checks symmetry across axes")
-    def analyze(self, bs:InternalBoardState, cell:Tuple[int,int], pv:int) -> float:
-        arr = bs.as_numpy()
-        r, c = cell
-        # propose value
-        arr[r, c] = pv
-        scores = []
-        # horizontal symmetry
-        mask = ~np.isnan(arr)
-        horiz = (arr == np.fliplr(arr))
-        scores.append(np.nanmean(horiz[mask & np.fliplr(mask)]))
-        # vertical
-        vert = (arr == np.flipud(arr))
-        scores.append(np.nanmean(vert[mask & np.flipud(mask)]))
-        # main diag
-        diag_flip = arr.T
-        mask_diag = mask.T
-        diag = (arr == diag_flip)
-        scores.append(np.nanmean(diag[mask & mask_diag]))
-        # final
-        return float(np.nanmax(scores))
+    module_id = "M4_SymmetryAxial"
+    name = "轴对称性"
+    description = "统计水平/垂直轴对称匹配率"
 
+    def analyze(self, state, cell, pv):
+        r, c = cell
+        match = 0; total = 0
+        # 水平
+        for col in range(state.cols):
+            v1 = state.get_value(r, col, (*cell, pv))
+            v2 = state.get_value(r, state.cols-1-col, (*cell, pv))
+            if not np.isnan(v1) and not np.isnan(v2):
+                match += (v1 == v2)
+                total += 1
+        # 垂直
+        for row in range(state.rows):
+            v1 = state.get_value(row, c, (*cell, pv))
+            v2 = state.get_value(state.rows-1-row, c, (*cell, pv))
+            if not np.isnan(v1) and not np.isnan(v2):
+                match += (v1 == v2)
+                total += 1
+        return float(match) / total if total > 0 else 0.0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 7. M5: 段差分析模块
+# ──────────────────────────────────────────────────────────────────────────────
+
+@register_module
 class M5_SegmentDiffModule(LogicModule):
-    def __init__(self):
-        super().__init__("M5_SegmentDiff", "Segment Diff", "Variance of differences in segments")
-    def analyze(self, bs:InternalBoardState, cell:Tuple[int,int], pv:int) -> float:
-        arr = bs.as_numpy()
+    module_id = "M5_SegmentDiff"
+    name = "段差分析"
+    description = "行/列方向 diff 方差倒数"
+
+    def analyze(self, state, cell, pv):
         r, c = cell
-        arr[r, c] = pv
-        best = 0.0
-        # directions: horizontal, vertical
-        for dr, dc in [(0,1),(1,0)]:
-            # collect along line
-            line = []
-            # go backward
-            i = -1
-            while True:
-                rr, cc = r+dr*i, c+dc*i
-                if 0<=rr<bs.rows and 0<=cc<bs.cols and not np.isnan(arr[rr,cc]):
-                    line.insert(0, arr[rr,cc]); i-=1
-                else: break
-            # include cell
-            line.append(arr[r,c])
-            # go forward
-            i=1
-            while True:
-                rr, cc = r+dr*i, c+dc*i
-                if 0<=rr<bs.rows and 0<=cc<bs.cols and not np.isnan(arr[rr,cc]):
-                    line.append(arr[rr,cc]); i+=1
-                else: break
-            if len(line)>=3:
-                diffs = np.diff(line)
-                var = np.nanvar(diffs)
-                score = 1.0/(1.0+var)
-                best = max(best, score)
-        return float(best)
 
-class M6_HistoricalModule(LogicModule):
-    # unchanged...
-    ...
+        # 行
+        row = state._board[r, :]
+        hypo_row = np.where(np.arange(state.cols)==c, pv, row)
+        seq = hypo_row[~np.isnan(hypo_row)]
+        score_row = self._score_seq(seq)
 
-# ... other placeholder modules ...
+        # 列
+        col = state._board[:, c]
+        hypo_col = np.where(np.arange(state.rows)==r, pv, col)
+        seq2 = hypo_col[~np.isnan(hypo_col)]
+        score_col = self._score_seq(seq2)
 
-# -----------------------------------------------------------------------------
-# 4. Module Registry
-# -----------------------------------------------------------------------------
-class ModuleRegistry:
-    def __init__(self):
-        self._mods: Dict[str, LogicModule] = {}
-        self._register_defaults()
+        return max(score_row, score_col)
 
-    def _register_defaults(self):
-        for mod in [
-            M1_BaseScoreModule(),
-            M2_VectorAPModule(),
-            M3_VectorGPModule(),
-            M4_SymmetryAxialModule(),
-            M5_SegmentDiffModule(),
-            M6_HistoricalModule(),
-            # ... etc ...
-        ]:
-            self._mods[mod.module_id] = mod
+    @staticmethod
+    def _score_seq(seq: np.ndarray) -> float:
+        if seq.size < 3:
+            return 0.0
+        diffs = np.diff(seq)
+        var = np.var(diffs)
+        return 1.0 / (1.0 + var)
 
-    def get_module(self, mid:str) -> Optional[LogicModule]:
-        return self._mods.get(mid)
+# ──────────────────────────────────────────────────────────────────────────────
+# 8. InferenceEngine：统一加权聚合
+# ──────────────────────────────────────────────────────────────────────────────
 
-    def get_all_modules(self) -> List[LogicModule]:
-        return list(self._mods.values())
+# 默认模块贡献权重，可从文件或环境加载
+GLOBAL_MODULE_WEIGHTS = {
+    "M1_BaseScore": 1.0,
+    "M4_SymmetryAxial": 0.8,
+    "M5_SegmentDiff": 0.7,
+    # … 其他模块
+}
 
-    def get_module_infos(self) -> List[ModuleInfo]:
-        return [m.get_info() for m in self._mods.values()]
-
-module_registry = ModuleRegistry()
-
-# -----------------------------------------------------------------------------
-# 5. Inference Engine
-# -----------------------------------------------------------------------------
 class InferenceEngine:
-    def __init__(self, registry:ModuleRegistry=Depends(lambda: module_registry)):
-        self.registry = registry
+    def __init__(self):
+        self.registry = modules
 
-    def run_inference(self, bs:InternalBoardState) -> Tuple[List[ValuePrediction],List[str]]:
-        preds, warns = [], []
-        active = bs.source_input.active_modules or []
-        mods = (self.registry.get_all_modules() if not active 
-                else [self.registry.get_module(m) for m in active if self.registry.get_module(m)])
-        weights = {**CURRENT_MODULE_CONTRIBUTION_WEIGHTS,
-                   **(bs.source_input.module_weights or {})}
+    def run_inference(self, state: InternalBoardState) -> Tuple[List[ValuePrediction], List[str]]:
+        results: List[ValuePrediction] = []
+        warnings: List[str] = []
 
-        for pv in bs.source_input.proposed_values:
-            cands = []
-            # skip if already present
-            if any(cell.value==pv for row in bs.board for cell in row if cell.is_fixed):
-                warns.append(f"{pv} already on board")
-                preds.append(ValuePrediction(proposed_value=pv, top_n_positions=[]))
+        # 合并权重
+        weights = GLOBAL_MODULE_WEIGHTS.copy()
+        if state.src.module_weights:
+            weights.update(state.src.module_weights)
+
+        for pv in state.src.proposed_values:
+            if pv in state.fixed_values:
+                warnings.append(f"Value {pv} 已存在于盘面，跳过。")
+                results.append(ValuePrediction(proposed_value=pv, top_n_positions=[]))
                 continue
 
-            for r in range(bs.rows):
-                for c in range(bs.cols):
-                    cell = bs.get_cell(r,c)
-                    if cell.is_fixed: continue
-                    num, den = 0.0, 0.0
-                    # M1
-                    m1 = self.registry.get_module("M1_BaseScore")
-                    raw1 = m1.analyze(bs,(r,c),pv); w1 = weights.get(m1.module_id, DEFAULT_MODULE_CONTRIBUTION_WEIGHT_IF_MISSING)
-                    num+=raw1*w1; den+=w1
-                    # others
-                    for m in mods:
-                        if m.module_id=="M1_BaseScore": continue
-                        raw = m.analyze(bs,(r,c),pv)
-                        w = weights.get(m.module_id, DEFAULT_MODULE_CONTRIBUTION_WEIGHT_IF_MISSING)
-                        num+=raw*w; den+=w
-                    score = num/den if den>0 else 0.0
-                    cands.append((cell.logic_code, round(score,4)))
-            cands.sort(key=lambda x:x[1], reverse=True)
-            top = [PositionScore(position_code=lc, score=sc) for lc,sc in cands[:bs.source_input.top_n_count]]
-            preds.append(ValuePrediction(proposed_value=pv, top_n_positions=top))
-        return preds, warns
+            scores: List[Tuple[str,float]] = []
+            for r in range(state.rows):
+                for c in range(state.cols):
+                    if state.is_fixed(r, c):
+                        continue
+                    agg = 0.0; wsum = 0.0
+                    for mid, mod in self.registry.items():
+                        if state.active_modules and mid not in state.active_modules:
+                            continue
+                        w = weights.get(mid, 1.0)
+                        s = mod.analyze(state, (r, c), pv)
+                        agg += s * w
+                        wsum += w
+                    final = agg / wsum if wsum else 0.0
+                    scores.append((state.logic_code(r,c), final))
 
-# -----------------------------------------------------------------------------
-# 6. FastAPI Setup
-# -----------------------------------------------------------------------------
-app = FastAPI(title="Adaptive Fill API", version="1.2")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+            top = sorted(scores, key=lambda x: x[1], reverse=True)[: state.src.top_n_count]
+            ps = [PositionScore(position_code=code, score=round(sc,4)) for code, sc in top]
+            results.append(ValuePrediction(proposed_value=pv, top_n_positions=ps))
 
-@app.post("/analyze", response_model=InferenceResponse)
-async def analyze(board_input:BoardInput=Body(...),
-                  engine:InferenceEngine=Depends()):
+        return results, warnings
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 9. FastAPI App & 路由
+# ──────────────────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="自适应盘面推理系统", version="1.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+def get_engine(): return InferenceEngine()
+
+@app.post("/infer", response_model=InferenceResponse, summary="运行推理")
+async def infer(board: BoardInput = Body(...), engine: InferenceEngine = Depends(get_engine)):
     start = time.perf_counter()
     try:
-        bs = InternalBoardState(board_input)
-    except ValueError as e:
+        state = InternalBoardState(board)
+    except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
-    preds, warns = engine.run_inference(bs)
-    elapsed = round((time.perf_counter()-start)*1000,2)
-    return InferenceResponse(predictions=preds,
-                             processing_time_ms=elapsed,
-                             warnings=warns or None)
+    preds, warns = await run_in_threadpool(engine.run_inference, state)
+    dt = (time.perf_counter() - start) * 1000
+    return InferenceResponse(predictions=preds, processing_time_ms=round(dt,2), warnings=warns or None)
 
-@app.get("/config/logic_modules", response_model=List[ModuleInfo])
-async def list_modules():
-    return module_registry.get_module_infos()
-
-@app.get("/config/module_weights", response_model=Dict[str,float])
-async def get_weights():
-    return CURRENT_MODULE_CONTRIBUTION_WEIGHTS
-
-@app.on_event("shutdown")
-async def shutdown():
-    save_module_contribution_weights()
+@app.get("/config/modules", response_model=List[ModuleInfo], summary="可用模块列表")
+def list_modules():
+    return [ModuleInfo(module_id=m.module_id, name=m.name, description=m.description)
+            for m in modules.values()]
