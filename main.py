@@ -2,7 +2,7 @@
 import random
 import math
 import numpy as np
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Any, Optional # <--- 在這裡加入了 Optional
 from collections import Counter, deque
 
 # -----------------------------------------------------------------------------
