@@ -1,17 +1,11 @@
 # main.py (FastAPI with "Industry Extreme" Analyzer)
 
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import json
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import os
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import uuid # For request IDs
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import time # For process time
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import logging # For enhanced logging
 from datetime import datetime # For health check timestamp
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import math # For advanced math in modules
 from collections import Counter, deque # For advanced logic in modules
 
@@ -19,7 +13,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, validator, Field
 from typing import List, Dict, Tuple, Callable, Optional, Any
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import numpy as np
 from ortools.sat.python import cp_model # Assuming Google OR-Tools is used
 from celery.result import AsyncResult # Kept as per original, though not used in /analyze
@@ -1450,7 +1443,6 @@ async def health_analyze(request: Request):
 
 # --- Main execution for local testing (optional) ---
 if __name__ == "__main__":
-from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
     import uvicorn
     if not os.path.exists(MEM_PATH):
         logger.info(f"Creating dummy {MEM_PATH} for testing.")
