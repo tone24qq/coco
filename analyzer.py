@@ -1,4 +1,18 @@
-from main import analyze_all_modules  # 導入批次分析模組
+import os
+import json
+import math
+import time
+import uuid
+import logging
+import numpy as np
+from typing import Any, List, Dict, Tuple, Optional, Callable
+from collections import deque, Counter
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field, validator
+from ortools.sat.python import cp_model
+import uvicorn
+
 # main.py (FastAPI with "Industry Extreme" Analyzer)
 
 import json
@@ -31,7 +45,7 @@ logger = logging.getLogger(__name__)
 # --- Application Setup ---
 # (User's original app setup - kept as is)
 app = FastAPI(
-    title="Plug-in權重 + 張量流 + 自動數字範圍 - AI Manager Enabled (Extreme Analyzer v1.0)",
+    title="Plug-inæ¬é + å¼µéæµ + èªåæ¸å­ç¯å - AI Manager Enabled (Extreme Analyzer v1.0)",
     version="3.3", # Incremented version for extreme analyzer
     description="Enhanced analysis API with AI Manager capabilities and 'Industry Extreme' analyzer modules."
 )
@@ -400,7 +414,7 @@ def ext_m3_local_heterogeneity_vec(grid: np.ndarray, request_id: Optional[str] =
 # More "extreme" modules will follow in the next parts...
 # For now, let's define these two and update the main structures.
 # In a full implementation, all 22 would be here.
-# ... (接續第一部分的程式碼: includes FastAPI setup, Pydantic models, helpers, ext_a2, ext_m3) ...
+# ... (æ¥çºç¬¬ä¸é¨åçç¨å¼ç¢¼: includes FastAPI setup, Pydantic models, helpers, ext_a2, ext_m3) ...
 
 def ext_d3_potential_field_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """
@@ -709,7 +723,7 @@ def ext_gm2_adv_col_flow_vec(grid: np.ndarray, request_id: Optional[str] = "N/A"
     return scores
 
 # More modules to follow...
-# ... (接續先前 analyzer.py 的程式碼: MathUtils, BoardAnalyzerUtils, ext_a2 到 ext_gm14 的函式定義) ...
+# ... (æ¥çºåå analyzer.py çç¨å¼ç¢¼: MathUtils, BoardAnalyzerUtils, ext_a2 å° ext_gm14 çå½å¼å®ç¾©) ...
 
 def ext_gm15_secure_territory_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """
@@ -1033,7 +1047,7 @@ def ext_gm18_rl_value_estimator_vec(grid: np.ndarray, request_id: Optional[str] 
     return scores
 
 # (End of EXT_GM module definitions for this part)
-# ... (接續第三部分的程式碼: MathUtils, BoardAnalyzerUtils, ext_a2 到 ext_gm18 的函式定義) ...
+# ... (æ¥çºç¬¬ä¸é¨åçç¨å¼ç¢¼: MathUtils, BoardAnalyzerUtils, ext_a2 å° ext_gm18 çå½å¼å®ç¾©) ...
 
 # -----------------------------------------------------------------------------
 # 3. "Industry Extreme" Module Registration and Weights
@@ -1221,8 +1235,235 @@ def solve_cp_for_candidates(
               500: {"model": AnalyzeErrorResponse, "description": "Internal server error"}
           },
           tags=["Analysis Engine vExtreme"]) # Updated tag
-async def analyze(req: AnalyzeRequest, request: Request):
-    board = req.new_card
-    proposals = [(pv.row, pv.col, pv.value) for pv in req.proposed_values]
-    final_scores = analyze_all_modules(board, proposals)
-    return {"scores": final_scores}
+async def analyze(req: AnalyzeRequest, request: Request): # Renamed from analyze_v2 for consistency
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+
+    try:
+        logger.info(f"EXTREME Analyzer: Received request. Grid: {len(req.new_card)}x{len(req.new_card[0]) if req.new_card else 0}. Proposals: {len(req.proposed_values)}.", extra={'request_id': request_id})
+        grid = np.array(req.new_card, dtype=int)
+
+        # 1. Use the NEW EXTREME tensor flow detailed scoring
+        raw_tf_scores_grid_extreme, rule_contributions_grid_extreme = await run_in_threadpool(
+            extreme_tensor_flow_score_detailed, grid, request_id
+        )
+        
+        # 2. Determine legal values (original logic)
+        globally_legal_values_for_new_placement = get_legal_values_for_placement(grid)
+        if not globally_legal_values_for_new_placement and any(pv.value != -1 for pv in req.proposed_values): # If proposing to place positive values
+            logger.warning("EXTREME Analyzer: No globally legal positive values to place.", extra={'request_id': request_id})
+
+        # 3. Prepare CandidateDetail objects
+        all_evaluated_candidates: List[CandidateDetail] = []
+        
+        for pv_idx, pv in enumerate(req.proposed_values):
+            r, c = pv.pos[0], pv.pos[1]
+            val_proposed = pv.value
+            is_valid_proposal_flag = True # Assume true initially
+            validation_notes = ""
+
+            # Perform proposal validation (can this value be placed at this spot?)
+            if val_proposed != -1: # If proposing to place a positive value
+                if grid[r,c] != -1:
+                    is_valid_proposal_flag = False
+                    validation_notes = f"Cell [{r},{c}] already filled with {grid[r,c]}."
+                elif val_proposed not in globally_legal_values_for_new_placement:
+                    is_valid_proposal_flag = False
+                    validation_notes = f"Value {val_proposed} not in globally legal set {globally_legal_values_for_new_placement} for new placement."
+            elif val_proposed == -1: # If proposing to clear a cell
+                if grid[r,c] == -1:
+                    is_valid_proposal_flag = False
+                    validation_notes = f"Cell [{r},{c}] is already empty."
+            
+            if not is_valid_proposal_flag:
+                 logger.warning(f"EXTREME Analyzer: Proposal ({val_proposed} at [{r},{c}]) invalid. {validation_notes}", extra={'request_id': request_id})
+                 cand_detail = CandidateDetail(
+                    pos=[r,c], value=val_proposed, is_valid_proposal=False,
+                    raw_tensor_flow_score=0, mem_score_value=0, final_objective_score=0,
+                    cp_solver_notes=validation_notes or "Invalid proposal."
+                 )
+                 all_evaluated_candidates.append(cand_detail)
+                 continue
+
+            # If proposal is valid up to this point:
+            # Get score for the TARGET cell of the proposal from the pre-calculated extreme score grid
+            raw_tf_score_cell = raw_tf_scores_grid_extreme[r, c]
+            tf_contrib_cell = rule_contributions_grid_extreme[r][c]
+            
+            # Calculate mem_score (using original logic)
+            # mem_score's legal_values_for_position might need to be more specific than globally_legal_values...
+            # For now, using globally_legal_values or allowing any positive int if the game logic is different.
+            # If val_proposed is -1 (clearing), mem_score might be calculated differently or be 0.
+            current_mem_score = 0.0
+            if val_proposed != -1: # Only calc mem_score for placing positive values
+                # Ensure mem_score gets a relevant set of "legal values" for its context
+                # If get_legal_values_for_placement filters out already used values, then a proposed value
+                # that is already on board (but valid for *this specific proposal* if rules allow e.g. strengthening)
+                # would not be in globally_legal_values_for_new_placement.
+                # This interaction needs careful game-specific definition.
+                # For now, let's use a broad set for mem_score calculation or assume val_proposed is valid for mem_score.
+                mem_score_legal_set = set(range(1, (get_card_max_value(grid) or 9) + 2)) # Example: 1 to max+1 or 1 to 10
+                if val_proposed in mem_score_legal_set: # Ensure proposed value is in the domain mem_score considers
+                    current_mem_score = mem_score(r, c, val_proposed, mem_score_legal_set)
+            
+            # Define final objective score for CP
+            # This could be adjusted, e.g. if clearing a cell has a different objective impact.
+            # If val_proposed is -1 (clear), raw_tf_score_cell might represent "badness" of current filled cell.
+            # The current extreme modules score "goodness" of a cell if it were filled positively.
+            # This needs adaptation if clearing moves are scored differently.
+            # Assuming for now, proposal is for positive values.
+            mem_score_factor = 5.0 
+            if val_proposed == -1: mem_score_factor = 0 # No mem score benefit for clearing in this example
+
+            final_obj_for_cp = raw_tf_score_cell + (mem_score_factor * current_mem_score)
+
+            cand_detail = CandidateDetail(
+                pos=[r, c], value=val_proposed, is_valid_proposal=True,
+                tensor_flow_contributions=tf_contrib_cell,
+                raw_tensor_flow_score=round(raw_tf_score_cell, 4),
+                mem_score_value=round(current_mem_score, 4),
+                final_objective_score=round(final_obj_for_cp, 4)
+            )
+            all_evaluated_candidates.append(cand_detail)
+
+        candidates_for_cp_solver = [cd for cd in all_evaluated_candidates if cd.is_valid_proposal]
+
+        if not candidates_for_cp_solver:
+            logger.warning("EXTREME Analyzer: No valid proposed values for CP solver.", extra={'request_id': request_id})
+            return AnalyzeSuccessResponse(
+                request_id=request_id, status="no_valid_candidates_for_cp",
+                analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME,
+                message="No valid proposals could be submitted to the solver.",
+                result=None, all_candidates_evaluated=all_evaluated_candidates
+            )
+
+        updated_candidate_details = await run_in_threadpool(
+            solve_cp_for_candidates, grid.shape, grid, candidates_for_cp_solver, request_id
+        )
+        
+        # Merge CP results back
+        processed_map_cp = {(cand.pos[0], cand.pos[1], cand.value): cand for cand in updated_candidate_details}
+        for i, cand_orig in enumerate(all_evaluated_candidates):
+            if cand_orig.is_valid_proposal:
+                key_cp = (cand_orig.pos[0], cand_orig.pos[1], cand_orig.value)
+                if key_cp in processed_map_cp:
+                    all_evaluated_candidates[i] = processed_map_cp[key_cp]
+
+        selected_by_cp_list = [cand for cand in all_evaluated_candidates if cand.is_selected_by_cp] # Renamed list
+        
+        final_result_detail: Optional[AnalyzeResultDetail] = None
+        response_message = "EXTREME Analysis complete."
+        status_val = "success" # Default success
+
+        if not selected_by_cp_list:
+            response_message = "EXTREME CP Solver did not select any candidate."
+            logger.info(response_message, extra={'request_id': request_id})
+            status_val = "fail_no_selection_cp_extreme"
+        elif len(selected_by_cp_list) == 1:
+            final_result_detail = AnalyzeResultDetail(**selected_by_cp_list[0].model_dump())
+            response_message = f"EXTREME Analyzer successfully selected: Pos={final_result_detail.pos}, Val={final_result_detail.value}."
+        else: # Should not happen with sum(x)==1
+            final_result_detail = AnalyzeResultDetail(**max(selected_by_cp_list, key=lambda cd: cd.final_objective_score).model_dump())
+            response_message = f"EXTREME CP Solver: Multiple options. Selected highest score: Pos={final_result_detail.pos}, Val={final_result_detail.value}."
+            status_val = "success_multiple_options_extreme"
+        
+        logger.info(response_message, extra={'request_id': request_id})
+        return AnalyzeSuccessResponse(
+            request_id=request_id, status=status_val,
+            analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME,
+            message=response_message, result=final_result_detail,
+            all_candidates_evaluated=all_evaluated_candidates
+        )
+
+    except HTTPException as he: raise he 
+    except ValueError as ve:
+        logger.warning(f"EXTREME Analyzer: ValueError: {str(ve)}", exc_info=True, extra={'request_id': request_id})
+        # Pydantic validation errors usually result in 422 status code by FastAPI automatically.
+        # If this is a custom ValueError, we might want to control the status code.
+        # For now, let FastAPI handle it or raise HTTPException for specific codes.
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"EXTREME Analyzer: Unexpected error: {str(e)}", exc_info=True, extra={'request_id': request_id})
+        raise HTTPException(status_code=500, detail="An unexpected internal server error occurred in the extreme analyzer.")
+
+
+# --- Health Check Endpoint ---
+# (User's original health check endpoint - can be kept as is, or updated to reflect new module set)
+@app.get("/health/analyze", response_model=AnalyzeHealthStatus, tags=["Health & Monitoring"])
+async def health_analyze(request: Request):
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+    logger.info("Health check requested for /analyze components (EXTREME version).", extra={'request_id': request_id})
+    checks = {}
+    overall_status = "UP"
+
+    # Check 1: Extreme Module functions and weights
+    if not EXTREME_MODULE_FUNCS_VEC:
+        checks["extreme_module_functions_load"] = "FAIL: EXTREME_MODULE_FUNCS_VEC is empty"
+        overall_status = "DEGRADED"
+    else:
+        checks["extreme_module_functions_load"] = f"OK: {len(EXTREME_MODULE_FUNCS_VEC)} extreme functions loaded"
+
+    if not EXTREME_MODULE_WEIGHTS:
+        checks["extreme_module_weights_load"] = "FAIL: EXTREME_MODULE_WEIGHTS is empty"
+        overall_status = "DEGRADED"
+    else:
+        checks["extreme_module_weights_load"] = f"OK: {len(EXTREME_MODULE_WEIGHTS)} extreme weights loaded"
+
+    if EXTREME_MODULE_FUNCS_VEC and EXTREME_MODULE_WEIGHTS:
+        missing_weights = [name for name in EXTREME_MODULE_FUNCS_VEC if name not in EXTREME_MODULE_WEIGHTS]
+        if missing_weights:
+            checks["extreme_functions_weights_match"] = f"WARN: Extreme functions missing weights: {missing_weights}"
+            if overall_status == "UP": overall_status = "DEGRADED"
+        else:
+            checks["extreme_functions_weights_match"] = "OK"
+    
+    # Check 2: Memory data (same as before)
+    if not os.path.exists(MEM_PATH):
+        checks["memory_data_file_exists"] = f"FAIL: {MEM_PATH} not found"; overall_status = "DEGRADED"
+    else:
+        checks["memory_data_file_exists"] = "OK"
+        if _total_samples_in_memory == 0 and os.path.getsize(MEM_PATH) > 0 :
+             checks["memory_data_load_status"] = "WARN: Memory file exists but no samples loaded."
+             if overall_status == "UP": overall_status = "DEGRADED"
+        else: checks["memory_data_load_status"] = f"OK: {_total_samples_in_memory} samples currently loaded."
+
+    # Check 3: Basic EXTREME tensor flow functionality
+    try:
+        dummy_grid = np.array([[-1, 1, 5], [2, -1, 8], [4, 6, -1]], dtype=int) # 3x3 for more complex modules
+        _, _ = extreme_tensor_flow_score_detailed(dummy_grid, "health_check_extreme_tf")
+        checks["extreme_tensor_flow_execution_test"] = "OK"
+    except Exception as e:
+        checks["extreme_tensor_flow_execution_test"] = f"FAIL: {str(e)}"
+        logger.error("Health check: extreme_tensor_flow_execution_test failed.", exc_info=True, extra={'request_id': request_id})
+        overall_status = "ERROR"
+
+    # Check 4: CP Solver (same as before)
+    try:
+        _ = cp_model.CpModel()
+        checks["cp_solver_availability_test"] = "OK"
+    except Exception as e:
+        checks["cp_solver_availability_test"] = f"FAIL: CP Model basic test failed - {str(e)}"
+        logger.error("Health check: cp_solver_availability_test failed.", exc_info=True, extra={'request_id': request_id})
+        overall_status = "ERROR"
+
+    components_info = {
+        "numpy_version": np.__version__,
+        "ortools_version": getattr(cp_model, '__version__', "unknown"), # Try to get ortools version
+        "analyzer_type": "Extreme Logic Modules"
+    }
+    return AnalyzeHealthStatus(
+        status=overall_status,
+        analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME, # Use new version
+        checks=checks, components=components_info
+    )
+
+# --- Main execution for local testing (optional) ---
+if __name__ == "__main__":
+    import uvicorn
+    if not os.path.exists(MEM_PATH):
+        logger.info(f"Creating dummy {MEM_PATH} for testing.")
+        dummy_mem_data = {"memory_cards": [[[1,2,-1,4],[-1,3,1,5],[2,-1,3,6],[7,8,9,-1]]]} # 4x4 example
+        with open(MEM_PATH, "w") as f_mem: json.dump(dummy_mem_data, f_mem) # Renamed f to f_mem
+        load_memory_data("main_startup")
+
+    logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (main.py). Access OpenAPI docs at /docs.")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
