@@ -4,7 +4,7 @@ import math
 import numpy as np
 from typing import List, Dict, Tuple, Any
 from collections import Counter, deque
-
+print("本次運行主程式版本：20250527-extreme-full")
 # -----------------------------------------------------------------------------
 # 0. 輔助工具 (可能被某些高級模組使用)
 # -----------------------------------------------------------------------------
