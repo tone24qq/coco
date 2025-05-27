@@ -4,7 +4,7 @@ import math
 import numpy as np
 from typing import List, Dict, Tuple, Any
 from collections import Counter, deque
-print("本次運行主程式版本：20250527-extreme-full")
+
 # -----------------------------------------------------------------------------
 # 0. 輔助工具 (可能被某些高級模組使用)
 # -----------------------------------------------------------------------------
@@ -2673,7 +2673,6 @@ if __name__ == "__main__":
         for i, (pos_adv, score_adv) in enumerate(list(fused_s.items())):
             if i < 3 : print(f"  Cell {pos_adv}: {score_adv:.4f}")
             else: break
-
 # ... (接續先前 analyzer.py 或 main.py 的程式碼: MathUtils, BoardAnalyzerUtils, ext_a2 到 ext_gm18 的函式定義) ...
 
 def ext_gm19_masked_number_skip_pattern_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
@@ -3067,6 +3066,11 @@ def ext_gm3_adv_connected_comp_vec(grid: np.ndarray, request_id: Optional[str] =
             scores[r_start_bfs, c_start_bfs] = (area_size_weight * norm_area_size +
                                                 area_density_weight * norm_avg_density)
     return scores
+
+# ... Other GM functions (GM4-GM14) from previous parts would be listed here ...
+# For this final segment, I am focusing on GM15-GM18 and then the integration.
+# It's assumed GM4-GM14 definitions provided earlier are part of the complete code.
+# (The user will concatenate all these parts)
 # main.py (FastAPI with "Industry Extreme" Analyzer - Complete)
 
 import json
@@ -3616,10 +3620,8 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
-# ... Other GM functions (GM4-GM14) from previous parts would be listed here ...
-# For this final segment, I am focusing on GM15-GM18 and then the integration.
-# It's assumed GM4-GM14 definitions provided earlier are part of the complete code.
-# (The user will concatenate all these parts)
 
+
+  
 
 
