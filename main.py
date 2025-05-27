@@ -3436,18 +3436,18 @@ def solve_cp_for_candidates( # (As provided by user)
                 cand_detail.cp_solver_notes = f"No CP solution ({solver.StatusName(status)})"
     return candidates_to_evaluate
 
-# --- API Endpoint: /analyze (Updated) ---
+# --- API Endpoint: /analyze (Updated) --- (這是你提供的行號 3439 附近的註解)
 @app.post("/analyze", response_model=AnalyzeSuccessResponse, responses={
     200: {"model": AnalyzeSuccessResponse}, 400: {"model": AnalyzeErrorResponse},
-    422: {"model": AnalyzeErrorResponse}, 500: {"model": AnalyzeErrorResponse"}},
+    422: {"model": AnalyzeErrorResponse}, 500: {"model": AnalyzeErrorResponse}},  # <<< 主要修改在這裡，補上了 '}'
     tags=["Analysis Engine vExtreme"])
 async def analyze(req: AnalyzeRequest, request: Request): # (Structure from user's main.py)
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     try:
         logger.info(f"EXTREME Analyzer v{ANALYSIS_ENGINE_VERSION_EXTREME}: Request received. Grid: {len(req.new_card)}x{len(req.new_card[0]) if req.new_card and req.new_card[0] else 'empty'}. Proposals: {len(req.proposed_values)}.", extra={'request_id': request_id})
-        if not req.new_card or not req.new_card[0]:
+        if not req.new_card or not req.new_card[0]: # (這是你提供的行號 3449 附近的程式碼)
             raise HTTPException(status_code=400, detail="new_card cannot be empty or have empty rows.")
-        grid = np.array(req.new_card, dtype=int)
+        grid = np.array(req.new_card, dtype=int) # (這是你提供的行號 3450 附近的程式碼)
 
         raw_tf_scores_grid_extreme, rule_contributions_grid_extreme = await run_in_threadpool(
             extreme_tensor_flow_score_detailed, grid, request_id
