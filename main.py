@@ -2376,66 +2376,6 @@ class GM18(LogicModule):
             "value_function": lambda x: float(x) if isinstance(x, (int, float)) else None,
         }
 
-
-def analyze_all_modules(board, proposals):
-    a2 = A2(module_id='A2', name='A2 模組', description='自動註冊')
-    d3 = D3(module_id='D3', name='D3 模組', description='自動註冊')
-    f10 = F10(module_id='F10', name='F10 模組', description='自動註冊')
-    gm1 = GM1(module_id='GM1', name='GM1 模組', description='自動註冊')
-    gm10 = GM10(module_id='GM10', name='GM10 模組', description='自動註冊')
-    gm11 = GM11(module_id='GM11', name='GM11 模組', description='自動註冊')
-    gm12 = GM12(module_id='GM12', name='GM12 模組', description='自動註冊')
-    gm13 = GM13(module_id='GM13', name='GM13 模組', description='自動註冊')
-    gm14 = GM14(module_id='GM14', name='GM14 模組', description='自動註冊')
-    gm15 = GM15(module_id='GM15', name='GM15 模組', description='自動註冊')
-    gm16 = GM16(module_id='GM16', name='GM16 模組', description='自動註冊')
-    gm17 = GM17(module_id='GM17', name='GM17 模組', description='自動註冊')
-    gm18 = GM18(module_id='GM18', name='GM18 模組', description='自動註冊')
-    gm2 = GM2(module_id='GM2', name='GM2 模組', description='自動註冊')
-    gm3 = GM3(module_id='GM3', name='GM3 模組', description='自動註冊')
-    gm4 = GM4(module_id='GM4', name='GM4 模組', description='自動註冊')
-    gm5 = GM5(module_id='GM5', name='GM5 模組', description='自動註冊')
-    gm6 = GM6(module_id='GM6', name='GM6 模組', description='自動註冊')
-    gm7 = GM7(module_id='GM7', name='GM7 模組', description='自動註冊')
-    gm8 = GM8(module_id='GM8', name='GM8 模組', description='自動註冊')
-    gm9 = GM9(module_id='GM9', name='GM9 模組', description='自動註冊')
-    m3 = M3(module_id='M3', name='M3 模組', description='自動註冊')
-
-    module_registry = {
-        'A2': a2,
-        'D3': d3,
-        'F10': f10,
-        'GM1': gm1,
-        'GM10': gm10,
-        'GM11': gm11,
-        'GM12': gm12,
-        'GM13': gm13,
-        'GM14': gm14,
-        'GM15': gm15,
-        'GM16': gm16,
-        'GM17': gm17,
-        'GM18': gm18,
-        'GM2': gm2,
-        'GM3': gm3,
-        'GM4': gm4,
-        'GM5': gm5,
-        'GM6': gm6,
-        'GM7': gm7,
-        'GM8': gm8,
-        'GM9': gm9,
-        'M3': m3
-    }
-
-    final_scores = {}
-    for module_id, module in module_registry.items():
-        try:
-            final_scores[module_id] = module.analyze(board, proposals)
-        except Exception as e:
-            print(f"模組 {module_id} 執行失敗: {e}")
-            final_scores[module_id] = 0.0
-
-    return final_scores
-
     def analyze(self, board_state: List[List[Any]], position_row: int, position_col: int) -> float:
         # 核心分流規則與用途: 透過提取目標格子及其周圍環境的多個預定義特徵，並將這些特徵進行加權線性組合（類似簡化AI模型的價值評估），來估算其戰略潛力。
         rows, cols = len(board_state), len(board_state[0]) if board_state else (0,0)
@@ -3499,7 +3439,7 @@ def solve_cp_for_candidates( # (As provided by user)
 # --- API Endpoint: /analyze (Updated) ---
 @app.post("/analyze", response_model=AnalyzeSuccessResponse, responses={
     200: {"model": AnalyzeSuccessResponse}, 400: {"model": AnalyzeErrorResponse},
-    422: {"model": AnalyzeErrorResponse}, 500: {"model": AnalyzeErrorResponse}},
+    422: {"model": AnalyzeErrorResponse}, 500: {"model": AnalyzeErrorResponse"}},
     tags=["Analysis Engine vExtreme"])
 async def analyze(req: AnalyzeRequest, request: Request): # (Structure from user's main.py)
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
@@ -3678,3 +3618,41 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (Version: {app.version}, Engine: {ANALYSIS_ENGINE_VERSION_EXTREME}). Access OpenAPI docs at /docs.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# -------------------------------------------
+# 模組批次分析函數（由 GPT 插入）
+# -------------------------------------------
+def analyze_all_modules(board: List[List[int]], proposals: List[Tuple[int, int, int]]) -> Dict[str, float]:
+    all_modules = [
+        A2("A2", "模組 A2", "分析 A2"),
+        M3("M3", "模組 M3", "分析 M3"),
+        D3("D3", "模組 D3", "分析 D3"),
+        F10("F10", "模組 F10", "分析 F10"),
+        GM1("GM1", "模組 GM1", "分析 GM1"),
+        GM2("GM2", "模組 GM2", "分析 GM2"),
+        GM3("GM3", "模組 GM3", "分析 GM3"),
+        GM4("GM4", "模組 GM4", "分析 GM4"),
+        GM5("GM5", "模組 GM5", "分析 GM5"),
+        GM6("GM6", "模組 GM6", "分析 GM6"),
+        GM7("GM7", "模組 GM7", "分析 GM7"),
+        GM8("GM8", "模組 GM8", "分析 GM8"),
+        GM9("GM9", "模組 GM9", "分析 GM9"),
+        GM10("GM10", "模組 GM10", "分析 GM10"),
+        GM11("GM11", "模組 GM11", "分析 GM11"),
+        GM12("GM12", "模組 GM12", "分析 GM12"),
+        GM13("GM13", "模組 GM13", "分析 GM13"),
+        GM14("GM14", "模組 GM14", "分析 GM14"),
+        GM15("GM15", "模組 GM15", "分析 GM15"),
+        GM16("GM16", "模組 GM16", "分析 GM16"),
+        GM17("GM17", "模組 GM17", "分析 GM17"),
+        GM18("GM18", "模組 GM18", "分析 GM18"),
+    ]
+
+    results = {}
+    for module in all_modules:
+        try:
+            results[module.module_id] = module.analyze(board, proposals)
+        except Exception as e:
+            print(f"[錯誤] 模組 {module.module_id} 分析失敗: {e}")
+            results[module.module_id] = 0.0
+
+    return results
