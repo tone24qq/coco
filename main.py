@@ -3608,7 +3608,13 @@ async def health_analyze(request: Request): # (User's original health check stru
 
     return AnalyzeHealthStatus(status=overall_status, analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME, checks=checks,
                                components={"numpy": np.__version__, "ortools": getattr(cp_model, '__version__', "unknown"), "analyzer_type": "Extreme Logic Modules v22"})
-
+def ext_gm3_adv_connected_comp_vec(grid: np.ndarray, **kwargs) -> np.ndarray:
+    """
+    GM3 模組暫時空實作，避免 API 因模組未定義而中斷。
+    可日後補上邏輯。
+    """
+    score_map = np.zeros_like(grid, dtype=float)
+    return score_map
 # --- Celery Task Definition (User's original, if used) ---
 # from celery_worker import app as celery_app # Assuming celery_app is defined in celery_worker.py
 # @celery_app.task(name="main_app.analyze_async_task") # Example task name
