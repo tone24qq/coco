@@ -1,11 +1,17 @@
 # main.py (FastAPI with "Industry Extreme" Analyzer)
 
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import json
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import os
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import uuid # For request IDs
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import time # For process time
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import logging # For enhanced logging
 from datetime import datetime # For health check timestamp
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import math # For advanced math in modules
 from collections import Counter, deque # For advanced logic in modules
 
@@ -13,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, validator, Field
 from typing import List, Dict, Tuple, Callable, Optional, Any
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
 import numpy as np
 from ortools.sat.python import cp_model # Assuming Google OR-Tools is used
 from celery.result import AsyncResult # Kept as per original, though not used in /analyze
@@ -30,7 +37,7 @@ logger = logging.getLogger(__name__)
 # --- Application Setup ---
 # (User's original app setup - kept as is)
 app = FastAPI(
-    title="Plug-in權重 + 張量流 + 自動數字範圍 - AI Manager Enabled (Extreme Analyzer v1.0)",
+    title="Plug-inæ¬é + å¼µéæµ + èªåæ¸å­ç¯å - AI Manager Enabled (Extreme Analyzer v1.0)",
     version="3.3", # Incremented version for extreme analyzer
     description="Enhanced analysis API with AI Manager capabilities and 'Industry Extreme' analyzer modules."
 )
@@ -399,7 +406,7 @@ def ext_m3_local_heterogeneity_vec(grid: np.ndarray, request_id: Optional[str] =
 # More "extreme" modules will follow in the next parts...
 # For now, let's define these two and update the main structures.
 # In a full implementation, all 22 would be here.
-# ... (接續第一部分的程式碼: includes FastAPI setup, Pydantic models, helpers, ext_a2, ext_m3) ...
+# ... (æ¥çºç¬¬ä¸é¨åçç¨å¼ç¢¼: includes FastAPI setup, Pydantic models, helpers, ext_a2, ext_m3) ...
 
 def ext_d3_potential_field_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """
@@ -708,7 +715,7 @@ def ext_gm2_adv_col_flow_vec(grid: np.ndarray, request_id: Optional[str] = "N/A"
     return scores
 
 # More modules to follow...
-# ... (接續先前 analyzer.py 的程式碼: MathUtils, BoardAnalyzerUtils, ext_a2 到 ext_gm14 的函式定義) ...
+# ... (æ¥çºåå analyzer.py çç¨å¼ç¢¼: MathUtils, BoardAnalyzerUtils, ext_a2 å° ext_gm14 çå½å¼å®ç¾©) ...
 
 def ext_gm15_secure_territory_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """
@@ -1032,7 +1039,7 @@ def ext_gm18_rl_value_estimator_vec(grid: np.ndarray, request_id: Optional[str] 
     return scores
 
 # (End of EXT_GM module definitions for this part)
-# ... (接續第三部分的程式碼: MathUtils, BoardAnalyzerUtils, ext_a2 到 ext_gm18 的函式定義) ...
+# ... (æ¥çºç¬¬ä¸é¨åçç¨å¼ç¢¼: MathUtils, BoardAnalyzerUtils, ext_a2 å° ext_gm18 çå½å¼å®ç¾©) ...
 
 # -----------------------------------------------------------------------------
 # 3. "Industry Extreme" Module Registration and Weights
@@ -1443,6 +1450,7 @@ async def health_analyze(request: Request):
 
 # --- Main execution for local testing (optional) ---
 if __name__ == "__main__":
+from main import ext_gm3_adv_connected_comp_vec  # Added by assistant
     import uvicorn
     if not os.path.exists(MEM_PATH):
         logger.info(f"Creating dummy {MEM_PATH} for testing.")
@@ -1452,4 +1460,3 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (main.py). Access OpenAPI docs at /docs.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
