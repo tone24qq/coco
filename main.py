@@ -2674,6 +2674,405 @@ if __name__ == "__main__":
             if i < 3 : print(f"  Cell {pos_adv}: {score_adv:.4f}")
             else: break
 
+# ... (接續先前 analyzer.py 或 main.py 的程式碼: MathUtils, BoardAnalyzerUtils, ext_a2 到 ext_gm18 的函式定義) ...
+
+def ext_gm19_masked_number_skip_pattern_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """
+    Core Rule: Analyzes the distribution of revealed numbers to detect significant "skip patterns" (e.g., a number expected in row X appears in row Y) and identifies if these skips follow an underlying regularity.
+    Purpose: To identify if the placement of numbers deviates from a simple sequential or expected placement in a structured way, suggesting a hidden rule or deliberate "跳格" arrangement.
+    ---
+    Design Philosophy: Assumes numbers might have an "ideal" or "base" position (e.g., if numbers 1-N are typically placed row by row). It then looks for systematic deviations (skips) from these base positions. Detected skip patterns (e.g., "always skip +2 rows", "alternate column for sequential numbers") are then used to score empty cells based on how well placing a potential number there would fit an observed dominant skip pattern.
+    Use Case: In scratch cards or puzzles where number placement might follow a non-obvious but consistent layout rule (e.g., for difficulty, or to form a visual pattern when revealed).
+    Scoring Formula Principle:
+        1. Identify "revealed number sequences" (e.g., 1, 2, 3, ... or other known sequences relevant to the card type).
+        2. For each sequence, determine a "base/expected" placement grid (e.g., number 'k' expected at row `floor((k-1)/cols)`, col `(k-1)%cols`).
+        3. Calculate "skip vectors" (delta_row, delta_col) for each revealed number relative to its base position.
+        4. Use clustering (e.g., k-means on skip vectors) or pattern detection (e.g., FFT on skip vector components if they form a series) to find dominant skip patterns.
+        5. For each empty cell (r, c):
+            a. For each potential number 'v' that could go there:
+                i. Calculate where 'v' *would have been* according to a dominant skip pattern if its base position was 'bp_v'.
+                ii. If (r,c) matches this predicted skipped position, score is high.
+        6. The cell's score is the max score across potential numbers 'v' that fit a strong pattern.
+    Compatibility: Handles integer grid. -1 is empty. Requires a concept of "expected sequences" or a way to define them.
+    Extensibility: Dynamic detection of sequences, more robust pattern detection algorithms (e.g., time series analysis for skips), configurable base placement rules.
+    Optimization & Extension Directions: Pre-calculate sequence base positions, use optimized clustering, allow for partial pattern matches.
+    Possible Multi-version Logic: GM19.v1 (simple row/col skip counts), GM19.v2 (this version with dominant skip pattern matching), GM19.v3 (probabilistic model of skip generation).
+    Additional Design Suggestion (棋譜分析/數列補全): The concept of "skip vectors" can be seen as analyzing "moves" from an expected position. If numbers are part of multiple interleaved sequences (like different colored "stones" in Go), this module could try to disentangle these sequences and their respective placement logics. For "數列補全", if a row/column is expected to contain an arithmetic or geometric progression of numbers, but some are "skipped" to other locations, this module could identify such cross-row/column progressions.
+    """
+    logger.debug(f"Executing ext_gm19_masked_number_skip_pattern_vec", extra={'request_id': request_id})
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+
+    if rows == 0 or cols == 0: return scores
+
+    def val_func_gm19(x_val: int) -> Optional[int]: # Returns int for sequence checks
+        if x_val != -1 and x_val > 0 : # Assuming positive integers are the numbers of interest
+            return int(x_val)
+        return None
+
+    # --- Step 1: Identify revealed numbers and their positions ---
+    revealed_numbers = [] # List of (value, r, c)
+    for r_idx in range(rows):
+        for c_idx in range(cols):
+            val = val_func_gm19(grid[r_idx, c_idx])
+            if val is not None:
+                revealed_numbers.append({'value': val, 'r': r_idx, 'c': c_idx})
+    
+    if not revealed_numbers:
+        return scores # No numbers to analyze patterns from
+
+    revealed_numbers.sort(key=lambda x: x['value']) # Sort by value to analyze sequences
+
+    # --- Step 2: Define "base/expected" placement (example: row-by-row for numbers 1 to rows*cols) ---
+    # This is a critical assumption and highly dependent on the scratch card's typical layout.
+    # For a generic approach, we might need to infer this or make it configurable.
+    # Let's assume numbers 1 to N are expected.
+    
+    max_revealed_value = max(rn['value'] for rn in revealed_numbers) if revealed_numbers else 0
+    # Heuristic: consider numbers from 1 up to max_revealed_value + a bit (e.g., +cols to allow for next row)
+    # Or, if the game has a fixed set of numbers (e.g. 1 to 25 for a 5x5 card)
+    expected_max_number_on_card = rows * cols # A common assumption for some card types
+    
+    base_positions: Dict[int, Tuple[int, int]] = {} # value -> (expected_r, expected_c)
+    for k_val in range(1, expected_max_number_on_card + 1):
+        base_r = (k_val - 1) // cols
+        base_c = (k_val - 1) % cols
+        if base_r < rows : # Ensure base position is within grid dimensions
+            base_positions[k_val] = (base_r, base_c)
+
+    # --- Step 3: Calculate "skip vectors" ---
+    skip_vectors: Dict[int, Tuple[int, int]] = {} # value -> (delta_r, delta_c)
+    for rn in revealed_numbers:
+        val = rn['value']
+        if val in base_positions:
+            expected_r, expected_c = base_positions[val]
+            skip_vectors[val] = (rn['r'] - expected_r, rn['c'] - expected_c)
+
+    if not skip_vectors:
+        return scores # No skips calculable
+
+    # --- Step 4: Find dominant skip patterns ---
+    # This is complex. For a "limit" version, we can try a few things:
+    # Option A: Clustering skip vectors (e.g., if many numbers have a (+1, 0) skip)
+    # Option B: Look for arithmetic progressions in skip components if numbers are sequential
+    # Option C: Test against predefined common skip patterns
+    
+    # Simplified for now: Count frequency of skip vectors. The most frequent is "dominant".
+    # More advanced: Use DBSCAN or k-means if skips are continuous-like.
+    dominant_skip_patterns = []
+    if skip_vectors:
+        skip_vector_tuples = [v for v in skip_vectors.values()]
+        if not skip_vector_tuples: return scores
+
+        counts = Counter(skip_vector_tuples)
+        # Consider patterns that appear at least, say, twice or a certain percentage
+        min_occurrences_for_pattern = max(2, int(len(skip_vector_tuples) * 0.1)) 
+        for skip_vec, count in counts.most_common():
+            if count >= min_occurrences_for_pattern:
+                # How many numbers exhibit this pattern?
+                numbers_with_this_skip = [val for val, sv in skip_vectors.items() if sv == skip_vec]
+                # Strength of pattern = count * (avg value of numbers with this skip / max_revealed_value (heuristic))
+                # Simplified strength: just the count or normalized count
+                pattern_strength = MathUtils.normalize_value(count, min_occurrences_for_pattern, len(skip_vector_tuples))
+                dominant_skip_patterns.append({'skip': skip_vec, 'strength': pattern_strength, 'example_values': numbers_with_this_skip[:3]})
+            else: # Stop if counts are too low
+                break 
+    
+    if not dominant_skip_patterns:
+        # Fallback: Check for simple global shifts if no specific pattern is strong
+        # e.g. if all numbers are shifted by (+delta_r_avg, +delta_c_avg)
+        # This is more complex to implement robustly here.
+        # For now, if no dominant patterns found, score will be low.
+        pass
+
+    # --- Step 5 & 6: Score empty cells based on fitting dominant patterns ---
+    # For each empty cell, and for each potential number that could go there (1 to expected_max_number_on_card)
+    potential_numbers_to_place = set(range(1, expected_max_number_on_card + 1)) - set(rn['value'] for rn in revealed_numbers)
+
+    for r_idx in range(rows):
+        for c_idx in range(cols):
+            if grid[r_idx, c_idx] != -1: # Only score empty cells
+                continue
+
+            cell_max_pattern_score = 0.0
+            for potential_val in potential_numbers_to_place:
+                if potential_val not in base_positions: continue
+                
+                base_r, base_c = base_positions[potential_val]
+                
+                for pattern in dominant_skip_patterns:
+                    skip_dr, skip_dc = pattern['skip']
+                    pattern_strength = pattern['strength']
+                    
+                    # Predicted position for potential_val if it followed this skip pattern
+                    predicted_r = base_r + skip_dr
+                    predicted_c = base_c + skip_dc
+                    
+                    if predicted_r == r_idx and predicted_c == c_idx:
+                        # This empty cell IS where potential_val would land if it followed this dominant pattern.
+                        # Score is based on pattern strength.
+                        # Can also add factor if potential_val is "close" to numbers that exhibit this pattern.
+                        current_pattern_fit_score = pattern_strength
+                        
+                        # Bonus if potential_val is arithmetically/sequentially close to other numbers ALREADY following this pattern
+                        # Example: if pattern has [5,10,15] and potential_val is 20.
+                        # This requires more complex sequence analysis within the pattern followers.
+                        # Simplified: just use pattern_strength for now.
+                        if current_pattern_fit_score > cell_max_pattern_score:
+                            cell_max_pattern_score = current_pattern_fit_score
+            
+            scores[r_idx, c_idx] = cell_max_pattern_score # Max score if multiple patterns/values fit
+            
+    return scores
+
+
+def ext_gm20_skip_pattern_confidence_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """
+    Core Rule: Based on skip patterns detected by GM19 (or a similar module), this module evaluates how placing a potential number in an empty cell would enhance or complete global skip regularities.
+    Purpose: To provide a confidence score for placing a specific number in a specific empty cell, prioritizing placements that strengthen observed systematic "跳格" patterns.
+    ---
+    Design Philosophy: Acts as a "verifier" or "enhancer" for patterns found by GM19. It simulates placing a number and checks if this placement increases the "regularity score" of one or more dominant skip patterns.
+    Use Case: Deciding *which* number to place in an empty cell that GM19 identified as a potential "pattern slot". Helps distinguish between multiple numbers that might fit a geometric slot.
+    Scoring Formula Principle:
+        1. Relies on GM19 (or an internal equivalent) to provide dominant skip patterns and the numbers following them.
+        2. For each empty cell (r, c) and each potential number 'v':
+            a. Temporarily "place" 'v' at (r,c).
+            b. Re-evaluate the strength/consistency of dominant skip patterns *with 'v' included*.
+               - Does 'v' now perfectly align with an existing pattern's skip vector from its base position?
+               - Does adding 'v' make a sequence of numbers (e.g., 1,2,v,4,5) that follow the pattern more complete or arithmetically regular?
+               - Does 'v' bridge two smaller groups of numbers that follow the same skip?
+            c. The score for placing 'v' at (r,c) is proportional to the increase in global pattern regularity or the strength of the pattern 'v' now completes.
+        3. The cell's final score is the max score across all potential 'v' that significantly enhance patterns.
+    Compatibility: Integer grid. -1 is empty. Highly dependent on the quality of pattern detection from GM19 or equivalent.
+    Extensibility: Use more sophisticated measures of "pattern regularity" (e.g., sequence completion metrics, graph-based pattern matching), consider negative evidence (placements that break patterns).
+    Optimization & Extension Directions: Incremental update of pattern strengths instead of full re-evaluation, use a "lookahead" mechanism to see if placing 'v' enables further pattern completions.
+    Possible Multi-version Logic: GM20.v1 (simple check if cell+value fits one GM19 pattern), GM20.v2 (this version measuring enhancement of regularity), GM20.v3 (probabilistic scoring of pattern completion).
+    Additional Design Suggestion (規律性跳動與結構穩定性): This module directly addresses this. "Structural stability" can be interpreted as the persistence and predictability of the skip patterns. If placing a number makes the overall set of skip vectors "simpler" (e.g., reduces the number of distinct dominant skip vectors, or increases the count of a very regular one), that's a high score.
+    """
+    logger.debug(f"Executing ext_gm20_skip_pattern_confidence_vec", extra={'request_id': request_id})
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+
+    if rows == 0 or cols == 0: return scores
+
+    # This module is complex as it ideally needs the output of GM19 or similar pattern detection.
+    # For a self-contained "extreme" version, it would need to:
+    # 1. Detect patterns on the current board (similar to GM19 logic).
+    # 2. For each empty cell (er, ec) and each potential number 'v_test':
+    #    a. Create a hypothetical grid_test by placing 'v_test' at (er, ec).
+    #    b. Re-detect patterns on grid_test.
+    #    c. Compare pattern "quality" (strength, regularity, completeness) before and after.
+    # This is computationally very expensive if done naively for every cell and every number.
+
+    # --- Simplified "Extreme" Approach for GM20: ---
+    # Assume GM19 has identified some dominant skip patterns and the numbers that follow them.
+    # GM20 will focus on: if placing 'v_test' at (er,ec) makes it *join* an existing strong pattern
+    # in a way that makes that pattern *more arithmetically or sequentially complete*.
+
+    # Re-using parts of GM19's logic for pattern detection (could be refactored into a shared utility)
+    # For brevity, I'll sketch the core idea rather than fully re-implementing GM19 here.
+    
+    # --- Placeholder for GM19's core pattern detection logic ---
+    # This would populate `dominant_skip_patterns_initial` and `skip_vectors_initial`
+    # For demonstration, let's assume we run a simplified GM19-like detection first.
+    # For a real implementation, GM19's results would be an input or GM20 would call GM19.
+    
+    # Let's assume `ext_gm19_masked_number_skip_pattern_vec` can be called to get some info,
+    # or we replicate its pattern finding part.
+    # This creates a dependency or requires code duplication / refactoring.
+    # To make GM20 self-contained for now, it needs its own pattern analysis.
+
+    # --- Step 1: Initial Pattern Analysis (Simplified from GM19) ---
+    revealed_numbers_initial = []
+    for r_idx in range(rows):
+        for c_idx in range(cols):
+            if grid[r_idx, c_idx] != -1 and grid[r_idx, c_idx] > 0:
+                revealed_numbers_initial.append({'value': int(grid[r_idx, c_idx]), 'r': r_idx, 'c': c_idx})
+    
+    if not revealed_numbers_initial: return scores
+    revealed_numbers_initial.sort(key=lambda x: x['value'])
+    
+    expected_max_number_on_card_gm20 = rows * cols
+    base_positions_gm20: Dict[int, Tuple[int, int]] = {
+        k_val: ((k_val - 1) // cols, (k_val - 1) % cols)
+        for k_val in range(1, expected_max_number_on_card_gm20 + 1)
+        if ((k_val - 1) // cols) < rows
+    }
+
+    skip_vectors_initial: Dict[int, Tuple[int, int]] = {}
+    for rn in revealed_numbers_initial:
+        val = rn['value']
+        if val in base_positions_gm20:
+            skip_vectors_initial[val] = (rn['r'] - base_positions_gm20[val][0], rn['c'] - base_positions_gm20[val][1])
+
+    dominant_patterns_details_initial = [] # List of {'skip': (dr,dc), 'values': [v1,v2...], 'strength': float}
+    if skip_vectors_initial:
+        skip_vector_tuples = list(skip_vectors_initial.values())
+        counts = Counter(skip_vector_tuples)
+        min_occurrences = max(2, int(len(skip_vector_tuples) * 0.1))
+        for skip_vec, count in counts.most_common():
+            if count >= min_occurrences:
+                current_pattern_values = sorted([val for val, sv in skip_vectors_initial.items() if sv == skip_vec])
+                dominant_patterns_details_initial.append({
+                    'skip': skip_vec, 
+                    'values': current_pattern_values, 
+                    'strength': MathUtils.normalize_value(count, min_occurrences, len(skip_vector_tuples))
+                })
+    # --- End of Initial Pattern Analysis ---
+
+    potential_numbers_to_place_gm20 = set(range(1, expected_max_number_on_card_gm20 + 1)) - set(rn['value'] for rn in revealed_numbers_initial)
+
+    for r_idx in range(rows):
+        for c_idx in range(cols):
+            if grid[r_idx, c_idx] != -1: continue # Only empty cells
+
+            max_confidence_score_for_cell = 0.0
+
+            for v_test in potential_numbers_to_place_gm20:
+                if v_test not in base_positions_gm20: continue
+                
+                base_r_test, base_c_test = base_positions_gm20[v_test]
+                current_confidence_for_v_test = 0.0
+
+                for initial_pattern in dominant_patterns_details_initial:
+                    pattern_skip_dr, pattern_skip_dc = initial_pattern['skip']
+                    pattern_values = initial_pattern['values']
+                    pattern_strength_initial = initial_pattern['strength']
+
+                    # Check if (r_idx, c_idx) is the "skipped" position for v_test according to this pattern
+                    predicted_r_for_v_test = base_r_test + pattern_skip_dr
+                    predicted_c_for_v_test = base_c_test + pattern_skip_dc
+
+                    if predicted_r_for_v_test == r_idx and predicted_c_for_v_test == c_idx:
+                        # Yes, v_test at (r_idx, c_idx) geometrically fits this pattern's skip rule.
+                        # Now, assess how adding v_test enhances the "regularity" of pattern_values.
+                        # Regularity: e.g., forms a more complete arithmetic sequence.
+                        
+                        temp_pattern_values_with_v_test = sorted(pattern_values + [v_test])
+                        
+                        # Measure regularity: e.g., how many elements form an arithmetic progression?
+                        # Simplified: Check if v_test fills a "gap" or extends the sequence arithmetically.
+                        # Example: if pattern_values = [2, 4, 8, 10] (skip is constant, diffs are 2)
+                        # If v_test = 6, it fills a gap. If v_test = 0 or 12, it extends.
+                        
+                        # Heuristic for "enhancement":
+                        # 1. Basic fit score (from pattern_strength_initial)
+                        enhancement_score = pattern_strength_initial * 0.5 # Base for fitting the skip
+
+                        # 2. Bonus for sequence completion/extension
+                        #    Requires analyzing `temp_pattern_values_with_v_test` for arithmetic progression.
+                        #    This is complex. A simpler proxy: is v_test "close" to the existing pattern_values?
+                        if len(pattern_values) >= 1:
+                            min_val_in_pattern = pattern_values[0]
+                            max_val_in_pattern = pattern_values[-1]
+                            avg_diff_in_pattern = 0
+                            if len(pattern_values) > 1:
+                                diffs = np.diff(pattern_values)
+                                if len(diffs)>0 : avg_diff_in_pattern = np.mean(diffs)
+
+                            # If v_test extends the sequence
+                            if math.isclose(v_test, max_val_in_pattern + avg_diff_in_pattern) if avg_diff_in_pattern > 0 else False:
+                                enhancement_score += pattern_strength_initial * 0.3
+                            elif math.isclose(v_test, min_val_in_pattern - avg_diff_in_pattern) if avg_diff_in_pattern > 0 else False:
+                                enhancement_score += pattern_strength_initial * 0.3
+                            
+                            # If v_test fills an internal gap (harder to check simply)
+                            # Simplified: if v_test is between min and max and maintains some regularity
+                            # For now, geometric fit is the main driver, regularity bonus is small addition.
+
+                        current_confidence_for_v_test = max(current_confidence_for_v_test, enhancement_score)
+                
+                if current_confidence_for_v_test > max_confidence_score_for_cell:
+                    max_confidence_score_for_cell = current_confidence_for_v_test
+            
+            scores[r_idx, c_idx] = max_confidence_score_for_cell
+            
+    return scores
+
+
+# (All 22 EXT_GM modules should be defined before this point in a complete file)
+# Make sure all GM module functions from the previous response (GM3-GM14) are included here.
+# For this segment, I'm assuming they are already defined above this point.
+# The example below only lists a few for brevity in this specific segment.
+# In the FINAL combined code, ALL ext_..._vec functions MUST be present.
+
+# Placeholder for GM3-GM14 definitions if they were not in the prior "Part 3"
+# In a real combined file, they would be here. For this snippet, assume they are present.
+# Example:
+def ext_gm3_adv_connected_comp_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray: # Copied from my generation context
+    """
+    Core Rule: Analyzes the size and density of the connected homogeneous region the cell belongs to using BFS/DFS.
+    Purpose: Identifies large, coherent clusters of similar-valued cells.
+    ---
+    Design Philosophy: Based on graph theory's "connected components". Finds regions of similar values (within a tolerance).
+    Use Case: Identifying large resource patches, empty areas for expansion, or consolidated territories.
+    Scoring Formula Principle: Score = w1 * normalized_area_size + w2 * normalized_area_density.
+    Compatibility: Integer grid. -1 empty. Similarity tolerance is configurable.
+    Extensibility: Weighted connectivity (cost to traverse), different connectivity types (8-conn vs 4-conn), shape analysis of components.
+    Optimization & Extension Directions: Union-find algorithm for faster component labeling on static grids, caching component properties.
+    Possible Multi-version Logic: GM3.v1 (simple neighbor emptiness), GM3.v2 (this version), GM3.v3 (component boundary analysis).
+    """
+    logger.debug(f"Executing ext_gm3_adv_connected_comp_vec", extra={'request_id': request_id})
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    if rows == 0 or cols == 0: return scores
+
+    # Parameters from previous generation for GM3
+    value_tolerance = 0.1 * 10 # Assuming values 1-10, tolerance of 1. Adjust if val_func normalizes.
+    area_size_weight = 0.6
+    area_density_weight = 0.4
+    max_bfs_steps = 100 # Max cells to explore for a component
+    
+    def val_func_gm3(x_val: int) -> Optional[float]:
+        if x_val == -1: return None # Or treat as a specific value like 0 if appropriate for "homogeneity"
+        return float(x_val)
+
+    for r_start_bfs in range(rows):
+        for c_start_bfs in range(cols):
+            start_val = val_func_gm3(grid[r_start_bfs, c_start_bfs])
+            if start_val is None:
+                scores[r_start_bfs, c_start_bfs] = 0.0 # Or a score indicating emptiness benefits
+                continue
+
+            q = deque([(r_start_bfs, c_start_bfs)])
+            visited_bfs = set([(r_start_bfs, c_start_bfs)])
+            component_cells_coords = [(r_start_bfs, c_start_bfs)]
+            steps = 0
+
+            while q and steps < max_bfs_steps:
+                r_curr, c_curr = q.popleft()
+                steps += 1
+                for dr_bfs, dc_bfs in [(0,1), (0,-1), (1,0), (-1,0)]:
+                    nr, nc = r_curr + dr_bfs, c_curr + dc_bfs
+                    if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited_bfs:
+                        neighbor_val = val_func_gm3(grid[nr, nc])
+                        if neighbor_val is not None and abs(neighbor_val - start_val) <= value_tolerance:
+                            visited_bfs.add((nr, nc))
+                            q.append((nr, nc))
+                            component_cells_coords.append((nr,nc))
+            
+            area_size = len(component_cells_coords)
+            norm_area_size = MathUtils.normalize_value(area_size, 1, rows * cols)
+
+            component_values = [val_func_gm3(grid[r_comp][c_comp]) for r_comp, c_comp in component_cells_coords]
+            component_values_clean = [v for v in component_values if v is not None]
+
+            avg_density_val = np.mean(component_values_clean) if component_values_clean else 0
+            # Normalize density (e.g. if values 1-10 for game)
+            norm_avg_density = MathUtils.normalize_value(avg_density_val, 0, 10.0, clamp=True) 
+            
+            # The score is for the starting cell, representing the component it's in.
+            # All cells in the same component would ideally get a similar score from this module if calculated for them.
+            # To make it specific for (r_start_bfs, c_start_bfs):
+            scores[r_start_bfs, c_start_bfs] = (area_size_weight * norm_area_size +
+                                                area_density_weight * norm_avg_density)
+    return scores
+
+# ... Other GM functions (GM4-GM14) from previous parts would be listed here ...
+# For this final segment, I am focusing on GM15-GM18 and then the integration.
+# It's assumed GM4-GM14 definitions provided earlier are part of the complete code.
+# (The user will concatenate all these parts)
+
 
     print("\n===== 第 6 節：最終程式碼結構、註釋與執行指南 =====")
     print("程式碼結構：所有內容已整合至此單一 main.py 檔案。")
