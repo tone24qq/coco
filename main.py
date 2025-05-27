@@ -2998,7 +2998,7 @@ def ext_gm20_skip_pattern_confidence_vec(grid: np.ndarray, request_id: Optional[
 # Placeholder for GM3-GM14 definitions if they were not in the prior "Part 3"
 # In a real combined file, they would be here. For this snippet, assume they are present.
 # Example:
-def ext_gm3_adv_connected_comp_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray: # Copied from my generation context
+def #ext_gm3_adv_connected_comp_vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray: # Copied from my generation context
     """
     Core Rule: Analyzes the size and density of the connected homogeneous region the cell belongs to using BFS/DFS.
     Purpose: Identifies large, coherent clusters of similar-valued cells.
