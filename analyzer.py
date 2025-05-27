@@ -1,18 +1,3 @@
-import os
-import json
-import math
-import time
-import uuid
-import logging
-import numpy as np
-from typing import Any, List, Dict, Tuple, Optional, Callable
-from collections import deque, Counter
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, validator
-from ortools.sat.python import cp_model
-import uvicorn
-
 # main.py (FastAPI with "Industry Extreme" Analyzer)
 
 import json
@@ -1060,7 +1045,6 @@ EXTREME_MODULE_FUNCS_VEC: Dict[str, Callable[[np.ndarray, Optional[str]], np.nda
     "EXT_F10_Discontinuity": ext_f10_structural_discontinuity_vec,
     "EXT_GM1_RowControl": ext_gm1_adv_row_control_vec,
     "EXT_GM2_ColFlow": ext_gm2_adv_col_flow_vec,
-    "EXT_GM3_ConnectedComp": ext_gm3_adv_connected_comp_vec, # Assuming GM3 was defined in a previous part
     "EXT_GM4_SpatialAutoCorr": ext_gm4_spatial_autocorrelation_vec, # Assuming GM4 was defined
     "EXT_GM5_LocalExtremum": ext_gm5_local_extremum_detector_vec, # Assuming GM5 was defined
     "EXT_GM6_PatternMatch": ext_gm6_local_pattern_match_vec, # Assuming GM6 was defined
