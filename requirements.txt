@@ -1,10 +1,5 @@
-numpy
-fastapi
-uvicorn
-ortools
-pydantic
-scipy
-tabulate
-celery
-matplotlib
-pillow
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.11.5
+numpy==2.2.6
+matplotlib==3.10.3
