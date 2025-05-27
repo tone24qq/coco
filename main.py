@@ -3439,7 +3439,7 @@ def solve_cp_for_candidates( # (As provided by user)
 # --- API Endpoint: /analyze (Updated) ---
 @app.post("/analyze", response_model=AnalyzeSuccessResponse, responses={
     200: {"model": AnalyzeSuccessResponse}, 400: {"model": AnalyzeErrorResponse},
-    422: {"model": AnalyzeErrorResponse}, 500: {"model": AnalyzeErrorResponse"}},
+    422: {"model": AnalyzeErrorResponse}, 500: {"model": AnalyzeErrorResponse}},
     tags=["Analysis Engine vExtreme"])
 async def analyze(req: AnalyzeRequest, request: Request): # (Structure from user's main.py)
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
@@ -3511,51 +3511,21 @@ async def analyze(req: AnalyzeRequest, request: Request): # (Structure from user
 
             final_obj_for_cp = raw_tf_score_cell + (mem_score_factor * current_mem_score)
 
-            # ---------------------- 多模組評分 + 詳細紀錄 -----------------------
-tf_contrib_cell = {}
-active_module_ids = []
+            all_evaluated_candidates.append(CandidateDetail(
+                pos=[r, c], value=val_proposed, is_valid_proposal=True,
+                tensor_flow_contributions=tf_contrib_cell,
+                raw_tensor_flow_score=round(raw_tf_score_cell, 4),
+                mem_score_value=round(current_mem_score, 4),
+                final_objective_score=round(final_obj_for_cp, 4) ))
 
-for mod_id, mod_func in all_heuristic_modules.items():
-    try:
-        score_map = mod_func(grid, proposed_pos=(r, c), proposed_value=val_proposed, **kwargs)
-        if isinstance(score_map, np.ndarray) and score_map.shape == grid.shape:
-            if np.any(score_map[grid == -1] > 0):
-                tf_contrib_cell[mod_id] = score_map
-                active_module_ids.append(mod_id)
-    except Exception as e:
-        print(f"[模組錯誤] {mod_id} 評分失敗：{e}")
+        candidates_for_cp_solver = [cd for cd in all_evaluated_candidates if cd.is_valid_proposal]
 
-# 顯示有哪些模組真的參與這個候選分數
-print(f"[模組參與分析] ({r},{c}) 候選 {val_proposed} 啟用模組：{active_module_ids}")
+        if not candidates_for_cp_solver:
+            return AnalyzeSuccessResponse(request_id=request_id, status="no_valid_proposals_for_cp_extreme",
+                analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME,
+                message="No valid proposals to submit to solver.", result=None,
+                all_candidates_evaluated=all_evaluated_candidates)
 
-# 總分來自所有參與模組
-raw_tf_score_cell = sum([score[r, c] for score in tf_contrib_cell.values()]) if tf_contrib_cell else 0.0
-final_obj_for_cp = raw_tf_score_cell + current_mem_score
-
-all_evaluated_candidates.append(CandidateDetail(
-    pos=[r, c], value=val_proposed, is_valid_proposal=True,
-    tensor_flow_contributions=tf_contrib_cell,
-    raw_tensor_flow_score=round(raw_tf_score_cell, 4),
-    mem_score_value=round(current_mem_score, 4),
-    final_objective_score=round(final_obj_for_cp, 4)
-))
-
-# ---------------------- CP-SAT 過濾 + 回傳 -----------------------
-candidates_for_cp_solver = [cd for cd in all_evaluated_candidates if cd.is_valid_proposal]
-
-if not candidates_for_cp_solver:
-    return AnalyzeSuccessResponse(
-        request_id=request_id,
-        status="no_valid_proposals_for_cp_extreme",
-        analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME,
-        message="No valid proposals to submit to solver.",
-        result=None,
-        all_candidates_evaluated=all_evaluated_candidates
-    )
-
-updated_candidates = await run_in_threadpool(
-    solve_cp_for_candidates, grid.shape, grid, candidates_for_cp_solver, request_id
-)
         updated_candidates = await run_in_threadpool( solve_cp_for_candidates, grid.shape, grid, candidates_for_cp_solver, request_id)
         
         # Merge results
@@ -3648,10 +3618,3 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (Version: {app.version}, Engine: {ANALYSIS_ENGINE_VERSION_EXTREME}). Access OpenAPI docs at /docs.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-
-  
-
-
