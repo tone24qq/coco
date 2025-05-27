@@ -1,8 +1,10 @@
+numpy
 fastapi
 uvicorn
-numpy>=1.20.0
-celery
-ortools==9.7.2996
+ortools
 pydantic
+scipy
 tabulate
-pandas
+celery
+matplotlib
+pillow
