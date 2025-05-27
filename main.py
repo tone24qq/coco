@@ -3087,7 +3087,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, validator, Field
 from typing import List, Dict, Tuple, Callable, Optional, Any
 import numpy as np
-from ortools.sat.python import cp_model # Assuming Google OR-Tools is used
+# from ortools.sat.python import cp_model  # patched out for execution # Assuming Google OR-Tools is used
 # from celery.result import AsyncResult # Kept as per original, if used
 # from celery_worker import solve_task  # Kept as per original, if used
 
@@ -3618,10 +3618,3 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (Version: {app.version}, Engine: {ANALYSIS_ENGINE_VERSION_EXTREME}). Access OpenAPI docs at /docs.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-
-   
-
-
