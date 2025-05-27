@@ -3618,41 +3618,10 @@ if __name__ == "__main__":
 
     logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (Version: {app.version}, Engine: {ANALYSIS_ENGINE_VERSION_EXTREME}). Access OpenAPI docs at /docs.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
-# -------------------------------------------
-# 模組批次分析函數（由 GPT 插入）
-# -------------------------------------------
-def analyze_all_modules(board: List[List[int]], proposals: List[Tuple[int, int, int]]) -> Dict[str, float]:
-    all_modules = [
-        A2("A2", "模組 A2", "分析 A2"),
-        M3("M3", "模組 M3", "分析 M3"),
-        D3("D3", "模組 D3", "分析 D3"),
-        F10("F10", "模組 F10", "分析 F10"),
-        GM1("GM1", "模組 GM1", "分析 GM1"),
-        GM2("GM2", "模組 GM2", "分析 GM2"),
-        GM3("GM3", "模組 GM3", "分析 GM3"),
-        GM4("GM4", "模組 GM4", "分析 GM4"),
-        GM5("GM5", "模組 GM5", "分析 GM5"),
-        GM6("GM6", "模組 GM6", "分析 GM6"),
-        GM7("GM7", "模組 GM7", "分析 GM7"),
-        GM8("GM8", "模組 GM8", "分析 GM8"),
-        GM9("GM9", "模組 GM9", "分析 GM9"),
-        GM10("GM10", "模組 GM10", "分析 GM10"),
-        GM11("GM11", "模組 GM11", "分析 GM11"),
-        GM12("GM12", "模組 GM12", "分析 GM12"),
-        GM13("GM13", "模組 GM13", "分析 GM13"),
-        GM14("GM14", "模組 GM14", "分析 GM14"),
-        GM15("GM15", "模組 GM15", "分析 GM15"),
-        GM16("GM16", "模組 GM16", "分析 GM16"),
-        GM17("GM17", "模組 GM17", "分析 GM17"),
-        GM18("GM18", "模組 GM18", "分析 GM18"),
-    ]
 
-    results = {}
-    for module in all_modules:
-        try:
-            results[module.module_id] = module.analyze(board, proposals)
-        except Exception as e:
-            print(f"[錯誤] 模組 {module.module_id} 分析失敗: {e}")
-            results[module.module_id] = 0.0
 
-    return results
+
+
+   
+
+
