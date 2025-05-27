@@ -3074,18 +3074,4 @@ def ext_gm3_adv_connected_comp_vec(grid: np.ndarray, request_id: Optional[str] =
 # (The user will concatenate all these parts)
 
 
-    print("\n===== 第 6 節：最終程式碼結構、註釋與執行指南 =====")
-    print("程式碼結構：所有內容已整合至此單一 main.py 檔案。")
-    print("註釋與文檔字串（含設計理念、公式原理、擴展方向等）已加入各模組。")
-    print("執行指南：")
-    print("1. 確認 Python 版本 (建議 3.8+)。")
-    print("2. 安裝必要函式庫: pip install numpy (如果尚未安裝)。")
-    print("3. 將此完整程式碼儲存為 main.py。")
-    print("4. 執行主程式: python main.py")
-    print("5. 觀察輸出，特別是各模組原始分數的差異性，以及在不同盤面和正規化方法下的融合結果。")
-
-    print("\n結論：**所有模組 analyze() 已補齊** 基於進階概念的具體評分邏輯。")
-    print("程式碼請盡量避免重複、設計思路請多樣化：已盡力達成，每個模組都有獨特的設計思路和評分邏輯。")
-    print("提醒：目前的『業界極限』實作仍為概念驗證級別，真實應用需大量測試、調優及性能優化。")
-
 
