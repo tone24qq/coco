@@ -3659,30 +3659,70 @@ async def analyze(req: AnalyzeRequest, request: Request): # (Structure from user
 async def health_analyze(request: Request): # (User's original health check structure)
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     logger.info("Health check for /analyze (EXTREME version).", extra={'request_id': request_id})
-    checks = {}; overall_status = "UP"
+    checks: Dict[str, str] = {} # 明確型態
+    overall_status: str = "UP"  # 明確型態
 
-    if not EXTREME_MODULE_FUNCS_VEC: checks["extreme_module_funcs_load"] = "FAIL"; overall_status = "DEGRADED"
-    else: checks["extreme_module_funcs_load"] = f"OK: {len(EXTREME_MODULE_FUNCS_VEC)} funcs"
-    if not EXTREME_MODULE_WEIGHTS: checks["extreme_module_weights_load"] = "FAIL"; overall_status = "DEGRADED"
-    else: checks["extreme_module_weights_load"] = f"OK: {len(EXTREME_MODULE_WEIGHTS)} weights"
-    if EXTREME_MODULE_FUNCS_VEC and EXTREME_MODULE_WEIGHTS:
+    # 檢查 EXTREME_MODULE_FUNCS_VEC
+    if not EXTREME_MODULE_FUNCS_VEC: 
+        checks["extreme_module_funcs_load"] = "FAIL"
+        overall_status = "DEGRADED"
+    else: 
+        checks["extreme_module_funcs_load"] = f"OK: {len(EXTREME_MODULE_FUNCS_VEC)} funcs"
+    
+    # 檢查 EXTREME_MODULE_WEIGHTS
+    if not EXTREME_MODULE_WEIGHTS: 
+        checks["extreme_module_weights_load"] = "FAIL"
+        overall_status = "DEGRADED"
+    else: 
+        checks["extreme_module_weights_load"] = f"OK: {len(EXTREME_MODULE_WEIGHTS)} weights"
+    
+    # 檢查 funcs 和 weights 是否匹配
+    if EXTREME_MODULE_FUNCS_VEC and EXTREME_MODULE_WEIGHTS: 
         missing = [n for n in EXTREME_MODULE_FUNCS_VEC if n not in EXTREME_MODULE_WEIGHTS]
-        if missing: checks["extreme_funcs_weights_match"] = f"WARN: Missing weights: {missing}"; overall_status = "DEGRADED"
-        else: checks["extreme_funcs_weights_match"] = "OK"
+        if missing: 
+            checks["extreme_funcs_weights_match"] = f"WARN: Missing weights: {missing}"
+            overall_status = "DEGRADED" 
+        else: 
+            checks["extreme_funcs_weights_match"] = "OK"
     
-    if not os.path.exists(MEM_PATH): checks["memory_file_exists"] = f"FAIL: {MEM_PATH} not found"; overall_status="DEGRADED"
-    else: checks["memory_file_exists"] = "OK"
+    # 檢查記憶體檔案是否存在
+    if not os.path.exists(MEM_PATH): 
+        checks["memory_file_exists"] = f"FAIL: {MEM_PATH} not found"
+        overall_status="DEGRADED"
+    else: 
+        checks["memory_file_exists"] = "OK"
     
+    # 測試 extreme_tensor_flow_score_detailed 函數執行
     try:
-        dummy_grid = np.array([[-1, 1, 5, 0], [2, -1, 8, 3], [4, 6, -1, 7], [0,0,0,0]], dtype=int)
-        _, _ = extreme_tensor_flow_score_detailed(dummy_grid, "health_check_extreme_tf")
+        dummy_grid = np.array([[-1, 1, 5, 0], [2, -1, 8, 3], [4, 6, -1, 7], [0,0,0,0]], dtype=int) 
+        _, _ = extreme_tensor_flow_score_detailed(dummy_grid, "health_check_extreme_tf") 
         checks["extreme_tf_execution_test"] = "OK"
-    except Exception as e: checks["extreme_tf_execution_test"] = f"FAIL: {str(e)}"; logger.error("Health: extreme_tf test FAIL.", exc_info=True, extra={'request_id': request_id}); overall_status="ERROR"
-    try: _ = cp_model.CpModel(); checks["cp_solver_avail_test"] = "OK"
-    except Exception as e: checks["cp_solver_avail_test"] = f"FAIL: {str(e)}"; logger.error("Health: CP Solver test FAIL.", exc_info=True, extra={'request_id': request_id}); overall_status="ERROR"
+    except Exception as e: 
+        checks["extreme_tf_execution_test"] = f"FAIL: {str(e)}"
+        logger.error("Health: extreme_tf test FAIL.", exc_info=True, extra={'request_id': request_id})
+        overall_status="ERROR"
+    
+    # 測試 CP Solver 是否可用
+    try: 
+        _ = cp_model.CpModel() 
+        checks["cp_solver_avail_test"] = "OK"
+    except Exception as e: 
+        checks["cp_solver_avail_test"] = f"FAIL: {str(e)}"
+        logger.error("Health: CP Solver test FAIL.", exc_info=True, extra={'request_id': request_id})
+        overall_status="ERROR"
 
-    return AnalyzeHealthStatus(status=overall_status, analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME, checks=checks,
-                               components={"numpy": np.__version__, "ortools": getattr(cp_model, '__version__', "unknown"), "analyzer_type": "Extreme Logic Modules v22"})
+    # 返回 AnalyzeHealthStatus 實例
+    return AnalyzeHealthStatus(
+        status=overall_status, 
+        analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME, 
+        checks=checks,
+        components={
+            "numpy": np.__version__, 
+            "ortools": getattr(cp_model, '__version__', "unknown"), 
+            "analyzer_type": "Extreme Logic Modules v22"
+        }
+    )
+
 
 # --- Celery Task Definition (User's original, if used) ---
 # from celery_worker import app as celery_app # Assuming celery_app is defined in celery_worker.py
