@@ -16,7 +16,7 @@ class MathUtils:
     """
     提供通用數學工具，所有模組統一計算風格
     """
-    @staticmethod
+    
     def sigmoid(x: float, k: float = 1.0) -> float:
         """安全型 sigmoid，避免 overflow"""
         try:
@@ -55,7 +55,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
 #     return np.zeros_like(grid, dtype=float)
 # REGISTERED_MODULES_BRAIN['LIMIT_SAMPLE_MODULE_FN'] = sample_module
  
-   @staticmethod
+   
    def normalize_value(value: float, min_val: float, max_val: float, clamp: bool = True) -> float:
        """
        Normalizes a value to the [0, 1] range.
@@ -75,17 +75,17 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
            return max(0.0, min(1.0, normalized)) #
        return normalized #
  
-   @staticmethod
+   
    def manhattan_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
        """ Calculates Manhattan distance between two points (r, c). """ #
        return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) # Corrected from source 42
  
-   @staticmethod
+   
    def euclidean_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> float:
        """ Calculates Euclidean distance between two points (r, c). """ #
        return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2) # Corrected from source 43
  
-   @staticmethod
+   
    def get_entropy(values: List[Any]) -> float:
        """Calculates Shannon entropy for a list of values.""" #
        if not values: #
@@ -103,7 +103,7 @@ class BoardAnalyzerUtils:
    Provides common board analysis utility functions.
    Used by modules to inspect grid neighborhoods, gradients, etc.
    """
-   @staticmethod
+   
    def get_neighborhood_values(grid: np.ndarray, r: int, c: int, radius: int = 1,
                                eight_connectivity: bool = True,
                                val_func: Callable[[int], Optional[float]] = lambda x_val: float(x_val) if x_val != -1 else None, #
@@ -132,7 +132,7 @@ class BoardAnalyzerUtils:
                        neighbors.append(processed_val) #
        return neighbors #
  
-   @staticmethod
+   
    def get_value_gradient_at_cell(grid: np.ndarray, r: int, c: int,
                                   val_func: Callable[[int], float] = lambda x_val: float(x_val) if x_val != -1 else 0.0) -> Tuple[float, float]: #
        """
@@ -152,7 +152,7 @@ class BoardAnalyzerUtils:
             (safe_val(r-1, c-1) + 2*safe_val(r-1, c) + safe_val(r-1, c+1)) #
        return gx, gy #
  
-   @staticmethod
+   
    def find_sequences_in_line(line: List[int], min_len: int = 3,
                               check_arithmetic: bool = True, check_geometric: bool = False) -> List[List[int]]: #
        """
@@ -1140,6 +1140,410 @@ def EXT_GM5_Line_Completion_Vec(grid: np.ndarray, request_id: Optional[str] = "N
            
    return scores #
  
+import numpy as np
+
+# -----------------------------------------------------------------------------
+# Module Implementations
+# -----------------------------------------------------------------------------
+
+# --- Template for new modules ---
+# def EXT_XXX_ModuleName(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+# """
+# Docstring explaining the module's purpose, parameters, and return value.
+# Parameters:
+# grid (np.ndarray): The input grid.
+# args: Additional positional arguments.
+# kwargs: Additional keyword arguments.
+# Returns:
+# np.ndarray: A numpy array representing the scores or transformed grid.
+# """
+# # Module logic here
+# return np.zeros_like(grid, dtype=float) # Placeholder return
+
+def EXT_A2_Weighted_Proximity_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Calculates scores based on weighted proximity to certain features.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_M3_Local_Heterogeneity_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Measures the local heterogeneity or diversity of elements.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_D3_Potential_Field_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Applies a potential field concept for scoring.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_F10_Discontinuity_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Detects and scores discontinuities in the grid.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_P7_Pathfinding_Value_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Evaluates grid cells based on pathfinding values or costs.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_R5_Resource_Control_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Assesses control over resources or key areas.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM1_Row_Control_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Evaluates control or patterns within rows.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM2_Col_Flow_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Analyzes flow or sequences within columns.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM3_Adv_Connected_Comp_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Advanced analysis of connected components.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM4_Spatial_Auto_Corr_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Calculates spatial auto-correlation.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM5_Line_Completion_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Scores based on potential for line completion.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM6_Symmetry_Potential_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Evaluates symmetry potential within the grid.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM7_Numeric_Gaps_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Identifies and scores numeric gaps or sequences.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM8_Edge_Affinity_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Measures affinity or attraction to edges/borders.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM9_Center_Control_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Assesses control or influence over the center of the grid.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM10_Blocking_Value_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Evaluates the strategic value of blocking opponent moves.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM11_Pair_Correlation_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Analyzes correlations between pairs of cells or values.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM12_Island_Analysis_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Identifies and analyzes isolated groups or 'islands' of cells.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM13_Sequence_Diversity_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Measures the diversity of sequences or patterns.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM14_Risk_Assessment_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Assesses risks associated with certain configurations or areas.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM15_Information_Gain_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Evaluates potential moves based on information gain.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM16_Harmonic_Centrality_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Calculates harmonic centrality for grid cells.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM17_Entropy_Minimization_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Scores based on the principle of entropy minimization.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM18_RL_Value_Est_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Estimates value using a reinforcement learning based approach.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM19_Masked_Number_Skip_Pattern_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Identifies skip patterns in masked numbers.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Assesses the confidence of identified skip patterns.
+    Parameters:
+        grid (np.ndarray): The input grid.
+    Returns:
+        np.ndarray: Score array.
+    """
+    # Placeholder logic
+    return np.zeros_like(grid, dtype=float)
+
+
+# -----------------------------------------------------------------------------
+# Module Registration
+# -----------------------------------------------------------------------------
+
+REGISTERED_MODULES_BRAIN = {
+    "EXT_A2_Weighted_Proximity_Vec": EXT_A2_Weighted_Proximity_Vec,
+    "EXT_M3_Local_Heterogeneity_Vec": EXT_M3_Local_Heterogeneity_Vec,
+    "EXT_D3_Potential_Field_Vec": EXT_D3_Potential_Field_Vec,
+    "EXT_F10_Discontinuity_Vec": EXT_F10_Discontinuity_Vec,
+    "EXT_P7_Pathfinding_Value_Vec": EXT_P7_Pathfinding_Value_Vec,
+    "EXT_R5_Resource_Control_Vec": EXT_R5_Resource_Control_Vec,
+    "EXT_GM1_Row_Control_Vec": EXT_GM1_Row_Control_Vec,
+    "EXT_GM2_Col_Flow_Vec": EXT_GM2_Col_Flow_Vec,
+    "EXT_GM3_Adv_Connected_Comp_Vec": EXT_GM3_Adv_Connected_Comp_Vec,
+    "EXT_GM4_Spatial_Auto_Corr_Vec": EXT_GM4_Spatial_Auto_Corr_Vec,
+    "EXT_GM5_Line_Completion_Vec": EXT_GM5_Line_Completion_Vec,
+    "EXT_GM6_Symmetry_Potential_Vec": EXT_GM6_Symmetry_Potential_Vec,
+    "EXT_GM7_Numeric_Gaps_Vec": EXT_GM7_Numeric_Gaps_Vec,
+    "EXT_GM8_Edge_Affinity_Vec": EXT_GM8_Edge_Affinity_Vec,
+    "EXT_GM9_Center_Control_Vec": EXT_GM9_Center_Control_Vec,
+    "EXT_GM10_Blocking_Value_Vec": EXT_GM10_Blocking_Value_Vec,
+    "EXT_GM11_Pair_Correlation_Vec": EXT_GM11_Pair_Correlation_Vec,
+    "EXT_GM12_Island_Analysis_Vec": EXT_GM12_Island_Analysis_Vec,
+    "EXT_GM13_Sequence_Diversity_Vec": EXT_GM13_Sequence_Diversity_Vec,
+    "EXT_GM14_Risk_Assessment_Vec": EXT_GM14_Risk_Assessment_Vec,
+    "EXT_GM15_Information_Gain_Vec": EXT_GM15_Information_Gain_Vec,
+    "EXT_GM16_Harmonic_Centrality_Vec": EXT_GM16_Harmonic_Centrality_Vec,
+    "EXT_GM17_Entropy_Minimization_Vec": EXT_GM17_Entropy_Minimization_Vec,
+    "EXT_GM18_RL_Value_Est_Vec": EXT_GM18_RL_Value_Est_Vec,
+    "EXT_GM19_Masked_Number_Skip_Pattern_Vec": EXT_GM19_Masked_Number_Skip_Pattern_Vec,
+    "EXT_GM20_Skip_Pattern_Confidence_Vec": EXT_GM20_Skip_Pattern_Confidence_Vec,
+}
+
+# -----------------------------------------------------------------------------
+# Module Query Function
+# -----------------------------------------------------------------------------
+
+def get_module_score(module_name: str, grid: np.ndarray, *args, **kwargs) -> np.ndarray:
+    """
+    Retrieves and executes a registered module by its name.
+
+    Parameters:
+        module_name (str): The name of the module to execute.
+        grid (np.ndarray): The input grid to pass to the module.
+        *args: Additional positional arguments for the module.
+        **kwargs: Additional keyword arguments for the module.
+
+    Returns:
+        np.ndarray: The output from the executed module.
+
+    Raises:
+        ValueError: If the module_name is not found in REGISTERED_MODULES_BRAIN.
+    """
+    func = REGISTERED_MODULES_BRAIN.get(module_name)
+    if not func:
+        raise ValueError(f"Module {module_name} not found in REGISTERED_MODULES_BRAIN.")
+    return func(grid, *args, **kwargs)
+
+# -----------------------------------------------------------------------------
+# Verification (Optional - for testing brain.py directly)
+# -----------------------------------------------------------------------------
+if __name__ == '__main__':
+    # Example usage for verification:
+    print("Verifying brain.py structure...")
+
+    # Create a dummy grid
+    dummy_grid = np.array([[1, 2, 0], [0, 1, 5], [3, 0, 4]])
+    print(f"Created dummy grid:\n{dummy_grid}")
+
+    # Test retrieving a module
+    module_to_test = "EXT_A2_Weighted_Proximity_Vec"
+    print(f"\nTesting get_module_score with '{module_to_test}'...")
+    try:
+        scores = get_module_score(module_to_test, dummy_grid)
+        print(f"Successfully called {module_to_test}. Output (should be zeros_like grid):\n{scores}")
+        assert isinstance(scores, np.ndarray), "Return type is not np.ndarray"
+        assert scores.shape == dummy_grid.shape, "Return shape does not match grid shape"
+        assert scores.dtype == float, "Return dtype is not float"
+    except ValueError as e:
+        print(f"Error: {e}")
+
+    # Test retrieving a non-existent module
+    non_existent_module = "EXT_XXX_NonExistentModule"
+    print(f"\nTesting get_module_score with non-existent module '{non_existent_module}'...")
+    try:
+        scores = get_module_score(non_existent_module, dummy_grid)
+        print(f"Output for non-existent module (should not happen):\n{scores}")
+    except ValueError as e:
+        print(f"Successfully caught error for non-existent module: {e}")
+
+    print("\nListing all registered modules:")
+    for i, name in enumerate(REGISTERED_MODULES_BRAIN.keys()):
+        print(f"{i+1}. {name}")
+
+    print(f"\nTotal modules registered: {len(REGISTERED_MODULES_BRAIN)}")
+    print("\nbrain.py verification complete.")
+
 # --- Module Registration (will be populated as modules are added) ---
 REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, Optional[str]], np.ndarray]] = {
    "EXT_A2_Weighted_Proximity_Vec": EXT_A2_Weighted_Proximity_Vec,
