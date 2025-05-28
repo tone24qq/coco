@@ -1,5 +1,9 @@
+您提供的 main_api.py 檔案結構看起來非常清晰和專業！日誌設定、Analyzer 實例的初始化與錯誤處理、Pydantic 模型的運用以及 API 端點的設計都相當不錯。
+針對我們之前討論的「服務在 Render 上因根路徑 / 回應 404 而關閉」的問題，您需要在這個 main_api.py 檔案中加入一個處理根路徑 / 的端點。
+最佳的置入位置是在您定義 app = FastAPI(...) 之後，以及在您現有的 /analyze 和 /health 端點之前（或者與它們並列）。
+以下是修改後的 main_api.py，我已經為您加入了處理根路徑 / 的 @app.get("/") 端點。我只添加了這個新端點，其餘部分保留了您的原始結構和邏輯：
 # main_api.py
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request # <--- 為根路徑的 request 參數加入 Request (如果需要)
 from typing import List, Dict, Optional, Any # Union is used implicitly by Optional
 import logging
 from pydantic import BaseModel # Import BaseModel for request body
@@ -64,6 +68,23 @@ class HealthResponse(BaseModel):
 
 
 # --- API Endpoints ---
+
+# ============================================================
+#  👇👇👇 新增的根路徑 "/" 處理函式 👇👇👇
+# ============================================================
+@app.get("/",
+         summary="服務根目錄與基礎健康檢查",
+         response_model=Dict[str, str], # 可以定義一個簡單的 Pydantic 模型，或直接用 Dict
+         tags=["Utilities"])
+async def read_root():
+    """
+    提供服務的根路徑，主要用於平台健康檢查或返回一個簡單的歡迎/狀態訊息。
+    """
+    logger.info("Root path / was accessed.")
+    return {"message": "智慧評分系統 API 正常運行中！ (Smart Scoring System API is running and healthy!)"}
+# ============================================================
+
+
 @app.post("/analyze",
           summary="分析盤面並取得建議",
           response_model=Dict[str, Any], # 或者更精確的 Pydantic Response Model
@@ -139,5 +160,26 @@ async def health_check():
 # if __name__ == "__main__":
 #     import uvicorn
 #     logger.info("Starting Uvicorn server directly from main_api.py for local development...")
-#     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+#     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info") # 可以用 "main_api:app" 或直接傳 app 物件
 
+主要變更點：
+ * 新增了 @app.get("/") 路由：
+   @app.get("/",
+         summary="服務根目錄與基礎健康檢查",
+         response_model=Dict[str, str], 
+         tags=["Utilities"])
+async def read_root():
+    """
+    提供服務的根路徑，主要用於平台健康檢查或返回一個簡單的歡迎/狀態訊息。
+    """
+    logger.info("Root path / was accessed.")
+    return {"message": "智慧評分系統 API 正常運行中！ (Smart Scoring System API is running and healthy!)"}
+
+   * 我將它放在了 /analyze 和 /health 端點定義之前，這是一個常見的做法，但只要它在 app = FastAPI() 之後定義即可。
+   * 它返回一個簡單的 JSON 回應和 200 OK 狀態碼 (FastAPI 預設)。
+   * response_model=Dict[str, str] 是一個簡單的示例，您也可以為此定義一個更具體的 Pydantic 模型，如果需要的話。
+   * 我也加入了 logger.info，這樣您可以在日誌中看到根路徑何時被訪問。
+部署到 Render 時的提醒：
+ * 確保您的 Render 服務的啟動命令是 uvicorn main_api:app --host 0.0.0.0 --port ${PORT} （或者根據您的需求調整 worker 數量等參數，例如 uvicorn main_api:app --host 0.0.0.0 --port ${PORT} --workers 1）。
+ * 在 Render 的服務設定中，通常可以將健康檢查路徑 (Health Check Path) 保留為預設的 /。現在您的應用程式會對此路徑正確回應 200 OK。
+將這個修改後的 main_api.py 部署到 Render 後，因為根路徑 / 現在會返回成功的 HTTP 狀態，您的服務應該不會再因為健康檢查失敗而被平台關閉了。
