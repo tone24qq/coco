@@ -2,9 +2,31 @@
 import random
 import math
 import numpy as np
+from new_module import PuzzleTensorOps
 from typing import List, Dict, Tuple, Any, Optional # <--- 在這裡加入了 Optional
 from collections import Counter, deque
+def get_pto(board_shape=(5,5), value=0):
+    board = np.full(board_shape, value, dtype=int)
+    return PuzzleTensorOps(board)
 
+# ===== 全域 PTO，開局直接掛載 =====
+pto = get_pto((7,7), value=-1)
+print("PTO 盤面內容:\n", pto.grid_view)
+
+# ===== 你原本的主流程繼續寫 =====
+def main():
+    # ...任何流程都可用 pto 或 get_pto 新建
+    # 例如：
+    print("PTO 盤面 shape:", pto.shape)
+    # 隨時用 PTO 的方法
+    print("空格總數:", pto.count_true_along_axis(axis=None))
+    # 用 PTO 做進階操作...
+    new_pto = get_pto((4,4), value=99)
+    print("新 PTO 盤面內容:\n", new_pto.grid_view)
+    # ...你自己所有的 AI/for/分析流程
+
+if __name__ == "__main__":
+    main()
 # -----------------------------------------------------------------------------
 # 0. 輔助工具 (可能被某些高級模組使用)
 # -----------------------------------------------------------------------------
