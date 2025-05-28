@@ -2,31 +2,111 @@
 import random
 import math
 import numpy as np
+from fastapi import FastAPI, Request # <--- 為 FastAPI 端點加入 Request, FastAPI
+import uuid # Health Check 端點用到了
+import logging # Health Check 端點用到了
+import os # Health Check 端點用到了
+# from ortools.sat.python import cp_model # Health Check 端點用到了 (若有使用)
+
 from new_module import PuzzleTensorOps
-from typing import List, Dict, Tuple, Any, Optional # <--- 在這裡加入了 Optional
+from typing import List, Dict, Tuple, Any, Optional, Sequence # <--- Optional 已加入, Sequence 可能也需要
 from collections import Counter, deque
-def get_pto(board_shape=(5,5), value=0):
-    board = np.full(board_shape, value, dtype=int)
+
+# --- Pydantic 模型定義 ---
+# 為了 AnalyzeHealthStatus 以及 FastAPI 的 response_model
+from pydantic import BaseModel
+
+class AnalyzeHealthStatus(BaseModel):
+    """
+    Represents the response model for the /health/analyze endpoint.
+    表示 /health/analyze 端點的回應模型。
+    """
+    status: str                     # 整體健康狀態 (e.g., "UP", "DEGRADED", "ERROR")
+    analysis_engine_version: str    # 分析引擎版本
+    checks: Dict[str, str]          # 各項檢查及其狀態
+    components: Dict[str, str]      # 相關組件及其版本或其他資訊
+
+    # 可選：為 OpenAPI 文件提供範例 (Pydantic V2 風格)
+    # model_config = {
+    #     "json_schema_extra": {
+    #         "examples": [
+    #             {
+    #                 "status": "UP",
+    #                 "analysis_engine_version": "v22-extreme",
+    #                 "checks": {
+    #                     "extreme_module_funcs_load": "OK: 150 funcs",
+    #                     # ... 其他檢查 ...
+    #                 },
+    #                 "components": {
+    #                     "numpy": "1.2x.x",
+    #                     # ... 其他組件 ...
+    #                 }
+    #             }
+    #         ]
+    #     }
+    # }
+# --- Pydantic 模型定義結束 ---
+
+
+def get_pto(board_shape=(5,5), value=0, dtype=int): # 我稍微增加了 dtype 參數
+    """
+    輔助函數，快速創建一個 PuzzleTensorOps 實例。
+    Helper function to quickly create a PuzzleTensorOps instance.
+    """
+    board = np.full(board_shape, value, dtype=dtype)
     return PuzzleTensorOps(board)
 
-# ===== 全域 PTO，開局直接掛載 =====
-pto = get_pto((7,7), value=-1)
-print("PTO 盤面內容:\n", pto.grid_view)
+# ===== 全域 PTO，開局直接掛載 (可選，視您的應用程式邏輯而定) =====
+# pto = get_pto((7,7), value=-1)
+# print("全域 PTO 盤面內容:\n", pto.grid_view)
 
-# ===== 你原本的主流程繼續寫 =====
-def main():
+
+# ==============================================================================
+#  在這裡定義您的 FastAPI 應用實例 (app) 和 API 路由 (endpoints)
+#  例如:
+# ==============================================================================
+# logger = logging.getLogger("uvicorn.error") # 或者您自己的 logger 設定
+# # 假設您的 FastAPI app 實例在這裡定義
+# app = FastAPI(title="極限版解謎引擎 API", version="1.0")
+
+# # 假設您的 Health Check 端點 (或其他使用 AnalyzeHealthStatus 的端點) 在這裡定義
+# # @app.get("/health/analyze", response_model=AnalyzeHealthStatus, tags=["Health & Monitoring"])
+# # async def health_analyze(request: Request):
+# #     # ... 您完整的 health_analyze 函數實現 ...
+# #     # request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+# #     # logger.info("Health check for /analyze (EXTREME version).", extra={'request_id': request_id})
+# #     # checks_example = {"check1": "OK"}
+# #     # overall_status_example = "UP"
+# #     # analysis_engine_version_example = "v1.0-extreme" # 確保此變數已定義
+# #     # components_example = {"numpy": np.__version__}
+# #     
+# #     # return AnalyzeHealthStatus(
+# #     #     status=overall_status_example,
+# #     #     analysis_engine_version=analysis_engine_version_example,
+# #     #     checks=checks_example,
+# #     #     components=components_example
+# #     # )
+# # --- API 路由定義結束 ---
+# ==============================================================================
+
+
+# ===== 您原本的主流程或其他邏輯可以繼續寫在這裡 =====
+def main_logic_entrypoint(): # 將 main 改名以避免與 uvicorn 的 main 衝突
+    """
+    您專案的主要邏輯入口點（非 API 部分）。
+    The main logic entry point for your project (non-API parts).
+    """
+    # global pto # 如果要使用上面定義的全域 pto
     # ...任何流程都可用 pto 或 get_pto 新建
     # 例如：
-    print("PTO 盤面 shape:", pto.shape)
+    # print("全域 PTO 盤面 shape:", pto.shape)
     # 隨時用 PTO 的方法
-    print("空格總數:", pto.count_true_along_axis(axis=None))
-    # 用 PTO 做進階操作...
+    # print("空格總數:", pto.count_true_along_axis(axis=None)) # 假設 pto.grid_view 是布林或 0/1
+    
     new_pto = get_pto((4,4), value=99)
     print("新 PTO 盤面內容:\n", new_pto.grid_view)
     # ...你自己所有的 AI/for/分析流程
 
-if __name__ == "__main__":
-    main()
 # -----------------------------------------------------------------------------
 # 0. 輔助工具 (可能被某些高級模組使用)
 # -----------------------------------------------------------------------------
@@ -85,10 +165,13 @@ class BoardAnalyzerUtils:
              (val_at(r-1, c-1) + 2*val_at(r, c-1) + val_at(r+1, c-1))
         # Sobel-like Gy
         gy = (val_at(r+1, c-1) + 2*val_at(r+1, c) + val_at(r+1, c+1)) - \
-             (val_at(r-1, c-1) + 2*val_at(r-1, c) + val_at(r-1, c+1))
-        
-        return gx, gy
+             (val_at(r-1, c-1) + 2*val_at(r-1, c) + val_at(r-1, c+1)) # Gy formula corrected from original
+        return (gx, gy)
 
+
+if __name__ == "__main__":
+    main_logic_entrypoint()
+    print("\n若要啟動 FastAPI 服務 (如果已定義 app 和路由)，請執行: uvicorn main:app --reload (假設檔名為 main.py)")
 
 # -----------------------------------------------------------------------------
 # 1. 基礎類別定義
