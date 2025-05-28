@@ -14,6 +14,14 @@ from pydantic import BaseModel
 from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, ModuleNotFoundError, ModuleExecutionError, VisualizationError
 import main as main_logic_module # TODO: User to verify this is the correct GM logic module
 
+try:
+    EXTREME_MODULE_FUNCS_VEC = list(main_logic_module.registered_modules.keys())
+    # 預設所有權重都是 1.0（你也可以寫成 main.py 給的自訂權重）
+    EXTREME_MODULE_WEIGHTS = {k: 1.0 for k in EXTREME_MODULE_FUNCS_VEC}
+except Exception as e:
+    EXTREME_MODULE_FUNCS_VEC = []
+    EXTREME_MODULE_WEIGHTS = {}
+    logger.error("自動同步 EXTREME_MODULE_FUNCS_VEC/WEIGHTS 失敗: %s", e)
 # --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
