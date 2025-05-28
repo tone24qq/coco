@@ -22,7 +22,7 @@ class AutoRegisteredScoringModuleBase:
     def get_output(self) -> np.ndarray:
         raise NotImplementedError(f"{self.__class__.__name__} must implement the 'get_output' method.")
 
-def is_ultimate_scoring_class(obj: Any, ...) -> bool:
+def is_ultimate_scoring_class(obj: Any, ) -> bool:
     # ... (與極致版相同，可能微調日誌)
     if not inspect.isclass(obj):
         return False
@@ -52,7 +52,7 @@ def is_ultimate_scoring_class(obj: Any, ...) -> bool:
     return False
 
 
-def create_ultimate_module_wrapper(cls_obj: type, ...) -> Callable:
+def create_ultimate_module_wrapper(cls_obj: type, ) -> Callable:
     # ... (與極致版相同，確保輸出類型轉換 np.array(processed_array) 包含在內)
     # ...
     #            if not isinstance(processed_array, np.ndarray):
@@ -232,7 +232,7 @@ def current_limit_auto_register(
                         if file_hash: # If hashing was successful
                             if file_hash in scanned_file_hashes:
                                 msg = (f"DUPLICATE CONTENT: File '{filepath}' has identical content to "
-                                       f"'{scanned_file_hashes[file_hash][0]}'. Hash: {file_hash[:8]}...")
+                                       f"'{scanned_file_hashes[file_hash][0]}'. Hash: {file_hash[:8]}")
                                 logger.warning(msg)
                                 processed_logs.append(msg)
                                 scanned_file_hashes[file_hash].append(filepath)
@@ -323,7 +323,7 @@ def current_limit_auto_register(
 
                     wrapper_func = create_ultimate_module_wrapper( # Using the ultimate wrapper
                         member_obj, 
-                        apply_normalization=apply_normalization_to_wrappers
+                    
                     )
                     target_register_dict[registration_key] = wrapper_func
                     msg = f"Registered: '{registration_key}' (from {importable_module_name}.{member_name})."
@@ -386,51 +386,37 @@ def current_limit_auto_register(
 
 # --- Example Usage (Similar to ultimate, adjust parameters like auto_create_init_py) ---
 if __name__ == '__main__':
+    print(">>>>已進入簡化版 <<<<<")
+    from typing import Dict, Callable
+    import numpy as np
+
     class DummyBrain:
         REGISTERED_MODULES_BRAIN: Dict[str, Callable] = {}
+
     brain = DummyBrain()
 
-    project_root = "current_limit_demo"
-    modules_pkg_dir = os.path.join(project_root, "my_pkg") # This will be a package
-    module_in_pkg = os.path.join(modules_pkg_dir, "feature_module.py")
-    
-    os.makedirs(modules_pkg_dir, exist_ok=True) # Create 'my_pkg' dir, but no __init__.py initially
+    registration_logs = current_limit_auto_register(
+        target_register_dict=brain.REGISTERED_MODULES_BRAIN,
+        scan_paths=['.'],  # <<<<<< 這一行要用 '.'，千萬不能再寫 project_root
+        auto_create_init_py=True,
+        recursive_scan=True,
+        force_override=True,
+        enable_testing=True
+    )
 
-    # Module that will benefit from auto_create_init_py
-    module_content = f"""
-import numpy as np
-from {__name__} import AutoRegisteredScoringModuleBase # Assuming base class is accessible
-
-class MyFeatureInPackage(AutoRegisteredScoringModuleBase):
-    def get_output(self) -> np.ndarray:
-        return self.grid * 100 + 42
-
-# A class that returns a list, to test auto-correction (type coercion)
-class ListReturnerModule:
-    _is_autoregister_module_via_decorator = True # Example marker
-    def __init__(self, grid): self.grid = grid
-    def get_output(self): # Returns list
-        return (self.grid.flatten() / 2).tolist() 
-"""
-    with open(module_in_pkg, "w", encoding="utf-8") as f:
-        f.write(module_content)
-
-    # Create a duplicate content file
-    duplicate_check_dir = os.path.join(project_root, "duplicate_checks")
-    os.makedirs(duplicate_check_dir, exist_ok=True)
-    with open(os.path.join(duplicate_check_dir, "original_content.py"), "w", encoding="utf-8") as f:
-        f.write("CONTENT_FOR_DUPLICATE_CHECK = True\nprint('original')")
-    with open(os.path.join(duplicate_check_dir, "copy_of_content.py"), "w", encoding="utf-8") as f:
-        f.write("CONTENT_FOR_DUPLICATE_CHECK = True\nprint('original')") # Identical content
-    with open(os.path.join(duplicate_check_dir, "different_content.py"), "w", encoding="utf-8") as f:
-        f.write("DIFFERENT_CONTENT = False\nprint('different')")
+    print("\n=== 註冊結果 ===")
+    for log in registration_logs:
+        print(log)
+    print("\n=== 註冊到的 modules ===")
+    for name in brain.REGISTERED_MODULES_BRAIN:
+        print(name)
 
 
     logger.info("--- Starting 'Current Achievable Limit' Auto Module Registration Example ---")
     
     registration_logs = current_limit_auto_register(
         target_register_dict=brain.REGISTERED_MODULES_BRAIN,
-        scan_paths=[project_root], # Scan the project root
+        scan_paths=['.'], # Scan the project root
         auto_create_init_py=True,  # <<<<<< Enable this new feature
         recursive_scan=True,
         force_override=True,
