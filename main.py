@@ -3760,6 +3760,11 @@ if __name__ == "__main__":
         dummy_mem_data = {"memory_cards": [[[1,2,-1,4],[-1,3,1,5],[2,-1,3,6],[7,8,9,-1]]]} 
         with open(MEM_PATH, "w") as f_mem_main: json.dump(dummy_mem_data, f_mem_main)
         load_memory_data("main_startup_dummy_mem")
+# 在您的 FastAPI app = FastAPI() 定義之後
+@app.get("/", status_code=200, tags=["Root"])
+async def read_root():
+    return {"message": "Welcome to the PuzzleTensorOps Extreme Analysis Service! Service is healthy."}
 
     logger.info(f"Starting Uvicorn server for EXTREME Analyzer FastAPI app (Version: {app.version}, Engine: {ANALYSIS_ENGINE_VERSION_EXTREME}). Access OpenAPI docs at /docs.")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+    
