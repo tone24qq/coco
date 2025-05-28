@@ -2532,20 +2532,35 @@ if "GM7" in GLOBAL_MODULE_WEIGHTS: GLOBAL_MODULE_WEIGHTS["GM7"] = 1.3 # 例如�
 if "GM16" in GLOBAL_MODULE_WEIGHTS: GLOBAL_MODULE_WEIGHTS["GM16"] = 1.4 # 瓶頸分析也很重要
 if "GM18" in GLOBAL_MODULE_WEIGHTS: GLOBAL_MODULE_WEIGHTS["GM18"] = 1.1 # AI價值估算
 
-# ==== ↓↓↓ 必備 for Analyzer / API 入口 ↓↓↓ ====
-# 提供 registered_modules 及 get_module_score
-registered_modules: Dict[str, Any] = {
-    module.module_id: module.score for module in REGISTERED_MODULES
-}
+# ==== ↓↓↓ 必備 for Analyzer / API 入口（安全版） ↓↓↓ ====
 
-def get_module_score(module_name: str, new_card, pv):
+# 1. 建立 module_id → instance 查詢字典
+registered_modules: Dict[str, Any] = {module.module_id: module for module in REGISTERED_MODULES}
+
+# 2. 標準 API 入口
+def get_module_score(module_id: str, new_card, pv=None):
+    """
+    取得指定模組分數。
+    - module_id: 字串，對應 module.module_id
+    - new_card: 盤面（list of list）
+    - pv: 額外參數，依模組需求可傳可不傳
+    """
     import numpy as np
+    if module_id not in registered_modules:
+        raise Exception(f"Module '{module_id}' not registered!")
     grid = np.array(new_card, dtype=int)
-    if module_name not in registered_modules:
-        raise Exception(f"Module {module_name} not registered!")
-    return registered_modules[module_name](grid, pv)
-# ==== ↑↑↑ 必備 end ↑↑↑ ====
+    # 如果你的 score 接收兩個參數就傳兩個（不然只傳 grid）
+    mod = registered_modules[module_id]
+    try:
+        if pv is not None:
+            return mod.score(grid, pv)
+        else:
+            return mod.score(grid)
+    except TypeError:
+        # 如果有的模組只吃一個參數（防呆用）
+        return mod.score(grid)
 
+# ==== ↑↑↑ 必備 end ↑↑↑ ====
 # -----------------------------------------------------------------------------
 # 4. 核心處理邏輯 (與之前版本相同)
 # -----------------------------------------------------------------------------
