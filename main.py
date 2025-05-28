@@ -2532,6 +2532,19 @@ if "GM7" in GLOBAL_MODULE_WEIGHTS: GLOBAL_MODULE_WEIGHTS["GM7"] = 1.3 # 例如�
 if "GM16" in GLOBAL_MODULE_WEIGHTS: GLOBAL_MODULE_WEIGHTS["GM16"] = 1.4 # 瓶頸分析也很重要
 if "GM18" in GLOBAL_MODULE_WEIGHTS: GLOBAL_MODULE_WEIGHTS["GM18"] = 1.1 # AI價值估算
 
+# ==== ↓↓↓ 必備 for Analyzer / API 入口 ↓↓↓ ====
+# 提供 registered_modules 及 get_module_score
+registered_modules: Dict[str, Any] = {
+    module.module_id: module.score for module in REGISTERED_MODULES
+}
+
+def get_module_score(module_name: str, new_card, pv):
+    import numpy as np
+    grid = np.array(new_card, dtype=int)
+    if module_name not in registered_modules:
+        raise Exception(f"Module {module_name} not registered!")
+    return registered_modules[module_name](grid, pv)
+# ==== ↑↑↑ 必備 end ↑↑↑ ====
 
 # -----------------------------------------------------------------------------
 # 4. 核心處理邏輯 (與之前版本相同)
