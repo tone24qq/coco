@@ -183,14 +183,14 @@ class PuzzleTensorOps:
         return f"{self.__class__.__name__}(shape={self.shape}, dtype={self.dtype}, data=\n{self._grid}\n)"
 
     def get_slice(self,
-                  slicing_object: Union[slice, int, ellipsis, np.ndarray, Sequence[Union[slice, int, ellipsis, np.ndarray]]]) -> np.ndarray:
+                  slicing_object: Union[slice, int, Ellipsis, np.ndarray, Sequence[Union[slice, int, Ellipsis, np.ndarray]]]) -> np.ndarray:
         """
         Retrieves a sub-array (slice) from the internal grid.
         從內部網格中檢索子陣列 (切片)。
 
         Parameters
         ----------
-        slicing_object : slice, int, ellipsis, np.ndarray, or sequence thereof
+        slicing_object : slice, int, Ellipsis, np.ndarray, or sequence thereof
             A valid NumPy slicing object.
             有效的 NumPy 切片物件。
 
@@ -218,7 +218,7 @@ class PuzzleTensorOps:
             raise type(e)(f"{msg_en} / {msg_zh}") from e
 
     def set_slice(self: PTO,
-                  slicing_object: Union[slice, int, ellipsis, np.ndarray, Sequence[Union[slice, int, ellipsis, np.ndarray]]],
+                  slicing_object: Union[slice, int, Ellipsis, np.ndarray, Sequence[Union[slice, int, Ellipsis, np.ndarray]]],
                   values: Union[int, float, bool, complex, np.ndarray]) -> PTO:
         """
         Sets values in a specified slice of the internal grid (in-place).
@@ -226,7 +226,7 @@ class PuzzleTensorOps:
 
         Parameters
         ----------
-        slicing_object : slice, int, ellipsis, np.ndarray, or sequence thereof
+        slicing_object : slice, int, Ellipsis, np.ndarray, or sequence thereof
             A valid NumPy slicing object defining the target region.
             定義目標區域的有效 NumPy 切片物件。
         values : scalar or np.ndarray
