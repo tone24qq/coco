@@ -1,143 +1,271 @@
 # main_api.py
-from fastapi import FastAPI, HTTPException, Body
-from typing import List, Dict, Optional, Any # Union is used implicitly by Optional
+# coding: utf-8
+
+from fastapi import FastAPI, HTTPException, Body, Request
+from typing import List, Dict, Optional, Any, Tuple, Callable
 import logging
-from pydantic import BaseModel # Import BaseModel for request body
+import uuid
+import os
+import numpy as np
+from pydantic import BaseModel
 
-# 假設 analyzer.py 和 main.py (提供模組) 在同一個目錄或 Python 路徑中
-from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, ModuleNotFoundError, ModuleExecutionError, VisualizationError # 從 analyzer.py 匯入 Analyzer 和相關錯誤類別
-
-# ==============================================================================
-# TODO: 非常重要！請確認這裡匯入的是你包含 GM 模組的正確檔案
-# 如果你的 GM 模組檔案不叫 main.py，請修改下面的 'main'
-# 例如：import my_gm_logic as main_logic_module
-import main as main_logic_module
-# ==============================================================================
-
-
-# --- Logging Setup ---
-# 確保 API 層也有日誌記錄
+# --- Logging Setup (一定要在 try/except 前) ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
 )
-logger = logging.getLogger("api") # 給 API 相關的日誌一個獨立的 logger name
+logger = logging.getLogger("extreme_api_service")
 
+# --- Module Imports ---
+from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, ModuleNotFoundError, ModuleExecutionError, VisualizationError
+import main as main_logic_module  # TODO: 確認 main.py 是否就是你的 GM 大腦
 
-# --- FastAPI App Setup ---
-app = FastAPI(
-    title="智慧評分系統 API",
-    description="提供盤面分析與評分建議的 API 服務。",
-    version="1.0.0"
-)
-
-
-# --- Analyzer Instance ---
-# 你需要確保 main_logic_module 是你實際包含 GMs 模組的 main.py
-# 這裡假設 main_logic_module 符合 Analyzer 的期望
-analyzer_instance: Optional[Analyzer] = None # 最好先定義一個預設值並註明類型
 try:
-    # 下面這行是第 30 行左右 (根據你之前的截圖)，已修正縮排
-    analyzer_instance = Analyzer(main_module=main_logic_module, default_top_n=3)
-    logger.info("Analyzer instance created successfully for the API using main_logic_module: %s", getattr(main_logic_module, '__name__', 'N/A'))
-except InitializationError as e_init: # 更具體地捕獲 Analyzer 初始化錯誤
-    logger.critical("CRITICAL: Failed to initialize Analyzer during API startup: %s", e_init, exc_info=True)
-    # 在這種情況下，analyzer_instance 將保持為 None，API 端點會返回服務不可用
-except Exception as e: # 捕獲其他可能的匯入或配置錯誤
-    logger.critical("CRITICAL: An unexpected error occurred during Analyzer initialization for API: %s", e, exc_info=True)
-    # analyzer_instance 保持為 None
+    EXTREME_MODULE_FUNCS_VEC = list(main_logic_module.registered_modules.keys())
+    EXTREME_MODULE_WEIGHTS = {k: 1.0 for k in EXTREME_MODULE_FUNCS_VEC}
+except Exception as e:
+    EXTREME_MODULE_FUNCS_VEC = []
+    EXTREME_MODULE_WEIGHTS = {}
+    logger.error("自動同步 EXTREME_MODULE_FUNCS_VEC/WEIGHTS 失敗: %s", e)
 
+ANALYSIS_ENGINE_VERSION_EXTREME: str = "1.1.0-extreme"
+MEM_PATH: str = "data/persistent_memory.json" # Placeholder
 
-# --- API Request Body Model (using Pydantic from FastAPI) ---
+class MockCPModel:
+    __version__: str = "9.9.mock"
+    def CpModel(self):
+        logger.info("[Placeholder] MockCPModel.CpModel() invoked.")
+        pass
+cp_model = MockCPModel()
+
+def extreme_tensor_flow_score_detailed(grid: np.ndarray, request_id_context: str) -> Tuple[np.ndarray, List[List[Dict[str, Any]]]]:
+    logger.info(f"[Placeholder] extreme_tensor_flow_score_detailed for {request_id_context}, grid: {grid.shape}")
+    scores = np.random.rand(*grid.shape).astype(np.float32) * 10
+    contributions = [[{"rule": f"dummy_r{r}_c{c}", "value": np.random.random()} for c in range(grid.shape[1])] for r in range(grid.shape[0])]
+    return scores, contributions
+
+async def run_in_threadpool(func: Callable, *args: Any, **kwargs: Any) -> Any:
+    logger.info(f"[Placeholder] Synchronously executing {func.__name__} via run_in_threadpool placeholder.")
+    return func(*args, **kwargs)
+
+def get_legal_values_for_placement(grid: np.ndarray) -> set:
+    logger.info(f"[Placeholder] get_legal_values_for_placement for grid: {grid.shape}")
+    return set(range(1, int(np.max(grid) if grid.size > 0 else 9) + 1))
+
+def get_card_max_value(grid: np.ndarray) -> Optional[int]:
+    logger.info(f"[Placeholder] get_card_max_value for grid: {grid.shape}")
+    return int(np.max(grid)) if grid.size > 0 else 9
+
+def mem_score(r: int, c: int, val: int, context_set: set) -> float:
+    logger.info(f"[Placeholder] mem_score for ({r},{c}) val {val} context_size {len(context_set)}")
+    return np.random.random() * 5.0
+
+# --- Pydantic Models ---
+class HealthResponse(BaseModel):
+    status: str
+    message: Optional[str] = None
+    reason: Optional[str] = None
+    analyzer_status: Optional[str] = None
+
+class AnalyzeHealthStatus(BaseModel):
+    status: str
+    analysis_engine_version: str
+    checks: Dict[str, str]
+    components: Dict[str, str]
+
+class CandidateDetail(BaseModel):
+    pos: List[int]
+    value: int
+    is_valid_proposal: bool
+    raw_tensor_flow_score: float
+    mem_score_value: float
+    final_objective_score: float
+    cp_solver_notes: Optional[str] = None
+
+class AnalyzeSuccessResponse(BaseModel):
+    request_id: str
+    message: str
+    grid_shape: Tuple[int, ...]
+    evaluated_candidates: List[CandidateDetail]
+
+class AnalyzeErrorResponse(BaseModel):
+    detail: str
+    request_id: Optional[str] = None
+
+class ProposedValue(BaseModel):
+    pos: Tuple[int, int]
+    value: int
+
 class AnalysisRequest(BaseModel):
     new_card: List[List[int]]
-    proposed_values: List[int]
+    proposed_values: List[ProposedValue]
     active_modules: Optional[List[str]] = None
     module_weights: Optional[Dict[str, float]] = None
     top_n: Optional[int] = None
+# --- Models End ---
 
-class HealthResponse(BaseModel):
-    status: str
-    reason: Optional[str] = None
-    message: Optional[str] = None
-    analyzer_status: str
+app = FastAPI(
+    title="智慧評分系統 API (Extreme Edition)",
+    description="提供基於進階 N 維張量運算與 AI 模組的盤面分析與評分建議 API 服務。",
+    version=ANALYSIS_ENGINE_VERSION_EXTREME
+)
 
+analyzer_instance: Optional[Analyzer] = None
+try:
+    analyzer_instance = Analyzer(main_module=main_logic_module, default_top_n=3)
+    logger.info("Analyzer instance created successfully for API, using logic module: %s", getattr(main_logic_module, '__name__', 'N/A'))
+except InitializationError as e_init:
+    logger.critical("CRITICAL_API_STARTUP_ERROR: Failed to initialize Analyzer: %s", e_init, exc_info=True)
+except Exception as e:
+    logger.critical("CRITICAL_API_STARTUP_ERROR: Unexpected error during Analyzer initialization: %s", e, exc_info=True)
 
-# --- API Endpoints ---
-@app.post("/analyze",
-          summary="分析盤面並取得建議",
-          response_model=Dict[str, Any], # 或者更精確的 Pydantic Response Model
-          tags=["Analysis"])
-async def analyze_board_endpoint(request_body: AnalysisRequest = Body(...)):
-    """
-    接收盤面狀態和候選值，調用核心分析器進行分析。
+@app.get("/", status_code=200, tags=["Utilities"], summary="Root Path / Basic Health Ping")
+async def read_root():
+    return {"message": "Smart Scoring System API (Extreme Edition) is running and healthy!"}
 
-    - **new_card**: 當前盤面狀態，二維整數列表，-1 表示未開。
-    - **proposed_values**: 候選的填入值列表。
-    - **active_modules**: (可選) 指定要使用的模組名稱列表。
-    - **module_weights**: (可選) 指定各模組的權重字典。
-    - **top_n**: (可選) 每個 proposed_value 要回傳的 Top-N 建議數量。
-    """
+@app.get("/health", response_model=HealthResponse, tags=["Utilities"], summary="Simple Analyzer Health Check")
+async def health_check_simple(request: Request):
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
     if analyzer_instance is None:
-        logger.error("API /analyze: Analyzer instance is not available (initialization failed).")
-        raise HTTPException(status_code=503, detail="分析服務暫時不可用，核心組件初始化失敗。")
-
-    logger.info("API /analyze endpoint called with %d PVs. First PV (if any): %s",
-                len(request_body.proposed_values),
-                request_body.proposed_values[0] if request_body.proposed_values else "N/A")
-    try:
-        # 調用 Analyzer 的核心方法
-        result = analyzer_instance.analyze_board(
-            new_card=request_body.new_card,
-            proposed_values=request_body.proposed_values,
-            active_modules=request_body.active_modules,
-            module_weights=request_body.module_weights,
-            top_n=request_body.top_n
-        )
-        logger.info("API /analyze: Analysis successful for %d PVs. Returning results.", len(request_body.proposed_values))
-        return result
-    except InvalidInputError as e:
-        logger.warning("API /analyze: Invalid input: %s - Request: %s", e, request_body.model_dump_json(indent=2))
-        raise HTTPException(status_code=422, detail=f"輸入參數無效 (Invalid Input): {e}")
-    except ModuleNotFoundError as e: # 模組未找到
-        logger.error("API /analyze: Module not found during analysis: %s - Request: %s", e, request_body.model_dump_json(indent=2), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"分析模組配置錯誤 (Module Not Found): {e}")
-    except ModuleExecutionError as e: # 模組執行錯誤
-        logger.error("API /analyze: Module execution error during analysis: %s - Request: %s", e, request_body.model_dump_json(indent=2), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"分析模組執行錯誤 (Module Execution Error): {e}")
-    except ModuleError as e: # 其他 analyzer.py 定義的 ModuleError
-        logger.error("API /analyze: General module error during analysis: %s - Request: %s", e, request_body.model_dump_json(indent=2), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"分析模組通用錯誤 (Module Error): {e}")
-    except VisualizationError as e:
-        logger.error("API /analyze: Visualization error during analysis: %s - Request: %s", e, request_body.model_dump_json(indent=2), exc_info=True)
-        # 即使視覺化失敗，如果分析結果仍在，可以考慮返回部分結果或特定錯誤碼
-        # 但為了簡化，這裡也拋出 500 錯誤
-        raise HTTPException(status_code=500, detail=f"視覺化生成錯誤 (Visualization Error): {e}")
-    except Exception as e: # 其他所有未預期的錯誤
-        logger.critical("API /analyze: Unexpected critical error during analysis: %s - Request: %s", e, request_body.model_dump_json(indent=2), exc_info=True)
-        raise HTTPException(status_code=500, detail=f"伺服器內部發生未預期錯誤 (Unexpected Server Error): {type(e).__name__} - {e}")
-
-@app.get("/health",
-         summary="健康檢查端點",
-         response_model=HealthResponse,
-         tags=["Utilities"])
-async def health_check():
-    """
-    提供簡單的健康狀態檢查。
-    檢查 Analyzer 核心實例是否已成功初始化。
-    """
-    if analyzer_instance is None:
-        logger.warning("/health: Health check failed - Analyzer not initialized.")
+        logger.warning(f"HEALTH_CHECK_SIMPLE /health: Failed - Analyzer not initialized. RequestID: {request_id}")
         return HealthResponse(status="unhealthy", reason="Analyzer core component not initialized.", analyzer_status="Not Initialized")
-    logger.info("/health: Health check successful - Analyzer is initialized.")
+    logger.info(f"HEALTH_CHECK_SIMPLE /health: Successful - Analyzer is initialized. RequestID: {request_id}")
     return HealthResponse(status="ok", message="Analyzer API is running and Analyzer core is initialized.", analyzer_status="Initialized")
 
-# --- Uvicorn direct run (optional, for local testing) ---
-# 通常在部署時，你會使用 Procfile 或類似的配置來由 Uvicorn 命令行工具啟動
-# 例如：uvicorn main_api:app --host 0.0.0.0 --port 8000
-#
-# if __name__ == "__main__":
-#     import uvicorn
-#     logger.info("Starting Uvicorn server directly from main_api.py for local development...")
-#     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+@app.get("/health/analyze", response_model=AnalyzeHealthStatus, tags=["Health & Monitoring"], summary="Detailed System Health Analysis")
+async def health_analyze_detailed(request: Request):
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+    logger.info(f"HEALTH_CHECK_DETAILED /health/analyze: Request received. RequestID: {request_id}")
+    checks: Dict[str, str] = {}
+    overall_status: str = "UP"
 
+    if not EXTREME_MODULE_FUNCS_VEC:
+        checks["extreme_module_funcs_load"] = "FAIL"; overall_status = "DEGRADED"
+    else:
+        checks["extreme_module_funcs_load"] = f"OK: {len(EXTREME_MODULE_FUNCS_VEC)} funcs"
+
+    if not EXTREME_MODULE_WEIGHTS:
+        checks["extreme_module_weights_load"] = "FAIL"; overall_status = "DEGRADED"
+    else:
+        checks["extreme_module_weights_load"] = f"OK: {len(EXTREME_MODULE_WEIGHTS)} weights"
+
+    if EXTREME_MODULE_FUNCS_VEC and EXTREME_MODULE_WEIGHTS:
+        missing = [n for n in EXTREME_MODULE_FUNCS_VEC if n not in EXTREME_MODULE_WEIGHTS]
+        if missing:
+            checks["extreme_funcs_weights_match"] = f"WARN: Missing weights for: {', '.join(missing[:3])}{'...' if len(missing)>3 else ''}"
+            overall_status = "DEGRADED"
+        else:
+            checks["extreme_funcs_weights_match"] = "OK"
+
+    if not os.path.exists(MEM_PATH):
+        checks["memory_file_exists"] = f"FAIL: {MEM_PATH} not found"; overall_status="DEGRADED"
+    else:
+        checks["memory_file_exists"] = "OK (Path exists)"
+
+    try:
+        dummy_grid_data = [[-1,1,5,0],[2,-1,8,3],[4,6,-1,7],[0,0,0,0]]
+        dummy_grid_np = np.array(dummy_grid_data, dtype=np.int32)
+        await run_in_threadpool(extreme_tensor_flow_score_detailed, dummy_grid_np, f"health_tf_{request_id}")
+        checks["extreme_tf_execution_test"] = "OK"
+    except Exception as e:
+        checks["extreme_tf_execution_test"] = f"FAIL: {str(e)}"; logger.error(f"HEALTH_ERROR /health/analyze: extreme_tf test FAIL. RequestID: {request_id}", exc_info=True); overall_status="ERROR"
+
+    try:
+        _ = cp_model.CpModel()
+        checks["cp_solver_avail_test"] = "OK"
+    except Exception as e:
+        checks["cp_solver_avail_test"] = f"FAIL: {str(e)}"; logger.error(f"HEALTH_ERROR /health/analyze: CP Solver test FAIL. RequestID: {request_id}", exc_info=True); overall_status="ERROR"
+
+    return AnalyzeHealthStatus(
+        status=overall_status,
+        analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME,
+        checks=checks,
+        components={
+            "numpy_version": np.__version__,
+            "ortools_version": getattr(cp_model, '__version__', "unknown"),
+            "analyzer_type": "Extreme Logic Modules v22"
+        }
+    )
+
+@app.post("/analyze",
+            response_model=AnalyzeSuccessResponse,
+            responses={
+                400: {"model": AnalyzeErrorResponse, "description": "Invalid input data (client-side error)"},
+                422: {"model": AnalyzeErrorResponse, "description": "Validation error in request data (unprocessable entity)"},
+                500: {"model": AnalyzeErrorResponse, "description": "Internal server processing error"},
+                503: {"model": AnalyzeErrorResponse, "description": "Service temporarily unavailable (e.g., Analyzer not initialized)"}
+            },
+            tags=["Analysis Engine vExtreme"],
+            summary="Perform Extreme N-Dimensional Tensor Analysis")
+async def analyze_board_main(req: AnalysisRequest, request: Request):
+    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
+    logger.info(f"API_CALL /analyze: RequestID: {request_id}. Grid: {len(req.new_card)}x{len(req.new_card[0]) if req.new_card and req.new_card[0] else 'empty'}. Proposals: {len(req.proposed_values)}.")
+
+    if analyzer_instance is None:
+        logger.error(f"API_ERROR /analyze: Analyzer instance not available. RequestID: {request_id}")
+        raise HTTPException(status_code=503, detail="Analysis service is temporarily unavailable due to initialization failure.")
+
+    if not req.new_card or not req.new_card[0]:
+        logger.warning(f"API_VALIDATION_ERROR /analyze: Empty new_card received. RequestID: {request_id}")
+        raise HTTPException(status_code=400, detail="Input 'new_card' cannot be empty or contain empty rows.")
+
+    try:
+        grid_np = np.array(req.new_card, dtype=np.int32)
+    except Exception as e:
+        logger.error(f"API_VALIDATION_ERROR /analyze: Failed to convert new_card to NumPy array. RequestID: {request_id}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Invalid data format in 'new_card': {str(e)}")
+
+    try:
+        analysis_result = await run_in_threadpool(
+            analyzer_instance.analyze_board,
+            new_card=req.new_card,
+            proposed_values=req.proposed_values,
+            active_modules=req.active_modules,
+            module_weights=req.module_weights,
+            top_n=req.top_n
+        )
+
+        processed_candidates = []
+        if isinstance(analysis_result, list):
+            for cand_data in analysis_result:
+                if isinstance(cand_data, dict):
+                    processed_candidates.append(CandidateDetail(**cand_data))
+                elif isinstance(cand_data, CandidateDetail):
+                    processed_candidates.append(cand_data)
+                else:
+                    logger.warning(f"API_RESULT_WARN /analyze: Unexpected candidate data type: {type(cand_data)}. RequestID: {request_id}")
+        else:
+            logger.warning(f"API_RESULT_WARN /analyze: Unexpected result type from analyzer: {type(analysis_result)}. RequestID: {request_id}")
+            raise HTTPException(status_code=500, detail="Internal error: Unexpected analysis result format.")
+
+        logger.info(f"API_SUCCESS /analyze: Analysis complete. RequestID: {request_id}. Evaluated {len(processed_candidates)} candidates.")
+        return AnalyzeSuccessResponse(
+            request_id=request_id,
+            message="Analysis successfully completed.",
+            grid_shape=grid_np.shape,
+            evaluated_candidates=processed_candidates
+        )
+
+    except InvalidInputError as e:
+        logger.warning(f"API_VALIDATION_ERROR /analyze: Invalid input from Analyzer: {e}. RequestID: {request_id}", exc_info=True)
+        raise HTTPException(status_code=422, detail=f"Invalid Input Parameters: {str(e)}")
+    except (ModuleNotFoundError, ModuleExecutionError, ModuleError, VisualizationError) as e:
+        logger.error(f"API_MODULE_ERROR /analyze: Analyzer module error: {e}. RequestID: {request_id}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Module Error during analysis ({type(e).__name__}): {str(e)}")
+    except Exception as e:
+        logger.critical(f"API_UNEXPECTED_ERROR /analyze: Unexpected critical error. RequestID: {request_id}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Unexpected internal server error: {type(e).__name__} - {str(e)}")
+
+if __name__ == "__main__":
+    logger.info("Executing main_api.py directly (intended for local Uvicorn launch instruction).")
+    print("\nTo run this FastAPI application locally for development:")
+    print("1. Ensure all dependencies are installed: pip install fastapi uvicorn numpy pydantic")
+    print("2. If using ortools, ensure it's installed: pip install ortools")
+    print("3. Ensure 'new_module.py' (with PuzzleTensorOps) and 'analyzer.py' (with Analyzer) are present.")
+    print("4. In your terminal, run: uvicorn main_api:app --reload --host 0.0.0.0 --port 8000")
+    print("   (Assuming this file is named main_api.py and the FastAPI instance is 'app')")
+    print("5. Open your browser to http://127.0.0.1:8000/docs to interact with the API.")
+    print("\nFor deployment on platforms like Render, use the platform's start command, e.g.:")
+    print("  uvicorn main_api:app --host 0.0.0.0 --port ${PORT} --workers 1")
+    # import uvicorn
+    # uvicorn.run(app, host="0.0.0.0", port=8000)
