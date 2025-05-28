@@ -7,6 +7,7 @@ import logging
 import uuid
 import os
 import numpy as np
+import brain
 from pydantic import BaseModel
 
 # --- Logging Setup (一定要在 try/except 前) ---
@@ -18,10 +19,9 @@ logger = logging.getLogger("extreme_api_service")
 
 # --- Module Imports ---
 from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, ModuleNotFoundError, ModuleExecutionError, VisualizationError
-import main as main_logic_module  # TODO: 確認 main.py 是否就是你的 GM 大腦
 
 try:
-    EXTREME_MODULE_FUNCS_VEC = list(main_logic_module.registered_modules.keys())
+    EXTREME_MODULE_FUNCS_VEC = list(brain.REGISTERED_MODULES_BRAIN.keys())
     EXTREME_MODULE_WEIGHTS = {k: 1.0 for k in EXTREME_MODULE_FUNCS_VEC}
 except Exception as e:
     EXTREME_MODULE_FUNCS_VEC = []

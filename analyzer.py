@@ -11,7 +11,7 @@ analyzer.py 永遠只做協調與公平融合，任何越界皆屬大忌。」
 本檔案完全遵循高內聚低耦合原則，禁止硬編寫任何業務邏輯、規則、演算法、
 模組分數計算與棋盤分析。所有分析行為均應由 main.py 之官方註冊模組執行。
 """
-
+import brain
 import base64
 import io
 import logging
@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import matplotlib.colors as mcolors
 import numpy as np
+
 
 # --- Configuration ---
 # Configure logging

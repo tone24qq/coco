@@ -1,33 +1,59 @@
 # brain.py
- 
+
 import numpy as np
 from typing import List, Dict, Tuple, Callable, Optional, Any
 import math
 from collections import Counter, deque
 import logging
-import random # For some heuristic initializations or tie-breaking
- 
+import random
+
 # --- Logging Configuration ---
-# It's generally better for the main application (main.py) to configure the root logger.
-# brain.py will use a logger named after itself.
 logger = logging.getLogger(__name__)
- 
-# --- Helper Utilities (Adapted from 文字 11.txt, sources 36-68, 520-525) ---
- 
+
+# === Helper Utilities ===
+
 class MathUtils:
-   """
-   Provides common mathematical utility functions.
-   Ensures consistent calculations across modules.
-   """
-   @staticmethod
-   def sigmoid(x: float, k: float = 1.0) -> float:
-       """ Applies the sigmoid function. Handles potential OverflowError. """
-       try:
-           # Clamping input to avoid extreme values that cause overflow
-           clamped_x = max(-700.0, min(700.0, -k * x)) #
-           return 1 / (1 + math.exp(clamped_x)) #
-       except OverflowError: # Should be rare with clamping
-           return 0.0 if -k * x > 0 else 1.0 #
+    """
+    提供通用數學工具，所有模組統一計算風格
+    """
+    @staticmethod
+    def sigmoid(x: float, k: float = 1.0) -> float:
+        """安全型 sigmoid，避免 overflow"""
+        try:
+            clamped_x = max(-700.0, min(700.0, -k * x))
+            return 1 / (1 + math.exp(clamped_x))
+        except OverflowError:
+            return 0.0 if -k * x > 0 else 1.0
+
+# === 大腦統一調度區 ===
+
+# 所有自動註冊的 scoring modules 都會進這 dict
+REGISTERED_MODULES_BRAIN: Dict[str, Callable] = {}
+
+def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray:
+    """
+    大腦統一呼叫介面
+    :param module_name: 註冊名稱（如 LIMIT_A6_FIXEDPOSITION_FN）
+    :param grid: 評分盤面（np.ndarray）
+    :param kwargs: 其它模組自定參數
+    :return: np.ndarray 評分結果
+    """
+    mod_func = REGISTERED_MODULES_BRAIN.get(module_name)
+    if mod_func is None:
+        raise ValueError(f"Module '{module_name}' not found in brain.")
+    return mod_func(grid, **kwargs)
+
+# === 記憶體 / 特徵 / 數據層可在此擴充 ===
+# EXAMPLE:
+# MEMORY_DB: Dict[str, Any] = {}
+# def remember(...): ...
+# def recall(...): ...
+# ...自訂記憶工具...
+
+# --- 模組註冊示範（通常 auto_register.py 會自動註冊，不須手動加）---
+# def sample_module(grid: np.ndarray, **kwargs):
+#     return np.zeros_like(grid, dtype=float)
+# REGISTERED_MODULES_BRAIN['LIMIT_SAMPLE_MODULE_FN'] = sample_module
  
    @staticmethod
    def normalize_value(value: float, min_val: float, max_val: float, clamp: bool = True) -> float:
