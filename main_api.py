@@ -9,10 +9,19 @@ import os
 import numpy as np # Required by /health/analyze
 from pydantic import BaseModel
 
+import logging
+
+# --- Logging Setup (一定要在 try/except 前) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
+)
+logger = logging.getLogger("extreme_api_service")
+
 # --- Module Imports ---
 # Assuming analyzer.py and main.py (as main_logic_module) are in the Python path
 from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, ModuleNotFoundError, ModuleExecutionError, VisualizationError
-import main as main_logic_module # TODO: User to verify this is the correct GM logic module
+import main as main_logic_module  # TODO: User to verify this is the correct GM logic module
 
 try:
     EXTREME_MODULE_FUNCS_VEC = list(main_logic_module.registered_modules.keys())
@@ -22,13 +31,6 @@ except Exception as e:
     EXTREME_MODULE_FUNCS_VEC = []
     EXTREME_MODULE_WEIGHTS = {}
     logger.error("自動同步 EXTREME_MODULE_FUNCS_VEC/WEIGHTS 失敗: %s", e)
-# --- Logging Setup ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
-)
-logger = logging.getLogger("extreme_api_service")
-
 # --- Placeholder for Global Constants & Functions ---
 # These MUST be defined by the user with their actual values/implementations
 ANALYSIS_ENGINE_VERSION_EXTREME: str = "1.1.0-extreme" # Placeholder
