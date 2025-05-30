@@ -29,7 +29,8 @@ class MathUtils:
         if math.isclose(max_val, min_val):
             if math.isclose(value, min_val):
                 return 0.5
-            elif value < min_val: [cite: 2]
+            elif value < min_val:
+    # [cite: 2]  # ← 如果你只是想留註解，請改成這樣
                 return 0.0
             else:  # value > max_val (which is min_val) [cite: 2]
                 return 1.0
