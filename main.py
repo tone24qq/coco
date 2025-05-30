@@ -2368,3 +2368,25 @@ if __name__ == "__main__":
     if settings.TASK_CALLBACK_URL_ENABLED: logger.info(f"Task callback ON: {settings.TASK_CALLBACK_URL}", extra=log_ex_main)
     else: logger.info("Task callback OFF.", extra=log_ex_main)
     uvicorn.run(app, host=settings.APP_HOST, port=settings.APP_PORT, log_config=None)
+import pytest
+from httpx import AsyncClient
+from main import app
+
+@pytest.mark.asyncio
+async def test_health():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        response = await ac.get("/health")
+        assert response.status_code == 200
+        assert "status" in response.json()
+@pytest.mark.asyncio
+async def test_modules():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        response = await ac.get("/modules")
+        assert response.status_code == 200
+        assert isinstance(response.json(), list)
+
+@pytest.mark.asyncio
+async def test_analyze_no_payload():
+    async with AsyncClient(app=app, base_url="http://test") as ac:
+        response = await ac.post("/analyze", json={})
+        assert response.status_code in [400, 422]  # Missing required fields
