@@ -1,42 +1,50 @@
-# main_api.py
+# main_api_alt_corrected.py
 # coding: utf-8
 
-from fastapi import FastAPI, HTTPException, Body, Request
-from typing import List, Dict, Optional, Any, Tuple, Callable
+from fastapi import FastAPI, HTTPException, Body, Request, Depends, status
+from typing import List, Dict, Optional, Any, Tuple, Callable, Union # Added Union
 import logging
 import uuid
-import os
+import os # os.path was used
 import numpy as np
-import brain
-from pydantic import BaseModel
 
-# --- Logging Setup (一定要在 try/except 前) ---
+# Project-specific imports
+import brain # Assuming brain.py is in the same directory or PYTHONPATH
+from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, VisualizationError # Import relevant exceptions
+
+# --- Logging Setup ---
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - %(message)s'
+    format='%(asctime)s - %(levelname)s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - RequestID: %(request_id)s - %(message)s'
 )
-logger = logging.getLogger("extreme_api_service")
+logger = logging.getLogger("extreme_api_service_alt") # Renamed logger for clarity if both run
 
-# --- Module Imports ---
-from analyzer import Analyzer, InitializationError, InvalidInputError, ModuleError, ModuleNotFoundError, ModuleExecutionError, VisualizationError
+# --- Global Variables & Initializations ---
+ANALYSIS_ENGINE_VERSION_EXTREME: str = "1.1.0-extreme-corrected"
+MEM_PATH: str = "data/persistent_memory.json" # Placeholder, ensure this path is meaningful or handled
 
+# --- Analyzer Instance ---
+analyzer_instance_alt: Optional[Analyzer] = None
 try:
-    EXTREME_MODULE_FUNCS_VEC = list(brain.REGISTERED_MODULES_BRAIN.keys())
-    EXTREME_MODULE_WEIGHTS = {k: 1.0 for k in EXTREME_MODULE_FUNCS_VEC}
-except Exception as e:
-    EXTREME_MODULE_FUNCS_VEC = []
-    EXTREME_MODULE_WEIGHTS = {}
-    logger.error("自動同步 EXTREME_MODULE_FUNCS_VEC/WEIGHTS 失敗: %s", e)
+    # Use the imported 'brain' module directly
+    analyzer_instance_alt = Analyzer(main_module=brain, default_top_n=3)
+    logger.info("Alternate Analyzer instance (analyzer_instance_alt) created successfully, using 'brain' module.")
+except InitializationError as e_init:
+    logger.critical("CRITICAL_ALT_API_STARTUP_ERROR: Failed to initialize Alternate Analyzer: %s", e_init, exc_info=True)
+    analyzer_instance_alt = None
+except Exception as e_unexpected:
+    logger.critical("CRITICAL_ALT_API_STARTUP_ERROR: Unexpected error during Alternate Analyzer initialization: %s", e_unexpected, exc_info=True)
+    analyzer_instance_alt = None
 
-ANALYSIS_ENGINE_VERSION_EXTREME: str = "1.1.0-extreme"
-MEM_PATH: str = "data/persistent_memory.json" # Placeholder
 
-class MockCPModel:
-    __version__: str = "9.9.mock"
+# --- Mock/Placeholder Components (from original file, kept for structural integrity if needed by user) ---
+class MockCPModel: # This was in the original PDF.
+    _version: str = "9.9.mock"
     def CpModel(self):
         logger.info("[Placeholder] MockCPModel.CpModel() invoked.")
-        pass
-cp_model = MockCPModel()
+        pass # It's a mock, so no actual model returned
+
+cp_model = MockCPModel() # Instantiated mock
 
 def extreme_tensor_flow_score_detailed(grid: np.ndarray, request_id_context: str) -> Tuple[np.ndarray, List[List[Dict[str, Any]]]]:
     logger.info(f"[Placeholder] extreme_tensor_flow_score_detailed for {request_id_context}, grid: {grid.shape}")
@@ -44,23 +52,9 @@ def extreme_tensor_flow_score_detailed(grid: np.ndarray, request_id_context: str
     contributions = [[{"rule": f"dummy_r{r}_c{c}", "value": np.random.random()} for c in range(grid.shape[1])] for r in range(grid.shape[0])]
     return scores, contributions
 
-async def run_in_threadpool(func: Callable, *args: Any, **kwargs: Any) -> Any:
-    logger.info(f"[Placeholder] Synchronously executing {func.__name__} via run_in_threadpool placeholder.")
-    return func(*args, **kwargs)
-
-def get_legal_values_for_placement(grid: np.ndarray) -> set:
-    logger.info(f"[Placeholder] get_legal_values_for_placement for grid: {grid.shape}")
-    return set(range(1, int(np.max(grid) if grid.size > 0 else 9) + 1))
-
-def get_card_max_value(grid: np.ndarray) -> Optional[int]:
-    logger.info(f"[Placeholder] get_card_max_value for grid: {grid.shape}")
-    return int(np.max(grid)) if grid.size > 0 else 9
-
-def mem_score(r: int, c: int, val: int, context_set: set) -> float:
-    logger.info(f"[Placeholder] mem_score for ({r},{c}) val {val} context_size {len(context_set)}")
-    return np.random.random() * 5.0
 
 # --- Pydantic Models ---
+# Models for health checks
 class HealthResponse(BaseModel):
     status: str
     message: Optional[str] = None
@@ -73,199 +67,209 @@ class AnalyzeHealthStatus(BaseModel):
     checks: Dict[str, str]
     components: Dict[str, str]
 
-class CandidateDetail(BaseModel):
-    pos: List[int]
-    value: int
-    is_valid_proposal: bool
-    raw_tensor_flow_score: float
-    mem_score_value: float
-    final_objective_score: float
-    cp_solver_notes: Optional[str] = None
+# Models for /analyze endpoint (corrected to match Analyzer's actual input/output)
+class AltAnalysisRequest(BaseModel):
+    new_card: List[List[int]] = Field(..., example=[[1,-1,0],[-1,2,-1]])
+    # Corrected: Analyzer expects List[int] for proposed_values
+    proposed_values: List[int] = Field(..., example=[3,5])
+    active_modules: Optional[List[str]] = None
+    module_weights: Optional[Dict[str, float]] = None
+    top_n: Optional[int] = Field(None, gt=0)
+    client_request_id: Optional[str] = None # Added for consistency
 
-class AnalyzeSuccessResponse(BaseModel):
+
+# Reusing models from main.py for Analyzer response structure
+class SuggestionItem(BaseModel):
+    position: List[int]
+    score: float
+
+class ProcessedParams(BaseModel):
+    requested_top_n: Union[int, str]
+    actual_top_n: int
+    requested_active_modules: Optional[List[str]]
+    effective_active_modules: List[str]
+    requested_module_weights: Optional[Dict[str, float]]
+    final_module_weights: Dict[str, float]
     request_id: str
-    message: str
-    grid_shape: Tuple[int, ...]
-    evaluated_candidates: List[CandidateDetail]
+    error: Optional[bool] = None
 
-class AnalyzeErrorResponse(BaseModel):
+class BoardDimensions(BaseModel):
+    rows: int
+    cols: int
+
+class AltAnalyzeResponse(BaseModel):
+    request_id: str
+    # Mirroring Analyzer's output structure
+    suggestions: Optional[Dict[int, List[SuggestionItem]]] = None # Key from PV (int)
+    visualization: Optional[str] = None
+    board_dimensions: Optional[BoardDimensions] = None
+    processed_params: Optional[ProcessedParams] = None
+    error: Optional[str] = None # For high-level errors or errors from analyzer response
+    message: Optional[str] = None # General message
+
+
+class AltAnalyzeErrorResponse(BaseModel):
     detail: str
     request_id: Optional[str] = None
 
-class ProposedValue(BaseModel):
-    pos: Tuple[int, int]
-    value: int
-
-class AnalysisRequest(BaseModel):
-    new_card: List[List[int]]
-    proposed_values: List[ProposedValue]
-    active_modules: Optional[List[str]] = None
-    module_weights: Optional[Dict[str, float]] = None
-    top_n: Optional[int] = None
-# --- Models End ---
-
-app = FastAPI(
-    title="智慧評分系統 API (Extreme Edition)",
-    description="提供基於進階 N 維張量運算與 AI 模組的盤面分析與評分建議 API 服務。",
+# --- FastAPI App Instance ---
+app_alt = FastAPI(
+    title="智慧評分系統 API (Extreme Edition - Corrected)",
+    description="提供基於進階分析與AI模組的盤面分析與評分建議API服務 (修正版)。",
     version=ANALYSIS_ENGINE_VERSION_EXTREME
 )
 
-analyzer_instance: Optional[Analyzer] = None
-try:
-    analyzer_instance = Analyzer(main_module=main_logic_module, default_top_n=3)
-    logger.info("Analyzer instance created successfully for API, using logic module: %s", getattr(main_logic_module, '__name__', 'N/A'))
-except InitializationError as e_init:
-    logger.critical("CRITICAL_API_STARTUP_ERROR: Failed to initialize Analyzer: %s", e_init, exc_info=True)
-except Exception as e:
-    logger.critical("CRITICAL_API_STARTUP_ERROR: Unexpected error during Analyzer initialization: %s", e, exc_info=True)
+# --- Middleware for Request ID (Simplified) ---
+@app_alt.middleware("http")
+async def add_request_id_middleware(request: Request, call_next: Callable):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id # Make it accessible in request state
+    
+    # For logging, pass 'extra' dict.
+    # This simple middleware doesn't auto-inject into all loggers.
+    # Log calls in endpoints should include extra={'request_id': request_id}
 
-@app.get("/", status_code=200, tags=["Utilities"], summary="Root Path / Basic Health Ping")
-async def read_root():
-    return {"message": "Smart Scoring System API (Extreme Edition) is running and healthy!"}
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
-@app.get("/health", response_model=HealthResponse, tags=["Utilities"], summary="Simple Analyzer Health Check")
-async def health_check_simple(request: Request):
+
+# --- API Endpoints ---
+@app_alt.get("/", status_code=200, tags=["Utilities (Alt)"], summary="Root Path / Basic Health Ping (Alt)")
+async def read_root_alt(request: Request):
+    req_id = getattr(request.state, 'request_id', "N/A_alt_root")
+    logger.info("Alternate API root accessed.", extra={'request_id': req_id})
+    return {"message": "Smart Scoring System API (Extreme Edition - Corrected) is running!"}
+
+@app_alt.get("/health", response_model=HealthResponse, tags=["Utilities (Alt)"], summary="Simple Analyzer Health Check (Alt)")
+async def health_check_simple_alt(request: Request):
+    req_id = getattr(request.state, 'request_id', "N/A_alt_health")
+    if analyzer_instance_alt is None:
+        logger.warning(f"HEALTH_CHECK_SIMPLE (Alt) /health: Failed - Analyzer not initialized.", extra={'request_id': req_id})
+        return HealthResponse(status="unhealthy", reason="Alternate Analyzer core component not initialized.", analyzer_status="Not Initialized")
+    logger.info(f"HEALTH_CHECK_SIMPLE (Alt) /health: Successful - Alternate Analyzer is initialized.", extra={'request_id': req_id})
+    return HealthResponse(status="ok", message="Alternate Analyzer API is running and core is initialized.", analyzer_status="Initialized")
+
+
+@app_alt.post("/analyze", 
+             response_model=AltAnalyzeResponse,
+             responses={
+                 400: {"model": AltAnalyzeErrorResponse, "description": "Invalid input data (client-side error)"},
+                 422: {"model": AltAnalyzeErrorResponse, "description": "Validation error in request data"},
+                 500: {"model": AltAnalyzeErrorResponse, "description": "Internal server processing error"},
+                 503: {"model": AltAnalyzeErrorResponse, "description": "Service temporarily unavailable"}
+             },
+             tags=["Analysis Engine vExtreme (Alt)"], 
+             summary="Perform Board Analysis using Analyzer (Corrected Alternate)")
+async def analyze_board_main_alt(
+    payload: AltAnalysisRequest, 
+    request: Request # For request_id
+):
     request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
-    if analyzer_instance is None:
-        logger.warning(f"HEALTH_CHECK_SIMPLE /health: Failed - Analyzer not initialized. RequestID: {request_id}")
-        return HealthResponse(status="unhealthy", reason="Analyzer core component not initialized.", analyzer_status="Not Initialized")
-    logger.info(f"HEALTH_CHECK_SIMPLE /health: Successful - Analyzer is initialized. RequestID: {request_id}")
-    return HealthResponse(status="ok", message="Analyzer API is running and Analyzer core is initialized.", analyzer_status="Initialized")
-
-@app.get("/health/analyze", response_model=AnalyzeHealthStatus, tags=["Health & Monitoring"], summary="Detailed System Health Analysis")
-async def health_analyze_detailed(request: Request):
-    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
-    logger.info(f"HEALTH_CHECK_DETAILED /health/analyze: Request received. RequestID: {request_id}")
-    checks: Dict[str, str] = {}
-    overall_status: str = "UP"
-
-    if not EXTREME_MODULE_FUNCS_VEC:
-        checks["extreme_module_funcs_load"] = "FAIL"; overall_status = "DEGRADED"
-    else:
-        checks["extreme_module_funcs_load"] = f"OK: {len(EXTREME_MODULE_FUNCS_VEC)} funcs"
-
-    if not EXTREME_MODULE_WEIGHTS:
-        checks["extreme_module_weights_load"] = "FAIL"; overall_status = "DEGRADED"
-    else:
-        checks["extreme_module_weights_load"] = f"OK: {len(EXTREME_MODULE_WEIGHTS)} weights"
-
-    if EXTREME_MODULE_FUNCS_VEC and EXTREME_MODULE_WEIGHTS:
-        missing = [n for n in EXTREME_MODULE_FUNCS_VEC if n not in EXTREME_MODULE_WEIGHTS]
-        if missing:
-            checks["extreme_funcs_weights_match"] = f"WARN: Missing weights for: {', '.join(missing[:3])}{'...' if len(missing)>3 else ''}"
-            overall_status = "DEGRADED"
-        else:
-            checks["extreme_funcs_weights_match"] = "OK"
-
-    if not os.path.exists(MEM_PATH):
-        checks["memory_file_exists"] = f"FAIL: {MEM_PATH} not found"; overall_status="DEGRADED"
-    else:
-        checks["memory_file_exists"] = "OK (Path exists)"
-
-    try:
-        dummy_grid_data = [[-1,1,5,0],[2,-1,8,3],[4,6,-1,7],[0,0,0,0]]
-        dummy_grid_np = np.array(dummy_grid_data, dtype=np.int32)
-        await run_in_threadpool(extreme_tensor_flow_score_detailed, dummy_grid_np, f"health_tf_{request_id}")
-        checks["extreme_tf_execution_test"] = "OK"
-    except Exception as e:
-        checks["extreme_tf_execution_test"] = f"FAIL: {str(e)}"; logger.error(f"HEALTH_ERROR /health/analyze: extreme_tf test FAIL. RequestID: {request_id}", exc_info=True); overall_status="ERROR"
-
-    try:
-        _ = cp_model.CpModel()
-        checks["cp_solver_avail_test"] = "OK"
-    except Exception as e:
-        checks["cp_solver_avail_test"] = f"FAIL: {str(e)}"; logger.error(f"HEALTH_ERROR /health/analyze: CP Solver test FAIL. RequestID: {request_id}", exc_info=True); overall_status="ERROR"
-
-    return AnalyzeHealthStatus(
-        status=overall_status,
-        analysis_engine_version=ANALYSIS_ENGINE_VERSION_EXTREME,
-        checks=checks,
-        components={
-            "numpy_version": np.__version__,
-            "ortools_version": getattr(cp_model, '__version__', "unknown"),
-            "analyzer_type": "Extreme Logic Modules v22"
-        }
+    log_extra = {'request_id': request_id, 'client_request_id': payload.client_request_id}
+    
+    logger.info(
+        f"ALT_API_CALL /analyze: RequestID: {request_id}. Grid: "
+        f"{len(payload.new_card)}x{len(payload.new_card[0]) if payload.new_card and payload.new_card[0] else 'empty'}. "
+        f"Proposals: {len(payload.proposed_values)}.",
+        extra=log_extra
     )
 
-@app.post("/analyze",
-            response_model=AnalyzeSuccessResponse,
-            responses={
-                400: {"model": AnalyzeErrorResponse, "description": "Invalid input data (client-side error)"},
-                422: {"model": AnalyzeErrorResponse, "description": "Validation error in request data (unprocessable entity)"},
-                500: {"model": AnalyzeErrorResponse, "description": "Internal server processing error"},
-                503: {"model": AnalyzeErrorResponse, "description": "Service temporarily unavailable (e.g., Analyzer not initialized)"}
-            },
-            tags=["Analysis Engine vExtreme"],
-            summary="Perform Extreme N-Dimensional Tensor Analysis")
-async def analyze_board_main(req: AnalysisRequest, request: Request):
-    request_id = getattr(request.state, 'request_id', str(uuid.uuid4()))
-    logger.info(f"API_CALL /analyze: RequestID: {request_id}. Grid: {len(req.new_card)}x{len(req.new_card[0]) if req.new_card and req.new_card[0] else 'empty'}. Proposals: {len(req.proposed_values)}.")
-
-    if analyzer_instance is None:
-        logger.error(f"API_ERROR /analyze: Analyzer instance not available. RequestID: {request_id}")
-        raise HTTPException(status_code=503, detail="Analysis service is temporarily unavailable due to initialization failure.")
-
-    if not req.new_card or not req.new_card[0]:
-        logger.warning(f"API_VALIDATION_ERROR /analyze: Empty new_card received. RequestID: {request_id}")
-        raise HTTPException(status_code=400, detail="Input 'new_card' cannot be empty or contain empty rows.")
+    if analyzer_instance_alt is None:
+        logger.error(f"ALT_API_ERROR /analyze: Alternate Analyzer instance not available. RequestID: {request_id}", extra=log_extra)
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, 
+                            detail="Analysis service (alt) is temporarily unavailable due to initialization failure.")
 
     try:
-        grid_np = np.array(req.new_card, dtype=np.int32)
-    except Exception as e:
-        logger.error(f"API_VALIDATION_ERROR /analyze: Failed to convert new_card to NumPy array. RequestID: {request_id}", exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Invalid data format in 'new_card': {str(e)}")
-
-    try:
-        analysis_result = await run_in_threadpool(
-            analyzer_instance.analyze_board,
-            new_card=req.new_card,
-            proposed_values=req.proposed_values,
-            active_modules=req.active_modules,
-            module_weights=req.module_weights,
-            top_n=req.top_n
+        # Correctly await the async method from Analyzer
+        analysis_result_dict = await analyzer_instance_alt.analyze_board(
+            new_card=payload.new_card,
+            proposed_values=payload.proposed_values, # Now List[int]
+            active_modules=payload.active_modules,
+            module_weights=payload.module_weights,
+            top_n=payload.top_n,
+            request_id_for_logging=request_id # Pass API request_id
         )
+        
+        # Check if analyzer returned an internal error structure
+        if 'error' in analysis_result_dict and isinstance(analysis_result_dict['error'], str):
+            logger.warning(f"ALT_API_ANALYZER_HANDLED_ERROR /analyze: {analysis_result_dict['error']}. RequestID: {request_id}", extra=log_extra)
+            return AltAnalyzeResponse(
+                request_id=request_id,
+                error=analysis_result_dict['error'],
+                suggestions=None, # Or extract from dict if available
+                visualization=analysis_result_dict.get('visualization'),
+                board_dimensions=BoardDimensions(**analysis_result_dict.get('board_dimensions', {'rows':0, 'cols':0})),
+                processed_params=ProcessedParams(**analysis_result_dict.get('processed_params', {})),
+                message="Analysis completed with input validation issues."
+            )
 
-        processed_candidates = []
-        if isinstance(analysis_result, list):
-            for cand_data in analysis_result:
-                if isinstance(cand_data, dict):
-                    processed_candidates.append(CandidateDetail(**cand_data))
-                elif isinstance(cand_data, CandidateDetail):
-                    processed_candidates.append(cand_data)
-                else:
-                    logger.warning(f"API_RESULT_WARN /analyze: Unexpected candidate data type: {type(cand_data)}. RequestID: {request_id}")
-        else:
-            logger.warning(f"API_RESULT_WARN /analyze: Unexpected result type from analyzer: {type(analysis_result)}. RequestID: {request_id}")
-            raise HTTPException(status_code=500, detail="Internal error: Unexpected analysis result format.")
-
-        logger.info(f"API_SUCCESS /analyze: Analysis complete. RequestID: {request_id}. Evaluated {len(processed_candidates)} candidates.")
-        return AnalyzeSuccessResponse(
+        # Adapt analyzer_result_dict to AltAnalyzeResponse
+        suggestions_raw = analysis_result_dict.get('suggestions', {})
+        suggestions_typed: Dict[int, List[SuggestionItem]] = {}
+        if isinstance(suggestions_raw, dict):
+            for pv_key, sugg_list_raw in suggestions_raw.items():
+                try:
+                    pv_int_key = int(pv_key)
+                    suggestions_typed[pv_int_key] = [SuggestionItem(**sugg) for sugg in sugg_list_raw]
+                except (ValueError, TypeError) as e:
+                     logger.warning(f"Could not parse suggestion for PV key '{pv_key}' in Alt API: {e}", extra=log_extra)
+        
+        logger.info(f"ALT_API_SUCCESS /analyze: Analysis complete. RequestID: {request_id}", extra=log_extra)
+        return AltAnalyzeResponse(
             request_id=request_id,
             message="Analysis successfully completed.",
-            grid_shape=grid_np.shape,
-            evaluated_candidates=processed_candidates
+            suggestions=suggestions_typed,
+            visualization=analysis_result_dict.get('visualization'),
+            board_dimensions=BoardDimensions(**analysis_result_dict.get('board_dimensions', {'rows':0, 'cols':0})),
+            processed_params=ProcessedParams(**analysis_result_dict.get('processed_params', {}))
         )
 
-    except InvalidInputError as e:
-        logger.warning(f"API_VALIDATION_ERROR /analyze: Invalid input from Analyzer: {e}. RequestID: {request_id}", exc_info=True)
-        raise HTTPException(status_code=422, detail=f"Invalid Input Parameters: {str(e)}")
-    except (ModuleNotFoundError, ModuleExecutionError, ModuleError, VisualizationError) as e:
-        logger.error(f"API_MODULE_ERROR /analyze: Analyzer module error: {e}. RequestID: {request_id}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Module Error during analysis ({type(e).__name__}): {str(e)}")
-    except Exception as e:
-        logger.critical(f"API_UNEXPECTED_ERROR /analyze: Unexpected critical error. RequestID: {request_id}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Unexpected internal server error: {type(e).__name__} - {str(e)}")
+    except InvalidInputError as e_analyzer_invalid: # Errors from Analyzer's validation
+        logger.warning(f"ALT_API_VALIDATION_ERROR /analyze: Invalid input for Analyzer: {e_analyzer_invalid}. RequestID: {request_id}", 
+                       exc_info=True, extra=log_extra)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Invalid Input Parameters for Analyzer: {str(e_analyzer_invalid)}")
+    
+    except (ModuleError, VisualizationError) as e_analyzer_runtime: # Other specific errors from Analyzer
+        logger.error(f"ALT_API_MODULE_ERROR /analyze: Analyzer runtime error: {e_analyzer_runtime}. RequestID: {request_id}", 
+                     exc_info=True, extra=log_extra)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Analyzer Error during analysis ({type(e_analyzer_runtime).__name__}): {str(e_analyzer_runtime)}")
+    
+    except Exception as e_unexpected: # Catch-all for other errors
+        logger.critical(f"ALT_API_UNEXPECTED_ERROR /analyze: Unexpected critical error. RequestID: {request_id}", 
+                        exc_info=True, extra=log_extra)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Unexpected internal server error: {type(e_unexpected).__name__} - {str(e_unexpected)}")
+
 
 if __name__ == "__main__":
-    logger.info("Executing main_api.py directly (intended for local Uvicorn launch instruction).")
-    print("\nTo run this FastAPI application locally for development:")
-    print("1. Ensure all dependencies are installed: pip install fastapi uvicorn numpy pydantic")
-    print("2. If using ortools, ensure it's installed: pip install ortools")
-    print("3. Ensure 'new_module.py' (with PuzzleTensorOps) and 'analyzer.py' (with Analyzer) are present.")
-    print("4. In your terminal, run: uvicorn main_api:app --reload --host 0.0.0.0 --port 8000")
-    print("   (Assuming this file is named main_api.py and the FastAPI instance is 'app')")
-    print("5. Open your browser to http://127.0.0.1:8000/docs to interact with the API.")
-    print("\nFor deployment on platforms like Render, use the platform's start command, e.g.:")
-    print("  uvicorn main_api:app --host 0.0.0.0 --port ${PORT} --workers 1")
-    # import uvicorn
-    # uvicorn.run(app, host="0.0.0.0", port=8000)
+    import uvicorn
+    # Add a simple handler for direct run, similar to the main.py
+    if not logger.hasHandlers():
+        _stdout_handler_alt = logging.StreamHandler()
+        _stdout_handler_alt.setFormatter(logging.Formatter(
+             '%(asctime)s - %(levelname)s - %(name)s - %(module)s.%(funcName)s:%(lineno)d - RequestID: %(request_id)s - %(message)s',
+            '%Y-%m-%d %H:%M:%S'
+        ))
+        class RequestIDLogFilterAlt(logging.Filter):
+            def filter(self, record):
+                record.request_id = getattr(record, 'request_id', 'system_alt')
+                return True
+        logger.addFilter(RequestIDLogFilterAlt())
+        logger.addHandler(_stdout_handler_alt)
+
+    logger.info("Executing main_api_alt_corrected.py directly.", extra={'request_id': 'startup_alt'})
+    logger.info("This is an ALTERNATE API implementation. The 'main.py' is the primary recommended API.", extra={'request_id': 'startup_alt'})
+    if analyzer_instance_alt is None:
+        logger.error("ALTERNATE ANALYZER NOT INITIALIZED. /analyze endpoint will fail.", extra={'request_id': 'startup_alt'})
+    else:
+        logger.info("Alternate Analyzer instance is initialized.", extra={'request_id': 'startup_alt'})
+    
+    print("\nTo run this ALTERNATE FastAPI application (main_api_alt_corrected.py):")
+    print("1. Ensure dependencies are installed: fastapi uvicorn numpy matplotlib pydantic pydantic-settings")
+    print("2. Ensure 'analyzer.py' and 'brain.py' are in the same directory or Python path.")
+    print("3. In your terminal, run: uvicorn main_api_alt_corrected:app_alt --reload --host 0.0.0.0 --port 8001")
+    print("   (Using port 8001 to avoid conflict if main.py runs on 8000)")
+    print("4. Open browser to http://127.0.0.1:8001/docs for this alternate API.")
+    
+    # To run programmatically (example, usually Uvicorn CLI is preferred for dev)
+    # uvicorn.run(app_alt, host="0.0.0.0", port=8001)
