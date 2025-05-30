@@ -1,7 +1,7 @@
-fastapi==0.115.1              # ← 最新穩定版，沒 0.115.12 這種版本
-uvicorn[standard]==0.24.0.post1  # ← 最新正式版，無 0.34.2，應為筆誤
-numpy==1.26.4                # ← numpy 最新穩定，2.x 尚未正式推出（你寫的 2.2.6 不存在）
-matplotlib==3.8.4            # ← 最新穩定版，3.10.x 尚未釋出（你寫的 3.10.3 是未來版）
-ortools==9.9.3963            # ← OK，這是官方最新穩定版
-prometheus_client==0.20.0    # ← 建議加版本號以保穩定部署
-pydantic-settings==2.2.1     # ← 你有用 `BaseSettings`，需加這個
+fastapi==0.115.1
+uvicorn[standard]==0.24.0.post1
+numpy==1.26.4
+matplotlib==3.8.4
+ortools==9.9.3963
+prometheus_client==0.20.0
+pydantic-settings==2.2.1
