@@ -2335,7 +2335,7 @@ async def get_module_info_full(request:Request, module_name:str=Path(...,descrip
     return ModuleInfo(name=module_name, **brain_interface.get_module_details(module_name))
 
 @app.post("/score/{module_name}", response_model=TaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, tags=["Scoring (Async)"], summary="Submit grid for background scoring")
-async def score_grid_bg_full(request:Request, payload:GridInput, module_name:str=Path(...,description="Module to use"), bg_tasks:BackgroundTasks=Depends(), api_key:APIKey=Depends(get_api_key)):
+async def score_grid_bg_full(request:Request, payload:GridInput, module_name:str=Path(...,description="Module to use"), bg_tasks:BackgroundTasks=BackgroundTasks(), api_key:APIKey=Depends(get_api_key)):
     req_id=request.state.request_id; client_req_id=payload.client_request_id; task_id=str(uuid.uuid4())
     log_ex={'request_id':req_id,'task_id':task_id,'module_name':module_name,'client_req_id':client_req_id or "N/A"}
     if module_name not in brain_interface.registered_modules: logger.warning("Module not found for BG task.",extra=log_ex); raise HTTPException(status_code=404,detail=f"Module '{module_name}' not found.")
@@ -2344,7 +2344,7 @@ async def score_grid_bg_full(request:Request, payload:GridInput, module_name:str
     return TaskAcceptedResponse(task_id=task_id,message=f"Task for module '{module_name}' accepted.",client_request_id=client_req_id)
 
 @app.post("/score/batch", response_model=list[TaskAcceptedResponse], status_code=status.HTTP_202_ACCEPTED, tags=["Scoring (Async)"], summary="Submit batch grids for background scoring")
-async def score_batch_bg_full(request:Request, payload:BatchGridInput, bg_tasks:BackgroundTasks=Depends(), api_key:APIKey=Depends(get_api_key)):
+async def score_batch_bg_full(request:Request, payload:BatchGridInput, bg_tasks:BackgroundTasks=BackgroundTasks(), api_key:APIKey=Depends(get_api_key)):
     req_id=request.state.request_id; client_req_id=payload.client_request_id; responses:list[TaskAcceptedResponse]=[]
     log_ex_batch={'request_id':req_id,'batch_size':len(payload.grids),'client_req_id':client_req_id or "N/A"}; logger.info("Batch BG task received.",extra=log_ex_batch)
     for item in payload.grids:
@@ -2378,13 +2378,13 @@ async def test_health():
         response = await ac.get("/health")
         assert response.status_code == 200
         assert "status" in response.json()
+
 @pytest.mark.asyncio
 async def test_modules():
     async with AsyncClient(app=app, base_url="http://test") as ac:
         response = await ac.get("/modules")
         assert response.status_code == 200
         assert isinstance(response.json(), list)
-
 @pytest.mark.asyncio
 async def test_analyze_no_payload():
     async with AsyncClient(app=app, base_url="http://test") as ac:
