@@ -5,3 +5,4 @@ matplotlib
 ortools
 prometheus_client
 starlette-prometheus
+pydantic-settings
