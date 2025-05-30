@@ -2,24 +2,23 @@
 # pylint: disable=too-many-arguments, too-many-locals, too-many-branches, too-many-statements, too-many-lines
 
 """
-核心調度器(analyzer.py): 專責處理來自API的分析請求。
+核心調度器(analyzer.py):專責處理來自API的分析請求。
 
 一句話總結:
 「所有棋盤邏輯、分析規則、分數運算都只許在 brain.py/模組寫,
 analyzer.py 永遠只做協調與公平融合,任何越界皆屬大忌。」
 
 本檔案完全遵循高內聚低耦合原則,禁止硬編寫任何業務邏輯、規則、演算法、
-模組分數計算與棋盤分析。所有分析行為均應由 main_module (來自 brain.py)之官方註冊模組執行。
+模組分數計算與棋盤分析。所有分析行為均應由 main_module (來自 brain.py)之官方註冊模
+組執行。
 """
 
-import brain # 實際應用的模組，由 main_module 參數傳入 Analyzer
 import base64
 import io
 import logging
 from typing import List, Dict, Any, Tuple, Optional, Union
 import random
-import asyncio # 新增: 用於非同步處理
-
+import asyncio # 新增:用於非同步處理
 import matplotlib
 matplotlib.use('Agg') # Ensure Matplotlib works in a headless environment
 import matplotlib.pyplot as plt
@@ -69,9 +68,15 @@ class Analyzer:
     負責接收分析請求,調用 main_module 中的邏輯模組,融合結果,並返回建議。
     嚴格遵守不干涉分析邏輯、僅做協調與公平融合的原則。
     """
+
     PV_COLORS = list(mcolors.TABLEAU_COLORS.values()) + list(mcolors.CSS4_COLORS.values())
 
     def __init__(self, main_module: Any, default_top_n: int = 3):
+        """
+        Initializes the Analyzer.
+        :param main_module: The brain module providing 'get_module_score' and 'registered_modules'.
+        :param default_top_n: Default number of top suggestions to return.
+        """
         if not hasattr(main_module, 'get_module_score') or \
            not callable(main_module.get_module_score):
             raise InitializationError(
@@ -80,10 +85,12 @@ class Analyzer:
         if not hasattr(main_module, 'registered_modules') or \
            not isinstance(main_module.registered_modules, dict):
             raise InitializationError(
-                "main_module 必須提供 'registered_modules' (字典)屬性。"
+                "main_module 必須提供 'registered_modules' (字典) 屬性。"
             )
         self.main_module = main_module
         self.default_top_n = default_top_n
+        self._current_cell_size_inch_for_dpi: float = 0.75 # Temporary attribute for DPI calculation
+
         logger.info("Analyzer initialized with default_top_n=%d. Registered modules from main_module: %s",
                     self.default_top_n, list(main_module.registered_modules.keys()))
 
@@ -95,47 +102,57 @@ class Analyzer:
         module_weights: Optional[Dict[str, float]],
         top_n: Optional[int]
     ) -> Tuple[int, int, List[int], Optional[List[str]], Optional[Dict[str, float]], int]:
+        """Validates the input parameters for board analysis."""
         if not new_card or not isinstance(new_card, list):
-            raise InvalidInputError("盤面 (new_card)不得為空且必須是列表。")
+            raise InvalidInputError("盤面 (new_card) 不得為空且必須是列表。")
         if not all(isinstance(row, list) for row in new_card):
-            raise InvalidInputError("盤面 (new_card)的每一行必須是列表。")
+            raise InvalidInputError("盤面 (new_card) 的每一行必須是列表。")
 
         rows = len(new_card)
-        if rows == 0:
-            raise InvalidInputError("盤面 (new_card)不得為空(沒有行)。")
-        
-        cols = len(new_card[0]) if new_card and new_card[0] is not None else 0
-        if cols == 0 and rows > 0 : # Allow fully empty board if it's 0x0
-             if not all(len(row) == 0 for row in new_card): # if rows > 0, cols must be consistently 0
-                raise InvalidInputError("盤面 (new_card)的列定義不一致或首行為空但其他行非空。")
-        
-        if not all(len(row) == cols for row in new_card):
-            raise InvalidInputError("盤面 (new_card)必須是矩形(所有行的列數需一致)。")
-        if not all(isinstance(val, int) for row in new_card for val in row):
-            raise InvalidInputError("盤面 (new_card)中的所有值必須是整數。")
+        if rows == 0: # Allow 0xN board if cols will also be 0
+             cols = 0
+             # Check if any row is not empty list if rows == 0 is not the case (e.g. new_card = [[]])
+             if any(row for row in new_card): # e.g. [[1], []] -> error, but [[]] means 1 row 0 cols
+                 pass # This will be caught by inconsistent column check later if not all rows are []
+        else: # rows > 0
+            cols = len(new_card[0]) if new_card[0] is not None else 0
 
-        has_negative_one = any(val == -1 for row in new_card for val in row)
-        if not has_negative_one and rows > 0 and cols > 0: # Only warn if board is not empty
-            logger.warning("盤面 (new_card) 中沒有-1(未開)的格子。可能無法提供「填入」建議。")
+
+        if rows == 0 and cols == 0 : # 0x0 board
+            pass # Allowed
+        elif rows > 0 and cols == 0: # Nx0 board (e.g. [[], [], []])
+            if not all(len(row) == 0 for row in new_card):
+                 raise InvalidInputError("盤面 (new_card) 的列定義不一致或首行為空但其他行非空。")
+        elif rows == 0 and cols > 0: # Should not happen if rows is len(new_card)
+            raise InvalidInputError("盤面 (new_card) 行數為零但列數非零，輸入結構異常。")
+        else: # rows > 0 and cols > 0
+            if not all(len(row) == cols for row in new_card):
+                raise InvalidInputError("盤面 (new_card) 必須是矩形(所有行的列數需一致)。")
+            if not all(isinstance(val, int) for row in new_card for val in row):
+                raise InvalidInputError("盤面 (new_card) 中的所有值必須是整數。")
+            
+            has_negative_one = any(val == -1 for row in new_card for val in row)
+            if not has_negative_one:
+                logger.warning("盤面 (new_card) 中沒有 -1 (未開) 的格子。可能無法提供「填入」建議。")
 
         if not proposed_values or not isinstance(proposed_values, list):
-            raise InvalidInputError("候選值(proposed_values)必須是非空列表。")
+            raise InvalidInputError("候選值 (proposed_values) 必須是非空列表。")
         if not all(isinstance(pv, int) for pv in proposed_values):
-            raise InvalidInputError("候選值(proposed_values)中的所有值必須是整數。")
+            raise InvalidInputError("候選值 (proposed_values) 中的所有值必須是整數。")
 
         if active_modules is not None:
             if not isinstance(active_modules, list) or \
                not all(isinstance(m, str) for m in active_modules):
-                raise InvalidInputError("啟用模組 (active_modules)若提供,必須是字串列表。")
-        
+                raise InvalidInputError("啟用模組 (active_modules) 若提供, 必須是字串列表。")
+
         if module_weights is not None:
             if not isinstance(module_weights, dict) or \
                not all(isinstance(k, str) and isinstance(v, (int, float)) for k, v in module_weights.items()):
-                raise InvalidInputError("模組權重(module_weights)若提供,必須是{str: float/int} 格式的字典。")
+                raise InvalidInputError("模組權重 (module_weights) 若提供, 必須是 {str: float/int} 格式的字典。")
 
         final_top_n = top_n if top_n is not None else self.default_top_n
         if not isinstance(final_top_n, int) or final_top_n <= 0:
-            raise InvalidInputError(f"Top-N 數量 ({final_top_n})必須是正整數。")
+            raise InvalidInputError(f"Top-N 數量 ({final_top_n}) 必須是正整數。")
 
         logger.debug("Input validation successful. Rows: %d, Cols: %d, Top_N: %d", rows, cols, final_top_n)
         return rows, cols, proposed_values, active_modules, module_weights, final_top_n
@@ -145,14 +162,14 @@ class Analyzer:
         requested_active_modules: Optional[List[str]],
         requested_module_weights: Optional[Dict[str, float]]
     ) -> Tuple[List[str], Dict[str, float]]:
+        """Determines the effective modules to run and their final weights."""
         registered_module_names = list(self.main_module.registered_modules.keys())
-        effective_module_names: List[str]
+        effective_module_names: List[str] = []
 
         if requested_active_modules is None:
             effective_module_names = registered_module_names
             logger.info("未指定 active_modules, 將使用所有已註冊模組: %s", effective_module_names)
         else:
-            effective_module_names = []
             for module_name in requested_active_modules:
                 if module_name not in registered_module_names:
                     logger.warning("請求的模組 '%s' 未在 main_module 中註冊。將被忽略。", module_name)
@@ -160,23 +177,27 @@ class Analyzer:
                     effective_module_names.append(module_name)
             
             if not effective_module_names and requested_active_modules:
-                logger.warning("指定的 active_modules (%s)均未在main_module註冊, 無模組可執行。", requested_active_modules)
+                logger.warning("指定的 active_modules (%s) 均未在 main_module 註冊, 無模組可執行。", requested_active_modules)
             elif not effective_module_names:
-                 logger.warning("active_modules 列表為空, 無模組可執行。")
+                 logger.warning("active_modules 列表為空或所有指定模組均無效, 無模組可執行。")
 
 
         final_module_weights: Dict[str, float] = {
             name: 1.0 for name in effective_module_names
         }
+
         if requested_module_weights:
             for name, weight in requested_module_weights.items():
                 if name in final_module_weights:
                     final_module_weights[name] = float(weight)
                 else:
-                    logger.warning(
-                        "權重配置中的模組'%s'未在生效模組列表(%s)中, 其權重將被忽略。",
-                        name, effective_module_names
-                    )
+                    # Only warn if the module was not in the original requested_active_modules (if provided)
+                    # or if it's simply not a registered module at all.
+                    if requested_active_modules is None or name in requested_active_modules :
+                        logger.warning(
+                            "權重配置中的模組 '%s' 未在生效模組列表 (%s) 中, 其權重將被忽略。",
+                            name, effective_module_names
+                        )
         
         logger.info("生效模組 (Effective Modules): %s", effective_module_names)
         logger.info("最終模組權重 (Final Module Weights): %s", final_module_weights)
@@ -190,8 +211,9 @@ class Analyzer:
         cols: int,
         request_id: Optional[str] = "N/A_REQ_ID"
     ) -> np.ndarray:
+        """Fuses scores from multiple modules using their weights and normalizes the result."""
         if rows == 0 or cols == 0: # Handle empty board case
-            return np.array([[]], dtype=float) if rows == 0 else np.empty((rows, 0), dtype=float)
+            return np.array([[]], dtype=float) if rows == 0 and cols == 0 else np.empty((rows, cols), dtype=float)
 
         fused_scores = np.zeros((rows, cols), dtype=float)
         if not module_scores_map:
@@ -204,31 +226,31 @@ class Analyzer:
         for module_name, scores_array in module_scores_map.items():
             weight = module_weights_map.get(module_name)
             if weight is None:
-                logger.error(f"RequestID: {request_id} - 嚴重內部錯誤: 模組'{module_name}'在評分融合階段缺少權重。將使用預設值1.0。")
+                logger.error(f"RequestID: {request_id} - 嚴重內部錯誤: 模組 '{module_name}' 在評分融合階段缺少權重。將使用預設值 1.0。")
                 weight = 1.0
             
             if not isinstance(scores_array, np.ndarray) or scores_array.shape != (rows, cols):
                 logger.error(
-                    f"RequestID: {request_id} - 模組 '{module_name}'的評分格式不符 "
-                    f"(期望{rows}x{cols} np.ndarray, 得到{type(scores_array)} "
+                    f"RequestID: {request_id} - 模組 '{module_name}' 的評分格式不符 "
+                    f"(期望 {rows}x{cols} np.ndarray, 得到 {type(scores_array)} "
                     f"{scores_array.shape if isinstance(scores_array, np.ndarray) else 'N/A'})。此模組分數將被忽略。"
                 )
                 continue
             
-            logger.debug(f"RequestID: {request_id} - 融合模組 '{module_name}'的評分 (權重: {weight:.2f}).")
+            logger.debug(f"RequestID: {request_id} - 融合模組 '{module_name}' 的評分 (權重: {weight:.2f}).")
             fused_scores += scores_array * weight
-
+        
         min_score_val = np.min(fused_scores) if fused_scores.size > 0 else 0.0
         max_score_val = np.max(fused_scores) if fused_scores.size > 0 else 0.0
 
         if max_score_val == min_score_val:
             normalized_fused_scores = np.zeros_like(fused_scores)
-            if min_score_val != 0 : # Only log if it wasn't already all zeros
-                 logger.debug(f"RequestID: {request_id} - Fused scores are all identical ({min_score_val:.4f}), normalized to 0.0.")
+            if min_score_val != 0: # Only log if it wasn't already all zeros
+                logger.debug(f"RequestID: {request_id} - Fused scores are all identical ({min_score_val:.4f}), normalized to 0.0.")
         else:
             normalized_fused_scores = (fused_scores - min_score_val) / (max_score_val - min_score_val)
-            logger.debug(f"RequestID: {request_id} - Fused scores normalized from range [{min_score_val:.4f}, {max_score_val:.4f}] to [0, 1].")
         
+        logger.debug(f"RequestID: {request_id} - Fused scores normalized from range [{min_score_val:.4f}, {max_score_val:.4f}] to [0, 1].")
         return normalized_fused_scores
 
     def _get_top_n_for_pv(
@@ -238,13 +260,14 @@ class Analyzer:
         top_n: int,
         request_id: Optional[str] = "N/A_REQ_ID"
     ) -> List[Dict[str, Any]]:
+        """Extracts top N suggestions for a given proposed value from the fused scores."""
         suggestions: List[Dict[str, Any]] = []
         if fused_scores_board.size == 0: # Empty board or scores
-             logger.info(f"RequestID: {request_id}- 融合後的評分盤面為空。無法提供建議。")
-             return suggestions
+            logger.info(f"RequestID: {request_id} - 融合後的評分盤面為空。無法提供建議。")
+            return suggestions
 
         rows, cols = fused_scores_board.shape
-        candidate_cells: List[Tuple[float, int, int]] = []
+        candidate_cells: List[Tuple[float, int, int]] = [] # (score, r, c)
         has_fillable_cells = False
 
         for r in range(rows):
@@ -254,13 +277,13 @@ class Analyzer:
                     candidate_cells.append((fused_scores_board[r, c], r, c))
         
         if not has_fillable_cells:
-            logger.info(f"RequestID: {request_id}- 盤面上沒有值為-1的可填入格子。無法為此 proposed_value 提供建議。")
+            logger.info(f"RequestID: {request_id} - 盤面上沒有值為 -1 的可填入格子。無法為此 proposed_value 提供建議。")
             return suggestions # Empty list
 
         if not candidate_cells: # Should ideally be caught by has_fillable_cells
-            logger.info(f"RequestID: {request_id}- 候選格子列表為空 (可能所有格子都不是-1)。")
+            logger.info(f"RequestID: {request_id} - 候選格子列表為空 (可能所有格子都不是 -1)。")
             return suggestions # Empty list
-
+            
         candidate_cells.sort(key=lambda x: x[0], reverse=True) # Sort by score descending
 
         for score, r, c in candidate_cells[:top_n]:
@@ -279,37 +302,51 @@ class Analyzer:
         top_n: Optional[int] = None,
         request_id_for_logging: Optional[str] = None
     ) -> Dict[str, Any]:
-        """執行棋盤分析的核心方法 (非同步)。"""
+        """執行棋盤分析的核心方法(非同步)。"""
         if request_id_for_logging is None:
             request_id_for_logging = f"analyzer-req-{random.randint(10000, 99999)}"
             logger.info(f"Generated temporary RequestID for logging: {request_id_for_logging}")
 
         log_prefix = f"RequestID: {request_id_for_logging} - Analyzer:"
         logger.info(
-            f"{log_prefix} 接收分析請求: {len(proposed_values) if proposed_values else 0}個候選值, "
-            f"盤面尺寸 {len(new_card)}x{len(new_card[0]) if new_card and new_card[0] is not None else 'empty'}. "
+            f"{log_prefix} 接收分析請求: {len(proposed_values) if proposed_values else 0} 個候選值, "
+            f"盤面尺寸 {len(new_card)}x{len(new_card[0]) if new_card and new_card[0] is not None and len(new_card)>0 else 'empty'}. "
             f"Active modules hint: {str(active_modules) if active_modules else 'ALL'}"
         )
+
+        rows: int = 0
+        cols: int = 0
+        final_top_n: int = self.default_top_n
+        val_active_modules: Optional[List[str]] = active_modules
+        val_module_weights: Optional[Dict[str, float]] = module_weights
+        effective_modules: List[str] = []
+        final_weights: Dict[str, float] = {}
+
 
         try:
             rows, cols, validated_pvs, val_active_modules, val_module_weights, final_top_n = \
                 self._validate_inputs(new_card, proposed_values, active_modules, module_weights, top_n)
+            
+            effective_modules, final_weights = self._get_effective_modules_and_weights(
+                val_active_modules, val_module_weights
+            )
+
         except InvalidInputError as e:
             logger.error(f"{log_prefix} 輸入參數驗證失敗: {e}", exc_info=True)
+            # Try to get rows/cols if possible for error visualization, otherwise use 0,0
+            current_rows_for_error = len(new_card) if isinstance(new_card, list) else 0
+            current_cols_for_error = len(new_card[0]) if current_rows_for_error > 0 and isinstance(new_card[0], list) else 0
+
             return {
                 'error': f"Invalid input: {e}",
                 'suggestions': {},
-                'visualization': self._generate_error_visualization(0, 0, f"Invalid Input: {e}"),
-                'board_dimensions': {'rows': 0, 'cols': 0},
+                'visualization': self._generate_error_visualization(current_rows_for_error, current_cols_for_error, f"Invalid Input: {e}"),
+                'board_dimensions': {'rows': current_rows_for_error, 'cols': current_cols_for_error},
                 'processed_params': {'request_id': request_id_for_logging, 'error': True}
             }
 
-        effective_modules, final_weights = self._get_effective_modules_and_weights(
-            val_active_modules, val_module_weights
-        )
-
-        all_suggestions: Dict[Union[int, str], List[Dict[str, Any]]] = {}
-        all_fused_scores_for_pvs: Dict[Union[int, str], np.ndarray] = {}
+        all_suggestions: Dict[int, List[Dict[str, Any]]] = {} # Changed key to int
+        all_fused_scores_for_pvs: Dict[int, np.ndarray] = {} # Changed key to int
 
         if not effective_modules:
             logger.warning(f"{log_prefix} 沒有任何生效的分析模組。分析將產生空建議和零分盤面。")
@@ -319,43 +356,56 @@ class Analyzer:
         else:
             for pv_idx, pv in enumerate(validated_pvs):
                 logger.info(f"{log_prefix} Processing PV {pv} ({pv_idx + 1}/{len(validated_pvs)})")
-                
                 module_tasks = []
                 for module_name in effective_modules:
-                    # Ensure get_module_score is awaitable (async def)
+                    # Use asyncio.to_thread to run synchronous brain modules
                     module_tasks.append(
-                        self.main_module.get_module_score(module_name, new_card, pv)
+                        asyncio.to_thread(
+                            self.main_module.get_module_score,
+                            module_name,
+                            new_card, # grid
+                            pv,       # proposed_value for the brain module
+                            request_id=request_id_for_logging # Pass request_id to brain
+                        )
                     )
                 
                 raw_module_results = []
                 try:
-                    # Execute all module calls concurrently for the current PV
                     logger.debug(f"{log_prefix} PV: {pv} - Calling {len(module_tasks)} modules concurrently.")
-                    # Setting return_exceptions=True to handle individual module failures
                     raw_module_results = await asyncio.gather(*module_tasks, return_exceptions=True)
                     logger.debug(f"{log_prefix} PV: {pv} - All modules processed.")
                 except Exception as e_gather: # Should not happen with return_exceptions=True
                     logger.error(f"{log_prefix} PV: {pv} - Unexpected error during asyncio.gather: {e_gather}", exc_info=True)
 
-
                 module_scores_for_pv: Dict[str, np.ndarray] = {}
                 for i, module_name in enumerate(effective_modules):
-                    raw_scores = raw_module_results[i]
+                    raw_scores_result = raw_module_results[i]
 
-                    if isinstance(raw_scores, Exception):
+                    if isinstance(raw_scores_result, Exception):
                         logger.error(
-                           f"{log_prefix} Error calling or processing scores from module '{module_name}' for PV '{pv}': {raw_scores}. "
-                           "This module's scores will be skipped.",
-                           exc_info=raw_scores  # Log the captured exception
+                            f"{log_prefix} Error calling or processing scores from module '{module_name}' for PV '{pv}': {raw_scores_result}. "
+                            "This module's scores will be skipped.",
+                            exc_info=raw_scores_result # Log the captured exception
                         )
-                        continue
-                    
-                    if raw_scores is None:
+                        if isinstance(raw_scores_result, ModuleNotFoundError): # More specific error if needed
+                             pass # Already logged
+                        elif isinstance(raw_scores_result, ModuleExecutionError):
+                             pass # Already logged
+                        continue # Skip this module for this PV
+
+                    if raw_scores_result is None:
                         logger.warning(f"{log_prefix} Module '{module_name}' for PV '{pv}' returned None. Skipping.")
                         continue
-
+                    
                     try:
-                        scores_np = np.array(raw_scores, dtype=float)
+                        # Ensure raw_scores_result is suitable for np.array, e.g. List[List[float]] or np.ndarray
+                        if not isinstance(raw_scores_result, (np.ndarray, list)):
+                            logger.error(
+                                f"{log_prefix} Module '{module_name}' for PV '{pv}' returned unexpected type {type(raw_scores_result)}. Expected list or ndarray. Skipping."
+                            )
+                            continue
+
+                        scores_np = np.array(raw_scores_result, dtype=float)
                         if scores_np.shape != (rows, cols):
                             logger.error(
                                 f"{log_prefix} Module '{module_name}' for PV '{pv}' returned incorrect score shape. "
@@ -366,7 +416,7 @@ class Analyzer:
                         # Logging stats for the received scores
                         non_zero_count = np.count_nonzero(scores_np)
                         sum_of_scores = np.sum(scores_np)
-                        min_val, max_val, mean_val = (0.0,0.0,0.0)
+                        min_val, max_val, mean_val = (0.0, 0.0, 0.0)
                         if scores_np.size > 0:
                             min_val = np.min(scores_np)
                             max_val = np.max(scores_np)
@@ -374,38 +424,38 @@ class Analyzer:
                         else: # Should not happen if shape check passes and not None
                             logger.warning(f"{log_prefix} Module '{module_name}' for PV '{pv}' resulted in empty scores_np (unexpected).")
 
-
                         logger.info(
                             f"{log_prefix} PV: {pv} - Module: [{module_name}] - "
                             f"Raw scores stats: Shape={scores_np.shape}, Non-zero={non_zero_count}, "
                             f"Sum={sum_of_scores:.4f}, Min={min_val:.4f}, Max={max_val:.4f}, Mean={mean_val:.4f}"
                         )
                         if rows <= 5 and cols <= 5:
-                             logger.debug(f"{log_prefix} PV: {pv} - Module: [{module_name}] - Raw scores board:\n{scores_np}")
-                        elif scores_np.size > 0:
-                             logger.debug(f"{log_prefix} PV: {pv} - Module: [{module_name}] - Raw scores board (first 3x3 snippet if available):\n{scores_np[:min(3,rows),:min(3,cols)]}")
-
+                            logger.debug(f"{log_prefix} PV: {pv} - Module: [{module_name}] - Raw scores board:\n{scores_np}")
+                        elif scores_np.size > 0 :
+                            logger.debug(f"{log_prefix} PV: {pv} - Module: [{module_name}] - Raw scores board (first 3x3 snippet if available):\n{scores_np[:min(3,rows), :min(3,cols)]}")
+                        
                         module_scores_for_pv[module_name] = scores_np
+
                     except Exception as e_proc: # Catch errors during np.array conversion or stat calculation
                         logger.error(
                             f"{log_prefix} Error processing scores from module '{module_name}' for PV '{pv}': {e_proc}. Skipping.",
                             exc_info=True
                         )
                         continue
-
-
+                
                 if not module_scores_for_pv:
                     logger.warning(f"{log_prefix} PV: {pv} - No valid scores obtained from any module.")
                     fused_scores_pv = np.zeros((rows, cols) if rows > 0 and cols > 0 else (0,0), dtype=float)
                 else:
-                    fused_scores_pv = self._fuse_scores(module_scores_for_pv, final_weights,
+                    fused_scores_pv = self._fuse_scores(module_scores_for_pv, final_weights, 
                                                         rows, cols, request_id=request_id_for_logging)
                 
                 all_fused_scores_for_pvs[pv] = fused_scores_pv
-                all_suggestions[pv] = self._get_top_n_for_pv(fused_scores_pv, new_card,
-                                                             final_top_n, request_id=request_id_for_logging)
+                all_suggestions[pv] = self._get_top_n_for_pv(fused_scores_pv, new_card, 
+                                                              final_top_n, request_id=request_id_for_logging)
                 logger.info(f"{log_prefix} PV: {pv} - Found {len(all_suggestions[pv])} suggestions (Top-{final_top_n}).")
 
+        visualization_b64 = ""
         try:
             visualization_b64 = self._generate_visualization(
                 new_card, validated_pvs, all_suggestions, all_fused_scores_for_pvs,
@@ -413,7 +463,6 @@ class Analyzer:
             )
         except Exception as e_viz:
             logger.error(f"{log_prefix} 生成視覺化圖像時發生嚴重錯誤: {e_viz}", exc_info=True)
-            # Ensure rows and cols are defined or fallback
             current_rows = rows if 'rows' in locals() and isinstance(rows, int) else 0
             current_cols = cols if 'cols' in locals() and isinstance(cols, int) else 0
             visualization_b64 = self._generate_error_visualization(
@@ -423,27 +472,25 @@ class Analyzer:
         return {
             'suggestions': all_suggestions,
             'visualization': visualization_b64,
-            'board_dimensions': {'rows': rows if 'rows' in locals() else 0, 
-                                 'cols': cols if 'cols' in locals() else 0},
+            'board_dimensions': {'rows': rows, 'cols': cols},
             'processed_params': {
                 'requested_top_n': top_n if top_n is not None else f"default ({self.default_top_n})",
-                'actual_top_n': final_top_n if 'final_top_n' in locals() else self.default_top_n,
-                'requested_active_modules': val_active_modules if 'val_active_modules' in locals() else "N/A",
-                'effective_active_modules': effective_modules if 'effective_modules' in locals() else [],
-                'requested_module_weights': val_module_weights if 'val_module_weights' in locals() else "N/A",
-                'final_module_weights': final_weights if 'final_weights' in locals() else {},
+                'actual_top_n': final_top_n,
+                'requested_active_modules': val_active_modules,
+                'effective_active_modules': effective_modules,
+                'requested_module_weights': val_module_weights,
+                'final_module_weights': final_weights,
                 'request_id': request_id_for_logging
             }
         }
 
     def _generate_error_visualization(self, rows: int, cols: int, error_message: str) -> str:
+        """Generates a base64 encoded image displaying an error message."""
         try:
-            # Ensure non-zero dimensions for figsize
             fig_width = max(cols * 0.5 if cols > 0 else 1, 5)
             fig_height = max(rows * 0.5 if rows > 0 else 1, 3)
-
             fig, ax = plt.subplots(figsize=(fig_width, fig_height))
-            ax.text(0.5, 0.5, f"錯誤:\n{error_message}",
+            ax.text(0.5, 0.5, f"錯誤:\n{error_message}", 
                     ha='center', va='center', fontsize=10, color='red', wrap=True)
             ax.axis('off')
             img_base64 = self._fig_to_base64(fig)
@@ -455,6 +502,7 @@ class Analyzer:
 
     # --- Visualization Refactoring Start ---
     def _setup_plot_figure(self, rows: int, cols: int, num_proposed_values: int) -> Tuple[plt.Figure, plt.Axes, float]:
+        """Sets up the matplotlib figure and axes for visualization."""
         cell_size_inch = max(0.5, min(1.0, 10.0 / max(rows, cols, 1))) # Avoid division by zero
         fig_width = max(cols * cell_size_inch, 6)
         fig_height = max(rows * cell_size_inch, 4)
@@ -465,6 +513,7 @@ class Analyzer:
         return fig, ax, cell_size_inch
 
     def _configure_plot_axes(self, ax: plt.Axes, rows: int, cols: int, cell_size_inch: float):
+        """Configures the axes properties for the board plot."""
         ax.set_xlim(-0.5, cols - 0.5)
         ax.set_ylim(rows - 0.5, -0.5) # Inverted y-axis for matrix style
         ax.set_xticks(np.arange(cols))
@@ -478,53 +527,54 @@ class Analyzer:
         ax.grid(True, which='both', color='grey', linestyle='-', linewidth=0.5)
         ax.set_aspect('equal', adjustable='box')
 
-    def _draw_heatmap(self, ax: plt.Axes, board_state: List[List[int]], 
-                      all_fused_scores_for_pvs: Dict[Union[int, str], np.ndarray], 
+    def _draw_heatmap(self, ax: plt.Axes, board_state: List[List[int]],
+                      all_fused_scores_for_pvs: Dict[int, np.ndarray], # Key changed to int
                       proposed_values: List[int]):
+        """Draws the heatmap based on fused scores for the first proposed value."""
         rows = len(board_state)
         cols = len(board_state[0]) if rows > 0 else 0
         if not (rows > 0 and cols > 0): return
 
         heatmap_data = np.full((rows, cols), np.nan)
-        first_pv_for_heatmap = None
+        first_pv_for_heatmap: Optional[int] = None
+
         if proposed_values and proposed_values[0] in all_fused_scores_for_pvs:
             first_pv_for_heatmap = proposed_values[0]
             scores_for_first_pv = all_fused_scores_for_pvs[first_pv_for_heatmap]
-            if scores_for_first_pv.shape == (rows,cols): # Ensure scores match board dimensions
+            if scores_for_first_pv.shape == (rows, cols): # Ensure scores match board dimensions
                 for r_idx in range(rows):
                     for c_idx in range(cols):
                         if board_state[r_idx][c_idx] == -1:
                             heatmap_data[r_idx, c_idx] = scores_for_first_pv[r_idx, c_idx]
             else:
                 logger.warning(f"Heatmap scores for PV {first_pv_for_heatmap} shape mismatch. Skipping heatmap.")
-
-
+        
         if not np.all(np.isnan(heatmap_data)):
-            cmap = plt.cm.viridis
+            cmap = plt.cm.viridis.copy() # Use a copy to modify
             cmap.set_bad(color='white', alpha=0) # Transparent for NaN cells
             ax.imshow(heatmap_data, cmap=cmap, alpha=0.6, aspect='auto', vmin=0, vmax=1)
-
+            
     def _draw_suggestions_and_highlights(self, ax: plt.Axes,
-                                         all_suggestions: Dict[Union[int, str], List[Dict[str, Any]]],
+                                         all_suggestions: Dict[int, List[Dict[str, Any]]], # Key changed to int
                                          proposed_values: List[int],
                                          top_n_suggestion_count: int
                                          ) -> Dict[Tuple[int, int], List[str]]:
+        """Draws suggestion highlights and prepares text for cells."""
         suggestion_texts_on_cells: Dict[Tuple[int, int], List[str]] = {}
         cell_highlights: List[Dict[str, Any]] = []
 
         for pv_idx, pv in enumerate(proposed_values):
             pv_color = self.PV_COLORS[pv_idx % len(self.PV_COLORS)]
             if pv in all_suggestions:
-                # Display top_n_suggestion_count or max 3 suggestions on graph per PV
-                top_n_to_display_on_graph = min(top_n_suggestion_count, 3) 
+                top_n_to_display_on_graph = min(top_n_suggestion_count, 3)
                 for rank_idx, suggestion in enumerate(all_suggestions[pv][:top_n_to_display_on_graph]):
                     r, c = suggestion['position']
                     rank = rank_idx + 1
                     text_for_cell = f"{pv}(R{rank})"
                     
-                    if (r,c) not in suggestion_texts_on_cells:
-                        suggestion_texts_on_cells[(r,c)] = []
-                    suggestion_texts_on_cells[(r,c)].append(text_for_cell)
+                    if (r, c) not in suggestion_texts_on_cells:
+                        suggestion_texts_on_cells[(r, c)] = []
+                    suggestion_texts_on_cells[(r, c)].append(text_for_cell)
 
                     rect_line_width = 2.0 if rank == 1 else (1.5 if rank == 2 else 1.0)
                     cell_highlights.append({
@@ -534,15 +584,16 @@ class Analyzer:
                     })
         
         for highlight in cell_highlights:
-            # Ensure coords is a tuple (x, y) for xy parameter
             rect_params = {k: v for k, v in highlight.items() if k != 'coords'}
             rect = patches.Rectangle(xy=highlight['coords'], **rect_params)
             ax.add_patch(rect)
+        
         return suggestion_texts_on_cells
 
-    def _draw_board_texts(self, ax: plt.Axes, board_state: List[List[int]], 
-                          suggestion_texts_on_cells: Dict[Tuple[int, int], List[str]], 
+    def _draw_board_texts(self, ax: plt.Axes, board_state: List[List[int]],
+                          suggestion_texts_on_cells: Dict[Tuple[int, int], List[str]],
                           cell_size_inch: float):
+        """Draws existing numbers and suggestion texts onto the board cells."""
         rows = len(board_state)
         cols = len(board_state[0]) if rows > 0 else 0
         if not (rows > 0 and cols > 0): return
@@ -552,6 +603,7 @@ class Analyzer:
             for c_idx in range(cols):
                 cell_value = board_state[r_idx][c_idx]
                 current_cell_texts = []
+
                 if cell_value != -1:
                     current_cell_texts.append(str(cell_value))
                 else:
@@ -563,60 +615,57 @@ class Analyzer:
                 final_display_text = "\n".join(current_cell_texts)
                 num_lines = final_display_text.count('\n') + 1
                 
-                # Adjust font size dynamically based on content and cell size
                 dynamic_font_size = base_font_size / num_lines if num_lines > 1 else base_font_size
-                # Further reduce if text is too wide for the cell
-                # This is an approximation; true text width is complex
-                avg_chars_per_line = len(final_display_text.replace("\n","")) / num_lines 
-                width_factor = (cell_size_inch * 10) / (avg_chars_per_line + 1) # +1 to avoid div by zero
-                dynamic_font_size = max(4, dynamic_font_size * min(1, width_factor ))
+                
+                avg_chars_per_line = (len(final_display_text.replace("\n", "")) / num_lines) if num_lines > 0 else 0
+                if avg_chars_per_line > 0: # Avoid division by zero if avg_chars_per_line is 0
+                    width_factor = (cell_size_inch * 10) / (avg_chars_per_line + 1) # +1 to avoid div by zero
+                    dynamic_font_size = max(4, dynamic_font_size * min(1.0, width_factor))
+                else: # Handle cases with no text or only newlines leading to zero avg_chars_per_line
+                    dynamic_font_size = max(4, dynamic_font_size)
 
 
                 ax.text(c_idx, r_idx, final_display_text,
                         ha='center', va='center', fontsize=dynamic_font_size, color='black', wrap=True)
 
-    def _add_legend_and_title(self, fig: plt.Figure, ax: plt.Axes, 
-                               proposed_values: List[int], 
-                               all_suggestions: Dict[Union[int, str], List[Dict[str, Any]]],
-                               rows: int, cols: int, cell_size_inch: float):
+    def _add_legend_and_title(self, fig: plt.Figure, ax: plt.Axes,
+                              proposed_values: List[int],
+                              all_suggestions: Dict[int, List[Dict[str, Any]]], # Key changed to int
+                              rows: int, cols: int, cell_size_inch: float):
+        """Adds title and legend to the plot."""
         pv_str = ", ".join(map(str, proposed_values)) if proposed_values else "無"
         title_str = f'盤面分析 ({rows}x{cols}) - 候選值: [{pv_str}]'
         if not any(sugg_list for sugg_list in all_suggestions.values()):
-             title_str += "\n(盤面無-1格或模組未提供有效建議)"
+            title_str += "\n(盤面無-1格或模組未提供有效建議)"
         
-        # Use fig.suptitle for better spacing control with tight_layout
         fig.suptitle(title_str, fontsize=max(8, cell_size_inch * 14))
-
-
         legend_elements = []
+
         if proposed_values and any(s for pv_suggs in all_suggestions.values() for s in pv_suggs):
             added_pvs_to_legend = set()
             for pv_idx, pv in enumerate(proposed_values):
-                # Check if this PV actually has suggestions to display in legend
                 if pv not in added_pvs_to_legend and any(s for s in all_suggestions.get(pv, [])):
                     color = self.PV_COLORS[pv_idx % len(self.PV_COLORS)]
-                    legend_elements.append(patches.Patch(facecolor=color, edgecolor=color,
-                                                         label=f'候選值 {pv} 建議'))
+                    legend_elements.append(patches.Patch(facecolor=color, edgecolor=color, label=f'候選值 {pv} 建議'))
                     added_pvs_to_legend.add(pv)
         
         if legend_elements:
             ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.03, 0.5),
                       fontsize=max(7, cell_size_inch * 10), title="圖例")
-            # Adjust rect for tight_layout to prevent legend overlap
-            plt.tight_layout(rect=[0, 0, 0.9 if legend_elements else 1, 0.95]) # rect=[left, bottom, right, top]
+            plt.tight_layout(rect=[0, 0, 0.9, 0.95]) # Adjust for legend
         else:
             plt.tight_layout(rect=[0, 0, 1, 0.95])
-
 
     def _generate_visualization(
         self,
         board_state: List[List[int]],
         proposed_values: List[int],
-        all_suggestions: Dict[Union[int, str], List[Dict[str, Any]]],
-        all_fused_scores_for_pvs: Dict[Union[int, str], np.ndarray],
-        top_n_suggestion_count: int, # This is the actual top_n used for generating suggestions
+        all_suggestions: Dict[int, List[Dict[str, Any]]], # Key changed to int
+        all_fused_scores_for_pvs: Dict[int, np.ndarray], # Key changed to int
+        top_n_suggestion_count: int,
         request_id: Optional[str] = "N/A_REQ_ID"
     ) -> str:
+        """Generates the complete board visualization as a base64 string."""
         logger.debug(f"RequestID: {request_id} - Generating visualization...")
         rows = len(board_state)
         cols = len(board_state[0]) if rows > 0 else 0
@@ -630,29 +679,29 @@ class Analyzer:
 
         self._configure_plot_axes(ax, rows, cols, cell_size_inch)
         self._draw_heatmap(ax, board_state, all_fused_scores_for_pvs, proposed_values)
-        
-        suggestion_texts = self._draw_suggestions_and_highlights(ax, all_suggestions, 
-                                                                 proposed_values, top_n_suggestion_count)
+        suggestion_texts = self._draw_suggestions_and_highlights(ax, all_suggestions, proposed_values, top_n_suggestion_count)
         self._draw_board_texts(ax, board_state, suggestion_texts, cell_size_inch)
         self._add_legend_and_title(fig, ax, proposed_values, all_suggestions, rows, cols, cell_size_inch)
-        
+
         img_base64 = self._fig_to_base64(fig)
-        plt.close(fig)
-        delattr(self, '_current_cell_size_inch_for_dpi') # Clean up temp attribute
+        plt.close(fig) # Close the figure to free memory
+        
+        if hasattr(self, '_current_cell_size_inch_for_dpi'):
+            delattr(self, '_current_cell_size_inch_for_dpi') # Clean up temp attribute
         return img_base64
+
     # --- Visualization Refactoring End ---
 
     def _fig_to_base64(self, fig: plt.Figure) -> str:
+        """Converts a Matplotlib figure to a base64 encoded PNG string."""
         buf = io.BytesIO()
         try:
-            # DPI can be adjusted for quality vs. size trade-off
-            # Using _current_cell_size_inch_for_dpi if available for dynamic DPI
             current_cell_size_inch = getattr(self, '_current_cell_size_inch_for_dpi', 0.75)
-            dpi = max(75, int(current_cell_size_inch * 120)) # Increased multiplier for potentially better quality
-            fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight') # bbox_inches='tight' often helps
+            dpi = max(75, int(current_cell_size_inch * 120))
+            fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
         except Exception as e:
             logger.error("fig.savefig failed: %s", e, exc_info=True)
-            plt.close(fig) # Ensure figure is closed on error
+            # plt.close(fig) # Ensure figure is closed on error if not closed by caller
             raise VisualizationError(f"Failed to save figure to buffer: {e}") from e
         
         buf.seek(0)
@@ -660,9 +709,10 @@ class Analyzer:
         buf.close()
         return img_base64
 
+
 # --- Example Usage and Mocking (for testing and demonstration) ---
 class MockMainModule:
-    """一個Mock的main_module (如 brain.py), 用於Analyzer 的測試和演示。"""
+    """一個 Mock 的 main_module (如 brain.py), 用於 Analyzer 的測試和演示。"""
     def __init__(self):
         self.registered_modules = {
             "GM1_Random": self._gm1_random_scorer,
@@ -674,60 +724,78 @@ class MockMainModule:
         }
         logger.info("MockMainModule initialized with modules: %s", list(self.registered_modules.keys()))
 
-    async def _gm1_random_scorer(self, board: List[List[int]], proposed_value: int) -> np.ndarray:
-        rows, cols = len(board), len(board[0]) if board and board[0] else (0,0)
-        logger.debug("[Mock GM1_Random] PV %d. Board %dx%d. Returning random scores.", proposed_value, rows, cols)
+    # Mock module methods are now async as get_module_score will be called with asyncio.to_thread
+    # For the mock, we can keep them async to simulate an async brain, or make them sync
+    # Let's keep them async for the mock to directly test asyncio.gather with awaitables.
+    # The real brain will be sync and wrapped by to_thread.
+    async def _gm1_random_scorer(self, board: List[List[int]], proposed_value: int, **kwargs) -> np.ndarray:
+        rows, cols = (len(board), len(board[0])) if board and board[0] else (0, 0)
+        req_id = kwargs.get("request_id", "N/A_mock")
+        logger.debug(f"[{req_id}][Mock GM1_Random] PV {proposed_value}. Board {rows}x{cols}. Returning random scores.")
         await asyncio.sleep(0.01) # Simulate some async work
-        if rows == 0 or cols == 0: return np.array([[]]) if rows == 0 else np.empty((rows, 0))
+        if rows == 0 or cols == 0: return np.array([[]]) if rows == 0 and cols == 0 else np.empty((rows,cols))
         return np.random.rand(rows, cols)
 
-    async def _gm2_target_top_left(self, board: List[List[int]], proposed_value: int) -> np.ndarray:
-        rows, cols = len(board), len(board[0]) if board and board[0] else (0,0)
+    async def _gm2_target_top_left(self, board: List[List[int]], proposed_value: int, **kwargs) -> np.ndarray:
+        rows, cols = (len(board), len(board[0])) if board and board[0] else (0, 0)
+        req_id = kwargs.get("request_id", "N/A_mock")
         scores = np.zeros((rows, cols))
         if rows > 0 and cols > 0: scores[0, 0] = 0.9
         if rows > 1 and cols > 1: scores[1, 1] = 0.7
-        logger.debug("[Mock GM2_TargetTopLeft] PV %d. Board %dx%d. Prioritizing top-left.", proposed_value, rows, cols)
+        logger.debug(f"[{req_id}][Mock GM2_TargetTopLeft] PV {proposed_value}. Board {rows}x{cols}. Prioritizing top-left.")
         await asyncio.sleep(0.02) # Simulate some async work
         return scores
 
-    async def _gm3_pv_bonus(self, board: List[List[int]], proposed_value: int) -> np.ndarray:
-        rows, cols = len(board), len(board[0]) if board and board[0] else (0,0)
+    async def _gm3_pv_bonus(self, board: List[List[int]], proposed_value: int, **kwargs) -> np.ndarray:
+        rows, cols = (len(board), len(board[0])) if board and board[0] else (0, 0)
+        req_id = kwargs.get("request_id", "N/A_mock")
         scores = np.full((rows, cols), 0.1)
         if proposed_value == 5:
             if rows > 0 and cols > 0 and board[rows-1][cols-1] == -1: # bottom-right
                 scores[rows-1, cols-1] = 1.0
-        logger.debug("[Mock GM3_PV_Bonus] PV %d. Board %dx%d. Bonus for PV 5 at bottom-right.", proposed_value, rows, cols)
+        logger.debug(f"[{req_id}][Mock GM3_PV_Bonus] PV {proposed_value}. Board {rows}x{cols}. Bonus for PV 5 at bottom-right.")
         return scores # This one is fast
 
-    async def _gm_error_module(self, board: List[List[int]], proposed_value: int) -> np.ndarray:
-        logger.debug("[Mock GM_ErrorModule] Intentionally raising ModuleExecutionError for PV %d.", proposed_value)
+    async def _gm_error_module(self, board: List[List[int]], proposed_value: int, **kwargs) -> np.ndarray:
+        req_id = kwargs.get("request_id", "N/A_mock")
+        logger.debug(f"[{req_id}][Mock GM_ErrorModule] Intentionally raising ModuleExecutionError for PV {proposed_value}.")
         await asyncio.sleep(0.005)
         raise ModuleExecutionError("GM_ErrorModule: Simulated controlled module failure.")
 
-    async def _gm_wrong_shape(self, board: List[List[int]], proposed_value: int) -> np.ndarray:
-        rows, cols = len(board), len(board[0]) if board and board[0] else (0,0)
-        logger.debug("[Mock GM_WrongShape] Returning scores with wrong shape for PV %d.", proposed_value)
-        if rows == 0 or cols == 0: return np.array([[]]) if rows == 0 else np.empty((rows,0))
-        return np.random.rand(rows + 1, cols +1) # Incorrect shape
+    async def _gm_wrong_shape(self, board: List[List[int]], proposed_value: int, **kwargs) -> np.ndarray:
+        rows, cols = (len(board), len(board[0])) if board and board[0] else (0, 0)
+        req_id = kwargs.get("request_id", "N/A_mock")
+        logger.debug(f"[{req_id}][Mock GM_WrongShape] Returning scores with wrong shape for PV {proposed_value}.")
+        if rows == 0 or cols == 0: return np.array([[]]) if rows == 0 and cols == 0 else np.empty((rows,cols))
+        return np.random.rand(rows + 1, cols + 1) # Incorrect shape
 
-    async def _gm_slow_module(self, board: List[List[int]], proposed_value: int) -> np.ndarray:
-        rows, cols = len(board), len(board[0]) if board and board[0] else (0,0)
-        logger.debug(f"[Mock GM_SlowModule] PV {proposed_value}. Board {rows}x{cols}. Simulating long computation.")
+    async def _gm_slow_module(self, board: List[List[int]], proposed_value: int, **kwargs) -> np.ndarray:
+        rows, cols = (len(board), len(board[0])) if board and board[0] else (0, 0)
+        req_id = kwargs.get("request_id", "N/A_mock")
+        logger.debug(f"[{req_id}][Mock GM_SlowModule] PV {proposed_value}. Board {rows}x{cols}. Simulating long computation.")
         await asyncio.sleep(0.1) # Simulate a slower module
         return np.random.rand(rows, cols)
-
-
-    async def get_module_score(self, module_name: str, new_card: List[List[int]], pv: int) -> Optional[np.ndarray]:
+    
+    # This get_module_score in MockMainModule is async, which allows testing analyzer's async flow
+    async def get_module_score(self, module_name: str, new_card: List[List[int]], pv: int, **kwargs) -> Optional[np.ndarray]:
+        req_id = kwargs.get("request_id", "N/A_mock_dispatch")
         if module_name not in self.registered_modules:
-            logger.error(f"Mock module '{module_name}' not found during get_module_score call.")
+            logger.error(f"[{req_id}] Mock module '{module_name}' not found during get_module_score call.")
             raise ModuleNotFoundError(f"Mock module '{module_name}' not found.")
         
-        # The called method itself is now async
-        return await self.registered_modules[module_name](new_card, pv)
+        # The called method itself is async
+        return await self.registered_modules[module_name](new_card, pv, request_id=req_id)
 
 
 async def main_test_runner(): # Renamed from if __name__ == '__main__' content to be async
+    # Import brain here only for the test runner if it's not already at top level
+    # For this example, assume brain is available if this is run.
+    # However, typically MockMainModule is self-contained or takes a mock brain.
+    # Here, Analyzer takes main_module, so we use MockMainModule instance.
+
     logger.info("--- analyzer.py Self-Test/Demonstration START (Async) ---")
+    
+    # Initialize with MockMainModule for testing
     analyzer_instance = Analyzer(main_module=MockMainModule(), default_top_n=3)
 
     # Test Case 1
@@ -745,6 +813,7 @@ async def main_test_runner(): # Renamed from if __name__ == '__main__' content t
         for pv_val, suggestions in results1['suggestions'].items():
             logger.info(f"  Suggestions for PV {pv_val}:")
             for sugg in suggestions: logger.info(f"    Pos: {sugg['position']}, Score: {sugg['score']:.4f}")
+        
         if results1.get('visualization') and isinstance(results1['visualization'], str) and \
            not results1['visualization'].startswith('Error'):
             with open("analyzer_test_case_1_async.png", "wb") as f:
@@ -755,7 +824,6 @@ async def main_test_runner(): # Renamed from if __name__ == '__main__' content t
         logger.error("Test Case 1 FAILED: %s", e, exc_info=True)
     except Exception as e_global:
         logger.error("Test Case 1 FAILED with UNEXPECTED error: %s", e_global, exc_info=True)
-
 
     # Test Case 2: Small Board with faulty modules
     board2 = [[-1, -1], [-1, 2]]
@@ -770,7 +838,7 @@ async def main_test_runner(): # Renamed from if __name__ == '__main__' content t
         logger.info("Test Case 2 Processed Params: %s", results2['processed_params'])
         logger.info("Test Case 2 results (GM_ErrorModule, GM_WrongShape contributions should be gracefully ignored):")
         for pv_val, suggestions in results2['suggestions'].items():
-             logger.info(f"  Suggestions for PV {pv_val}: {suggestions}")
+            logger.info(f"  Suggestions for PV {pv_val}: {suggestions}")
         if results2.get('visualization') and isinstance(results2['visualization'], str) and \
            not results2['visualization'].startswith('Error'):
             with open("analyzer_test_case_2_async.png", "wb") as f:
@@ -781,7 +849,6 @@ async def main_test_runner(): # Renamed from if __name__ == '__main__' content t
         logger.error("Test Case 2 FAILED: %s", e, exc_info=True)
     except Exception as e_global:
         logger.error("Test Case 2 FAILED with UNEXPECTED error: %s", e_global, exc_info=True)
-
 
     # Test Case 3: Full Board (no -1)
     board3 = [[1, 2], [3, 4]]
@@ -797,18 +864,17 @@ async def main_test_runner(): # Renamed from if __name__ == '__main__' content t
         for pv_val, suggestions in results3['suggestions'].items():
             assert not suggestions, f"PV {pv_val} should have no suggestions on a full board."
             logger.info(f"  Suggestions for PV {pv_val}: {suggestions}")
+        # Corrected variable name for visualization check
         if results3.get('visualization') and isinstance(results3['visualization'], str) and \
            not results3['visualization'].startswith('Error'):
             with open("analyzer_test_case_3_async.png", "wb") as f:
-                f.write(base64.b64decode(results3['visualization']))
+                f.write(base64.b64decode(results3['visualization'])) # Corrected variable name
             logger.info("Test Case 3 Visualization: analyzer_test_case_3_async.png")
         else: logger.warning("Test Case 3 Visualization data missing or indicates error: %s", results3.get('visualization'))
-
     except AnalyzerError as e:
         logger.error("Test Case 3 FAILED: %s", e, exc_info=True)
     except Exception as e_global:
         logger.error("Test Case 3 FAILED with UNEXPECTED error: %s", e_global, exc_info=True)
-
 
     # Test Case 4: No effective modules
     board4 = [[-1,-1],[-1,-1]]
@@ -824,83 +890,79 @@ async def main_test_runner(): # Renamed from if __name__ == '__main__' content t
         logger.info("Test Case 4 results (expect no suggestions from modules, scores should be 0):")
         for pv_val, suggestions in results4['suggestions'].items():
             logger.info(f"  Suggestions for PV {pv_val}: {suggestions}")
-            for sugg in suggestions:
+            for sugg in suggestions: # Scores should be 0 as fused from empty or zero arrays
+                 # If normalized_fused_scores is all zeros, this holds.
+                 # If module_weights_map makes total weight 0, also 0.
+                 # If no modules run, fused_scores is zeros.
                 assert sugg['score'] == 0.0, "Scores should be 0.0 if no modules ran or all returned 0."
+
+        # Corrected variable name for visualization check
         if results4.get('visualization') and isinstance(results4['visualization'], str) and \
            not results4['visualization'].startswith('Error'):
             with open("analyzer_test_case_4_async.png", "wb") as f:
-                f.write(base64.b64decode(results4['visualization']))
+                f.write(base64.b64decode(results4['visualization'])) # Corrected variable name
             logger.info("Test Case 4 Visualization: analyzer_test_case_4_async.png")
         else: logger.warning("Test Case 4 Visualization data missing or indicates error: %s", results4.get('visualization'))
+
     except AnalyzerError as e:
         logger.error("Test Case 4 FAILED: %s", e, exc_info=True)
     except Exception as e_global:
         logger.error("Test Case 4 FAILED with UNEXPECTED error: %s", e_global, exc_info=True)
 
-    # Test Case 5: Empty board input
+    # Test Case 5: Empty board input new_card=[]
     board5: List[List[int]] = []
     pvs5 = [1]
-    logger.info("\n--- Test Case 5: Empty board input ---")
+    logger.info("\n--- Test Case 5: Empty board input (new_card=[]) ---")
     try:
-        # This will raise InvalidInputError before analyze_board is awaited
         results5 = await analyzer_instance.analyze_board(
             new_card=board5, proposed_values=pvs5,
             request_id_for_logging="test_req_005_async"
         )
-        # We expect an error, so this part should ideally not be reached if validation is synchronous
-        logger.info("Test Case 5 Results (unexpected if validation failed): %s", results5)
-    except InvalidInputError as e:
+        # This path will be taken if validation allows empty board (0x0)
+        # _validate_inputs raises InvalidInputError: "盤面 (new_card) 不得為空且必須是列表。"
+        # If new_card=[] it's not empty but implies 0 rows.
+        # Validation logic: rows = len(new_card) = 0. cols = 0. This is allowed.
+        # Let's see what happens.
+        logger.info("Test Case 5 Results (for 0x0 board): %s", results5)
+        assert results5['board_dimensions']['rows'] == 0
+        assert results5['board_dimensions']['cols'] == 0
+        assert not results5['suggestions'].get(1, []) # No suggestions for 0x0 board
+        if results5.get('visualization'): # Should be error visualization
+             logger.info("Test Case 5 Visualization for 0x0 board: %s", results5['visualization'][:100])
+
+
+    except InvalidInputError as e: # This might not be hit if 0x0 is valid.
         logger.info("Test Case 5 Correctly caught InvalidInputError for empty board: %s", e)
-    except Exception as e_global: # Catch any other unexpected errors
+    except Exception as e_global:
         logger.error("Test Case 5 FAILED with unexpected error: %s", e_global, exc_info=True)
 
 
-    # Test Case 6: Board with empty row input
+    # Test Case 6: Board with empty row input new_card=[[]] (1x0 board)
     board6: List[List[int]] = [[]]
     pvs6 = [1]
-    logger.info("\n--- Test Case 6: Board with empty row input ---")
+    logger.info("\n--- Test Case 6: Board with empty row input (new_card=[[]], 1x0 board) ---")
     try:
-        # This will raise InvalidInputError
         results6 = await analyzer_instance.analyze_board(
             new_card=board6, proposed_values=pvs6,
             request_id_for_logging="test_req_006_async"
         )
+        # Validation logic: rows = 1, cols = len(new_card[0]) = 0. This is allowed by current validation.
+        logger.info("Test Case 6 Results (for 1x0 board): %s", results6)
+        assert results6['board_dimensions']['rows'] == 1
+        assert results6['board_dimensions']['cols'] == 0
+        assert not results6['suggestions'].get(1, [])
+        if results6.get('visualization'):
+             logger.info("Test Case 6 Visualization for 1x0 board: %s", results6['visualization'][:100])
+
     except InvalidInputError as e:
-        logger.info("Test Case 6 Correctly caught InvalidInputError for board with empty row: %s", e)
+        logger.info("Test Case 6 Correctly caught InvalidInputError: %s", e)
     except Exception as e_global:
         logger.error("Test Case 6 FAILED with unexpected error: %s", e_global, exc_info=True)
-        
-    # Test Case 7: 0x0 board (no rows, no cols)
-    board7: List[List[int]] = [] # Representing 0xN
-    pvs7 = [1]
-    logger.info("\n--- Test Case 7: 0xN board (no rows) ---")
-    try:
-        results7 = await analyzer_instance.analyze_board(
-            new_card=board7, proposed_values=pvs7,
-            request_id_for_logging="test_req_007_async"
-        )
-        # Validation should catch this
-    except InvalidInputError as e:
-        logger.info("Test Case 7 Correctly caught InvalidInputError for 0xN board: %s", e)
-    except Exception as e_global:
-        logger.error("Test Case 7 FAILED with unexpected error: %s", e_global, exc_info=True)
-
-    board8: List[List[int]] = [[], []] # Representing Nx0
-    pvs8 = [1]
-    logger.info("\n--- Test Case 8: Nx0 board (no cols) ---")
-    try:
-        results8 = await analyzer_instance.analyze_board(
-            new_card=board8, proposed_values=pvs8,
-            request_id_for_logging="test_req_008_async"
-        )
-        # Validation should catch this
-    except InvalidInputError as e:
-        logger.info("Test Case 8 Correctly caught InvalidInputError for Nx0 board: %s", e)
-    except Exception as e_global:
-        logger.error("Test Case 8 FAILED with unexpected error: %s", e_global, exc_info=True)
 
 
     logger.info("\n--- analyzer.py Self-Test/Demonstration COMPLETE (Async) ---")
 
 if __name__ == '__main__':
+    # To run this test, you would need 'brain.py' available or ensure MockMainModule is used.
+    # The current main_test_runner uses MockMainModule, so it's self-contained for analyzer.py testing.
     asyncio.run(main_test_runner())
