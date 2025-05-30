@@ -52,7 +52,7 @@ logging.setLogRecordFactory(record_factory_with_request_id)
 
 logging.basicConfig(
     level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-    format='%(asctime)s - %(levelname)s - %(name)s - MAIN - %(module)s.%(funcName)s:%(lineno)d - RequestID: %(request_id)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(name)s - MAIN - %(module)s.%(funcName)s:%(lineno)d - 'RequestID: %(req_id)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 logger = logging.getLogger(__name__)
