@@ -1,3 +1,4 @@
+
 # 強化合併版 main9_optimized.py
 # === Logging 設定 ===
 import logging
@@ -2450,3 +2451,5 @@ if __name__ == "__main__":
     logger.info(f"Starting {settings.APP_TITLE} v{settings.APP_VERSION} on {settings.APP_HOST}:{settings.APP_PORT}", extra=log_ex_main)
     logger.info(f"API Key (first 4 chars): {settings.API_KEY[:4]}...", extra=log_ex_main)
     if settings.TASK_CALLBACK_URL_ENABLED: logger.info(f"Task callback ON: {settings.TASK_CALLBACK_URL}", extra=log_ex_main)
+    else: logger.info("Task callback OFF.", extra=log_ex_main)
+    uvicorn.run(app, host=settings.APP_HOST, port=settings.APP_PORT, log_config=None)
