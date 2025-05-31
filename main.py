@@ -80,9 +80,11 @@ app = FastAPI(
 @app.get("/")
 async def root():
     return {"message": "Service is alive.
+    
 @app.get("/healthz")
 async def health_check():
     return {"status": "ok"}
+    
 # CORS Middleware
 # 來源：2024-2025新知識.txt - FastAPI CORS (Page 8 section 3.1.3) [Internal Alias]
 app.add_middleware(
