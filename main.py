@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from pydantic_settings import BaseSettings # 來源：main.py (用户需求 Point 4.a) & 给你2025资料在深度建议一次.pdf (Page 3 section 3.1.2)
 from typing import List, Dict, Any, Tuple, cast
+from typing import Callable
 
 # 來源：analyzer.py, brain.py (本项目)
 import analyzer
