@@ -77,6 +77,9 @@ app = FastAPI(
     version="1.0.0",
     description="AI Module Scoring Service based on a 3-tier architecture (main -> analyzer -> brain)."
 )
+@app.get("/")
+async def root():
+    return {"message": "Service is alive.
 @app.get("/healthz")
 async def health_check():
     return {"status": "ok"}
