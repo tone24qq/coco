@@ -46,8 +46,8 @@ settings = AppSettings()
 # Basic logging config, can be enhanced with structlog or other libraries
 # The format includes a placeholder for request_id
 logging.basicConfig(
-    level=settings.log_level.upper(),
-    format="%(asctime)s - %(name)s - %(levelname)s - RID:%(request_id)s - %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"  # 🔧 先拿掉 request_id
 )
 logger = logging.getLogger(settings.app_name)
 
