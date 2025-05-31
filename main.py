@@ -77,7 +77,9 @@ app = FastAPI(
     version="1.0.0",
     description="AI Module Scoring Service based on a 3-tier architecture (main -> analyzer -> brain)."
 )
-
+@app.get("/healthz")
+async def health_check():
+    return {"status": "ok"}
 # CORS Middleware
 # 來源：2024-2025新知識.txt - FastAPI CORS (Page 8 section 3.1.3) [Internal Alias]
 app.add_middleware(
