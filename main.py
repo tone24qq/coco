@@ -3,114 +3,181 @@ import asyncio
 import logging
 import math
 import random
+import time # For elapsed_ms
 import uuid
 from collections import Counter, deque
 from contextvars import ContextVar
-from typing import Any, Callable, Hashable # Removed TypeAlias for <3.10 compatibility if needed elsewhere, but Callable is fine
+from typing import Any, Callable, Hashable, cast
 
 import numpy as np
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from numpy.typing import NDArray
 from pydantic import BaseModel, Field, ConfigDict
 from pydantic_settings import BaseSettings
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette_prometheus import PrometheusMiddleware, metrics
 
-# --- Request ID ContextVar ---
+# --- ContextVars for Logging ---
 request_id_contextvar: ContextVar[str | None] = ContextVar("request_id", default=None)
+trace_id_contextvar: ContextVar[str | None] = ContextVar("trace_id", default=None)
+# Add other contextvars if needed, e.g., user_id_contextvar
 
 # --- Settings via Pydantic BaseSettings (.env file) ---
 class AppSettings(BaseSettings):
-    """Application settings."""
-
     LOG_LEVEL: str = Field("INFO", description="Logging level")
     APP_NAME: str = Field("BrainAPI", description="Application name")
-    # Add other settings as needed, e.g., API keys, external URLs
+    SERVICE_NAME: str = Field("coco-analyzer", description="Service identifier for logs") # From logging_spec_v2025.txt
+    ENVIRONMENT: str = Field("dev", description="Environment (dev, staging, prod)") # From logging_spec_v2025.txt
 
     class Config:
-        """Pydantic BaseSettings config."""
-
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"
 
-
 settings = AppSettings()
+
+# --- Logging Filter to Add Contextual Info ---
+class ContextualLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = request_id_contextvar.get() # type: ignore[attr-defined]
+        record.trace_id = trace_id_contextvar.get() # type: ignore[attr-defined]
+        record.service_name = settings.SERVICE_NAME # type: ignore[attr-defined]
+        record.environment = settings.ENVIRONMENT # type: ignore[attr-defined]
+        # record.user_id = user_id_contextvar.get() # Example if user_id is in contextvar
+        return True
 
 # --- Logging Configuration ---
 class JsonFormatter(logging.Formatter):
-    """JSON Log Formatter with request_id."""
-
+    """JSON Log Formatter adhering to logging_spec_v2025.txt."""
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record as JSON."""
-        log_record = {
+        log_entry: dict[str, Any] = {
             "timestamp": self.formatTime(record, self.datefmt),
             "level": record.levelname,
+            "logger": record.name,
+            "service": getattr(record, "service_name", settings.SERVICE_NAME),
+            "env": getattr(record, "environment", settings.ENVIRONMENT),
             "module": record.module,
             "function": record.funcName,
             "line": record.lineno,
+            "request_id": getattr(record, "request_id", None), # Populated by ContextualLogFilter
+            "trace_id": getattr(record, "trace_id", None),     # Populated by ContextualLogFilter
             "message": record.getMessage(),
-            "request_id": getattr(record, "request_id", "N/A_system"),
         }
-        if record.exc_info:
-            log_record["exception"] = self.formatException(record.exc_info)
-        
-        # Add other 'extra' attributes from the LogRecord if they exist
-        # Be careful not to overwrite standard fields or include sensitive data without purpose
+
+        # Add fields from 'extra' if they exist and are part of the spec
+        # These are typically added by specific logging calls, like the request/response logger
+        if hasattr(record, "user_id"):
+            log_entry["user_id"] = record.user_id # type: ignore[attr-defined]
+        if hasattr(record, "ip"):
+            log_entry["ip"] = record.ip # type: ignore[attr-defined]
+        if hasattr(record, "http_method"): # Renamed from "method" to avoid clash with LogRecord.method
+            log_entry["method"] = record.http_method # type: ignore[attr-defined]
+        if hasattr(record, "http_url"): # Renamed from "url"
+            log_entry["url"] = record.http_url # type: ignore[attr-defined]
+        if hasattr(record, "http_status"): # Renamed from "status"
+            log_entry["status"] = record.http_status # type: ignore[attr-defined]
+        if hasattr(record, "elapsed_ms"):
+            log_entry["elapsed_ms"] = record.elapsed_ms # type: ignore[attr-defined]
+        if hasattr(record, "user_agent"):
+             log_entry["user_agent"] = record.user_agent # type: ignore[attr-defined]
+        if hasattr(record, "response_bytes"):
+            log_entry["response_bytes"] = record.response_bytes # type: ignore[attr-defined]
+
+
+        # Include any other custom fields from 'extra' that aren't explicitly handled above
+        # Be cautious with this part to not include overly verbose or sensitive data by default
+        standard_attrs = set(logging.LogRecord('', '', '', '', '', '', '', '', '').__dict__.keys()) | set(log_entry.keys())
         for key, value in record.__dict__.items():
-            if key not in log_record and key not in ("args", "asctime", "created", "exc_info", "exc_text", "filename",
-                                                     "levelname", "levelno", "lineno", "message", "module", "msecs",
-                                                     "msg", "name", "pathname", "process", "processName", "relativeCreated",
-                                                     "stack_info", "thread", "threadName", "taskName", "request_id"): # exclude standard and already handled
-                log_record[key] = value
+            if key not in standard_attrs and key not in ['args', 'exc_text', 'stack_info', 'msg', 'asctime', # common internal attrs
+                                                          'service_name', 'environment']: # already handled or internal
+                log_entry[f"extra_{key}"] = value
 
-        return str(log_record).replace("'", '"') # Basic JSON-like string
 
-# Set up root logger
-logger = logging.getLogger()
-logger.setLevel(settings.LOG_LEVEL.upper())
+        if record.exc_info:
+            log_entry["exception_info"] = self.formatException(record.exc_info)
+        if record.stack_info:
+            log_entry["stack_info"] = self.formatStack(record.stack_info)
 
-# Remove existing handlers to avoid duplicate logs
-if logger.hasHandlers():
-    logger.handlers.clear()
+        return str(log_entry).replace("'", '"')
 
-# Add new handler with JSON formatter
-handler = logging.StreamHandler() # Output to stdout
-formatter = JsonFormatter()
-handler.setFormatter(formatter)
-logger.addHandler(handler)
 
-# Specific logger for this module, will inherit root logger's config
+# Configure root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(settings.LOG_LEVEL.upper())
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+
+# Add filter and formatter to a new stream handler
+context_filter = ContextualLogFilter()
+root_logger.addFilter(context_filter)
+
+stream_handler = logging.StreamHandler()
+json_formatter = JsonFormatter(datefmt="%Y-%m-%dT%H:%M:%S%z") # ISO 8601 format
+stream_handler.setFormatter(json_formatter)
+root_logger.addHandler(stream_handler)
+
+# Specific logger for this module
 module_logger = logging.getLogger(__name__)
 
+# --- Request/Response Logging Middleware (Adhering to logging_spec_v2025.txt) ---
+class StructuredRequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        # Set up contextvars for request_id and trace_id
+        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        tr_id = request.headers.get("X-Trace-ID") or req_id # Use req_id if trace_id is missing
+        
+        req_id_token = request_id_contextvar.set(req_id)
+        tr_id_token = trace_id_contextvar.set(tr_id)
 
-# --- Request ID Middleware ---
-class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Middleware to handle request IDs."""
+        # user_id_token = user_id_contextvar.set(request.headers.get("X-User-ID")) # Example
 
-    async def dispatch(self, request: Request, call_next: Callable): # type: ignore[type-arg]
-        """Attach a request ID to each request."""
-        request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        token = request_id_contextvar.set(request_id)
+        client_ip = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
 
-        # Add request_id to the logging record for all subsequent logs in this request context
-        # This can be done by adapting the logger or using a filter.
-        # For simplicity, we rely on the formatter pulling from LogRecord.request_id
-        # which is populated by passing `extra={'request_id': request_id}`
-        # Or, as done here, the formatter can try to access the contextvar directly,
-        # but it's cleaner if `extra` is used or a filter sets it on the record.
-        # The JsonFormatter tries `getattr(record, "request_id", ...)`
+        log_extras_request = {
+            "ip": client_ip,
+            "http_method": request.method,
+            "http_url": str(request.url),
+            "user_agent": user_agent,
+            # "user_id": user_id_contextvar.get() # if set
+        }
+        module_logger.info("Request received", extra=log_extras_request)
 
-        module_logger.debug( # Example of logging with explicit request_id in extra
-            f"Request started: {request.method} {request.url.path}",
-            extra={"request_id": request_id, "http_method": request.method, "http_path": request.url.path}
-        )
-
+        start_time = time.perf_counter()
         response = await call_next(request)
-        response.headers["X-Request-ID"] = request_id
-        request_id_contextvar.reset(token)
+        elapsed_time_ms = (time.perf_counter() - start_time) * 1000
+        
+        response_content_length = response.headers.get("content-length")
+
+        log_extras_response = {
+            "ip": client_ip,
+            "http_method": request.method,
+            "http_url": str(request.url),
+            "http_status": response.status_code,
+            "elapsed_ms": round(elapsed_time_ms, 2),
+            "user_agent": user_agent,
+            # "user_id": user_id_contextvar.get(), # if set
+            "response_bytes": int(response_content_length) if response_content_length else None
+        }
+        # Customize message based on status code for better context from logging_spec
+        if 400 <= response.status_code < 500:
+            module_logger.warning("Client error response", extra=log_extras_response)
+        elif response.status_code >= 500:
+            module_logger.error("Server error response", extra=log_extras_response)
+        else:
+            module_logger.info("Request completed", extra=log_extras_response)
+
+
+        response.headers["X-Request-ID"] = req_id
+        if tr_id:
+             response.headers["X-Trace-ID"] = tr_id
+        
+        request_id_contextvar.reset(req_id_token)
+        trace_id_contextvar.reset(tr_id_token)
+        # user_id_contextvar.reset(user_id_token) # if set
         return response
+
 
 # --- FastAPI Application Setup ---
 app = FastAPI(
@@ -119,620 +186,345 @@ app = FastAPI(
     version="1.0.0",
 )
 
-app.add_middleware(PrometheusMiddleware)
-app.add_middleware(RequestIdMiddleware)
-app.add_route("/metrics", metrics)
+app.add_middleware(PrometheusMiddleware) # Should be one of the first ideally
+app.add_middleware(StructuredRequestLoggingMiddleware) # Add our new logging middleware
 
 
-# --- Pydantic Models for API ---
+# --- Pydantic Models for API (same as before) ---
 class GridInput(BaseModel):
-    """Input for scoring a grid."""
-
     grid: list[list[int]] = Field(..., description="The game grid, -1 for empty cells.")
     module_name: str = Field(..., description="Name of the scoring module to use.")
-    request_id: str | None = Field(None, description="Optional request ID to trace calls.")
+    # request_id is now handled by middleware and contextvars primarily for logging,
+    # but can be optionally passed for external tracing correlation if needed.
+    # It's not used by the endpoint logic directly if contextvars are primary.
+    # passed_request_id: str | None = Field(None, alias="X-Request-ID", description="Optional external request ID.")
+
 
     model_config = ConfigDict(extra="forbid")
 
-
 class ScoreOutput(BaseModel):
-    """Output containing the scores for the grid."""
-
     module_name: str = Field(..., description="Name of the executed scoring module.")
     score_grid: list[list[float]] = Field(..., description="The resulting scores for each cell.")
     request_id: str | None = Field(None, description="Request ID associated with this scoring.")
+    trace_id: str | None = Field(None, description="Trace ID associated with this scoring.")
+
 
     model_config = ConfigDict(extra="forbid")
 
 
-# === Helper Utilities ===
+# === Helper Utilities (MathUtils, BoardAnalyzerUtils - same as before, ensure they use module_logger) ===
 class MathUtils:
-    """Provides common math tools, ensuring consistent calculation styles across modules."""
-
+    # ... (previous MathUtils code, ensure logging uses module_logger if any needed) ...
     def sigmoid(self, x: float, k: float = 1.0) -> float:
-        """
-        Safe sigmoid function, avoids overflow.
-
-        Args:
-            x: The input value.
-            k: Scaling factor for x.
-
-        Returns:
-            The sigmoid value.
-        """
         try:
-            clamped_x = np.clip(-k * x, -700.0, 700.0) # 新寫法 ✅
+            clamped_x = np.clip(-k * x, -700.0, 700.0)
             return 1.0 / (1.0 + math.exp(clamped_x))
         except OverflowError:
-            return 0.0 if -k * x > 0 else 1.0 # 新寫法 ✅ (logic remains)
-
+            return 0.0 if -k * x > 0 else 1.0
 
     def normalize_value(
         self, value: float, min_val: float, max_val: float, clamp: bool = True
     ) -> float:
-        """
-        Normalizes a value to the [0, 1] range.
-        Handles cases where min_val equals max_val to prevent division by zero.
-        Addresses Requirement 2.c (reasonable score distribution).
-        強化:處理 min_val 和 max_val相等時,根據 value 與其的關係返回0.0,0.5,或1.0,更
-        精確地處理邊界情況。
-
-        Args:
-            value: The value to normalize.
-            min_val: The minimum possible value in the original range.
-            max_val: The maximum possible value in the original range.
-            clamp: If True, clamps the output to [0, 1].
-
-        Returns:
-            The normalized value.
-        """
         if math.isclose(max_val, min_val):
-            if math.isclose(value, min_val):
-                return 0.5
-            elif value < min_val:
-                return 0.0
-            else:  # value > max_val (which is min_val)
-                return 1.0
-
-        if (max_val - min_val) == 0: # Should be caught by isclose above, but as a safeguard
+            if math.isclose(value, min_val): return 0.5
+            elif value < min_val: return 0.0
+            else: return 1.0
+        if (max_val - min_val) == 0:
              return 0.5 if math.isclose(value, min_val) else (0.0 if value < min_val else 1.0)
-
-
         normalized = (value - min_val) / (max_val - min_val)
-        if clamp:
-            return float(np.clip(normalized, 0.0, 1.0)) # 新寫法 ✅ Ensure float return
-        return normalized
+        return float(np.clip(normalized, 0.0, 1.0)) if clamp else normalized
 
     def manhattan_distance(self, p1: tuple[int, int], p2: tuple[int, int]) -> int:
-        """Calculates Manhattan distance between two points (r, c)."""
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
     def euclidean_distance(self, p1: tuple[int, int] | tuple[float, float], p2: tuple[int, int] | tuple[float, float]) -> float:
-        """Calculates Euclidean distance between two points (r, c)."""
         return math.sqrt((p1[0] - p2[0]) ** 2 + (p1[1] - p2[1]) ** 2)
 
     def get_entropy(self, values: list[Hashable]) -> float:
-        """
-        Calculates Shannon entropy for a list of values.
-        Values can be numbers or any hashable type for frequency counting.
-        """
-        if not values:
-            return 0.0
-
+        if not values: return 0.0
         counts = Counter(values)
         total_count = len(values)
         entropy = 0.0
         for count_val in counts.values():
             probability = count_val / total_count
-            if probability > 0: # Avoid math.log2(0)
-                entropy -= probability * math.log2(probability)
+            if probability > 0: entropy -= probability * math.log2(probability)
         return entropy
 
-
 class BoardAnalyzerUtils:
-    """
-    Provides common board analysis utility functions.
-    Used by modules to inspect grid neighborhoods, gradients, etc.
-    """
-
+    # ... (previous BoardAnalyzerUtils code, ensure logging uses module_logger if any needed) ...
     def get_neighborhood_values(
-        self,
-        grid: NDArray[np.int_],
-        r: int,
-        c: int,
-        radius: int = 1,
+        self, grid: NDArray[np.int_], r: int, c: int, radius: int = 1,
         eight_connectivity: bool = True,
-        val_func: Callable[[int], float | None] = lambda x_val: float(x_val)
-        if x_val != -1
-        else None,
+        val_func: Callable[[int], float | None] = lambda x_val: float(x_val) if x_val != -1 else None,
         include_center: bool = False,
     ) -> list[float]:
-        """
-        Retrieves values from the neighborhood of a cell.
-        Supports configurable radius, connectivity, and value processing.
-        """
         neighbors: list[float] = []
-        rows, cols = grid.shape
-
+        rows_grid, cols_grid = grid.shape
         for dr_offset in range(-radius, radius + 1):
             for dc_offset in range(-radius, radius + 1):
-                if not include_center and dr_offset == 0 and dc_offset == 0:
-                    continue
-
+                if not include_center and dr_offset == 0 and dc_offset == 0: continue
                 if not eight_connectivity:
-                    if radius == 1 and abs(dr_offset) + abs(dc_offset) != 1:
-                        continue
-                    elif radius > 1 and abs(dr_offset) + abs(dc_offset) > radius:
-                        continue
-
+                    if radius == 1 and abs(dr_offset) + abs(dc_offset) != 1: continue
+                    elif radius > 1 and abs(dr_offset) + abs(dc_offset) > radius: continue
                 nr, nc = r + dr_offset, c + dc_offset
-
-                if 0 <= nr < rows and 0 <= nc < cols:
+                if 0 <= nr < rows_grid and 0 <= nc < cols_grid:
                     processed_val = val_func(grid[nr, nc])
-                    if processed_val is not None:
-                        neighbors.append(processed_val)
+                    if processed_val is not None: neighbors.append(processed_val)
         return neighbors
 
     def get_value_gradient_at_cell(
-        self,
-        grid: NDArray[np.int_],
-        r: int,
-        c: int,
-        val_func: Callable[[int], float] = lambda x_val: float(x_val)
-        if x_val != -1
-        else 0.0,
+        self, grid: NDArray[np.int_], r: int, c: int,
+        val_func: Callable[[int], float] = lambda x_val: float(x_val) if x_val != -1 else 0.0,
     ) -> tuple[float, float]:
-        """
-        Calculates an approximate gradient (Sobel-like) at a cell.
-        Useful for modules analyzing value changes.
-        """
-        rows, cols = grid.shape
-
+        rows_grid, cols_grid = grid.shape
         def safe_val(r_in: int, c_in: int) -> float:
-            if 0 <= r_in < rows and 0 <= c_in < cols:
-                return val_func(grid[r_in, c_in])
+            if 0 <= r_in < rows_grid and 0 <= c_in < cols_grid: return val_func(grid[r_in, c_in])
             return 0.0
-
-        # Sobel operator like calculation
-        gx = (
-            safe_val(r - 1, c + 1)
-            + 2 * safe_val(r, c + 1)
-            + safe_val(r + 1, c + 1)
-        ) - (
-            safe_val(r - 1, c - 1)
-            + 2 * safe_val(r, c - 1)
-            + safe_val(r + 1, c - 1)
-        )
-        gy = (
-            safe_val(r + 1, c - 1)
-            + 2 * safe_val(r + 1, c)
-            + safe_val(r + 1, c + 1)
-        ) - (
-            safe_val(r - 1, c - 1)
-            + 2 * safe_val(r - 1, c)
-            + safe_val(r - 1, c + 1)
-        )
+        gx = (safe_val(r - 1, c + 1) + 2 * safe_val(r, c + 1) + safe_val(r + 1, c + 1)) - \
+             (safe_val(r - 1, c - 1) + 2 * safe_val(r, c - 1) + safe_val(r + 1, c - 1))
+        gy = (safe_val(r + 1, c - 1) + 2 * safe_val(r + 1, c) + safe_val(r + 1, c + 1)) - \
+             (safe_val(r - 1, c - 1) + 2 * safe_val(r - 1, c) + safe_val(r - 1, c + 1))
         return gx, gy
 
     def find_sequences_in_line(
-        self,
-        line: list[int],
-        min_len: int = 3,
-        check_arithmetic: bool = True,
-        check_geometric: bool = False,
-        allow_gaps: int = 0,
+        self, line: list[int], min_len: int = 3, check_arithmetic: bool = True,
+        check_geometric: bool = False, allow_gaps: int = 0,
     ) -> list[list[int]]:
-        """
-        Finds arithmetic or geometric sequences in a 1D list of numbers.
-        Simplified version focusing on arithmetic as geometric logic from PDF was complex.
-        """
         sequences: list[list[int]] = []
         n = len(line)
-        if n < min_len:
-            return sequences
-
+        if n < min_len: return sequences
         if check_arithmetic:
             for i in range(n):
-                if line[i] == -1:
-                    continue
+                if line[i] == -1: continue
                 for j in range(i + 1, n):
-                    # Try to establish initial difference
                     if line[j] == -1:
-                        if allow_gaps > 0: # Need to find the next non-gap number to establish diff
-                            current_gap_count_for_diff = 0
-                            next_non_gap_idx = -1
+                        if allow_gaps > 0:
+                            current_gap_count_for_diff = 0; next_non_gap_idx = -1
                             for k_search in range(j, n):
-                                if line[k_search] == -1:
-                                    current_gap_count_for_diff += 1
-                                else:
-                                    next_non_gap_idx = k_search
-                                    break
+                                if line[k_search] == -1: current_gap_count_for_diff += 1
+                                else: next_non_gap_idx = k_search; break
                             if next_non_gap_idx != -1 and current_gap_count_for_diff <= allow_gaps:
                                 diff = line[next_non_gap_idx] - line[i]
-                                current_seq = [line[i], line[next_non_gap_idx]]
-                                current_gap_count = current_gap_count_for_diff
-                                # Extend sequence
+                                current_seq = [line[i], line[next_non_gap_idx]]; current_gap_count = current_gap_count_for_diff
                                 for l_extend in range(next_non_gap_idx + 1, n):
                                     if line[l_extend] == -1:
                                         current_gap_count += 1
-                                        if current_gap_count > allow_gaps:
-                                            break
+                                        if current_gap_count > allow_gaps: break
                                         continue
                                     expected = current_seq[-1] + diff
-                                    if math.isclose(float(line[l_extend]), float(expected)):
-                                        current_seq.append(line[l_extend])
-                                        current_gap_count = 0
-                                    else: # Sequence broken
-                                        break
-                                if len(current_seq) >= min_len:
-                                    sequences.append(list(current_seq))
-                            # else: no valid element to form diff or too many gaps
-                        continue # Move to next j if initial j is a gap and no diff established
-
-                    # line[j] is not -1
+                                    if math.isclose(float(line[l_extend]), float(expected)): current_seq.append(line[l_extend]); current_gap_count = 0
+                                    else: break
+                                if len(current_seq) >= min_len: sequences.append(list(current_seq))
+                        continue
                     diff = line[j] - line[i]
-                    current_seq = [line[i], line[j]]
-                    current_gap_count = 0
+                    current_seq = [line[i], line[j]]; current_gap_count = 0
                     for k in range(j + 1, n):
                         if line[k] == -1:
                             current_gap_count += 1
-                            if current_gap_count > allow_gaps:
-                                break
+                            if current_gap_count > allow_gaps: break
                             continue
                         expected = current_seq[-1] + diff
-                        if math.isclose(float(line[k]), float(expected)):
-                            current_seq.append(line[k])
-                            current_gap_count = 0
-                        else: # Sequence broken
-                            break
-                    if len(current_seq) >= min_len:
-                        sequences.append(list(current_seq))
-        # Geometric sequence check is omitted for brevity as per PDF's complexity and focus
+                        if math.isclose(float(line[k]), float(expected)): current_seq.append(line[k]); current_gap_count = 0
+                        else: break
+                    if len(current_seq) >= min_len: sequences.append(list(current_seq))
         return sequences
 
+    def get_card_max_value_from_grid_dimensions(self, grid_shape: tuple[int, int]) -> int:
+        rows_grid, cols_grid = grid_shape
+        return 0 if rows_grid == 0 or cols_grid == 0 else rows_grid * cols_grid
 
-    def get_card_max_value_from_grid_dimensions(
-        self, grid_shape: tuple[int, int]
-    ) -> int:
-        """Calculates the maximum possible number on the card based on its dimensions."""
-        rows, cols = grid_shape
-        if rows == 0 or cols == 0:
-            return 0
-        return rows * cols
-
-    def get_all_possible_numbers_for_grid(
-        self, grid_shape: tuple[int, int]
-    ) -> set[int]:
-        """
-        Returns a set of all numbers that could theoretically appear on a grid of given dimensions.
-        """
+    def get_all_possible_numbers_for_grid(self, grid_shape: tuple[int, int]) -> set[int]:
         max_val = self.get_card_max_value_from_grid_dimensions(grid_shape)
-        if max_val == 0:
-            return set()
-        return set(range(1, max_val + 1))
+        return set() if max_val == 0 else set(range(1, max_val + 1))
 
     def get_legal_values_for_placement(self, grid: NDArray[np.int_]) -> set[int]:
-        """
-        Determines the set of numbers that can be legally placed onto an empty cell in the grid.
-        This adheres to the rule: numbers are 1 to R*C and no positive number can be repeated.
-        """
-        if grid.size == 0:
-            return set()
+        if grid.size == 0: return set()
+        rows_grid, cols_grid = grid.shape
+        all_possible = self.get_all_possible_numbers_for_grid((rows_grid, cols_grid))
+        used_positive: set[int] = {int(v) for v in grid.flat if v != -1 and v > 0}
+        return all_possible - used_positive
 
-        rows, cols = grid.shape
-        all_possible_on_this_grid = self.get_all_possible_numbers_for_grid(
-            (rows, cols)
-        )
-        
-        used_positive_values_on_board: set[int] = set() # 新寫法 ✅
-        for v_flat in grid.flat:
-            v = int(v_flat) # Ensure it's int for comparison and set addition
-            if v != -1 and v > 0:
-                 used_positive_values_on_board.add(v)
-
-        legal_placements = all_possible_on_this_grid - used_positive_values_on_board
-        return legal_placements
-
-
-# Initialize utility instances
 _math_utils = MathUtils()
 _board_analyzer_utils = BoardAnalyzerUtils()
 
-# === Brain Core Dispatch Area ===
-# Type alias for scoring functions
-ScoringFunctionType = Callable[[NDArray[np.int_], str | None], NDArray[np.float64]] # Corrected np.float_ to np.float64
+# === Brain Core Dispatch Area (same as before) ===
+ScoringFunctionType = Callable[[NDArray[np.int_], str | None], NDArray[np.float64]]
 REGISTERED_MODULES_BRAIN: dict[str, ScoringFunctionType] = {}
 
-
 async def get_module_score_async(
-    module_name: str, grid: NDArray[np.int_], request_id_val: str | None, **kwargs: Any
-) -> NDArray[np.float64]: # Corrected return type
-    """
-    Retrieves and executes a specific scoring module from the registry asynchronously.
-    Uses asyncio.to_thread for potentially CPU-bound module functions.
-
-    Args:
-        module_name: The registered name of the module to execute.
-        grid: The input numpy array representing the game board.
-        request_id_val: The request ID for logging and tracing.
-        kwargs: Additional keyword arguments for the module.
-
-    Returns:
-        A numpy array containing the scores for each cell, as computed by the module.
-        Returns a zero array of the same shape if the module is not found or an error occurs.
-    """
-    effective_request_id = request_id_val or request_id_contextvar.get() or "N/A_brain_dispatch_async"
+    module_name: str, grid: NDArray[np.int_], **kwargs: Any # request_id_val removed, filter handles it
+) -> NDArray[np.float64]:
+    # The effective_request_id for logging within this function will be picked up by the filter.
+    # Specific module might still need request_id if it does specific logic with it,
+    # but for logging, filter is primary.
+    
+    # For logging within this specific function call, if not relying purely on the filter:
+    log_req_id = request_id_contextvar.get()
+    log_tr_id = trace_id_contextvar.get()
 
     if module_name not in REGISTERED_MODULES_BRAIN:
         module_logger.error(
-            f"Module {module_name} not found in REGISTERED_MODULES_BRAIN.",
-            extra={"request_id": effective_request_id, "module_name": module_name},
+            f"Module not found", # Simpler message, context in structured log
+            extra={"module_name_requested": module_name} # Filter adds req_id, tr_id
         )
-        rows, cols = grid.shape if grid.ndim == 2 and grid.size > 0 else (0,0)
-        return np.zeros((rows, cols), dtype=np.float64) # Corrected dtype
+        rows_grid, cols_grid = grid.shape if grid.ndim == 2 and grid.size > 0 else (0,0)
+        return np.zeros((rows_grid, cols_grid), dtype=np.float64)
 
     module_func = REGISTERED_MODULES_BRAIN[module_name]
     module_logger.info(
-        f"Executing module: {module_name} via to_thread",
-        extra={"request_id": effective_request_id, "module_name": module_name},
+        f"Executing module via to_thread",
+        extra={"module_name_executed": module_name} # Filter adds req_id, tr_id
     )
 
     try:
-        kwargs_for_module = kwargs.copy()
-        # Check if 'request_id' is an expected parameter by the module_func
+        # Pass request_id explicitly ONLY if the module signature expects it
+        # and it's used for more than just logging (which filter covers)
         import inspect
         sig = inspect.signature(module_func)
+        final_kwargs = kwargs.copy()
         if 'request_id' in sig.parameters:
-            kwargs_for_module['request_id'] = effective_request_id
-        elif 'request_id' in kwargs_for_module: # remove if not in signature
-            del kwargs_for_module['request_id']
-
-
-        # Ensure grid is passed as the first positional argument
-        score_grid = await asyncio.to_thread(module_func, grid, **kwargs_for_module)
+            final_kwargs['request_id'] = log_req_id # Pass the current request_id
+        
+        # Pass grid as the first positional argument
+        score_grid = await asyncio.to_thread(module_func, grid, **final_kwargs)
         
         if not isinstance(score_grid, np.ndarray):
             module_logger.error(
-                f"Module {module_name} returned type {type(score_grid)}, expected np.ndarray.",
-                extra={"request_id": effective_request_id, "module_name": module_name, "returned_type": str(type(score_grid))},
+                "Module returned non-NumPy array",
+                extra={"module_name_error": module_name, "returned_type": str(type(score_grid))}
             )
             raise TypeError(f"Module {module_name} did not return a NumPy array.")
         if score_grid.shape != grid.shape:
             module_logger.error(
-                f"Module {module_name} returned shape {score_grid.shape}, expected {grid.shape}.",
-                extra={"request_id": effective_request_id, "module_name": module_name, "returned_shape": str(score_grid.shape), "expected_shape": str(grid.shape)},
+                "Module returned array with incorrect shape",
+                extra={
+                    "module_name_shape_error": module_name,
+                    "returned_shape": str(score_grid.shape),
+                    "expected_shape": str(grid.shape)
+                }
             )
             raise ValueError(f"Module {module_name} returned array with incorrect shape.")
             
-        return score_grid.astype(np.float64) # Ensure correct dtype
+        return score_grid.astype(np.float64)
     except Exception as e:
         module_logger.error(
-            f"Error executing module {module_name}: {str(e)}",
-            exc_info=True, # Provides stack trace
-            extra={"request_id": effective_request_id, "module_name": module_name},
+            f"Error executing module: {str(e)}",
+            exc_info=True,
+            extra={"module_name_exception": module_name}
         )
-        rows, cols = grid.shape if grid.ndim == 2 and grid.size > 0 else (0,0)
-        return np.zeros((rows, cols), dtype=np.float64) # Corrected dtype
+        rows_grid, cols_grid = grid.shape if grid.ndim == 2 and grid.size > 0 else (0,0)
+        return np.zeros((rows_grid, cols_grid), dtype=np.float64)
 
 
-# --- Scoring Module Implementations (Modernized) ---
+# --- Scoring Module Implementations (ensure they use module_logger, no `extra` for req_id) ---
 def EXT_A2_Weighted_Proximity_Vec(
-    grid: NDArray[np.int_], request_id: str | None = None, **kwargs: Any # Added **kwargs
-) -> NDArray[np.float64]: # Corrected return type
-    """
-    (A2-加權鄰近性)
-    """
-    effective_request_id = request_id or request_id_contextvar.get() or "N/A_brain_A2"
-    module_logger.debug(
-        "Executing EXT_A2_Weighted_Proximity_Vec",
-        extra={"request_id": effective_request_id},
-    )
-
+    grid: NDArray[np.int_], request_id: str | None = None, **kwargs: Any # request_id can be kept for direct use if needed
+) -> NDArray[np.float64]:
+    # The filter will add request_id to logs. If this function uses request_id for non-logging purposes,
+    # it can accept it. Otherwise, it can be removed from signature if only for logging.
+    # For now, keeping it as per original structure, but logging will use contextvar one.
+    module_logger.debug("Executing EXT_A2_Weighted_Proximity_Vec") # req_id added by filter
     rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=np.float64) # Corrected dtype
-    if rows == 0 or cols == 0:
-        return scores
-
-    radius = 2
-    value_weight_factor = 0.15
-    distance_decay_factor = 1.8
-
+    scores = np.zeros((rows, cols), dtype=np.float64)
+    if rows == 0 or cols == 0: return scores
+    radius = 2; value_weight_factor = 0.15; distance_decay_factor = 1.8
     for r_idx in range(rows):
         for c_idx in range(cols):
-            if grid[r_idx, c_idx] != -1:
-                continue
-
+            if grid[r_idx, c_idx] != -1: continue
             proximity_score = 0.0
             for dr_offset in range(-radius, radius + 1):
                 for dc_offset in range(-radius, radius + 1):
-                    if dr_offset == 0 and dc_offset == 0:
-                        continue
-                    
+                    if dr_offset == 0 and dc_offset == 0: continue
                     nr, nc = r_idx + dr_offset, c_idx + dc_offset
                     if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
-                        dist = _math_utils.manhattan_distance(
-                            (r_idx, c_idx), (nr, nc)
-                        )
-                        if dist == 0:
-                            dist = 1
-
-                        score_contribution = (
-                            grid[nr, nc] * value_weight_factor
-                        ) / (dist**distance_decay_factor)
+                        dist = _math_utils.manhattan_distance((r_idx, c_idx), (nr, nc))
+                        if dist == 0: dist = 1
+                        score_contribution = (grid[nr, nc] * value_weight_factor) / (dist**distance_decay_factor)
                         proximity_score += score_contribution
-            
-            max_val_on_grid = float(
-                _board_analyzer_utils.get_card_max_value_from_grid_dimensions(
-                    (rows, cols)
-                )
-            )
-            if max_val_on_grid == 0:
-                max_val_on_grid = 1.0
-
+            max_val_on_grid = float(_board_analyzer_utils.get_card_max_value_from_grid_dimensions((rows, cols)))
+            if max_val_on_grid == 0: max_val_on_grid = 1.0
             num_neighbors_in_radius = (2 * radius + 1) ** 2 - 1
-            heuristic_max_score = (
-                num_neighbors_in_radius
-                * max_val_on_grid
-                * value_weight_factor
-                / (1**distance_decay_factor if distance_decay_factor != 0 else 1.0) # Avoid 1**0 issues if decay is 0
-            )
-            if heuristic_max_score == 0 and num_neighbors_in_radius > 0 and max_val_on_grid > 0 : # If factors are non-zero but result is zero
-                heuristic_max_score = 1e-9 # Small number to avoid div by zero if proximity_score can be non-zero
-
-            if heuristic_max_score > 0: # or math.isclose(heuristic_max_score, 0.0) and proximity_score > 0 :
-                scores[r_idx, c_idx] = _math_utils.normalize_value(
-                    proximity_score, 0, heuristic_max_score, clamp=True
-                )
-            elif math.isclose(proximity_score, 0.0):
-                 scores[r_idx, c_idx] = 0.0
-            else: # proximity_score is non-zero but heuristic_max_score is zero, implies an issue or edge case.
-                 # Default to 0 or 1 based on interpretation, or log a warning.
-                 scores[r_idx, c_idx] = 0.5 # Neutral score if normalization is problematic
-                 module_logger.warning(
-                     "Heuristic max score is zero in EXT_A2, but proximity score is not. Check factors.",
-                     extra={"request_id": effective_request_id, "proximity_score": proximity_score, "heuristic_max_score": heuristic_max_score}
-                 )
-
+            heuristic_max_score = (num_neighbors_in_radius * max_val_on_grid * value_weight_factor /
+                                   (1**distance_decay_factor if distance_decay_factor != 0 else 1.0))
+            if heuristic_max_score == 0 and num_neighbors_in_radius > 0 and max_val_on_grid > 0: heuristic_max_score = 1e-9
+            if heuristic_max_score > 0:
+                scores[r_idx, c_idx] = _math_utils.normalize_value(proximity_score, 0, heuristic_max_score, clamp=True)
+            elif math.isclose(proximity_score, 0.0): scores[r_idx, c_idx] = 0.0
+            else:
+                scores[r_idx, c_idx] = 0.5
+                module_logger.warning("EXT_A2: Heuristic max score is zero but proximity score is not.",
+                                 extra={"proximity_score": proximity_score, "heuristic_max_score": heuristic_max_score})
     return scores
-
 
 def EXT_M3_Local_Heterogeneity_Vec(
-    grid: NDArray[np.int_], request_id: str | None = None, **kwargs: Any # Added **kwargs
-) -> NDArray[np.float64]: # Corrected return type
-    """
-    (M3 - 局部異質性)
-    """
-    effective_request_id = request_id or request_id_contextvar.get() or "N/A_brain_M3"
-    module_logger.debug("Executing EXT_M3_Local_Heterogeneity_Vec", extra={'request_id': effective_request_id})
-
+    grid: NDArray[np.int_], request_id: str | None = None, **kwargs: Any
+) -> NDArray[np.float64]:
+    module_logger.debug("Executing EXT_M3_Local_Heterogeneity_Vec")
     rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=np.float64) # Corrected dtype
-    if rows == 0 or cols == 0:
-        return scores
-
-    radius = 1
-    min_neighbors_for_robust_score = 2
-    
+    scores = np.zeros((rows, cols), dtype=np.float64)
+    if rows == 0 or cols == 0: return scores
+    radius = 1; min_neighbors_for_robust_score = 2
     all_possible_values_in_game = _board_analyzer_utils.get_all_possible_numbers_for_grid(grid.shape)
-    if not all_possible_values_in_game: # No numbers possible, so no diversity
-        return scores # scores remain zeros
-
+    if not all_possible_values_in_game: return scores
     max_theoretical_entropy: float
-    if len(all_possible_values_in_game) > 1:
-        max_theoretical_entropy = math.log2(len(all_possible_values_in_game))
-    elif len(all_possible_values_in_game) == 1: # Only one possible number
-        max_theoretical_entropy = math.log2(2) # Avoid log2(1)=0, or treat as 0 if N=1 means no diversity by definition
-                                              # PDF implies giving some scale log2(2)
-    else: # No possible values (empty set)
-        max_theoretical_entropy = 1.0 # Fallback, though handled by early exit if not all_possible_values_in_game
-
-    if max_theoretical_entropy == 0: # If it somehow becomes 0 (e.g. log2(1))
-        max_theoretical_entropy = 1.0 # Prevent division by zero
-
+    if len(all_possible_values_in_game) > 1: max_theoretical_entropy = math.log2(len(all_possible_values_in_game))
+    elif len(all_possible_values_in_game) == 1: max_theoretical_entropy = math.log2(2)
+    else: max_theoretical_entropy = 1.0
+    if max_theoretical_entropy == 0: max_theoretical_entropy = 1.0
     for r_idx in range(rows):
         for c_idx in range(cols):
-            if grid[r_idx, c_idx] != -1:
-                continue
-
-            # Ensure val_func returns hashable items for Counter in get_entropy
+            if grid[r_idx, c_idx] != -1: continue
             raw_neighbor_values = _board_analyzer_utils.get_neighborhood_values(
                 grid, r_idx, c_idx, radius=radius, eight_connectivity=True,
-                val_func=lambda x_val: int(x_val) if x_val != -1 else None, # Produces int | None
-                include_center=False
-            )
-            
-            # Filter out Nones and ensure they are hashable (ints are)
+                val_func=lambda x_val: int(x_val) if x_val != -1 else None, include_center=False)
             processed_neighbor_values: list[Hashable] = [val for val in raw_neighbor_values if val is not None]
-
-
             if len(processed_neighbor_values) < min_neighbors_for_robust_score:
-                scores[r_idx, c_idx] = 0.0
-                continue
-            
+                scores[r_idx, c_idx] = 0.0; continue
             current_entropy = _math_utils.get_entropy(processed_neighbor_values)
-
             normalized_score = current_entropy / max_theoretical_entropy
             scores[r_idx, c_idx] = _math_utils.normalize_value(normalized_score, 0, 1, clamp=True)
-
     return scores
 
-
 def EXT_F10_Discontinuity_Vec(
-    grid: NDArray[np.int_], request_id: str | None = None, **kwargs: Any # Added **kwargs
-) -> NDArray[np.float64]: # Corrected return type
-    """
-    (F10-不連續性修復/序列完成度)
-    """
-    effective_request_id = request_id or request_id_contextvar.get() or "N/A_brain_F10"
-    module_logger.debug("Executing EXT_F10_Discontinuity_Vec", extra={'request_id': effective_request_id})
-
+    grid: NDArray[np.int_], request_id: str | None = None, **kwargs: Any
+) -> NDArray[np.float64]:
+    module_logger.debug("Executing EXT_F10_Discontinuity_Vec")
     rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=np.float64) # Corrected dtype
-    if rows == 0 or cols == 0:
-        return scores
-
+    scores = np.zeros((rows, cols), dtype=np.float64)
+    if rows == 0 or cols == 0: return scores
     legal_values_for_placement = _board_analyzer_utils.get_legal_values_for_placement(grid)
-    if not legal_values_for_placement:
-        return scores
-
+    if not legal_values_for_placement: return scores
     min_sequence_len_to_score = 3
     heuristic_max_len = float(max(rows, cols, min_sequence_len_to_score))
-    if heuristic_max_len == 0 : heuristic_max_len = float(min_sequence_len_to_score) # avoid div by zero
-
+    if heuristic_max_len == 0: heuristic_max_len = float(min_sequence_len_to_score)
     for r_idx in range(rows):
         for c_idx in range(cols):
-            if grid[r_idx, c_idx] != -1:
-                continue
-
+            if grid[r_idx, c_idx] != -1: continue
             max_len_contribution_for_this_cell = 0.0
-            for val_to_try_float in legal_values_for_placement: # legal_values are int
-                val_to_try = int(val_to_try_float) # Ensure int for grid placement
-                temp_grid = grid.copy()
-                temp_grid[r_idx, c_idx] = val_to_try
+            for val_to_try_float in legal_values_for_placement:
+                val_to_try = int(val_to_try_float)
+                temp_grid = grid.copy(); temp_grid[r_idx, c_idx] = val_to_try
                 current_val_max_len = 0.0
-
-                # Check Row
+                # Row
                 row_line = list(temp_grid[r_idx, :])
-                sequences_in_row = _board_analyzer_utils.find_sequences_in_line(
-                    row_line, min_len=min_sequence_len_to_score, allow_gaps=1, check_arithmetic=True
-                )
-                for seq in sequences_in_row:
-                    if val_to_try in seq:
-                        current_val_max_len = max(current_val_max_len, float(len(seq)))
-                
+                for seq in _board_analyzer_utils.find_sequences_in_line(row_line, min_sequence_len_to_score, True, False, 1):
+                    if val_to_try in seq: current_val_max_len = max(current_val_max_len, float(len(seq)))
+                # Col
                 col_line = list(temp_grid[:, c_idx])
-                sequences_in_col = _board_analyzer_utils.find_sequences_in_line(
-                    col_line, min_len=min_sequence_len_to_score, allow_gaps=1, check_arithmetic=True
-                )
-                for seq in sequences_in_col:
-                    if val_to_try in seq:
-                        current_val_max_len = max(current_val_max_len, float(len(seq)))
-
-                if cols > 0 and rows > 0 : # Diagonals only make sense if 2D
+                for seq in _board_analyzer_utils.find_sequences_in_line(col_line, min_sequence_len_to_score, True, False, 1):
+                    if val_to_try in seq: current_val_max_len = max(current_val_max_len, float(len(seq)))
+                # Diagonals
+                if cols > 0 and rows > 0:
                     diag1_line = list(np.diag(temp_grid, k=c_idx - r_idx))
-                    sequences_in_diag1 = _board_analyzer_utils.find_sequences_in_line(
-                        diag1_line, min_len=min_sequence_len_to_score, allow_gaps=1, check_arithmetic=True
-                    )
-                    for seq in sequences_in_diag1:
-                        if val_to_try in seq:
-                            current_val_max_len = max(current_val_max_len, float(len(seq)))
-
-                    flipped_temp_grid = np.fliplr(temp_grid)
-                    flipped_c_idx = cols - 1 - c_idx
+                    for seq in _board_analyzer_utils.find_sequences_in_line(diag1_line, min_sequence_len_to_score, True, False, 1):
+                        if val_to_try in seq: current_val_max_len = max(current_val_max_len, float(len(seq)))
+                    flipped_temp_grid = np.fliplr(temp_grid); flipped_c_idx = cols - 1 - c_idx
                     diag2_line = list(np.diag(flipped_temp_grid, k=flipped_c_idx - r_idx))
-                    sequences_in_diag2 = _board_analyzer_utils.find_sequences_in_line(
-                        diag2_line, min_len=min_sequence_len_to_score, allow_gaps=1, check_arithmetic=True
-                    )
-                    for seq in sequences_in_diag2:
-                        if val_to_try in seq:
-                            current_val_max_len = max(current_val_max_len, float(len(seq)))
-
+                    for seq in _board_analyzer_utils.find_sequences_in_line(diag2_line, min_sequence_len_to_score, True, False, 1):
+                        if val_to_try in seq: current_val_max_len = max(current_val_max_len, float(len(seq)))
                 if current_val_max_len >= min_sequence_len_to_score:
                     max_len_contribution_for_this_cell = max(max_len_contribution_for_this_cell, current_val_max_len)
-            
-            scores[r_idx, c_idx] = _math_utils.normalize_value(
-                max_len_contribution_for_this_cell, 0, heuristic_max_len, clamp=True
-            )
+            scores[r_idx, c_idx] = _math_utils.normalize_value(max_len_contribution_for_this_cell, 0, heuristic_max_len, clamp=True)
     return scores
 
 REGISTERED_MODULES_BRAIN = {
@@ -742,82 +534,52 @@ REGISTERED_MODULES_BRAIN = {
 }
 
 @app.post("/score_grid", response_model=ScoreOutput)
-async def score_grid_endpoint(grid_input: GridInput):
-    """
-    Scores a given grid using the specified module.
-    """
-    current_request_id = request_id_contextvar.get() or grid_input.request_id or str(uuid.uuid4())
-    # If middleware set it, contextvar.get() is enough.
-    # If X-Request-ID header is used, middleware should set it.
-    # If passed in body, use grid_input.request_id.
-    # Fallback to new UUID.
-    
-    # Ensure contextvar is set for subsequent operations if not already by middleware
-    token = request_id_contextvar.set(current_request_id)
-
+async def score_grid_endpoint(grid_input: GridInput) -> ScoreOutput:
+    current_req_id = request_id_contextvar.get() # Should be set by middleware
+    current_tr_id = trace_id_contextvar.get()   # Should be set by middleware
 
     module_logger.info(
-        f"Received scoring request for module: {grid_input.module_name}",
-        extra={"request_id": current_request_id, "module_name": grid_input.module_name}
+        "Processing /score_grid request", # Filter adds req_id, tr_id
+        extra={"module_name_requested": grid_input.module_name}
     )
-
     try:
         grid_list = grid_input.grid
-        if not grid_list: # Empty list representing the grid
-            if grid_input.module_name in REGISTERED_MODULES_BRAIN : # if module expects 0x0 grid
-                 grid_np: NDArray[np.int_] = np.array([[]], dtype=np.int_).reshape(0,0) # Create 0x0 array
-            else: # Should not happen if module expects a grid
-                 module_logger.warning("Empty grid provided and module might not handle it.", extra={"request_id": current_request_id})
-                 grid_np = np.array([[]], dtype=np.int_).reshape(0,0) # default to 0x0
-        
+        if not grid_list and not (isinstance(grid_list, list) and len(grid_list) == 0 and (len(grid_list[0])==0 if len(grid_list)>0 else True)): # Check for truly empty or 0x0
+            grid_np: NDArray[np.int_] = np.array([[]], dtype=np.int_).reshape(0,0)
         elif not all(isinstance(row, list) for row in grid_list) or \
-             (len(grid_list) > 0 and not all(len(row) == len(grid_list[0]) for row in grid_list)):
+             (len(grid_list) > 0 and not all(len(row) == len(grid_list[0]) for row in grid_list if grid_list)): # Added check for grid_list not empty
             detail = "Grid must be a list of lists with consistent row lengths."
-            module_logger.error(detail, extra={"request_id": current_request_id})
+            module_logger.error(detail) # Filter adds req_id, tr_id
             raise HTTPException(status_code=400, detail=detail)
         else:
             grid_np = np.array(grid_list, dtype=np.int_)
-
-        if grid_np.ndim != 2: #This check might be redundant if above list checks are robust
-            detail = "Grid must be 2-dimensional after conversion."
-            module_logger.error(detail, extra={"request_id": current_request_id, "grid_shape": str(grid_np.shape)})
-            raise HTTPException(status_code=400, detail=detail)
-
-
+        if grid_np.ndim != 2 :
+             if grid_np.shape == (0,): # np.array([]) results in shape (0,)
+                 grid_np = np.array([[]], dtype=np.int_).reshape(0,0) # Convert to 0x0
+             else:
+                detail = f"Grid must be 2-dimensional after conversion, got shape {grid_np.shape}."
+                module_logger.error(detail, extra={"grid_shape_error": str(grid_np.shape)})
+                raise HTTPException(status_code=400, detail=detail)
     except ValueError as ve:
-        module_logger.error(
-            f"Invalid grid format during NumPy conversion: {str(ve)}", extra={"request_id": current_request_id}
-        )
+        module_logger.error(f"Invalid grid format during NumPy conversion: {str(ve)}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Invalid grid format: {str(ve)}") from ve
-    except HTTPException: # Re-raise if it's already an HTTPException
-        raise
-    except Exception as e_conv: # Catch any other conversion errors
-        module_logger.error(
-            f"Unexpected error during grid conversion: {str(e_conv)}", exc_info=True, extra={"request_id": current_request_id}
-        )
+    except HTTPException: raise
+    except Exception as e_conv:
+        module_logger.error(f"Unexpected error during grid conversion: {str(e_conv)}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"Unexpected error processing grid: {str(e_conv)}")
 
-
-    score_array = await get_module_score_async(
-        grid_input.module_name, grid_np, current_request_id
-    )
+    score_array = await get_module_score_async(grid_input.module_name, grid_np)
     
-    response = ScoreOutput(
+    return ScoreOutput(
         module_name=grid_input.module_name,
         score_grid=score_array.tolist(),
-        request_id=current_request_id
+        request_id=current_req_id,
+        trace_id=current_tr_id
     )
-    request_id_contextvar.reset(token) # Reset contextvar
-    return response
 
-
-# --- Main execution for Uvicorn ---
 if __name__ == "__main__":
-    # Determine log level for uvicorn from settings, default to lowercase 'info' if not directly mappable
     uvicorn_log_level = settings.LOG_LEVEL.lower()
-    valid_uvicorn_levels = ["critical", "error", "warning", "info", "debug", "trace"]
-    if uvicorn_log_level not in valid_uvicorn_levels:
-        uvicorn_log_level = "info" # Default for uvicorn
-
+    if uvicorn_log_level not in ["critical", "error", "warning", "info", "debug", "trace"]:
+        uvicorn_log_level = "info"
     module_logger.info(f"Starting {settings.APP_NAME} on http://localhost:8000 with log level {uvicorn_log_level}")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level=uvicorn_log_level)
