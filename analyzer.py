@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field, model_validator # model_validator 新增
 import brain1
 import brain2
 import brain3
-
+BRAIN_VERSION = os.getenv("BRAIN_VERSION", "brain2")  # 可是 brain1, brain2, brain3
+brain = importlib.import_module(BRAIN_VERSION)
 # 來源：main.py (用户需求 Point 4.c)
 logger = logging.getLogger(__name__) # 建議使用 __name__ 以便日誌追蹤來源模組
 
