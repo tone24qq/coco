@@ -1,16 +1,16 @@
 # main.py
-# 本文件自動生成，依據新大腦.pdf、給你2025资料在深度建议一次.pdf、极限强化.pdf 維度實現
 # 系統入口與 FastAPI 路由層。
 
 import os
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta # timedelta for uptime
 import time # For performance logging
-import asyncio # 新增：為了 keep_alive_task
+import asyncio # For background tasks
+import httpx # For self_ping_task
 
 import numpy as np
-from fastapi import FastAPI, HTTPException, Depends, Request, Response # Response 新增
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
 from pydantic_settings import BaseSettings
@@ -23,10 +23,15 @@ load_dotenv()
 import analyzer
 import brain
 
+# --- Global variables for app instance lifecycle ---
+START_TIME: datetime | None = None
+APP_INSTANCE_ID: str = f"app-instance-{uuid.uuid4()}"
+
 # --- Configuration via Pydantic BaseSettings ---
 class AppSettings(BaseSettings):
-    app_name: str = Field(default="AI Scoring Service", validation_alias="APP_NAME")
-    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    app_name: str = Field(default="AI Scoring Service", env="APP_NAME")
+    log_level: str = Field(default="INFO", env="LOG_LEVEL")
+    server_port: int = Field(default=8000, env="PORT") # Render typically sets PORT
 
     class Config:
         env_file = ".env"
@@ -53,22 +58,49 @@ logging.basicConfig(
 )
 
 _base_logger = logging.getLogger(settings.app_name)
-logger = RequestIdLoggerAdapter(_base_logger, {'request_id': 'APP_DEFAULT_ID'})
+logger = RequestIdLoggerAdapter(_base_logger, {'request_id': APP_INSTANCE_ID}) # Use APP_INSTANCE_ID as default for non-request logs
 
 
-# --- Keep Alive Task (inspired by 測試.txt) ---
+# --- Background Tasks ---
 async def keep_alive_task_main_app():
-    """每60秒打印一次日誌以保持服務活躍，避免被Render等平台視為idle而關閉。"""
+    """每60秒打印一次日誌以保持服務活躍，並監控系統資源（日誌本身即為監控）。"""
     while True:
-        logger.info("💡 Main App Still alive... (avoiding idle shutdown)", extra={"request_id": "keep_alive"})
+        # "監控系統資源" 目前主要透過日誌表示活躍。可擴展加入 psutil 等真實資源監控。
+        logger.info(f"💡 Keep-alive log for {APP_INSTANCE_ID}. Service active.", extra={"request_id": "keep_alive_log"})
         await asyncio.sleep(60)
+
+async def self_ping_task():
+    """每60秒對自身 /healthz 端點發起 HTTP GET 請求，以產生真實流量。"""
+    # 注意：這裡的 URL 和 PORT 應與服務實際監聽的配置一致
+    # 在 Render 環境中，PORT 通常由平台設定，settings.server_port 應能讀取到
+    healthz_url = f"http://127.0.0.1:{settings.server_port}/healthz"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        while True:
+            try:
+                response = await client.get(healthz_url)
+                response.raise_for_status() # Raises an exception for 4XX/5XX responses
+                logger.info(f"🩺 Self-ping to {healthz_url} successful, status: {response.status_code}.",
+                            extra={"request_id": "self_ping_success"})
+            except httpx.RequestError as e:
+                logger.error(f"🩺 Self-ping to {healthz_url} failed (RequestError): {e}",
+                             exc_info=False, # Avoid full stack trace for common ping errors
+                             extra={"request_id": "self_ping_failure"})
+            except httpx.HTTPStatusError as e:
+                logger.error(f"🩺 Self-ping to {healthz_url} failed (HTTPStatusError {e.response.status_code}): {e}",
+                             exc_info=False,
+                             extra={"request_id": "self_ping_http_failure"})
+            except Exception as e:
+                logger.error(f"🩺 Self-ping task encountered an unexpected error: {e}",
+                             exc_info=True, # Log full trace for unexpected errors
+                             extra={"request_id": "self_ping_unexpected_error"})
+            await asyncio.sleep(60)
 
 
 # --- FastAPI App Initialization ---
 app = FastAPI(
     title=settings.app_name,
     version="1.0.0",
-    description="AI Module Scoring Service based on a 3-tier architecture (main -> analyzer -> brain)."
+    description="AI Module Scoring Service with keep-alive and self-ping tasks."
 )
 
 # --- FastAPI Event Handlers ---
@@ -76,30 +108,44 @@ ANALYZER_INSTANCE_CONFIG: analyzer.AnalyzerConfig
 
 @app.on_event("startup")
 async def startup_event():
-    global ANALYZER_INSTANCE_CONFIG
-    logger.info(f"Application '{settings.app_name}' starting up...", extra={"request_id": "startup"})
-    logger.info(f"Log level set to: {settings.log_level}", extra={"request_id": "startup"})
-    
-    try:
-        ANALYZER_INSTANCE_CONFIG = analyzer.DEFAULT_ANALYZER_CONFIG
-        analyzer.initialize_analyzer(config_override=ANALYZER_INSTANCE_CONFIG)
-        logger.info("Analyzer initialized successfully.", extra={"request_id": "startup"})
-    except Exception as e:
-        logger.error(f"CRITICAL: Failed to initialize analyzer during startup: {e}", exc_info=True, extra={"request_id": "startup_CRITICAL_ERROR"})
-        # Depending on severity, you might want to raise an error here to prevent app from starting in a broken state,
-        # or allow it to start with limited functionality if possible.
-        # For now, it logs the error and continues, but Render might see it as unhealthy if critical parts fail.
+    global ANALYZER_INSTANCE_CONFIG, START_TIME, APP_INSTANCE_ID
+    START_TIME = datetime.now(timezone.utc)
 
-    # Start the keep-alive task
-    asyncio.create_task(keep_alive_task_main_app()) # [cite: 1]
-    logger.info("Keep-alive task started.", extra={"request_id": "startup"})
-    logger.info("Application startup complete.", extra={"request_id": "startup"})
+    logger.info(f"🚀 Application Instance ID: {APP_INSTANCE_ID} starting up...", extra={"request_id": "startup"})
+    logger.info(f"Log level set to: {settings.log_level}", extra={"request_id": "startup"})
+    logger.info(f"Service will listen on port: {settings.server_port}", extra={"request_id": "startup"})
+
+    try:
+        ANALYZER_INSTANCE_CONFIG = analyzer.DEFAULT_ANALYZER_CONFIG # Or load from settings if implemented
+        analyzer.initialize_analyzer(config_override=ANALYZER_INSTANCE_CONFIG)
+        logger.info("✅ Analyzer initialized successfully.", extra={"request_id": "startup"})
+    except Exception as e:
+        logger.error(f"🔥 CRITICAL: Failed to initialize analyzer during startup: {e}",
+                     exc_info=True, extra={"request_id": "startup_analyzer_error"})
+        # Consider if app should proceed or exit if analyzer is critical
+
+    # 啟動背景任務
+    asyncio.create_task(keep_alive_task_main_app())
+    logger.info("✅ Keep-alive logging task started.", extra={"request_id": "startup"})
+
+    asyncio.create_task(self_ping_task())
+    logger.info("✅ Self-ping task to /healthz started.", extra={"request_id": "startup"})
+
+    logger.info("🏁 Application startup sequence complete.", extra={"request_id": "startup"})
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("Application shutting down...", extra={"request_id": "shutdown"})
-    # Add any other cleanup logic here
-    logger.info("Application shutdown complete.", extra={"request_id": "shutdown"})
+    global START_TIME, APP_INSTANCE_ID
+    shutdown_time_utc = datetime.now(timezone.utc)
+    uptime_message = "Uptime: Unknown (startup time not recorded)"
+    if START_TIME:
+        uptime = shutdown_time_utc - START_TIME
+        uptime_message = f"Uptime: {str(uptime).split('.')[0]}" # Remove microseconds for cleaner log
+
+    logger.info(f"🛑 Application Instance ID: {APP_INSTANCE_ID} shutting down. {uptime_message}",
+                extra={"request_id": "shutdown", "app_instance_id": APP_INSTANCE_ID})
+    # Add any other cleanup logic here (e.g., closing connections)
+    logger.info("🏁 Application shutdown sequence complete.", extra={"request_id": "shutdown"})
 
 
 # --- Request ID Middleware and Dependency ---
@@ -112,7 +158,7 @@ async def request_id_middleware(request: Request, call_next: Callable):
     return response
 
 async def get_request_id(request: Request) -> str:
-    return cast(str, getattr(request.state, "request_id", "unknown_request_id"))
+    return cast(str, getattr(request.state, "request_id", "unknown_request_id_in_dependency"))
 
 # --- CORS Middleware ---
 app.add_middleware(
@@ -123,7 +169,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Pydantic Models (assuming these are defined as before) ---
+# --- Pydantic Models ( Definitions from previous corrected version ) ---
 class AnalyzeRequest(BaseModel):
     new_card: List[List[int]] = Field(..., description="二維陣列代表當前盤面，-1表示空格")
     proposed_values: Dict[str, List[int]] | None = Field(default=None, description="提議的值")
@@ -184,32 +230,28 @@ class ScoreModuleResponse(BaseModel):
 
 # --- API Endpoints ---
 
-# 修正：明確支援 GET 和 HEAD 方法，參考 測試.txt [cite: 1]
 @app.api_route("/", methods=["GET", "HEAD"])
-async def root(request: Request): # Added request for logging context
+async def root(request: Request):
     req_id = getattr(request.state, "request_id", "NO_ID_IN_ROOT")
-    logger.info("Root / endpoint hit.", extra={"request_id": req_id})
+    logger.info("📡 Root / endpoint hit.", extra={"request_id": req_id})
     return {"message": "Service is alive."}
 
-# 修正：確保 /healthz GET 正常，並明確添加 HEAD 支持，參考 測試.txt [cite: 2]
 @app.get("/healthz")
-async def health_check_z(request: Request): # Renamed from health_check
-    req_id = getattr(request.state, "request_id", "NO_ID_IN_HEALTHZ")
-    logger.info("GET /healthz endpoint hit.", extra={"request_id": req_id})
-    return {"status": "ok"}
+async def healthz_get(request: Request):
+    req_id = getattr(request.state, "request_id", "NO_ID_IN_HEALTHZ_GET")
+    logger.info("❤️ GET /healthz endpoint hit.", extra={"request_id": req_id})
+    return {"status": "ok from main app"}
 
-@app.api_route("/healthz", methods=["HEAD"]) # Explicit HEAD handler [cite: 2]
-async def health_check_z_head(request: Request):
+@app.api_route("/healthz", methods=["HEAD"])
+async def healthz_head(request: Request):
     req_id = getattr(request.state, "request_id", "NO_ID_IN_HEALTHZ_HEAD")
-    logger.info("HEAD /healthz endpoint hit.", extra={"request_id": req_id})
-    return Response(status_code=200) # HEAD should return 200 OK with no body
+    logger.info("❤️ HEAD /healthz endpoint hit.", extra={"request_id": req_id})
+    return Response(status_code=200)
 
-# 保留 /health 端點，並明確支援 GET 和 HEAD
 @app.api_route("/health", methods=["GET", "HEAD"], status_code=200, summary="Detailed Health Check")
-async def health_detailed_check(request_id: str = Depends(get_request_id)): # Renamed from health_check to avoid conflict
-    logger.debug("Detailed /health endpoint called.", extra={"request_id": request_id})
-    # For HEAD, FastAPI/Starlette should automatically strip the body if we return content
-    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat(), "request_id": request_id}
+async def health_detailed(request_id: str = Depends(get_request_id)):
+    logger.debug("💙 Detailed /health endpoint called.", extra={"request_id": request_id})
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat(), "app_instance_id": APP_INSTANCE_ID, "request_id": request_id}
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -219,14 +261,14 @@ async def analyze_route(
 ):
     start_time = time.perf_counter()
     logger.info(f"Received /analyze request. Grid shape: {len(data.new_card)}x{len(data.new_card[0]) if data.new_card and data.new_card[0] else 'N/A'}",
-                extra={"request_id": request_id})
+                extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
     try:
         grid_np = np.array(data.new_card, dtype=int)
     except Exception as e:
-        logger.error(f"Error converting new_card to NumPy array: {e}", exc_info=True, extra={"request_id": request_id})
+        logger.error(f"Error converting new_card to NumPy array: {e}", exc_info=True, extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=400, detail=f"Invalid grid_data format in new_card: {str(e)}")
     if grid_np.ndim != 2 or grid_np.size == 0:
-        logger.error(f"Invalid grid dimensions: {grid_np.shape}", extra={"request_id": request_id})
+        logger.error(f"Invalid grid dimensions: {grid_np.shape}", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=400, detail="Grid must be a 2D array and non-empty.")
     try:
         config_to_use = data.analyzer_config_override if data.analyzer_config_override else ANALYZER_INSTANCE_CONFIG
@@ -240,7 +282,7 @@ async def analyze_route(
         ]
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.info(f"Successfully analyzed grid. Found {len(response_suggestions)} suggestions. Duration: {duration_ms:.2f}ms",
-                    extra={"request_id": request_id})
+                    extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         return AnalyzeResponse(
             request_id=request_id,
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -253,7 +295,7 @@ async def analyze_route(
         raise
     except Exception as e:
         duration_ms = (time.perf_counter() - start_time) * 1000
-        logger.exception(f"An unexpected error occurred during analysis. Duration: {duration_ms:.2f}ms: {e}", extra={"request_id": request_id})
+        logger.exception(f"An unexpected error occurred during analysis. Duration: {duration_ms:.2f}ms: {e}", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=500, detail=f"Internal server error during analysis: {str(e)}")
 
 @app.post("/score", response_model=ScoreModuleResponse)
@@ -262,17 +304,17 @@ async def score_module_route(
     request_id: str = Depends(get_request_id),
 ):
     start_time = time.perf_counter()
-    logger.info(f"Received /score request for module: {data.module_name}", extra={"request_id": request_id})
+    logger.info(f"Received /score request for module: {data.module_name}", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
     if data.module_name not in brain.REGISTERED_MODULES_BRAIN:
-        logger.warning(f"Module '{data.module_name}' not found.", extra={"request_id": request_id})
+        logger.warning(f"Module '{data.module_name}' not found.", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=404, detail=f"Module '{data.module_name}' not found.")
     try:
         grid_np = np.array(data.grid_data, dtype=int)
     except Exception as e:
-        logger.error(f"Error converting grid_data to NumPy array: {e}", exc_info=True, extra={"request_id": request_id})
+        logger.error(f"Error converting grid_data to NumPy array: {e}", exc_info=True, extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=400, detail=f"Invalid grid_data format: {str(e)}")
     if grid_np.ndim != 2 or grid_np.size == 0:
-        logger.error(f"Invalid grid dimensions for scoring: {grid_np.shape}", extra={"request_id": request_id})
+        logger.error(f"Invalid grid dimensions for scoring: {grid_np.shape}", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=400, detail="Grid for scoring must be a 2D array and non-empty.")
     try:
         module_pydantic_config_class = type(brain.DEFAULT_MODULE_CONFIGS.get(data.module_name, brain.BaseModuleConfig()))
@@ -281,13 +323,13 @@ async def score_module_route(
             try:
                 final_module_config = module_pydantic_config_class(**data.module_config_override)
                 logger.info(f"Using overridden config for module {data.module_name}: {final_module_config.model_dump_json()}",
-                            extra={"request_id": request_id})
+                            extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
             except Exception as pydantic_error:
-                logger.error(f"Invalid module_config_override for {data.module_name}: {pydantic_error}", exc_info=True, extra={"request_id": request_id})
+                logger.error(f"Invalid module_config_override for {data.module_name}: {pydantic_error}", exc_info=True, extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
                 raise HTTPException(status_code=400, detail=f"Invalid config override for module {data.module_name}: {pydantic_error}")
         else:
             final_module_config = brain.DEFAULT_MODULE_CONFIGS.get(data.module_name, brain.BaseModuleConfig())
-            logger.info(f"Using default config for module {data.module_name}.", extra={"request_id": request_id})
+            logger.info(f"Using default config for module {data.module_name}.", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
 
         score_matrix = brain.get_module_score(
             data.module_name,
@@ -302,7 +344,7 @@ async def score_module_route(
             if preview_rows > 0 and preview_cols > 0:
                  preview = score_matrix[:preview_rows, :preview_cols].tolist()
         duration_ms = (time.perf_counter() - start_time) * 1000
-        logger.info(f"Successfully scored grid with module '{data.module_name}'. Duration: {duration_ms:.2f}ms", extra={"request_id": request_id})
+        logger.info(f"Successfully scored grid with module '{data.module_name}'. Duration: {duration_ms:.2f}ms", extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         return ScoreModuleResponse(
             request_id=request_id,
             module_name=data.module_name,
@@ -315,23 +357,23 @@ async def score_module_route(
     except Exception as e:
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.exception(f"An unexpected error occurred while scoring with module {data.module_name}. Duration: {duration_ms:.2f}ms: {e}",
-                         extra={"request_id": request_id})
+                         extra={"request_id": request_id, "app_instance_id": APP_INSTANCE_ID})
         raise HTTPException(status_code=500, detail=f"Internal server error during scoring: {str(e)}")
 
 # --- Main execution for Uvicorn ---
 if __name__ == "__main__":
     import uvicorn
     log_config_uvicorn = uvicorn.config.LOGGING_CONFIG
-    log_config_uvicorn["formatters"]["default"]["fmt"] = "%(asctime)s - %(levelname)s - %(message)s"
+    log_config_uvicorn["formatters"]["default"]["fmt"] = "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s" # Added %(name)s for consistency
     log_config_uvicorn["formatters"]["access"]["fmt"] = '%(asctime)s - %(levelname)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
 
-    logger.info(f"Starting Uvicorn server directly from main.py on port 8000 for {settings.app_name}...",
-                extra={"request_id": "main_direct_run"})
+    logger.info(f"Starting Uvicorn server directly from main.py on port {settings.server_port} for {settings.app_name}...",
+                extra={"request_id": "main_direct_run", "app_instance_id": APP_INSTANCE_ID})
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=settings.server_port, # Use port from settings
         log_level=settings.log_level.lower(),
-        reload=True,
+        reload=True, # Good for development, set to False or remove for production
         log_config=log_config_uvicorn
     )
