@@ -233,6 +233,7 @@ def EXT_GM5_Line_Completion_Vec(
         # if config.target_line_length > max(rows, cols) and (rows > 0 and cols > 0) : # if grid is smaller than target line
             pass # allow, but scores will likely be 0
     if rows == 0 or cols == 0 or min(rows, cols) < 2:
+    # 無法處理過小盤面，直接返回空分數
     return scores
 
 
