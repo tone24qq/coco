@@ -232,15 +232,18 @@ def EXT_GM5_Line_Completion_Vec(
         # For target_line_length, need at least that many in one dimension.
         # if config.target_line_length > max(rows, cols) and (rows > 0 and cols > 0) : # if grid is smaller than target line
             pass # allow, but scores will likely be 0
+def analyze_grid(grid: np.ndarray) -> np.ndarray:
+    rows, cols = grid.shape
+    scores = np.zeros_like(grid, dtype=float)  # 初始化 scores
+
     if rows == 0 or cols == 0 or min(rows, cols) < 2:
         return scores
 
+    potential_numbers_to_place = list(BoardAnalyzerUtils.get_legal_values_for_placement(grid))
 
-    potential_numbers_to_place = list(BoardAnalyzerUtils.get_legal_values_for_placement(grid))  # OK
+    # ...後續邏輯分析可加在這邊...
 
-if rows == 0 or cols == 0 or min(rows, cols) < 2:
-    return scores  # <- 正確縮排
-
+    return scores  # 結尾回傳
     # 來源：新大腦.pdf - EXT_GM5 line_completion_score_map (Page 25) #
     # Using config for scores
     
