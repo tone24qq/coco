@@ -1,9 +1,12 @@
 fastapi
-uvicorn[standard]
-numpy
 matplotlib
+numpy
 ortools
-prometheus_client
-starlette-prometheus
 pydantic-settings
+prometheus_client
+python-dotenv
 python-json-logger
+psutil>=5.9.0
+starlette-prometheus
+uvicorn[standard]
+httpx>=0.24.0
