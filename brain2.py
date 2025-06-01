@@ -232,8 +232,8 @@ def EXT_GM5_Line_Completion_Vec(
         # For target_line_length, need at least that many in one dimension.
         # if config.target_line_length > max(rows, cols) and (rows > 0 and cols > 0) : # if grid is smaller than target line
             pass # allow, but scores will likely be 0
-        elif rows == 0 or cols == 0: # definitely no lines
-             return scores
+        if rows == 0 or cols == 0 or min(rows, cols) < 2:
+    return scores
 
 
     potential_numbers_to_place = list(BoardAnalyzerUtils.get_legal_values_for_placement(grid)) # 來源：新大腦.pdf (Page 25)
