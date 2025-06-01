@@ -742,7 +742,7 @@ app = FastAPI(
     description="A FastAPI server demonstrating Maximized PuzzleTensorOps capabilities.",
 )
 app.add_middleware(PrometheusMiddleware)
-app.add_route("/metrics", handle_metrics_in_app)
+app.add_route("/metrics", metrics)
 
 class EnhancedLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable[[Request], Any]) -> Any:
