@@ -236,9 +236,10 @@ def EXT_GM5_Line_Completion_Vec(
         return scores
 
 
-    potential_numbers_to_place = list(BoardAnalyzerUtils.get_legal_values_for_placement(grid)) # 來源：新大腦.pdf (Page 25)
-    if rows == 0 or cols == 0 or min(rows, cols) < 2:
-    return scores
+    potential_numbers_to_place = list(BoardAnalyzerUtils.get_legal_values_for_placement(grid))  # OK
+
+if rows == 0 or cols == 0 or min(rows, cols) < 2:
+    return scores  # <- 正確縮排
 
     # 來源：新大腦.pdf - EXT_GM5 line_completion_score_map (Page 25) #
     # Using config for scores
