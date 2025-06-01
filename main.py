@@ -363,12 +363,34 @@ async def score_module_route(
 # --- Main execution for Uvicorn ---
 if __name__ == "__main__":
     import uvicorn
-    log_config_uvicorn = uvicorn.config.LOGGING_CONFIG
-    log_config_uvicorn["formatters"]["default"]["fmt"] = "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s" # Added %(name)s for consistency
-    log_config_uvicorn["formatters"]["access"]["fmt"] = '%(asctime)s - %(levelname)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
+    from app_settings import settings  # 請確認你的設定模組名稱
+    import logging
 
-    logger.info(f"Starting Uvicorn server directly from main.py on port {settings.server_port} for {settings.app_name}...",
-                extra={"request_id": "main_direct_run", "app_instance_id": APP_INSTANCE_ID})
+    # 取得 uvicorn 的 log config
+    log_config_uvicorn = uvicorn.config.LOGGING_CONFIG
+
+    # 修改 formatter 格式，移除容易出錯的 request_id 等欄位
+    log_config_uvicorn["formatters"]["default"]["fmt"] = (
+        "%(asctime)s - %(levelname)s - [%(name)s] - %(message)s"
+    )
+    log_config_uvicorn["formatters"]["access"]["fmt"] = (
+        '%(asctime)s - %(levelname)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
+    )
+
+    # 安全記錄啟動訊息（不會因 log formatter 崩潰）
+    logger = logging.getLogger("uvicorn.error")
+    logger.info(
+        f"🚀 Starting Uvicorn server directly from main.py on port {settings.server_port} for {settings.app_name}..."
+    )
+
+    # 執行 Uvicorn
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=settings.server_port,
+        log_config=log_config_uvicorn,
+        reload=False,
+    )
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
