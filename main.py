@@ -12,13 +12,21 @@ import numpy as np
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
-from pydantic_settings import BaseSettings # 來源：main.py (用户需求 Point 4.a) & 给你2025资料在深度建议一次.pdf (Page 3 section 3.1.2)
-from typing import List, Dict, Any, Tuple, cast
+# 來源：main.py (用户需求 Point 4.a) & 给你2025资料在深度建议一次.pdf (Page 3 section 3.1.2)
+from pydantic_settings import BaseSettings
+from typing import List, Dict, Any, Tuple, cast 
 from typing import Callable
+from dotenv import load_dotenv # 新增：為了載入 .env 文件
+
+# 新增：呼叫 load_dotenv() 以載入環境變數，應在 AppSettings 實例化前
+# 以及在 analyzer/brain (若它們在模組級別讀取環境變數) 導入並使用前
+load_dotenv()
 
 # 來源：analyzer.py, brain.py (本项目)
-import analyzer
-import brain # Though main doesn't call brain directly, analyzer uses its DEFAULT_MODULE_CONFIGS.
+import analyzer 
+# Though main doesn't call brain directly, analyzer uses its DEFAULT_MODULE_CONFIGS.
+# Correction: main.py *does* call brain directly in /score endpoint.
+import brain 
 
 # --- Configuration via Pydantic BaseSettings ---
 # 來源：main.py (用户需求 Point 4.a)
@@ -43,31 +51,37 @@ settings = AppSettings()
 # 來源：main.py (用户需求 Point 4.c)
 # 來源：请给出26个模块极限强化（针对手机版）的深度意见分析方向越详细越好.pdf - 日誌與監控整合
 # 來源：给你2025资料在深度建议一次.pdf - 日誌與監控整合 (Page 1)
-# Basic logging config, can be enhanced with structlog or other libraries
-# The format includes a placeholder for request_id
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"  # 🔧 先拿掉 request_id
-)
-logger = logging.getLogger(settings.app_name)
 
 # Adapter to inject request_id into log records if not explicitly passed
 # This is a simple way; for more robust context, contextvars might be used.
 class RequestIdLoggerAdapter(logging.LoggerAdapter):
     def process(self, msg: str, kwargs: Any) -> Tuple[str, Any]:
-        # Ensure 'extra' exists and has 'request_id'
+        # Ensure 'extra' exists
         if 'extra' not in kwargs:
             kwargs['extra'] = {}
         
-        # If request_id is already in extra, use it, otherwise use the adapter's default.
-        # The default set in the adapter might come from request.state.
-        current_request_id = kwargs['extra'].get('request_id', self.extra.get('request_id', "NO_REQUEST_ID"))
+        # If request_id is already in extra (passed from call site), use it.
+        # Otherwise, use the adapter's default 'request_id' (from self.extra, set at instantiation),
+        # or a final fallback.
+        # This ensures 'request_id' is always available if the formatter uses %(request_id)s.
+        current_request_id = kwargs['extra'].get(
+            'request_id', 
+            self.extra.get('request_id', "NO_REQUEST_ID_PROVIDED") 
+        )
         kwargs['extra']['request_id'] = current_request_id
-        
-        # The format string in basicConfig now directly uses %(request_id)s,
-        # so we just need to ensure 'request_id' is in the record's dictionary.
-        # The adapter's role here is more about ensuring it's present.
         return msg, kwargs
+
+# Basic logging config, can be enhanced with structlog or other libraries
+# The format includes a placeholder for request_id
+# 修正：在格式字串中加入 request_id
+logging.basicConfig(
+    level=settings.log_level.upper(), # Ensure log_level is upper case for basicConfig
+    format="%(asctime)s - %(levelname)s - %(name)s - [%(request_id)s] - %(message)s"
+)
+
+# 修正：使用 RequestIdLoggerAdapter 實例化 logger
+_base_logger = logging.getLogger(settings.app_name)
+logger = RequestIdLoggerAdapter(_base_logger, {'request_id': 'GLOBAL_DEFAULT_ID'})
 
 
 # --- FastAPI App Initialization ---
@@ -77,9 +91,11 @@ app = FastAPI(
     version="1.0.0",
     description="AI Module Scoring Service based on a 3-tier architecture (main -> analyzer -> brain)."
 )
+
 @app.get("/")
 async def root():
-    return {"message": "Service is alive.
+    # 修正：補全字串的引號和字典的括號
+    return {"message": "Service is alive."}
     
 @app.get("/healthz")
 async def health_check():
@@ -103,9 +119,6 @@ async def request_id_middleware(request: Request, call_next: Callable):
     request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
     request.state.request_id = request_id # Store it in request state
 
-    # For logging: pass request_id explicitly via `extra` when logging
-    # Or configure logger/handlers to pick it up from task-local storage if using contextvars
-
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id # Add it to the response
     return response
@@ -119,15 +132,11 @@ async def get_request_id(request: Request) -> str:
 # 來源：给你2025资料在深度建议一次.pdf - Pydantic V2 (Page 1) & PEP 604 (Page 1)
 class AnalyzeRequest(BaseModel):
     new_card: List[List[int]] = Field(..., description="二維陣列代表當前盤面，-1表示空格")
-    # proposed_values is kept as per prompt, though current analyzer doesn't use it.
-    # It could be used for "what-if" scenarios if analyzer logic is extended.
     proposed_values: Dict[str, List[int]] | None = Field(
         default=None, 
         description="提議的值 (目前主要分析邏輯未使用，可為特定擴展保留)"
     )
-    # Allow passing an override for AnalyzerConfig if needed for a specific request
     analyzer_config_override: analyzer.AnalyzerConfig | None = Field(default=None, description="可選：覆蓋預設的分析器設定")
-
 
     @validator('new_card')
     def check_grid_not_empty_and_rectangular(cls, v: List[List[int]]) -> List[List[int]]:
@@ -154,7 +163,6 @@ class Suggestion(BaseModel):
     confidence_score: float
     contributing_modules: Dict[str, float] | None = Field(default=None)
 
-
 class AnalyzeResponse(BaseModel):
     request_id: str
     timestamp: str
@@ -163,13 +171,10 @@ class AnalyzeResponse(BaseModel):
     message: str | None = Field(default=None)
     duration_ms: float # For performance monitoring
 
-
 class ScoreModuleRequest(BaseModel):
     module_name: str = Field(...)
     grid_data: List[List[int]] = Field(..., description="二維陣列代表盤面")
-    # Allow passing a specific Pydantic config for the module being scored
     module_config_override: Dict[str, Any] | None = Field(default=None, description="可選：覆蓋該模組的預設Pydantic設定（JSON對象）")
-
 
     @validator('grid_data')
     def check_score_grid(cls, v: List[List[int]]) -> List[List[int]]:
@@ -177,6 +182,7 @@ class ScoreModuleRequest(BaseModel):
         if not v: raise ValueError("grid_data cannot be empty")
         if not isinstance(v, list) or not all(isinstance(row, list) for row in v):
             raise ValueError("grid_data must be a list of lists of integers")
+    
         if not v[0]: raise ValueError("grid_data rows cannot be empty")
         row_len = len(v[0])
         if not all(len(row) == row_len for row in v):
@@ -194,7 +200,6 @@ class ScoreModuleResponse(BaseModel):
     message: str
     duration_ms: float
 
-
 # --- FastAPI Event Handlers ---
 # 來源：main.py (用户需求 Point 4.b)
 ANALYZER_INSTANCE_CONFIG: analyzer.AnalyzerConfig # Global for this main instance
@@ -208,9 +213,9 @@ async def startup_event():
     # if settings.analyzer_config_json:
     #     try:
     #         ANALYZER_INSTANCE_CONFIG = analyzer.AnalyzerConfig.model_validate_json(settings.analyzer_config_json)
-    #         logger.info("Loaded AnalyzerConfig from AppSettings (JSON).")
+    #         logger.info("Loaded AnalyzerConfig from AppSettings (JSON).", extra={"request_id": "startup_config_load"})
     #     except Exception as e:
-    #         logger.error(f"Failed to load AnalyzerConfig from JSON: {e}. Using default.")
+    #         logger.error(f"Failed to load AnalyzerConfig from JSON: {e}. Using default.", extra={"request_id": "startup_config_fail"})
     #         ANALYZER_INSTANCE_CONFIG = analyzer.DEFAULT_ANALYZER_CONFIG
     # else:
     ANALYZER_INSTANCE_CONFIG = analyzer.DEFAULT_ANALYZER_CONFIG # Use default from analyzer.py
@@ -287,7 +292,6 @@ async def analyze_route(
         logger.exception(f"An unexpected error occurred during analysis. Duration: {duration_ms:.2f}ms: {e}", extra={"request_id": request_id})
         raise HTTPException(status_code=500, detail=f"Internal server error during analysis: {str(e)}")
 
-
 # 來源：main.py (用户需求 Point 4 - /score (可选))
 @app.post("/score", response_model=ScoreModuleResponse)
 async def score_module_route(
@@ -333,7 +337,6 @@ async def score_module_route(
             final_module_config = brain.DEFAULT_MODULE_CONFIGS.get(data.module_name, brain.BaseModuleConfig())
             logger.info(f"Using default config for module {data.module_name}.", extra={"request_id": request_id})
 
-
         score_matrix = brain.get_module_score(
             data.module_name, 
             grid_np, 
@@ -342,10 +345,11 @@ async def score_module_route(
         )
         
         preview: List[List[float]] | None = None
-        if score_matrix.size > 0:
+        if score_matrix.size > 0: # Check if score_matrix is not empty
             preview_rows = min(score_matrix.shape[0], 5)
             preview_cols = min(score_matrix.shape[1], 5)
-            preview = score_matrix[:preview_rows, :preview_cols].tolist()
+            if preview_rows > 0 and preview_cols > 0: # Ensure dimensions are positive
+                 preview = score_matrix[:preview_rows, :preview_cols].tolist()
 
         duration_ms = (time.perf_counter() - start_time) * 1000
         logger.info(f"Successfully scored grid with module '{data.module_name}'. Duration: {duration_ms:.2f}ms", extra={"request_id": request_id})
@@ -364,13 +368,12 @@ async def score_module_route(
                          extra={"request_id": request_id})
         raise HTTPException(status_code=500, detail=f"Internal server error during scoring: {str(e)}")
 
-
-# Health check endpoint
-@app.get("/health", status_code=200, summary="Health Check")
-async def health_check(request_id: str = Depends(get_request_id)):
-    logger.debug("Health check endpoint called.", extra={"request_id": request_id})
+# Health check endpoint (renamed from /health to /health-status to avoid conflict if /healthz is preferred)
+# Or simply remove if /healthz is sufficient
+@app.get("/health-status", status_code=200, summary="Health Check Status")
+async def health_status_check(request_id: str = Depends(get_request_id)):
+    logger.debug("Health status check endpoint called.", extra={"request_id": request_id})
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat(), "request_id": request_id}
-
 
 # --- Main execution for Uvicorn ---
 # 來源：main.py (用户需求 Point 6) - python main.py 能成功启动
@@ -378,12 +381,11 @@ if __name__ == "__main__":
     import uvicorn
     # This allows running with `python main.py`
     # For production, prefer `uvicorn main:app --host 0.0.0.0 --port 8000 [other_options]`
-    # The AppSettings log_level is already applied to the root logger.
-    # Uvicorn's own log level can also be set.
+    
+    # Configure Uvicorn's own logging format if desired
     log_config_uvicorn = uvicorn.config.LOGGING_CONFIG
-    log_config_uvicorn["formatters"]["default"]["fmt"] = "%(asctime)s - %(levelname)s - %(message)s" # Simpler for uvicorn itself
+    log_config_uvicorn["formatters"]["default"]["fmt"] = "%(asctime)s - %(levelname)s - %(message)s" 
     log_config_uvicorn["formatters"]["access"]["fmt"] = '%(asctime)s - %(levelname)s - %(client_addr)s - "%(request_line)s" %(status_code)s'
-
 
     logger.info(f"Starting Uvicorn server directly from main.py on port 8000 for {settings.app_name}...", 
                 extra={"request_id": "main_direct_run"})
@@ -392,6 +394,6 @@ if __name__ == "__main__":
         host="0.0.0.0", 
         port=8000, 
         log_level=settings.log_level.lower(),
-        reload=True # Good for development, remove for production
-        # log_config=log_config_uvicorn # Optional: custom uvicorn log format
+        reload=True, # Good for development, remove for production
+        log_config=log_config_uvicorn # Apply custom uvicorn log format
     )
