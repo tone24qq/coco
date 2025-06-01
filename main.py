@@ -21,8 +21,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import analyzer
-import brain
-
+import brain1
+import brain2
+import brain3
 # --- Global variables for app instance lifecycle ---
 START_TIME: datetime | None = None
 APP_INSTANCE_ID: str = f"app-instance-{uuid.uuid4()}"
