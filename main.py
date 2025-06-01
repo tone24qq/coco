@@ -73,7 +73,7 @@ async def self_ping_task():
     """每60秒對自身 /healthz 端點發起 HTTP GET 請求，以產生真實流量。"""
     # 注意：這裡的 URL 和 PORT 應與服務實際監聽的配置一致
     # 在 Render 環境中，PORT 通常由平台設定，settings.server_port 應能讀取到
-    healthz_url = f"http://127.0.0.1:{settings.server_port}/healthz"
+    healthz_url = url = "https://coco-3clu.onrender.com/healthz"
     async with httpx.AsyncClient(timeout=10.0) as client:
         while True:
             try:
