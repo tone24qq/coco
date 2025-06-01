@@ -62,8 +62,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field # Ensure Pydantic is a hard dependency
 from pydantic_settings import BaseSettings
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette_prometheus import PrometheusMiddleware, handle_metrics_in_app
-
+from starlette_prometheus import PrometheusMiddleware
 # Attempt to import Numba, proceed without if not available for core NumPy functionality
 try:
     from numba import njit, prange
