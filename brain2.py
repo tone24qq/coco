@@ -9,7 +9,7 @@ import math
 from collections import Counter, deque # Counter might not be fully Numba compatible if used inside njit
 import logging
 from typing import List, Dict, Tuple, Callable, Optional, Any, Set, Union # Added Union
-
+import new_module
 import numba
 from numba import njit, prange, typed
 
