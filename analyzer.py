@@ -1,16 +1,21 @@
 # analyzer.py
-# 负责业务逻辑调度：将 grid 传入 brain1/brain2/brain3 三个模块，合并 26 个 GM 模块的评分结果。
-
-import logging
-from typing import Dict, Tuple, Any
 
 import numpy as np
+from typing import Dict, Any
+from collections import OrderedDict
 
+from pydantic import BaseModel
+
+from new_module import PuzzleTensorOps
+from brain1 import BaseModuleConfig as GM1_3_Config
+from brain2 import BaseModuleConfig as GM4_12_Config
+from brain3 import BaseModuleConfig as GM13_26_Config
+
+# 导入所有 GM 模块函数
 from brain1 import (
     EXT_GM1_Proximity_Vec,
     EXT_GM2_Heterogeneity_Vec,
     EXT_GM3_PotentialField_Vec,
-    BaseModuleConfig,
 )
 from brain2 import (
     EXT_GM4_Spatial_Auto_Corr_Vec,
@@ -22,15 +27,6 @@ from brain2 import (
     EXT_GM10_BlockingValue_Vec,
     EXT_GM11_PairCorrelation_Vec,
     EXT_GM12_IslandAnalysis_Vec,
-    SpatialAutocorrelationConfig,
-    LineCompletionConfig,
-    SymmetryPotentialConfig,
-    NumericGapsConfig,
-    EdgeAffinityConfig,
-    CenterControlConfig,
-    BlockingValueConfig,
-    PairCorrelationConfig,
-    IslandAnalysisConfig,
 )
 from brain3 import (
     EXT_GM13_Sequence_Diversity_Vec,
@@ -47,112 +43,76 @@ from brain3 import (
     EXT_GM24_TemporalCoherence_Vec,
     EXT_GM25_StrategicDepth_Vec,
     EXT_GM26_ContextualFlexibility_Vec,
-    SequenceDiversityConfig,
-    RiskAssessmentConfig,
-    InformationGainConfig,
-    HarmonicCentralityConfig,
-    LocalEntropyMinimizationConfig,
-    RLValueEstimationConfig,
-    SkipPatternConfig,
-    SkipPatternConfidenceConfig,
 )
-from typing import Tuple
 
-logger = logging.getLogger(__name__)
 
-DEFAULT_MODULE_CONFIGS: Dict[str, BaseModuleConfig] = {
-    "GM1": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM2": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM3": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM4": SpatialAutocorrelationConfig(enabled=True, weight=1.0),
-    "GM5": LineCompletionConfig(enabled=True, weight=1.0),
-    "GM6": SymmetryPotentialConfig(enabled=True, weight=1.0),
-    "GM7": NumericGapsConfig(enabled=True, weight=1.0),
-    "GM8": EdgeAffinityConfig(enabled=True, weight=1.0),
-    "GM9": CenterControlConfig(enabled=True, weight=1.0),
-    "GM10": BlockingValueConfig(enabled=True, weight=1.0),
-    "GM11": PairCorrelationConfig(enabled=True, weight=1.0),
-    "GM12": IslandAnalysisConfig(enabled=True, weight=1.0),
-    "GM13": SequenceDiversityConfig(enabled=True, weight=1.0),
-    "GM14": RiskAssessmentConfig(enabled=True, weight=1.0),
-    "GM15": InformationGainConfig(enabled=True, weight=1.0),
-    "GM16": HarmonicCentralityConfig(enabled=True, weight=1.0),
-    "GM17": LocalEntropyMinimizationConfig(enabled=True, weight=1.0),
-    "GM18": RLValueEstimationConfig(enabled=True, weight=1.0),
-    "GM19": SkipPatternConfig(enabled=True, weight=1.0),
-    "GM20": SkipPatternConfidenceConfig(enabled=True, weight=1.0),
-    "GM21": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM22": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM23": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM24": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM25": BaseModuleConfig(enabled=True, weight=1.0),
-    "GM26": BaseModuleConfig(enabled=True, weight=1.0),
-}
+class CombinedScoresResponse(BaseModel):
+    combined_score_matrix: list[list[float]]
+    individual_module_scores: dict[str, list[list[float]]]
 
 
 def compute_combined_scores(
-    grid: np.ndarray, overrides: Dict[str, Any], request_id: str
-) -> Dict[Tuple[int, int], Dict[str, float]]:
+    grid: np.ndarray,
+    module_configs: Dict[str, Any],
+    request_id: str,
+) -> Dict[str, Any]:
     """
-    对给定 grid 运行 GM1–GM26 共 26 个向量化模块，返回按 cell 合并后的评分字典：
-    { (r,c): {"GM1": 0.23, "GM2": 0.45, … "GM26": 0.10} }
+    使用 PuzzleTensorOps.score_full_board 一次性全图打分，并保留 individual_scores。
+    - grid: 二维 numpy 数组, 空格标记为 -1
+    - module_configs: {
+          'GM1': GM1_3_Config(...),
+          ...,
+          'GM26': GM13_26_Config(...)
+      }
+    - request_id: 用于日志追踪
     """
-    if grid.ndim != 2 or grid.dtype.kind not in ("i",):
-        msg = "Grid must be a 2D NumPy array of ints"
-        logger.error(msg, extra={"request_id": request_id})
-        raise ValueError(msg)
-
     rows, cols = grid.shape
-    covered_coords = list(zip(*np.where(grid == -1)))
 
-    module_configs = DEFAULT_MODULE_CONFIGS.copy()
-    for key, val in overrides.items():
-        if key in module_configs and isinstance(val, dict):
-            module_configs[key] = module_configs[key].model_copy().model_update(val)
+    # 构造 GM1–GM26 的配置
+    # 若缺失配置，则使用默认：enabled=True, weight=1.0
+    default_cfg_1_3 = GM1_3_Config(enabled=True, weight=1.0)
+    default_cfg_4_12 = GM4_12_Config(enabled=True, weight=1.0)
+    default_cfg_13_26 = GM13_26_Config(enabled=True, weight=1.0)
 
-    combined: Dict[Tuple[int, int], Dict[str, float]] = {
-        (r, c): {} for (r, c) in covered_coords
+    full_configs = {
+        "GM1": module_configs.get("GM1", default_cfg_1_3),
+        "GM2": module_configs.get("GM2", default_cfg_1_3),
+        "GM3": module_configs.get("GM3", default_cfg_1_3),
+        "GM4": module_configs.get("GM4", default_cfg_4_12),
+        "GM5": module_configs.get("GM5", default_cfg_4_12),
+        "GM6": module_configs.get("GM6", default_cfg_4_12),
+        "GM7": module_configs.get("GM7", default_cfg_4_12),
+        "GM8": module_configs.get("GM8", default_cfg_4_12),
+        "GM9": module_configs.get("GM9", default_cfg_4_12),
+        "GM10": module_configs.get("GM10", default_cfg_4_12),
+        "GM11": module_configs.get("GM11", default_cfg_4_12),
+        "GM12": module_configs.get("GM12", default_cfg_4_12),
+        "GM13": module_configs.get("GM13", default_cfg_13_26),
+        "GM14": module_configs.get("GM14", default_cfg_13_26),
+        "GM15": module_configs.get("GM15", default_cfg_13_26),
+        "GM16": module_configs.get("GM16", default_cfg_13_26),
+        "GM17": module_configs.get("GM17", default_cfg_13_26),
+        "GM18": module_configs.get("GM18", default_cfg_13_26),
+        "GM19": module_configs.get("GM19", default_cfg_13_26),
+        "GM20": module_configs.get("GM20", default_cfg_13_26),
+        "GM21": module_configs.get("GM21", default_cfg_13_26),
+        "GM22": module_configs.get("GM22", default_cfg_13_26),
+        "GM23": module_configs.get("GM23", default_cfg_13_26),
+        "GM24": module_configs.get("GM24", default_cfg_13_26),
+        "GM25": module_configs.get("GM25", default_cfg_13_26),
+        "GM26": module_configs.get("GM26", default_cfg_13_26),
     }
 
-    # Brain1 (GM1–GM3)
-    if module_configs["GM1"].enabled:
-        try:
-            scores1 = EXT_GM1_Proximity_Vec(grid, module_configs["GM1"], request_id)
-            for (r, c) in covered_coords:
-                combined[(r, c)]["GM1"] = float(scores1[r, c])
-        except Exception as e:
-            logger.error(
-                f"GM1 error: {e}", extra={"request_id": request_id}, exc_info=True
-            )
-            for (r, c) in covered_coords:
-                combined[(r, c)]["GM1"] = 0.0
+    # 1. 使用 score_full_board 一次性计算合并分数
+    pto = PuzzleTensorOps(grid)
+    combined_scores = pto.score_full_board(full_configs, request_id)
 
-    if module_configs["GM2"].enabled:
-        try:
-            scores2 = EXT_GM2_Heterogeneity_Vec(grid, module_configs["GM2"], request_id)
-            for (r, c) in covered_coords:
-                combined[(r, c)]["GM2"] = float(scores2[r, c])
-        except Exception as e:
-            logger.error(
-                f"GM2 error: {e}", extra={"request_id": request_id}, exc_info=True
-            )
-            for (r, c) in covered_coords:
-                combined[(r, c)]["GM2"] = 0.0
-
-    if module_configs["GM3"].enabled:
-        try:
-            scores3 = EXT_GM3_PotentialField_Vec(grid, module_configs["GM3"], request_id)
-            for (r, c) in covered_coords:
-                combined[(r, c)]["GM3"] = float(scores3[r, c])
-        except Exception as e:
-            logger.error(
-                f"GM3 error: {e}", extra={"request_id": request_id}, exc_info=True
-            )
-            for (r, c) in covered_coords:
-                combined[(r, c)]["GM3"] = 0.0
-
-    # Brain2 (GM4–GM12)
-    for gm_key, func in [
+    # 2. 依旧生成 individual_scores，以便调试或返回给前端
+    individual_scores = OrderedDict()
+    modules = [
+        ("GM1", EXT_GM1_Proximity_Vec),
+        ("GM2", EXT_GM2_Heterogeneity_Vec),
+        ("GM3", EXT_GM3_PotentialField_Vec),
         ("GM4", EXT_GM4_Spatial_Auto_Corr_Vec),
         ("GM5", EXT_GM5_Line_Completion_Vec),
         ("GM6", EXT_GM6_Symmetry_Potential_Vec),
@@ -162,27 +122,6 @@ def compute_combined_scores(
         ("GM10", EXT_GM10_BlockingValue_Vec),
         ("GM11", EXT_GM11_PairCorrelation_Vec),
         ("GM12", EXT_GM12_IslandAnalysis_Vec),
-    ]:
-        cfg = module_configs[gm_key]
-        if cfg.enabled:
-            try:
-                vec_scores = func(grid, cfg, request_id)
-                for (r, c) in covered_coords:
-                    combined[(r, c)][gm_key] = float(vec_scores[r, c])
-            except Exception as e:
-                logger.error(
-                    f"{gm_key} error: {e}",
-                    extra={"request_id": request_id},
-                    exc_info=True,
-                )
-                for (r, c) in covered_coords:
-                    combined[(r, c)][gm_key] = 0.0
-        else:
-            for (r, c) in covered_coords:
-                combined[(r, c)][gm_key] = 0.0
-
-    # Brain3 (GM13–GM26)
-    for gm_key, func in [
         ("GM13", EXT_GM13_Sequence_Diversity_Vec),
         ("GM14", EXT_GM14_Risk_Assessment_Vec),
         ("GM15", EXT_GM15_Information_Gain_Vec),
@@ -197,23 +136,20 @@ def compute_combined_scores(
         ("GM24", EXT_GM24_TemporalCoherence_Vec),
         ("GM25", EXT_GM25_StrategicDepth_Vec),
         ("GM26", EXT_GM26_ContextualFlexibility_Vec),
-    ]:
-        cfg = module_configs[gm_key]
-        if cfg.enabled:
-            try:
-                vec_scores = func(grid, cfg, request_id)
-                for (r, c) in covered_coords:
-                    combined[(r, c)][gm_key] = float(vec_scores[r, c])
-            except Exception as e:
-                logger.error(
-                    f"{gm_key} error: {e}",
-                    extra={"request_id": request_id},
-                    exc_info=True,
-                )
-                for (r, c) in covered_coords:
-                    combined[(r, c)][gm_key] = 0.0
-        else:
-            for (r, c) in covered_coords:
-                combined[(r, c)][gm_key] = 0.0
+    ]
 
-    return combined
+    for name, func in modules:
+        cfg = full_configs[name]
+        try:
+            scores = func(grid, cfg, request_id)
+            if not isinstance(scores, np.ndarray) or scores.shape != (rows, cols):
+                raise ValueError(f"{name} 返回形状错误: {scores.shape}")
+        except Exception:
+            scores = np.zeros((rows, cols), dtype=float)
+        individual_scores[name] = scores.tolist()
+
+    response = CombinedScoresResponse(
+        combined_score_matrix=combined_scores.tolist(),
+        individual_module_scores=individual_scores,
+    )
+    return response.dict()
