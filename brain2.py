@@ -715,3 +715,83 @@ def EXT_GM12_Island_Analysis_Vec(
             scores[r_cell, c_cell] = final_island_score
             
     return scores * config.weight
+
+
+# === Appended Registry ===
+"""
+Module registry for brain modules.
+Automatically generated to support API integration.
+"""
+
+from typing import Dict, Type
+from brain1 import *
+from brain2 import *
+from brain3 import *
+
+DEFAULT_MODULE_CONFIGS: Dict[str, Type] = {
+    "basemodule": BaseModuleConfig,
+    "weightedproximity": WeightedProximityConfig,
+    "localheterogeneity": LocalHeterogeneityConfig,
+    "potentialfield": PotentialFieldConfig,
+    "discontinuityrepair": DiscontinuityRepairConfig,
+    "pathfindingvalue": PathfindingValueConfig,
+    "resourcecontrol": ResourceControlConfig,
+    "linecontrol": LineControlConfig,
+    "connectedcomponent": ConnectedComponentConfig,
+    "spatialautocorrelation": SpatialAutocorrelationConfig,
+    "linecompletion": LineCompletionConfig,
+    "symmetrypotential": SymmetryPotentialConfig,
+    "numericgaps": NumericGapsConfig,
+    "edgeaffinity": EdgeAffinityConfig,
+    "centercontrol": CenterControlConfig,
+    "blockingvalue": BlockingValueConfig,
+    "paircorrelation": PairCorrelationConfig,
+    "islandanalysis": IslandAnalysisConfig,
+    "sequencediversity": SequenceDiversityConfig,
+    "riskassessment": RiskAssessmentConfig,
+    "informationgain": InformationGainConfig,
+    "harmoniccentrality": HarmonicCentralityConfig,
+    "localentropyminimization": LocalEntropyMinimizationConfig,
+    "rlvalueestimation": RLValueEstimationConfig,
+    "skippattern": SkipPatternConfig,
+    "skippatternconfidence": SkipPatternConfidenceConfig
+}
+
+REGISTERED_MODULES_BRAIN: Dict[str, str] = {
+    "basemodule": "brain1.BaseModuleConfig",
+    "weightedproximity": "brain1.WeightedProximityConfig",
+    "localheterogeneity": "brain1.LocalHeterogeneityConfig",
+    "potentialfield": "brain1.PotentialFieldConfig",
+    "discontinuityrepair": "brain1.DiscontinuityRepairConfig",
+    "pathfindingvalue": "brain1.PathfindingValueConfig",
+    "resourcecontrol": "brain1.ResourceControlConfig",
+    "linecontrol": "brain1.LineControlConfig",
+    "connectedcomponent": "brain1.ConnectedComponentConfig",
+    "spatialautocorrelation": "brain2.SpatialAutocorrelationConfig",
+    "linecompletion": "brain2.LineCompletionConfig",
+    "symmetrypotential": "brain2.SymmetryPotentialConfig",
+    "numericgaps": "brain2.NumericGapsConfig",
+    "edgeaffinity": "brain2.EdgeAffinityConfig",
+    "centercontrol": "brain2.CenterControlConfig",
+    "blockingvalue": "brain2.BlockingValueConfig",
+    "paircorrelation": "brain2.PairCorrelationConfig",
+    "islandanalysis": "brain2.IslandAnalysisConfig",
+    "sequencediversity": "brain3.SequenceDiversityConfig",
+    "riskassessment": "brain3.RiskAssessmentConfig",
+    "informationgain": "brain3.InformationGainConfig",
+    "harmoniccentrality": "brain3.HarmonicCentralityConfig",
+    "localentropyminimization": "brain3.LocalEntropyMinimizationConfig",
+    "rlvalueestimation": "brain3.RLValueEstimationConfig",
+    "skippattern": "brain3.SkipPatternConfig",
+    "skippatternconfidence": "brain3.SkipPatternConfidenceConfig"
+}
+
+
+
+# === Injected Function ===
+
+def get_module_score(config, board_state) -> float:
+    """
+    統一模組分數計算介面。
+    """
+    return 0.0  # TODO: 根據實際模組策略實作
