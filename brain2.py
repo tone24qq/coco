@@ -1,384 +1,284 @@
 # brain2.py
-# 第二部分：包含 GM4–GM12 各 scoring 模块 (全部向量化) 与对应 Config。
 
 import numpy as np
 import math
 import logging
-from typing import List, Dict, Tuple, Any, Set
+from collections import deque, Counter
+from typing import List, Tuple, Any, Optional
 
 from pydantic import BaseModel, Field
-
-from brain1 import MathUtils, BoardAnalyzerUtils, BaseModuleConfig
 
 logger = logging.getLogger(__name__)
 
 
-class SpatialAutocorrelationConfig(BaseModuleConfig):
+class BaseModuleConfig(BaseModel):
     """
-    (GM4) 空间自相关性配置
+    基础模块配置：- enabled: bool - weight: float
     """
-    autocorrelation_type: str = Field(
-        default="positive",
-        pattern="^(positive|negative)$",
-        description="偏好正 (positive) 或负 (negative) 自相关",
-    )
-    neighborhood_radius: int = Field(default=1, ge=1)
-    use_median_for_hypothetical: bool = Field(
-        default=True,
-        description="True: 用潜在数字中位数; False: 用平均数",
-    )
+    enabled: bool = Field(default=True, description="模块启用/禁用开关")
+    weight: float = Field(default=1.0, ge=0.0, description="模块权重")
+
+    class Config:
+        validate_assignment = True
 
 
-class LineCompletionConfig(BaseModuleConfig):
-    """
-    (GM5) 线段补全配置
-    """
-    target_line_length: int = Field(default=3, ge=3)
-    score_identical_3: float = Field(default=0.6, ge=0.0)
-    score_arithmetic_3_mend: float = Field(default=0.7, ge=0.0)
-    score_arithmetic_3_extend: float = Field(default=0.5, ge=0.0)
-    enable_quality_enhancement: bool = Field(default=True)
-    score_arithmetic_3_mend_high_val_bonus: float = Field(
-        default=0.2, ge=0.0, description="高值等差修复额外奖励"
-    )
-    high_value_threshold_factor_gm5: float = Field(
-        default=0.66, ge=0.0, le=1.0, description="高值门槛占比"
-    )
+class MathUtils:
+    @staticmethod
+    def normalize_value(
+        value: float, min_val: float, max_val: float, clamp: bool = True
+    ) -> float:
+        if math.isclose(min_val, max_val):
+            if math.isclose(value, min_val):
+                return 0.5
+            return 0.0 if value < min_val else 1.0
+        norm = (value - min_val) / (max_val - min_val)
+        return float(max(0.0, min(1.0, norm))) if clamp else float(norm)
 
 
-class SymmetryPotentialConfig(BaseModuleConfig):
-    """
-    (GM6) 对称性潜力配置
-    """
-    score_horizontal: float = Field(default=0.7, ge=0.0)
-    score_vertical: float = Field(default=0.7, ge=0.0)
-    score_point_center: float = Field(default=0.8, ge=0.0)
-    score_main_diagonal: float = Field(default=0.6, ge=0.0)
-    score_anti_diagonal: float = Field(default=0.6, ge=0.0)
-    strict_square_for_diagonal: bool = Field(
-        default=True,
-        description="对角线对称是否严格要求方形",
-    )
+class BoardAnalyzerUtils:
+    @staticmethod
+    def get_neighborhood_values(
+        grid: np.ndarray,
+        r: int,
+        c: int,
+        radius: int = 1,
+        eight_connectivity: bool = True,
+        val_func=None,
+        include_center: bool = False,
+    ) -> List[float]:
+        if val_func is None:
+            val_func = lambda x: float(x) if x != -1 else None
 
-
-class NumericGapsConfig(BaseModuleConfig):
-    """
-    (GM7) 数值间隙配置
-    """
-    score_arithmetic_1_gap_fill: float = Field(default=0.9, ge=0.0)
-    score_arithmetic_generic_mend: float = Field(default=0.7, ge=0.0)
-    score_arithmetic_generic_extend: float = Field(default=0.5, ge=0.0)
-    enable_quality_enhancement_gm7: bool = Field(default=True)
-    score_gap_fill_high_val_bonus: float = Field(
-        default=0.1, ge=0.0, description="高值间隙填充额外奖励"
-    )
-    high_value_threshold_factor_gm7: float = Field(
-        default=0.66, ge=0.0, le=1.0
-    )
-
-
-class EdgeAffinityConfig(BaseModuleConfig):
-    """
-    (GM8) 边缘亲和配置
-    """
-    affinity_mode: str = Field(
-        default="prefer_edge",
-        pattern="^(prefer_edge|avoid_edge)$",
-        description="边缘亲和模式",
-    )
-    corner_bonus_prefer: float = Field(default=0.2, ge=0.0)
-    corner_penalty_avoid: float = Field(default=0.2, ge=0.0)
-
-
-class CenterControlConfig(BaseModuleConfig):
-    """
-    (GM9) 中心控制配置
-    """
-    affinity_mode: str = Field(
-        default="prefer_center",
-        pattern="^(prefer_center|avoid_center)$",
-        description="中心控制模式",
-    )
-
-
-class BlockingValueConfig(BaseModuleConfig):
-    """
-    (GM10) 阻挡价值配置
-    """
-    undesirable_sequences_list: List[List[int]] = Field(
-        default_factory=lambda: [[1, 1, 1], [2, 2, 2]],
-        description="不良序列列表",
-    )
-    score_if_safe: float = Field(default=0.9, ge=0.0, le=1.0)
-    score_if_unsafe: float = Field(default=0.1, ge=0.0, le=1.0)
-    check_line_length: int = Field(default=3, ge=2)
-
-
-class PairCorrelationConfig(BaseModuleConfig):
-    """
-    (GM11) 对偶相关性配置
-    """
-    favorable_pairs: Dict[Tuple[int, int], float] = Field(
-        default_factory=lambda: {
-            (3, 7): 0.8,
-            (7, 3): 0.8,
-            (1, 2): 0.6,
-            (2, 1): 0.6,
-            (10, 20): 0.7,
-            (20, 10): 0.7,
-        },
-        description="有利数对映射",
-    )
-
-
-class IslandAnalysisConfig(BaseModuleConfig):
-    """
-    (GM12) 岛屿分析配置
-    """
-    w_size: float = Field(default=0.4, ge=0.0, le=1.0)
-    w_compactness: float = Field(default=0.3, ge=0.0, le=1.0)
-    w_avg_value: float = Field(default=0.3, ge=0.0, le=1.0)
+        rows, cols = grid.shape
+        neighbors: List[float] = []
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
+                if not include_center and dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    if not eight_connectivity and radius == 1 and (abs(dr) + abs(dc) != 1):
+                        continue
+                    val = val_func(grid[nr, nc])
+                    if val is not None:
+                        neighbors.append(val)
+        return neighbors
 
 
 def EXT_GM4_Spatial_Auto_Corr_Vec(
     grid: np.ndarray,
-    config: SpatialAutocorrelationConfig,
-    request_id: str | None = "N/A_GM4",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM4",
 ) -> np.ndarray:
     """
-    (GM4–空间自相关性)
+    GM4 – 空间自相关性
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    if rows == 0 or cols == 0:
+        return scores
 
-    max_val = rows * cols
-    revealed_mask = grid != -1
-    revealed_vals = grid[revealed_mask]
-    potential_vals = [v for v in range(1, max_val + 1) if v not in revealed_vals.tolist()]
-
-    if potential_vals:
-        hypo_val = (
-            float(np.median(potential_vals))
-            if config.use_median_for_hypothetical
-            else float(np.mean(potential_vals))
-        )
+    potential_numbers = list(
+        BoardAnalyzerUtils.get_neighborhood_values(grid, 0, 0, radius=0)
+    )
+    # 取中位数或平均数作为假设值
+    if potential_numbers:
+        hypo_val = float(np.median(potential_numbers))
     else:
-        hypo_val = float(max_val) / 2.0
+        max_val_board = max(rows, cols)
+        hypo_val = (1.0 + float(max_val_board)) / 2.0 if max_val_board > 0 else 0.5
 
-    coords = np.stack(np.where(grid == -1), axis=1)
-    for (r, c) in coords:
-        neigh_vals = BoardAnalyzerUtils.get_neighborhood_values(
-            grid,
-            r,
-            c,
-            radius=config.neighborhood_radius,
-            eight_connectivity=True,
-            val_func=lambda x: float(x) if x != -1 else None,
-            include_center=False,
-        )
-        if not neigh_vals:
-            scores[r, c] = 0.5
-            continue
-        mean_neigh = float(np.mean(neigh_vals))
-        diff = abs(hypo_val - mean_neigh)
-        max_possible = float(max_val)
-        norm_diff = MathUtils.normalize_value(diff, 0.0, max_possible, clamp=True)
-        scores[r, c] = (1.0 - norm_diff) if config.autocorrelation_type == "positive" else norm_diff
+    max_norm = float(max(rows, cols))
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+
+            neighbor_values = BoardAnalyzerUtils.get_neighborhood_values(
+                grid, r, c, radius=1, eight_connectivity=True, val_func=lambda x: float(x) if x != -1 else None
+            )
+            if not neighbor_values:
+                scores[r, c] = 0.5
+                continue
+
+            mean_nb = np.mean(neighbor_values)
+            diff = abs(hypo_val - mean_nb)
+            norm_diff = MathUtils.normalize_value(diff, 0, max_norm, clamp=True)
+            scores[r, c] = 1.0 - norm_diff
 
     return scores * config.weight
 
 
 def EXT_GM5_Line_Completion_Vec(
     grid: np.ndarray,
-    config: LineCompletionConfig,
-    request_id: str | None = "N/A_GM5",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM5",
 ) -> np.ndarray:
     """
-    (GM5–线段补全)
+    GM5 – 线段补全
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    if rows == 0 or cols == 0 or min(rows, cols) < 1:
+        return scores
 
-    coords = np.stack(np.where(grid == -1), axis=1)
-    for (r, c) in coords:
-        lines = [
-            grid[r, :].tolist(),
-            grid[:, c].tolist(),
-        ]
+    potential_numbers = [
+        v for v in range(1, rows * cols + 1) if v not in grid
+    ]
+    if not potential_numbers:
+        return scores
 
-        diag1 = []
-        k = 0
-        while r - k >= 0 and c - k >= 0:
-            diag1.append(grid[r - k, c - k])
-            k += 1
-        diag1.reverse()
-        k = 1
-        while r + k < rows and c + k < cols:
-            diag1.append(grid[r + k, c + k])
-            k += 1
-        lines.append(diag1)
+    score_map = {
+        "identical_3": 0.6,
+        "arithmetic_3_mend": 0.7,
+        "arithmetic_3_extend": 0.5,
+        "arithmetic_3_mend_high": 0.9,
+    }
 
-        diag2 = []
-        k = 0
-        while r - k >= 0 and c + k < cols:
-            diag2.append(grid[r - k, c + k])
-            k += 1
-        diag2.reverse()
-        k = 1
-        while r + k < rows and c - k >= 0:
-            diag2.append(grid[r + k, c - k])
-            k += 1
-        lines.append(diag2)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
 
-        best_score = 0.0
-        for line in lines:
-            sequences = BoardAnalyzerUtils.find_sequences_in_line(
-                line,
-                min_len=config.target_line_length,
-                check_arithmetic=True,
-                check_geometric=False,
-                allow_gaps=0,
-            )
-            if sequences:
-                for seq in sequences:
-                    base = (
-                        config.score_identical_3
-                        if len(set(seq)) == 1
-                        else config.score_arithmetic_3_mend
-                    )
-                    if (
-                        config.enable_quality_enhancement
-                        and max(seq) > config.high_value_threshold_factor_gm5 * (rows * cols)
-                    ):
-                        base += config.score_arithmetic_3_mend_high_val_bonus
-                    best_score = max(best_score, base)
-        scores[r, c] = best_score
+            max_cell_score = 0.0
+            for p in potential_numbers:
+                for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
+                    # 修复等值三连 / 等差三连
+                    r1, c1 = r - dr, c - dc
+                    r2, c2 = r + dr, c + dc
+                    if 0 <= r1 < rows and 0 <= c1 < cols and 0 <= r2 < rows and 0 <= c2 < cols:
+                        v1 = grid[r1, c1]
+                        v2 = grid[r2, c2]
+                        if v1 != -1 and v2 != -1:
+                            if v1 == p and v2 == p:
+                                max_cell_score = max(max_cell_score, score_map["identical_3"])
+                            if (v1 + v2) == 2 * p and abs(p - v1) > 0:
+                                sc = score_map["arithmetic_3_mend"]
+                                if (v1 + p + v2) / 3 > (rows * cols) / 2:
+                                    sc = max(sc, score_map["arithmetic_3_mend_high"])
+                                max_cell_score = max(max_cell_score, sc)
+
+                    # 等差延伸情况
+                    r1e, c1e = r + dr, c + dc
+                    r2e, c2e = r + 2 * dr, c + 2 * dc
+                    if 0 <= r1e < rows and 0 <= c1e < cols and 0 <= r2e < rows and 0 <= c2e < cols:
+                        v1e = grid[r1e, c1e]
+                        v2e = grid[r2e, c2e]
+                        if v1e != -1 and v2e != -1:
+                            if p == v1e and p == v2e:
+                                max_cell_score = max(max_cell_score, score_map["identical_3"])
+                            if (p + v2e) == 2 * v1e and abs(v1e - p) > 0:
+                                max_cell_score = max(max_cell_score, score_map["arithmetic_3_extend"])
+
+                    r1e2, c1e2 = r - 2 * dr, c - 2 * dc
+                    r2e2, c2e2 = r - dr, c - dc
+                    if 0 <= r1e2 < rows and 0 <= c1e2 < cols and 0 <= r2e2 < rows and 0 <= c2e2 < cols:
+                        v1e2 = grid[r1e2, c1e2]
+                        v2e2 = grid[r2e2, c2e2]
+                        if v1e2 != -1 and v2e2 != -1:
+                            if v1e2 == v2e2 and v1e2 == p:
+                                max_cell_score = max(max_cell_score, score_map["identical_3"])
+                            if (v1e2 + p) == 2 * v2e2 and abs(v2e2 - v1e2) > 0:
+                                max_cell_score = max(max_cell_score, score_map["arithmetic_3_extend"])
+
+                scores[r, c] = MathUtils.normalize_value(max_cell_score, 0, 1.0, clamp=True)
 
     return scores * config.weight
 
 
 def EXT_GM6_Symmetry_Potential_Vec(
     grid: np.ndarray,
-    config: SymmetryPotentialConfig,
-    request_id: str | None = "N/A_GM6",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM6",
 ) -> np.ndarray:
     """
-    (GM6–对称潜力)
+    GM6 – 对称潜力
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    if rows == 0 or cols == 0:
+        return scores
 
-    center_r = (rows - 1) / 2.0
-    center_c = (cols - 1) / 2.0
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
 
-    coords = np.stack(np.where(grid == -1), axis=1)
-    for (r, c) in coords:
-        sc = 0.0
-        if grid[r, cols - 1 - c] != -1:
-            sc += config.score_horizontal
-        if grid[rows - 1 - r, c] != -1:
-            sc += config.score_vertical
+            # 水平翻转
+            if grid[r, cols - 1 - c] != -1:
+                scores[r, c] = max(scores[r, c], 1.0)
+            # 垂直翻转
+            if grid[rows - 1 - r, c] != -1:
+                scores[r, c] = max(scores[r, c], 1.0)
+            # 对角线翻转
+            if grid[c, r] != -1:
+                scores[r, c] = max(scores[r, c], 1.0)
+            if grid[rows - 1 - c, cols - 1 - r] != -1:
+                scores[r, c] = max(scores[r, c], 1.0)
 
-        sym_r = int(round(2 * center_r - r))
-        sym_c = int(round(2 * center_c - c))
-        if 0 <= sym_r < rows and 0 <= sym_c < cols and grid[sym_r, sym_c] != -1:
-            sc += config.score_point_center
-
-        if grid[c, r] != -1:
-            sc += config.score_main_diagonal
-
-        mirror_r = cols - 1 - c
-        mirror_c = rows - 1 - r
-        if 0 <= mirror_r < rows and 0 <= mirror_c < cols and grid[mirror_r, mirror_c] != -1:
-            sc += config.score_anti_diagonal
-
-        scores[r, c] = sc
-
-    max_score = (
-        config.score_horizontal
-        + config.score_vertical
-        + config.score_point_center
-        + config.score_main_diagonal
-        + config.score_anti_diagonal
-    )
-    if max_score > 0:
-        scores = scores / max_score
-
+    if np.any(scores > 0):
+        mn = float(np.min(scores[grid == -1]))
+        mx = float(np.max(scores[grid == -1]))
+        if not math.isclose(mx, mn):
+            scores = (scores - mn) / (mx - mn)
+        else:
+            scores = np.zeros_like(scores)
     return scores * config.weight
 
 
 def EXT_GM7_Numeric_Gaps_Vec(
     grid: np.ndarray,
-    config: NumericGapsConfig,
-    request_id: str | None = "N/A_GM7",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM7",
 ) -> np.ndarray:
     """
-    (GM7–数值间隙)
+    GM7 – 数值间隙
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    if rows == 0 or cols == 0:
+        return scores
 
-    coords = np.stack(np.where(grid == -1), axis=1)
-    for (r, c) in coords:
-        neighborhood = []
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < rows and 0 <= nc < cols:
-                neighbor_val = grid[nr, nc]
-                if neighbor_val != -1:
-                    neighborhood.append(int(neighbor_val))
-        if len(neighborhood) < 2:
-            scores[r, c] = 0.0
-            continue
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
 
-        best = 0.0
-        for i in range(len(neighborhood)):
-            for j in range(i + 1, len(neighborhood)):
-                a = neighborhood[i]
-                b = neighborhood[j]
-                if abs(a - b) == 2:
-                    mid = (a + b) // 2
-                    if mid not in neighborhood:
-                        best = max(best, config.score_arithmetic_1_gap_fill)
-                else:
-                    diff = b - a
-                    length = abs(diff) + 1
-                    if length >= config.target_line_length:
-                        best = max(best, config.score_arithmetic_generic_mend)
-                    else:
-                        best = max(best, config.score_arithmetic_generic_extend)
-
-        if (
-            max(neighborhood) > config.high_value_threshold_factor_gm7 * (rows * cols)
-            and config.enable_quality_enhancement_gm7
-        ):
-            best += config.score_gap_fill_high_val_bonus
-            best = min(best, 1.0)
-
-        scores[r, c] = best
+            max_score = 0.0
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                r1, c1 = r + dr, c + dc
+                r2, c2 = r - dr, c - dc
+                if 0 <= r1 < rows and 0 <= c1 < cols and 0 <= r2 < rows and 0 <= c2 < cols:
+                    v1 = grid[r1, c1]
+                    v2 = grid[r2, c2]
+                    if v1 != -1 and v2 != -1:
+                        gap = abs(v1 - v2)
+                        if gap == 2:
+                            max_score = max(max_score, 1.0)
+            scores[r, c] = max_score
 
     return scores * config.weight
 
 
 def EXT_GM8_Edge_Affinity_Vec(
     grid: np.ndarray,
-    config: EdgeAffinityConfig,
-    request_id: str | None = "N/A_GM8",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM8",
 ) -> np.ndarray:
     """
-    (GM8–边缘亲和)
+    GM8 – 边缘亲和
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
@@ -390,136 +290,85 @@ def EXT_GM8_Edge_Affinity_Vec(
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            on_edge = r == 0 or r == rows - 1 or c == 0 or c == cols - 1
-            on_corner = (r == 0 or r == rows - 1) and (c == 0 or c == cols - 1)
-            if config.affinity_mode == "prefer_edge":
-                if on_corner:
-                    scores[r, c] = config.corner_bonus_prefer
-                elif on_edge:
-                    scores[r, c] = config.corner_bonus_prefer / 2.0
+
+            # 角落
+            if (r == 0 or r == rows - 1) and (c == 0 or c == cols - 1):
+                scores[r, c] = 1.0
+            # 边缘
+            elif r == 0 or r == rows - 1 or c == 0 or c == cols - 1:
+                scores[r, c] = 0.7
             else:
-                if on_corner or on_edge:
-                    scores[r, c] = max(0.0, 1.0 - config.corner_penalty_avoid)
-                else:
-                    scores[r, c] = 1.0
+                scores[r, c] = 0.3
 
     return scores * config.weight
 
 
 def EXT_GM9_Center_Control_Vec(
     grid: np.ndarray,
-    config: CenterControlConfig,
-    request_id: str | None = "N/A_GM9",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM9",
 ) -> np.ndarray:
     """
-    (GM9–中心控制)
+    GM9 – 中心控制
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    center_r, center_c = rows // 2, cols // 2
+    max_dist = center_r + center_c
 
-    center_r = (rows - 1) / 2.0
-    center_c = (cols - 1) / 2.0
-
-    idxs = np.indices((rows, cols))
-    rr = idxs[0].astype(float)
-    cc = idxs[1].astype(float)
-    dists = np.sqrt((rr - center_r) ** 2 + (cc - center_c) ** 2)
-
-    min_d, max_d = float(np.min(dists)), float(np.max(dists))
-    norm_d = (
-        (dists - min_d) / (max_d - min_d)
-        if not math.isclose(max_d, min_d)
-        else np.zeros_like(dists)
-    )
-
-    raw_scores = (1.0 - norm_d) if config.affinity_mode == "prefer_center" else norm_d
-
-    mask = grid == -1
-    scores[mask] = raw_scores[mask]
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            dist = abs(r - center_r) + abs(c - center_c)
+            scores[r, c] = 1.0 - (dist / max_dist)
 
     return scores * config.weight
 
 
 def EXT_GM10_BlockingValue_Vec(
     grid: np.ndarray,
-    config: BlockingValueConfig,
-    request_id: str | None = "N/A_GM10",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM10",
 ) -> np.ndarray:
     """
-    (GM10–阻挡价值)
+    GM10 – 阻挡价值
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
-    L = config.check_line_length
 
-    def check_line_for_undesirable(line: List[int]) -> bool:
-        n = len(line)
-        for i in range(n - L + 1):
-            segment = line[i : i + L]
-            for bad in config.undesirable_sequences_list:
-                if segment == bad:
-                    return True
-        return False
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
 
-    coords = np.stack(np.where(grid == -1), axis=1)
-    for (r, c) in coords:
-        unsafe = False
-
-        row_list = grid[r, :].tolist()
-        if check_line_for_undesirable(row_list):
-            unsafe = True
-
-        if not unsafe:
-            col_list = grid[:, c].tolist()
-            if check_line_for_undesirable(col_list):
-                unsafe = True
-
-        if not unsafe:
-            diag1 = []
-            k = 0
-            while r - k >= 0 and c - k >= 0:
-                diag1.append(grid[r - k, c - k])
-                k += 1
-            diag1.reverse()
-            k = 1
-            while r + k < rows and c + k < cols:
-                diag1.append(grid[r + k, c + k])
-                k += 1
-            if check_line_for_undesirable(diag1):
-                unsafe = True
-
-        if not unsafe:
-            diag2 = []
-            k = 0
-            while r - k >= 0 and c + k < cols:
-                diag2.append(grid[r - k, c + k])
-                k += 1
-            diag2.reverse()
-            k = 1
-            while r + k < rows and c - k >= 0:
-                diag2.append(grid[r + k, c - k])
-                k += 1
-            if check_line_for_undesirable(diag2):
-                unsafe = True
-
-        scores[r, c] = config.score_if_unsafe if unsafe else config.score_if_safe
+            low_penalty = False
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                r1, c1 = r + dr, c + dc
+                r2, c2 = r - dr, c - dc
+                if 0 <= r1 < rows and 0 <= c1 < cols and 0 <= r2 < rows and 0 <= c2 < cols:
+                    v1 = grid[r1, c1]
+                    v2 = grid[r2, c2]
+                    if v1 != -1 and v2 != -1 and v1 == v2:
+                        low_penalty = True
+            scores[r, c] = 0.0 if low_penalty else 1.0
 
     return scores * config.weight
 
 
 def EXT_GM11_PairCorrelation_Vec(
     grid: np.ndarray,
-    config: PairCorrelationConfig,
-    request_id: str | None = "N/A_GM11",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM11",
 ) -> np.ndarray:
     """
-    (GM11–对偶相关)
+    GM11 – 对偶相关
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
@@ -527,114 +376,67 @@ def EXT_GM11_PairCorrelation_Vec(
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
 
-    max_val = rows * cols
-    revealed_vals = grid[grid != -1]
-    potential_vals = [v for v in range(1, max_val + 1) if v not in revealed_vals.tolist()]
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
 
-    if not potential_vals:
-        return scores
-
-    coords = np.stack(np.where(grid == -1), axis=1)
-    for (r, c) in coords:
-        best = 0.0
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
-                neigh = int(grid[nr, nc])
-                for h in potential_vals:
-                    pair = (neigh, h)
-                    if pair in config.favorable_pairs:
-                        best = max(best, config.favorable_pairs[pair])
-        scores[r, c] = best
+            best_corr = 0.0
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                r1, c1 = r + dr, c + dc
+                if 0 <= r1 < rows and 0 <= c1 < cols and grid[r1, c1] != -1:
+                    val = grid[r1, c1]
+                    # 假设对偶相关度就是 1/(|val - avg_val|+1)
+                    avg_val = np.mean(grid[grid != -1]) if np.any(grid != -1) else 0.0
+                    corr = 1.0 / (abs(val - avg_val) + 1.0)
+                    best_corr = max(best_corr, corr)
+            scores[r, c] = best_corr
 
     return scores * config.weight
 
 
 def EXT_GM12_IslandAnalysis_Vec(
     grid: np.ndarray,
-    config: IslandAnalysisConfig,
-    request_id: str | None = "N/A_GM12",
+    config: BaseModuleConfig,
+    request_id: Optional[str] = "N/A_GM12",
 ) -> np.ndarray:
     """
-    (GM12–岛屿分析)
+    GM12 – 岛屿分析
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    visited = np.zeros((rows, cols), dtype=bool)
 
-    revealed_mask = grid != -1
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1 or visited[r, c]:
+                continue
 
-    def get_connected_component_size(r0: int, c0: int) -> int:
-        visited: Set[Tuple[int, int]] = set()
-        queue = [(r0, c0)]
-        visited.add((r0, c0))
-        size = 1
-        for (r_i, c_i) in queue:
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                nr, nc = r_i + dr, c_i + dc
-                if (
-                    0 <= nr < rows
-                    and 0 <= nc < cols
-                    and (nr, nc) not in visited
-                    and grid[nr, nc] != -1
-                ):
-                    visited.add((nr, nc))
-                    queue.append((nr, nc))
-                    size += 1
-        return size
+            # BFS 查找空格连通区
+            queue = deque([(r, c)])
+            component = [(r, c)]
+            visited[r, c] = True
+            while queue:
+                rr, cc = queue.popleft()
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = rr + dr, cc + dc
+                    if (
+                        0 <= nr < rows
+                        and 0 <= nc < cols
+                        and not visited[nr, nc]
+                        and grid[nr, nc] == -1
+                    ):
+                        visited[nr, nc] = True
+                        component.append((nr, nc))
+                        queue.append((nr, nc))
 
-    coords = np.stack(np.where(grid == -1), axis=1)
-    raw_vals = []
-    for (r, c) in coords:
-        comp_sizes = []
-        comp_values = []
-        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-            nr, nc = r + dr, c + dc
-            if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
-                size = get_connected_component_size(nr, nc)
-                comp_sizes.append(size)
-                visited: Set[Tuple[int, int]] = set()
-                queue = [(nr, nc)]
-                visited.add((nr, nc))
-                vals = [grid[nr, nc]]
-                for (rr_i, cc_i) in queue:
-                    for ddr, ddc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        rrr, ccc = rr_i + ddr, cc_i + ddc
-                        if (
-                            0 <= rrr < rows
-                            and 0 <= ccc < cols
-                            and (rrr, ccc) not in visited
-                            and grid[rrr, ccc] != -1
-                        ):
-                            visited.add((rrr, ccc))
-                            queue.append((rrr, ccc))
-                            vals.append(grid[rrr, ccc])
-                comp_values.append(float(np.mean(vals)))
-        if comp_sizes:
-            size_val = float(max(comp_sizes))
-            compactness_val = size_val / (len(comp_sizes) + 1.0)
-            avg_val = float(np.mean(comp_values)) if comp_values else 0.0
-        else:
-            size_val = 0.0
-            compactness_val = 0.0
-            avg_val = 0.0
-        raw_vals.append((r, c, size_val, compactness_val, avg_val))
-
-    if raw_vals:
-        sizes = np.array([v[2] for v in raw_vals], dtype=float)
-        comps = np.array([v[3] for v in raw_vals], dtype=float)
-        avgs = np.array([v[4] for v in raw_vals], dtype=float)
-        mn_s, mx_s = float(np.min(sizes)), float(np.max(sizes))
-        mn_c, mx_c = float(np.min(comps)), float(np.max(comps))
-        mn_a, mx_a = float(np.min(avgs)), float(np.max(avgs))
-
-        for idx, (r, c, s_val, c_val, a_val) in enumerate(raw_vals):
-            ns = 0.0 if math.isclose(mx_s, mn_s) else (s_val - mn_s) / (mx_s - mn_s)
-            nc = 0.0 if math.isclose(mx_c, mn_c) else (c_val - mn_c) / (mx_c - mn_c)
-            na = 0.0 if math.isclose(mx_a, mn_a) else (a_val - mn_a) / (mx_a - mn_a)
-            sc = config.w_size * ns + config.w_compactness * nc + config.w_avg_value * na
-            scores[r, c] = sc
+            area = float(len(component))
+            total = float(rows * cols)
+            norm_area = MathUtils.normalize_value(area, 0, total, clamp=True)
+            for (ri, ci) in component:
+                scores[ri, ci] = norm_area
 
     return scores * config.weight
