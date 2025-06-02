@@ -1,442 +1,125 @@
-# brain2.py
-
 import numpy as np
-import math
-import logging
-from collections import deque, Counter
-from typing import List, Tuple, Any, Optional
+from scipy.ndimage import label, find_objects
 
-from pydantic import BaseModel, Field
-
-logger = logging.getLogger(__name__)
-
-
-class BaseModuleConfig(BaseModel):
+def analyze_clusters(board_arr, blank_id_map, missing_numbers, missing_index_map):
     """
-    基础模块配置：- enabled: bool - weight: float
+    Analyze connected masked clusters and their anchor constraints (GM6-GM9, GM10).
+    Returns:
+        cluster_ratio: array of score per blank for fill ratio
+        cluster_size_score: array of score per blank for cluster size (inverse)
+        cluster_slack_flag: array of score per blank for no-slack clusters
+        cluster_density_score: array of score per blank for cluster density
+        cluster_min_vals, cluster_max_vals: arrays of cluster min/max anchor values
+        cluster_anchor_count: array of anchor counts per cluster
+        region_map: labeled regions map of masked cells
     """
-    enabled: bool = Field(default=True, description="模块启用/禁用开关")
-    weight: float = Field(default=1.0, ge=0.0, description="模块权重")
-
-    class Config:
-        validate_assignment = True
-
-
-class MathUtils:
-    @staticmethod
-    def normalize_value(
-        value: float, min_val: float, max_val: float, clamp: bool = True
-    ) -> float:
-        if math.isclose(min_val, max_val):
-            if math.isclose(value, min_val):
-                return 0.5
-            return 0.0 if value < min_val else 1.0
-        norm = (value - min_val) / (max_val - min_val)
-        return float(max(0.0, min(1.0, norm))) if clamp else float(norm)
-
-
-class BoardAnalyzerUtils:
-    @staticmethod
-    def get_neighborhood_values(
-        grid: np.ndarray,
-        r: int,
-        c: int,
-        radius: int = 1,
-        eight_connectivity: bool = True,
-        val_func=None,
-        include_center: bool = False,
-    ) -> List[float]:
-        if val_func is None:
-            val_func = lambda x: float(x) if x != -1 else None
-
-        rows, cols = grid.shape
-        neighbors: List[float] = []
-        for dr in range(-radius, radius + 1):
-            for dc in range(-radius, radius + 1):
-                if not include_center and dr == 0 and dc == 0:
+    N, M = board_arr.shape
+    # Label connected masked regions (8-directional connectivity)
+    mask = (board_arr == -1).astype(int)
+    structure = np.ones((3,3), dtype=int)  # 8-neighbor connectivity
+    region_map, num_clusters = label(mask, structure=structure)
+    # Compute cluster sizes (number of blanks per cluster)
+    # We use bincount on region_map flattened (ignoring 0 label)
+    flat_labels = region_map.flatten()
+    cluster_sizes = np.bincount(flat_labels, minlength=num_clusters+1)
+    # Initialize arrays for cluster anchor information
+    cluster_min_vals = np.full(num_clusters+1, np.inf, dtype=float)
+    cluster_max_vals = np.full(num_clusters+1, -np.inf, dtype=float)
+    cluster_anchor_count = np.zeros(num_clusters+1, dtype=int)
+    # Scan each known cell and update neighboring cluster anchor values
+    known_mask = (board_arr > 0)
+    known_coords = np.argwhere(known_mask)
+    for (ki, kj) in known_coords:
+        kv = board_arr[ki, kj]
+        # Check all adjacent masked cells to associate this known value with that cluster
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                if di == 0 and dj == 0:
                     continue
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < rows and 0 <= nc < cols:
-                    if not eight_connectivity and radius == 1 and (abs(dr) + abs(dc) != 1):
-                        continue
-                    val = val_func(grid[nr, nc])
-                    if val is not None:
-                        neighbors.append(val)
-        return neighbors
-
-
-def EXT_GM4_Spatial_Auto_Corr_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM4",
-) -> np.ndarray:
-    """
-    GM4 – 空间自相关性
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    if rows == 0 or cols == 0:
-        return scores
-
-    potential_numbers = list(
-        BoardAnalyzerUtils.get_neighborhood_values(grid, 0, 0, radius=0)
-    )
-    # 取中位数或平均数作为假设值
-    if potential_numbers:
-        hypo_val = float(np.median(potential_numbers))
-    else:
-        max_val_board = max(rows, cols)
-        hypo_val = (1.0 + float(max_val_board)) / 2.0 if max_val_board > 0 else 0.5
-
-    max_norm = float(max(rows, cols))
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            neighbor_values = BoardAnalyzerUtils.get_neighborhood_values(
-                grid, r, c, radius=1, eight_connectivity=True, val_func=lambda x: float(x) if x != -1 else None
-            )
-            if not neighbor_values:
-                scores[r, c] = 0.5
-                continue
-
-            mean_nb = np.mean(neighbor_values)
-            diff = abs(hypo_val - mean_nb)
-            norm_diff = MathUtils.normalize_value(diff, 0, max_norm, clamp=True)
-            scores[r, c] = 1.0 - norm_diff
-
-    return scores * config.weight
-
-
-def EXT_GM5_Line_Completion_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM5",
-) -> np.ndarray:
-    """
-    GM5 – 线段补全
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    if rows == 0 or cols == 0 or min(rows, cols) < 1:
-        return scores
-
-    potential_numbers = [
-        v for v in range(1, rows * cols + 1) if v not in grid
-    ]
-    if not potential_numbers:
-        return scores
-
-    score_map = {
-        "identical_3": 0.6,
-        "arithmetic_3_mend": 0.7,
-        "arithmetic_3_extend": 0.5,
-        "arithmetic_3_mend_high": 0.9,
-    }
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            max_cell_score = 0.0
-            for p in potential_numbers:
-                for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
-                    # 修复等值三连 / 等差三连
-                    r1, c1 = r - dr, c - dc
-                    r2, c2 = r + dr, c + dc
-                    if 0 <= r1 < rows and 0 <= c1 < cols and 0 <= r2 < rows and 0 <= c2 < cols:
-                        v1 = grid[r1, c1]
-                        v2 = grid[r2, c2]
-                        if v1 != -1 and v2 != -1:
-                            if v1 == p and v2 == p:
-                                max_cell_score = max(max_cell_score, score_map["identical_3"])
-                            if (v1 + v2) == 2 * p and abs(p - v1) > 0:
-                                sc = score_map["arithmetic_3_mend"]
-                                if (v1 + p + v2) / 3 > (rows * cols) / 2:
-                                    sc = max(sc, score_map["arithmetic_3_mend_high"])
-                                max_cell_score = max(max_cell_score, sc)
-
-                    # 等差延伸情况
-                    r1e, c1e = r + dr, c + dc
-                    r2e, c2e = r + 2 * dr, c + 2 * dc
-                    if 0 <= r1e < rows and 0 <= c1e < cols and 0 <= r2e < rows and 0 <= c2e < cols:
-                        v1e = grid[r1e, c1e]
-                        v2e = grid[r2e, c2e]
-                        if v1e != -1 and v2e != -1:
-                            if p == v1e and p == v2e:
-                                max_cell_score = max(max_cell_score, score_map["identical_3"])
-                            if (p + v2e) == 2 * v1e and abs(v1e - p) > 0:
-                                max_cell_score = max(max_cell_score, score_map["arithmetic_3_extend"])
-
-                    r1e2, c1e2 = r - 2 * dr, c - 2 * dc
-                    r2e2, c2e2 = r - dr, c - dc
-                    if 0 <= r1e2 < rows and 0 <= c1e2 < cols and 0 <= r2e2 < rows and 0 <= c2e2 < cols:
-                        v1e2 = grid[r1e2, c1e2]
-                        v2e2 = grid[r2e2, c2e2]
-                        if v1e2 != -1 and v2e2 != -1:
-                            if v1e2 == v2e2 and v1e2 == p:
-                                max_cell_score = max(max_cell_score, score_map["identical_3"])
-                            if (v1e2 + p) == 2 * v2e2 and abs(v2e2 - v1e2) > 0:
-                                max_cell_score = max(max_cell_score, score_map["arithmetic_3_extend"])
-
-                scores[r, c] = MathUtils.normalize_value(max_cell_score, 0, 1.0, clamp=True)
-
-    return scores * config.weight
-
-
-def EXT_GM6_Symmetry_Potential_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM6",
-) -> np.ndarray:
-    """
-    GM6 – 对称潜力
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    if rows == 0 or cols == 0:
-        return scores
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            # 水平翻转
-            if grid[r, cols - 1 - c] != -1:
-                scores[r, c] = max(scores[r, c], 1.0)
-            # 垂直翻转
-            if grid[rows - 1 - r, c] != -1:
-                scores[r, c] = max(scores[r, c], 1.0)
-            # 对角线翻转
-            if grid[c, r] != -1:
-                scores[r, c] = max(scores[r, c], 1.0)
-            if grid[rows - 1 - c, cols - 1 - r] != -1:
-                scores[r, c] = max(scores[r, c], 1.0)
-
-    if np.any(scores > 0):
-        mn = float(np.min(scores[grid == -1]))
-        mx = float(np.max(scores[grid == -1]))
-        if not math.isclose(mx, mn):
-            scores = (scores - mn) / (mx - mn)
+                ni, nj = ki + di, kj + dj
+                if 0 <= ni < N and 0 <= nj < M and board_arr[ni, nj] == -1:
+                    cid = region_map[ni, nj]
+                    # Update cluster's min/max known neighbor values
+                    if kv < cluster_min_vals[cid]:
+                        cluster_min_vals[cid] = kv
+                    if kv > cluster_max_vals[cid]:
+                        cluster_max_vals[cid] = kv
+    # Replace inf/-inf placeholders with appropriate range endpoints (open clusters)
+    total_numbers = max(missing_numbers) if missing_numbers else 0
+    K_val = total_numbers if total_numbers > 0 else board_arr.size  # estimated K
+    # Use K_val as N×M or largest number present if no missing beyond
+    if total_numbers < board_arr.size:
+        # If some cells never filled (K < N*M), K_val represents the highest number originally (first K values)
+        K_val = max(K_val, board_arr.size)
+    for cid in range(1, num_clusters+1):
+        if cluster_min_vals[cid] == np.inf and cluster_max_vals[cid] == -np.inf:
+            # No known neighbors at all (no anchors)
+            cluster_min_vals[cid] = 1.0
+            cluster_max_vals[cid] = float(K_val)
+            cluster_anchor_count[cid] = 0
+        elif cluster_min_vals[cid] == np.inf:
+            # No low anchor, high anchor exists
+            cluster_min_vals[cid] = 1.0
+            cluster_anchor_count[cid] = 1
+        elif cluster_max_vals[cid] == -np.inf:
+            # No high anchor, low anchor exists
+            cluster_max_vals[cid] = float(K_val)
+            cluster_anchor_count[cid] = 1
         else:
-            scores = np.zeros_like(scores)
-    return scores * config.weight
-
-
-def EXT_GM7_Numeric_Gaps_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM7",
-) -> np.ndarray:
-    """
-    GM7 – 数值间隙
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    if rows == 0 or cols == 0:
-        return scores
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            max_score = 0.0
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                r1, c1 = r + dr, c + dc
-                r2, c2 = r - dr, c - dc
-                if 0 <= r1 < rows and 0 <= c1 < cols and 0 <= r2 < rows and 0 <= c2 < cols:
-                    v1 = grid[r1, c1]
-                    v2 = grid[r2, c2]
-                    if v1 != -1 and v2 != -1:
-                        gap = abs(v1 - v2)
-                        if gap == 2:
-                            max_score = max(max_score, 1.0)
-            scores[r, c] = max_score
-
-    return scores * config.weight
-
-
-def EXT_GM8_Edge_Affinity_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM8",
-) -> np.ndarray:
-    """
-    GM8 – 边缘亲和
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            # 角落
-            if (r == 0 or r == rows - 1) and (c == 0 or c == cols - 1):
-                scores[r, c] = 1.0
-            # 边缘
-            elif r == 0 or r == rows - 1 or c == 0 or c == cols - 1:
-                scores[r, c] = 0.7
+            cluster_anchor_count[cid] = 2
+    # Calculate cluster fill ratio and density metrics
+    cluster_ratio = np.zeros(num_clusters+1, dtype=float)
+    cluster_slack_flag = np.zeros(num_clusters+1, dtype=float)
+    cluster_density = np.zeros(num_clusters+1, dtype=float)
+    # Use find_objects to get cluster bounding boxes for density
+    cluster_slices = find_objects(region_map)
+    for cid in range(1, num_clusters+1):
+        size = cluster_sizes[cid]
+        # Determine missing numbers count the cluster must fill
+        a_val = int(cluster_min_vals[cid]); b_val = int(cluster_max_vals[cid])
+        if cluster_anchor_count[cid] == 2:
+            missing_count = (b_val - a_val - 1)
+        elif cluster_anchor_count[cid] == 1:
+            if a_val == 1 and b_val <= K_val:
+                # Anchor at high side
+                missing_count = (b_val - 1)
+            elif b_val == K_val and a_val >= 1:
+                # Anchor at low side
+                missing_count = (K_val - a_val)
             else:
-                scores[r, c] = 0.3
-
-    return scores * config.weight
-
-
-def EXT_GM9_Center_Control_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM9",
-) -> np.ndarray:
-    """
-    GM9 – 中心控制
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    center_r, center_c = rows // 2, cols // 2
-    max_dist = center_r + center_c
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            dist = abs(r - center_r) + abs(c - center_c)
-            scores[r, c] = 1.0 - (dist / max_dist)
-
-    return scores * config.weight
-
-
-def EXT_GM10_BlockingValue_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM10",
-) -> np.ndarray:
-    """
-    GM10 – 阻挡价值
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            low_penalty = False
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                r1, c1 = r + dr, c + dc
-                r2, c2 = r - dr, c - dc
-                if 0 <= r1 < rows and 0 <= c1 < cols and 0 <= r2 < rows and 0 <= c2 < cols:
-                    v1 = grid[r1, c1]
-                    v2 = grid[r2, c2]
-                    if v1 != -1 and v2 != -1 and v1 == v2:
-                        low_penalty = True
-            scores[r, c] = 0.0 if low_penalty else 1.0
-
-    return scores * config.weight
-
-
-def EXT_GM11_PairCorrelation_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM11",
-) -> np.ndarray:
-    """
-    GM11 – 对偶相关
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-
-            best_corr = 0.0
-            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                r1, c1 = r + dr, c + dc
-                if 0 <= r1 < rows and 0 <= c1 < cols and grid[r1, c1] != -1:
-                    val = grid[r1, c1]
-                    # 假设对偶相关度就是 1/(|val - avg_val|+1)
-                    avg_val = np.mean(grid[grid != -1]) if np.any(grid != -1) else 0.0
-                    corr = 1.0 / (abs(val - avg_val) + 1.0)
-                    best_corr = max(best_corr, corr)
-            scores[r, c] = best_corr
-
-    return scores * config.weight
-
-
-def EXT_GM12_IslandAnalysis_Vec(
-    grid: np.ndarray,
-    config: BaseModuleConfig,
-    request_id: Optional[str] = "N/A_GM12",
-) -> np.ndarray:
-    """
-    GM12 – 岛屿分析
-    """
-    if not config.enabled:
-        return np.zeros_like(grid, dtype=float)
-
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    visited = np.zeros((rows, cols), dtype=bool)
-
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1 or visited[r, c]:
-                continue
-
-            # BFS 查找空格连通区
-            queue = deque([(r, c)])
-            component = [(r, c)]
-            visited[r, c] = True
-            while queue:
-                rr, cc = queue.popleft()
-                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nr, nc = rr + dr, cc + dc
-                    if (
-                        0 <= nr < rows
-                        and 0 <= nc < cols
-                        and not visited[nr, nc]
-                        and grid[nr, nc] == -1
-                    ):
-                        visited[nr, nc] = True
-                        component.append((nr, nc))
-                        queue.append((nr, nc))
-
-            area = float(len(component))
-            total = float(rows * cols)
-            norm_area = MathUtils.normalize_value(area, 0, total, clamp=True)
-            for (ri, ci) in component:
-                scores[ri, ci] = norm_area
-
-    return scores * config.weight
+                # Both 1 and K known (should be anchor_count=2 instead)
+                missing_count = max(0, b_val - a_val - 1)
+        else:
+            missing_count = int(K_val) - 0  # all numbers 1..K
+        # Compute ratio and slack flag
+        if size > 0:
+            cluster_ratio[cid] = missing_count / float(size)
+        cluster_slack_flag[cid] = 1.0 if (size - missing_count) == 0 else 0.0
+        # Compute density = blanks / bounding-box area
+        sl = cluster_slices[cid-1]
+        if sl is not None:
+            height = sl[0].stop - sl[0].start
+            width = sl[1].stop - sl[1].start
+            area = height * width
+            cluster_density[cid] = (size / area) if area > 0 else 0.0
+        else:
+            cluster_density[cid] = 0.0
+    # Map cluster metrics to each blank cell
+    blank_positions = np.argwhere(board_arr == -1)
+    # Prepare output arrays for each blank index
+    num_blanks = len(blank_positions)
+    cluster_ratio_scores = np.zeros(num_blanks, dtype=float)
+    cluster_size_scores = np.zeros(num_blanks, dtype=float)
+    cluster_slack_scores = np.zeros(num_blanks, dtype=float)
+    cluster_density_scores = np.zeros(num_blanks, dtype=float)
+    for idx, (bi, bj) in enumerate(blank_positions):
+        cid = region_map[bi, bj]
+        cluster_ratio_scores[idx] = cluster_ratio[cid] if cluster_sizes[cid] > 0 else 0.0
+        # Size score: inverse of cluster size (smaller clusters => higher score)
+        cluster_size_scores[idx] = 1.0 / cluster_sizes[cid] if cluster_sizes[cid] > 0 else 0.0
+        cluster_slack_scores[idx] = cluster_slack_flag[cid]
+        # Density score: inverse of density (sparser cluster => higher score)
+        density = cluster_density[cid]
+        cluster_density_scores[idx] = 1.0 - density  # lower density yields higher score
+    return (cluster_ratio_scores, cluster_size_scores, cluster_slack_scores, cluster_density_scores,
+            cluster_min_vals, cluster_max_vals, cluster_anchor_count, region_map)
