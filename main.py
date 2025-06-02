@@ -4,11 +4,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 import numpy as np
-from analyzer import Analyzer  # 确保 analyzer.py 与 main.py 在同一目录
+from analyzer import Analyzer  # 确保 analyzer.py 和 main.py 在同一个目录
 
 class AnalyzeRequest(BaseModel):
     """
-    分析请求模型：
+    分析请求：
       - grid: 二维整数列表（隐藏格以 -1 表示）
       - target: 要查找的数字
     """
@@ -20,7 +20,7 @@ analyzer = Analyzer()
 
 @app.post("/analyze")
 def do_analyze(request: AnalyzeRequest):
-    # 验证并转换为 numpy 数组
+    # 验证并转成 numpy 数组
     try:
         grid_arr = np.array(request.grid, dtype=int)
     except Exception:
@@ -32,7 +32,6 @@ def do_analyze(request: AnalyzeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"分析过程出错：{e}")
 
-    # 返回 {位置ID: 分数} 的字典
     return {"scores": scores}
 
 @app.get("/health")
