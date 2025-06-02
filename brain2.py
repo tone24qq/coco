@@ -1,125 +1,162 @@
 import numpy as np
-from scipy.ndimage import label, find_objects
 
-def analyze_clusters(board_arr, blank_id_map, missing_numbers, missing_index_map):
+def ex10(grid: np.ndarray) -> np.ndarray:
     """
-    Analyze connected masked clusters and their anchor constraints (GM6-GM9, GM10).
-    Returns:
-        cluster_ratio: array of score per blank for fill ratio
-        cluster_size_score: array of score per blank for cluster size (inverse)
-        cluster_slack_flag: array of score per blank for no-slack clusters
-        cluster_density_score: array of score per blank for cluster density
-        cluster_min_vals, cluster_max_vals: arrays of cluster min/max anchor values
-        cluster_anchor_count: array of anchor counts per cluster
-        region_map: labeled regions map of masked cells
+    檢測反對角線方向（NE-SW）等差序列模式。
     """
-    N, M = board_arr.shape
-    # Label connected masked regions (8-directional connectivity)
-    mask = (board_arr == -1).astype(int)
-    structure = np.ones((3,3), dtype=int)  # 8-neighbor connectivity
-    region_map, num_clusters = label(mask, structure=structure)
-    # Compute cluster sizes (number of blanks per cluster)
-    # We use bincount on region_map flattened (ignoring 0 label)
-    flat_labels = region_map.flatten()
-    cluster_sizes = np.bincount(flat_labels, minlength=num_clusters+1)
-    # Initialize arrays for cluster anchor information
-    cluster_min_vals = np.full(num_clusters+1, np.inf, dtype=float)
-    cluster_max_vals = np.full(num_clusters+1, -np.inf, dtype=float)
-    cluster_anchor_count = np.zeros(num_clusters+1, dtype=int)
-    # Scan each known cell and update neighboring cluster anchor values
-    known_mask = (board_arr > 0)
-    known_coords = np.argwhere(known_mask)
-    for (ki, kj) in known_coords:
-        kv = board_arr[ki, kj]
-        # Check all adjacent masked cells to associate this known value with that cluster
-        for di in (-1, 0, 1):
-            for dj in (-1, 0, 1):
-                if di == 0 and dj == 0:
-                    continue
-                ni, nj = ki + di, kj + dj
-                if 0 <= ni < N and 0 <= nj < M and board_arr[ni, nj] == -1:
-                    cid = region_map[ni, nj]
-                    # Update cluster's min/max known neighbor values
-                    if kv < cluster_min_vals[cid]:
-                        cluster_min_vals[cid] = kv
-                    if kv > cluster_max_vals[cid]:
-                        cluster_max_vals[cid] = kv
-    # Replace inf/-inf placeholders with appropriate range endpoints (open clusters)
-    total_numbers = max(missing_numbers) if missing_numbers else 0
-    K_val = total_numbers if total_numbers > 0 else board_arr.size  # estimated K
-    # Use K_val as N×M or largest number present if no missing beyond
-    if total_numbers < board_arr.size:
-        # If some cells never filled (K < N*M), K_val represents the highest number originally (first K values)
-        K_val = max(K_val, board_arr.size)
-    for cid in range(1, num_clusters+1):
-        if cluster_min_vals[cid] == np.inf and cluster_max_vals[cid] == -np.inf:
-            # No known neighbors at all (no anchors)
-            cluster_min_vals[cid] = 1.0
-            cluster_max_vals[cid] = float(K_val)
-            cluster_anchor_count[cid] = 0
-        elif cluster_min_vals[cid] == np.inf:
-            # No low anchor, high anchor exists
-            cluster_min_vals[cid] = 1.0
-            cluster_anchor_count[cid] = 1
-        elif cluster_max_vals[cid] == -np.inf:
-            # No high anchor, low anchor exists
-            cluster_max_vals[cid] = float(K_val)
-            cluster_anchor_count[cid] = 1
-        else:
-            cluster_anchor_count[cid] = 2
-    # Calculate cluster fill ratio and density metrics
-    cluster_ratio = np.zeros(num_clusters+1, dtype=float)
-    cluster_slack_flag = np.zeros(num_clusters+1, dtype=float)
-    cluster_density = np.zeros(num_clusters+1, dtype=float)
-    # Use find_objects to get cluster bounding boxes for density
-    cluster_slices = find_objects(region_map)
-    for cid in range(1, num_clusters+1):
-        size = cluster_sizes[cid]
-        # Determine missing numbers count the cluster must fill
-        a_val = int(cluster_min_vals[cid]); b_val = int(cluster_max_vals[cid])
-        if cluster_anchor_count[cid] == 2:
-            missing_count = (b_val - a_val - 1)
-        elif cluster_anchor_count[cid] == 1:
-            if a_val == 1 and b_val <= K_val:
-                # Anchor at high side
-                missing_count = (b_val - 1)
-            elif b_val == K_val and a_val >= 1:
-                # Anchor at low side
-                missing_count = (K_val - a_val)
-            else:
-                # Both 1 and K known (should be anchor_count=2 instead)
-                missing_count = max(0, b_val - a_val - 1)
-        else:
-            missing_count = int(K_val) - 0  # all numbers 1..K
-        # Compute ratio and slack flag
-        if size > 0:
-            cluster_ratio[cid] = missing_count / float(size)
-        cluster_slack_flag[cid] = 1.0 if (size - missing_count) == 0 else 0.0
-        # Compute density = blanks / bounding-box area
-        sl = cluster_slices[cid-1]
-        if sl is not None:
-            height = sl[0].stop - sl[0].start
-            width = sl[1].stop - sl[1].start
-            area = height * width
-            cluster_density[cid] = (size / area) if area > 0 else 0.0
-        else:
-            cluster_density[cid] = 0.0
-    # Map cluster metrics to each blank cell
-    blank_positions = np.argwhere(board_arr == -1)
-    # Prepare output arrays for each blank index
-    num_blanks = len(blank_positions)
-    cluster_ratio_scores = np.zeros(num_blanks, dtype=float)
-    cluster_size_scores = np.zeros(num_blanks, dtype=float)
-    cluster_slack_scores = np.zeros(num_blanks, dtype=float)
-    cluster_density_scores = np.zeros(num_blanks, dtype=float)
-    for idx, (bi, bj) in enumerate(blank_positions):
-        cid = region_map[bi, bj]
-        cluster_ratio_scores[idx] = cluster_ratio[cid] if cluster_sizes[cid] > 0 else 0.0
-        # Size score: inverse of cluster size (smaller clusters => higher score)
-        cluster_size_scores[idx] = 1.0 / cluster_sizes[cid] if cluster_sizes[cid] > 0 else 0.0
-        cluster_slack_scores[idx] = cluster_slack_flag[cid]
-        # Density score: inverse of density (sparser cluster => higher score)
-        density = cluster_density[cid]
-        cluster_density_scores[idx] = 1.0 - density  # lower density yields higher score
-    return (cluster_ratio_scores, cluster_size_scores, cluster_slack_scores, cluster_density_scores,
-            cluster_min_vals, cluster_max_vals, cluster_anchor_count, region_map)
+    output = np.zeros(grid.shape, dtype=float)
+    # 反對角線（三格從右上到左下）
+    a = grid[:-2, 2:]
+    b = grid[1:-1, 1:-1]
+    c = grid[2:, :-2]
+    mask1 = (a == -1) & (b != -1) & (c != -1)
+    output[:-2, 2:][mask1] = 1.0
+    mask2 = (b == -1) & (a != -1) & (c != -1) & (((c + a) % 2) == 0)
+    output[1:-1, 1:-1][mask2] = 1.0
+    mask3 = (c == -1) & (a != -1) & (b != -1)
+    output[2:, :-2][mask3] = 1.0
+    return output
+
+def ex11(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測主對角線方向（NW-SE）三連相同數字模式。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    a = grid[:-2, :-2]
+    b = grid[1:-1, 1:-1]
+    c = grid[2:, 2:]
+    mask1 = (a == -1) & (b != -1) & (c != -1) & (b == c)
+    output[:-2, :-2][mask1] = 1.0
+    mask2 = (b == -1) & (a != -1) & (c != -1) & (a == c)
+    output[1:-1, 1:-1][mask2] = 1.0
+    mask3 = (c == -1) & (a != -1) & (b != -1) & (a == b)
+    output[2:, 2:][mask3] = 1.0
+    return output
+
+def ex12(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測反對角線方向（NE-SW）三連相同數字模式。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    a = grid[:-2, 2:]
+    b = grid[1:-1, 1:-1]
+    c = grid[2:, :-2]
+    mask1 = (a == -1) & (b != -1) & (c != -1) & (b == c)
+    output[:-2, 2:][mask1] = 1.0
+    mask2 = (b == -1) & (a != -1) & (c != -1) & (a == c)
+    output[1:-1, 1:-1][mask2] = 1.0
+    mask3 = (c == -1) & (a != -1) & (b != -1) & (a == b)
+    output[2:, :-2][mask3] = 1.0
+    return output
+
+def ex13(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測整列（橫列）相同數字模式。如果某一橫列已知數字全都相同且至少一格缺失，
+    則將該列所有缺失格標記為潛在相同數字。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    n_rows, n_cols = grid.shape
+    for i in range(n_rows):
+        row = grid[i, :]
+        if np.any(row == -1) and np.nanmin(row[row != -1]) == np.nanmax(row[row != -1]):
+            # 該列的已知數值都相等
+            output[i, row == -1] = 1.0
+    return output
+
+def ex14(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測整行（直行）相同數字模式。縱向版本的 ex13。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    n_rows, n_cols = grid.shape
+    for j in range(n_cols):
+        col = grid[:, j]
+        if np.any(col == -1) and np.nanmin(col[col != -1]) == np.nanmax(col[col != -1]):
+            output[col == -1, j] = 1.0
+    return output
+
+def ex15(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測 2x2 方塊內相同數字模式。如果一個2x2區塊有三個格子相同數字，
+    一個缺失，則缺失格也很可能是相同數字。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    # 定義2x2區塊四個元素
+    tl = grid[:-1, :-1]   # top-left
+    tr = grid[:-1, 1:]    # top-right
+    bl = grid[1:, :-1]    # bottom-left
+    br = grid[1:, 1:]     # bottom-right
+    # 情況：右下角缺失，其餘三格已知且相等
+    mask_br = (br == -1) & (tl != -1) & (tr != -1) & (bl != -1) & (tl == tr) & (tl == bl)
+    output[1:, 1:][mask_br] = 1.0
+    # 情況：左下角缺失
+    mask_bl = (bl == -1) & (tl != -1) & (tr != -1) & (br != -1) & (tl == tr) & (tl == br)
+    output[1:, :-1][mask_bl] = 1.0
+    # 情況：右上角缺失
+    mask_tr = (tr == -1) & (tl != -1) & (bl != -1) & (br != -1) & (tl == bl) & (tl == br)
+    output[:-1, 1:][mask_tr] = 1.0
+    # 情況：左上角缺失
+    mask_tl = (tl == -1) & (tr != -1) & (bl != -1) & (br != -1) & (tr == bl) & (tr == br)
+    output[:-1, :-1][mask_tl] = 1.0
+    return output
+
+def ex16(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測四角相同數字模式。如果整個盤面的四個角落中，
+    有三個角的數字已知且相同，最後一個角落缺失，則標記該缺失角落。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    # 盤面四個角座標
+    corners = [(0, 0), (0, grid.shape[1]-1), (grid.shape[0]-1, 0), (grid.shape[0]-1, grid.shape[1]-1)]
+    corner_vals = [grid[i, j] for i, j in corners]
+    known_vals = [v for v in corner_vals if v != -1]
+    # 若有且只有一個角缺失，且其餘角已知值都相等
+    if corner_vals.count(-1) == 1 and len(known_vals) > 0 and min(known_vals) == max(known_vals):
+        missing_index = corner_vals.index(-1)
+        i, j = corners[missing_index]
+        output[i, j] = 1.0
+    return output
+
+def ex17(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測十字形（+形狀）相同數字模式。如果中心或臂端有缺失，且十字形其他格皆已知且相同，
+    則缺失格可能也是該相同數字。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    n_rows, n_cols = grid.shape
+    if n_rows < 3 or n_cols < 3:
+        return output  # 太小的盤面無法形成十字形
+    # 取出內部區域 (排除邊界) 作為中心可能位置
+    center = grid[1:-1, 1:-1]
+    up    = grid[:-2, 1:-1]
+    down  = grid[2:, 1:-1]
+    left  = grid[1:-1, :-2]
+    right = grid[1:-1, 2:]
+    # Case 1: 中心缺失，四個方向皆已知且相等
+    mask_center = (center == -1) & (up != -1) & (down != -1) & (left != -1) & (right != -1) \
+                  & (up == down) & (up == left) & (up == right)
+    output[1:-1, 1:-1][mask_center] = 1.0
+    # Case 2: 上方缺失（中心與其餘方向已知且相等）
+    mask_up = (up == -1) & (center != -1) & (down != -1) & (left != -1) & (right != -1) \
+              & (center == down) & (center == left) & (center == right)
+    output[:-2, 1:-1][mask_up] = 1.0
+    # Case 3: 下方缺失
+    mask_down = (down == -1) & (center != -1) & (up != -1) & (left != -1) & (right != -1) \
+                & (center == up) & (center == left) & (center == right)
+    output[2:, 1:-1][mask_down] = 1.0
+    # Case 4: 左方缺失
+    mask_left = (left == -1) & (center != -1) & (up != -1) & (down != -1) & (right != -1) \
+                & (center == up) & (center == down) & (center == right)
+    output[1:-1, :-2][mask_left] = 1.0
+    # Case 5: 右方缺失
+    mask_right = (right == -1) & (center != -1) & (up != -1) & (down != -1) & (left != -1) \
+                 & (center == up) & (center == down) & (center == left)
+    output[1:-1, 2:][mask_right] = 1.0
+    return output
+
+def ex18(grid: np.ndarray) -> np.ndarray:
+    """
+    （保留）其他模式偵測槽位。當前未實作特殊邏輯，回傳全零矩陣。
+    """
+    # 尚未定義的新模式，可在此擴充
+    return np.zeros(grid.shape, dtype=float)
