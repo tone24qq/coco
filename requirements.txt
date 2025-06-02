@@ -10,3 +10,4 @@ psutil>=5.9.0
 starlette-prometheus
 uvicorn[standard]
 httpx>=0.24.0
+scipy>=1.9.0,<2.0.0
