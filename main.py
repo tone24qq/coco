@@ -1,23 +1,39 @@
+# main.py
+
 from fastapi import FastAPI, HTTPException, Body
-from pydantic import BaseModel
-from typing import Any, List
+from pydantic import BaseModel, root_validator
+from typing import Any, List, Union
 import os
 import numpy as np
 from analyzer import analyze_full_board
 
-# 先定義 new_card 裡面真正要的欄位
 class NewCardModel(BaseModel):
-    grid: List[List[int]]
+    """
+    這個 Model 可以接受兩種形式：
+      1. new_card: List[List[int]]
+      2. new_card: {"grid": List[List[int]]}
+    最終都會把底下的 .grid 屬性設成正確的二維 int 清單。
+    """
+    grid: List[List[int]] = []
 
-    # 如果你希望後續能接受任意型別，也可加上 arbitrary_types_allowed
-    model_config = {
-        "arbitrary_types_allowed": True
-    }
+    @root_validator(pre=True)
+    def allow_list_or_dict(cls, values):
+        """
+        如果前端直接把 new_card 塞成 List[List[int]]，
+        該 validator 會把它轉成 {"grid": <that list>}。
+        """
+        # 如果前端 new_card 本身就是一個 list of lists，就直接把它視為 grid
+        if isinstance(values, list):
+            return {"grid": values}
+        # 如果前端傳 { "grid": […] } 就照原樣
+        if "grid" in values:
+            return {"grid": values["grid"]}
+        # 其餘情況算錯誤
+        raise ValueError("new_card 必須是 二維陣列，或包含 grid 欄位的物件")
 
-# 定義整體請求結構：new_card、以及 proposed_values（可選）
 class CombinedInput(BaseModel):
     new_card: NewCardModel
-    proposed_values: List[Any] = []  # 如果前端不傳也沒關係，預設為空列表
+    proposed_values: List[Any] = []
 
     model_config = {
         "arbitrary_types_allowed": True
@@ -35,20 +51,10 @@ async def root_head():
 
 @app.post("/analyze")
 async def analyze(input: CombinedInput = Body(...)):
-    """
-    接收的 JSON 範例必須長這樣：
-    {
-      "new_card": {
-        "grid": [[...], [...], ...]
-      },
-      "proposed_values": [...]
-    }
-    """
-
-    # 1. 把 grid 拿出來
+    # 這裡 input.new_card.grid 一定是一個 List[List[int]]
     grid = input.new_card.grid
 
-    # 2. 基本驗證：檢查 grid 不為空、為矩形、大小不超 100x100
+    # 一樣做原本的檢查：矩形、不超過 100x100、轉 np.array…… 
     if grid is None:
         raise HTTPException(status_code=422, detail="new_card.grid 不可為空。")
     row_lengths = [len(row) for row in grid]
@@ -60,7 +66,6 @@ async def analyze(input: CombinedInput = Body(...)):
     if n_rows > 100 or n_cols > 100:
         raise HTTPException(status_code=422, detail=f"Grid 大小 {n_rows}x{n_cols} 超過 100x100 限制。")
 
-    # 3. 轉成 NumPy 陣列並檢查維度
     try:
         arr = np.array(grid, dtype=int)
     except Exception as e:
@@ -68,29 +73,21 @@ async def analyze(input: CombinedInput = Body(...)):
     if arr.ndim != 2:
         raise HTTPException(status_code=422, detail="Grid data is not a 2D matrix.")
 
-    # 4. 呼叫分析函式
     try:
         score_matrix = analyze_full_board(arr)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
 
-    # 5. 回傳結果：包含原始 new_card、proposed_values，以及分析出的 top3（由後端自行計算）
-    #    這裡假設 analyze_full_board 回的是整張分數矩陣，你可以自行在這裡算 top3
+    # 結果（示範回 top3、used_modules）
     flat = score_matrix.flatten()
-    # 找出三個最大分數的索引（以行主序優先），示範作法如下：
-    idx_sorted = np.argsort(-flat)  # 由大到小排序
+    idx_sorted = np.argsort(-flat)
     top3_idx = idx_sorted[:3].tolist()
-    # 轉成 (row, col) 形式
     top3_coords = [(int(i // n_cols) + 1, int(i % n_cols) + 1) for i in top3_idx]
 
     return {
-        # 原樣回傳前端傳過來的 new_card、proposed_values：
-        "new_card_received": input.new_card.dict(),
+        "new_card_received": {"grid": grid},
         "proposed_values_received": input.proposed_values,
-        # 回傳前 3 名分數最高的位置（1-based row/col）：
         "top3_positions": top3_coords,
-        # 回傳這次計算時實際用到的模組列表（示範用，需你在 analyze_full_board 裡回傳或記錄）
-        # 假設 analyze_full_board 裡維護了一個 global list: USED_MODULES
         "used_modules": getattr(analyze_full_board, "USED_MODULES", [])
     }
 
