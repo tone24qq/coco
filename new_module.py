@@ -5,7 +5,7 @@ import random
 
 class ProbabilityModule:
     """
-    对所有隐藏格均匀分配概率（基线模块）。
+    对所有隐藏格均匀分配概率（基线）。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -24,8 +24,8 @@ class ProbabilityModule:
 
 class AdjacencyModule:
     """
-    根据邻近已揭示数字与目标数字的差距，对隐藏格打分。
-    如果相邻格数字与 target 越接近，该隐藏格得分越高。
+    根据邻近已知数值与 target 之差打分。差距越小 -> 分数越高。
+    若全部邻近都没贡献，就退回均匀分布（所有 hidden 给 1）。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -45,7 +45,6 @@ class AdjacencyModule:
                             score += 1.0 / (diff + 1.0)
                     scores[pos_id] = score
 
-        # 如果全为 0，就退回均匀分布
         if scores and all(v == 0 for v in scores.values()):
             for k in scores:
                 scores[k] = 1.0
@@ -55,8 +54,8 @@ class AdjacencyModule:
 
 class FrequencyModule:
     """
-    将所有数字按「低 ≤ N/2」、「高 > N/2」分两类，统计四个象限内已揭示 目标类别 的个数，
-    选择已揭示最少的象限，给予该象限隐藏格更高权重。
+    把所有数字分为“低 ≤ N/2”、“高 > N/2”两类，统计四象限内已揭示与 target 同类数字的数量，
+    选择数量最少的象限，给予该象限隐藏格更高权重（2.0），其余象限权重 1.0。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -102,9 +101,9 @@ class FrequencyModule:
 class PatternModule:
     """
     深度检测“行范围”或“列余数”两种排列模式：
-      1. 行范围模式：假设每行为一个连续数字区间（如 8×10 卡：1–10、11–20…）
+      1. 行范围模式：假设每行是一个连续数值区间（如 1–10、11–20…）
       2. 列余数模式：假设每列数字末位相同（第 j 列对应末位 j+1，最后一列对应 0）
-    如果都不符合，则退回“半区启发式”：target 属于后半片区域则偏好下半行，否则偏好上半行。
+    如果都不成立，则退回“半区启发式”：若 target 大于总数一半，则偏好下半行，否则偏好上半行。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -113,7 +112,8 @@ class PatternModule:
             return {}
 
         range_size = math.ceil((rows * cols) / rows)
-        # 检测“行范围模式”
+
+        # 判断行范围模式
         row_pattern = True
         for i in range(rows):
             for j in range(cols):
@@ -127,7 +127,7 @@ class PatternModule:
             if not row_pattern:
                 break
 
-        # 检测“列余数模式”
+        # 判断列余数模式
         col_pattern = True
         for j in range(cols):
             for i in range(rows):
@@ -175,11 +175,10 @@ class PatternModule:
 
 class SampleMatchModule:
     """
-    如果部分揭示与已知样本完全或高度匹配，就用该样本位置直接预测 target。
-    否则返回空字典，让其他模块统筹判断。
+    如果部分揭示与样本高度匹配，直接用样本位置预测 target；否则返回空字典。
     """
     def __init__(self):
-        # 示例：随机生成一个 8×10 样本；实际请替换为读取你自己的 Excel/ZIP 样本
+        # 示例：随机生成一个 8×10 样本；你可以改为读取真实样本
         N = 8 * 10
         nums = list(range(1, N + 1))
         random.shuffle(nums)
