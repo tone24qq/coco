@@ -3,17 +3,29 @@
 import numpy as np
 from typing import Dict, List
 
-# 1. 导入你在 brain1.py 中的所有 ex1–ex9 函数
-#    （请务必保证函数名和你 own 文件中一模一样，否则会 ImportError）
+# ────────────────────────────────────────────────────────────────────
+# 一律「保留並調用」你自己在 brain1.py / brain2.py / brain3.py 中寫的 ex 函數：
+#
+#    brain1.py  ： ex1, ex2, ex3, ex4, ex5, ex6, ex7, ex8, ex9
+#    brain2.py  ： ex10, ex11, ex12, ex13, ex14, ex15, ex16, ex17, ex18
+#    brain3.py  ： ex19, ex20, ex21, ex22, ex23, ex24, ex25, ex26
+#
+# 請確保這些名稱和你手上三個檔案裡一模一樣，否則會 import 失敗。
+# 這裡**絕對不動**你的原本實作，只是將它們全部匯入並執行一次。
+# ────────────────────────────────────────────────────────────────────
 from brain1 import ex1, ex2, ex3, ex4, ex5, ex6, ex7, ex8, ex9
-
-# 2. 导入你在 brain2.py 中的所有 ex10–ex18 函数
 from brain2 import ex10, ex11, ex12, ex13, ex14, ex15, ex16, ex17, ex18
-
-# 3. 导入你在 brain3.py 中的所有 ex19–ex26 函数
 from brain3 import ex19, ex20, ex21, ex22, ex23, ex24, ex25, ex26
 
-# 4. 导入 new_module.py 里的 5 个新模块类（新增逻辑）
+# ────────────────────────────────────────────────────────────────────
+# 再把我寫好的五個「新增模組」匯入，放在 new_module.py：
+#   ProbabilityModule
+#   AdjacencyModule
+#   FrequencyModule
+#   PatternModule
+#   SampleMatchModule
+# 這五個模組不會影響到你原本 ex1~ex26 的任何實作。
+# ────────────────────────────────────────────────────────────────────
 from new_module import (
     ProbabilityModule,
     AdjacencyModule,
@@ -22,24 +34,25 @@ from new_module import (
     SampleMatchModule,
 )
 
+
 class Analyzer:
     """
-    将“原有 ex1–ex26 函数”与“5 个新模块”整合：
-      1. 先调用 ex1–ex26（它们返回与 grid 同形的 np.ndarray）
-         把所有在隐藏位（grid==-1）上非零的点计为 1 分累加进 combined_scores；
-      2. 再调用 5 个新模块（它们返回 {posID: raw_score}），
-         每个先做归一化（和为 1）→ 多个模块累加 → 除以模块数（平均）→ 累加到 combined_scores；
-      返回最终 {posID: 综合分数}。
+    統一調用：
+      1. 你原本在 brain1.py/brain2.py/brain3.py 裡的 ex1~ex26，一次跑完，把每個 隱藏格(grid==-1) 上
+         nonzero 的位置都 +1 分，累計到 combined_scores 。
+      2. 再調用五個新增模組（new_module.py 內的那五個）。它們各自返回 {posID: raw_score}，
+         先做「該模組內部歸一化 → 再五個模組平均 → 最後累加到 combined_scores」。
+      回傳最終 {posID: 綜合分數}。
     """
 
     def __init__(self):
-        # 1. 保留旧有的 26 个 ex 函数
+        # 正式「保留」舊有的 26 支 ex 函數
         self.registered_modules = [
             ex1, ex2, ex3, ex4, ex5, ex6, ex7, ex8, ex9,
             ex10, ex11, ex12, ex13, ex14, ex15, ex16, ex17, ex18,
             ex19, ex20, ex21, ex22, ex23, ex24, ex25, ex26,
         ]
-        # 2. 实例化新增的 5 个模块
+        # 再「初始化」我寫的 5 個新模組
         self.new_modules = [
             ProbabilityModule(),
             AdjacencyModule(),
@@ -53,14 +66,14 @@ class Analyzer:
         grid:  2D numpy array，隐藏格用 -1 表示
         target: 要预测的数字
 
-        返回字典 {posID: 综合分数}，posID 从 1 开始，逐行优先编号。
+        返回 {posID: 綜合分數}（posID 從 1 開始，逐行優先編號）。
         """
         if grid.ndim != 2:
-            raise ValueError("analyze: 输入必须是二维 numpy array")
+            raise ValueError("analyze: 輸入必須是 2D numpy array")
 
         rows, cols = grid.shape
 
-        # 先收集所有隐藏格的 posID（1-based，逐行优先）
+        # 先收集所有隐藏格的 posID（1-based，逐行優先）
         hidden_positions: List[int] = [
             i * cols + j + 1
             for i in range(rows)
@@ -70,29 +83,28 @@ class Analyzer:
         if not hidden_positions:
             return {}
 
-        # ─── 第一部分：调用 ex1–ex26，将它们各自返回的 np.ndarray 累加到 combined_scores ───
+        # ─── 第一部分：調用 ex1~ex26 舊函數，累加到 combined_scores ───
         combined_scores: Dict[int, float] = {}
 
         for func in self.registered_modules:
             try:
-                # 每个 exX 返回一个与 grid 形状相同的 np.ndarray，值为 0 或 1 或浮点
                 output_arr = func(grid)
             except Exception:
-                # 如果某个旧函数内部出错，跳过它
+                # 如果某個舊函數執行出錯，跳過它
                 continue
 
             if not isinstance(output_arr, np.ndarray) or output_arr.shape != grid.shape:
-                # 强制要求它们返回的是同形 np.ndarray，否则跳过
+                # 強制要求它回傳與 grid 同形的 ndarray，否則略過
                 continue
 
-            # 对应在“隐藏位（grid==-1）”上，非零的点认为是 1 分，然后累加
+            # 只在隐藏格(grid==-1) 且 output_arr 非零時 +1
             for i in range(rows):
                 for j in range(cols):
                     if grid[i, j] == -1 and output_arr[i, j] != 0:
                         pos_id = i * cols + j + 1
                         combined_scores[pos_id] = combined_scores.get(pos_id, 0.0) + 1.0
 
-        # ─── 第二部分：调用 5 个新模块，先做归一化→累加→平均→累加到 combined_scores ───
+        # ─── 第二部分：調用 5 個新模組 → 「歸一化 → 累加 → 平均」───
         temp_scores: Dict[int, float] = {}
         active_new = 0
 
@@ -100,33 +112,32 @@ class Analyzer:
             try:
                 ms: Dict[int, float] = module.predict(grid.tolist(), target)
             except Exception:
-                # 如果某个新模块内部出错，跳过它
                 continue
 
             if not isinstance(ms, dict) or not ms:
                 continue
 
-            # 只保留真正隐藏格的位置
+            # 只保留真正属于 hidden_positions 的鍵
             ms = {p: v for p, v in ms.items() if p in hidden_positions}
             total = sum(ms.values())
 
             if total == 0:
-                # 如果一个模块输出的所有 raw_score 都是 0，则退回均匀分布
+                # 若一個模組全給 0，就退回「對所有 hidden 全部給 1/len(hidden)」
                 uniform = 1.0 / len(hidden_positions)
                 for p in hidden_positions:
                     ms[p] = uniform
             else:
-                # 正规化：该模块所有 ms[p] 相加 = 1
+                # 正規化：讓這個模組的 ms[p] 相加 = 1
                 for p in ms:
                     ms[p] = ms[p] / total
 
-            # 把这个模块的“正规化后分数”累加进 temp_scores
+            # 把「正規化後的分數」先累加到 temp_scores
             for p, v in ms.items():
                 temp_scores[p] = temp_scores.get(p, 0.0) + float(v)
 
             active_new += 1
 
-        # 如果至少有一个新模块生效，就把它们的平均分数累加到 combined_scores
+        # 最後把所有新模組的平均分數累加到 combined_scores
         if active_new > 0:
             for p, tot in temp_scores.items():
                 avg_score = tot / active_new
