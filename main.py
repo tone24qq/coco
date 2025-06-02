@@ -22,7 +22,9 @@ from pydantic_settings import BaseSettings
 
 # 3. 本地應用/自定义模块导入
 import analyzer
-import brain
+import brain1
+import brain2
+import brain3
 
 # 舊寫法 ❌ (dotenv loaded after some imports)
 # load_dotenv()
