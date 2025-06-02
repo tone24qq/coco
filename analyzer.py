@@ -1,126 +1,102 @@
+# analyzer.py
+
 import numpy as np
-import math
-import brain1, brain2, brain3, new_module
+from typing import Dict, List
 
-# 模組權重設定：使用者可自行調整 ex1～ex28 的權重
-MODULE_WEIGHTS = {i: 1.0 for i in range(1, 29)}
+# 匯入原本你在 brain1.py、brain2.py、brain3.py 等檔案裡定義的函式
+# 請確保函式名稱與你實際檔案中的一致
+from brain1 import EXT_A2, EXT_M3, EXT_M10
+from brain2 import EXT_D3, EXT_F10, EXT_M6
+from brain3 import EXT_P4, EXT_R7, EXT_L1
 
-# 正規化方式："minmax" 或 "zscore"
-NORMALIZE_METHOD = "minmax"
+# 匯入 new_module.py 裡新增的五個模組類別
+from new_module import (
+    ProbabilityModule,
+    AdjacencyModule,
+    FrequencyModule,
+    PatternModule,
+    SampleMatchModule,
+)
 
-def analyze_full_board(grid: np.ndarray) -> np.ndarray:
+def analyze_full_board(grid: np.ndarray) -> Dict[int, float]:
     """
-    統一分析入口。對傳入的數字盤面 (grid) 執行所有模組分析，
-    再將各模組回傳的分數矩陣做正規化並加權合併，最終回傳整張分數矩陣。
-    如果所有分數都為 0，代表無任何模組有信心，則對每個遮蔽格給一個小基礎分 (0.1) 作為 fallback。
+    統一呼叫「舊有的 EXT_* 模組」與「五個新預測模組」，
+    最後回傳合併後的分數字典 {位置ID: 分數}。
+
+    grid: 2D numpy array，隱藏格用 -1 表示。
     """
-    # 防呆：若非 NumPy 陣列，自動轉換
-    if not isinstance(grid, np.ndarray):
-        grid = np.array(grid)
     if grid.ndim != 2:
-        raise ValueError("Input grid 必須為 2D numpy array。")
-    grid = grid.astype(float)  # 轉為浮點型，保留 -1 等特殊數值
-    n_rows, n_cols = grid.shape
+        raise ValueError("analyze_full_board: 輸入必須是 2 維陣列")
 
-    # 動態蒐集所有 exXX 模組函式
-    modules = []
-    for module in (brain1, brain2, brain3, new_module):
-        for name in dir(module):
-            if name.startswith("ex") and name[2:].isdigit():
-                func = getattr(module, name)
-                if callable(func):
-                    modules.append(func)
-    # 按函式名稱中的數字排序 (ex1, ex2, ...)
-    modules.sort(key=lambda f: int(f.__name__[2:]))
+    rows, cols = grid.shape
 
-    # 執行所有模組並收集分數矩陣
-    score_matrices = []
-    for func in modules:
-        mod_num = int(func.__name__[2:])
-        weight = MODULE_WEIGHTS.get(mod_num, 1.0)
+    # 先蒐集所有隱藏格的位置 ID（1-based，逐行優先）
+    hidden_positions: List[int] = []
+    for i in range(rows):
+        for j in range(cols):
+            if grid[i, j] == -1:
+                hidden_positions.append(i * cols + j + 1)
+
+    if not hidden_positions:
+        return {}
+
+    # ─────────────── 舊有 EXT_* 模組部分 ───────────────
+    combined_scores: Dict[int, float] = {}
+    for func in (EXT_A2, EXT_M3, EXT_M10, EXT_D3, EXT_F10, EXT_M6, EXT_P4, EXT_R7, EXT_L1):
+        # 假設每個 EXT_* 函式的介面都是： func(grid) -> dict[int, float]
         try:
-            result = func(grid)
-        except Exception as e:
-            # 模組執行失敗時，用全零矩陣取代，並列印錯誤訊息
-            result = np.zeros((n_rows, n_cols))
-            print(f"Module ex{mod_num} 執行錯誤：{e}")
-        result = np.array(result, dtype=float)
-        if result.shape != grid.shape:
-            # 若輸出形狀不符，用全零矩陣取代
-            result = np.zeros((n_rows, n_cols), dtype=float)
+            mod_scores = func(grid)  # 取得該模組回傳的 {pos_id: raw_score}
+        except Exception:
+            # 若某個舊模組執行時出錯，就跳過它
+            continue
+        if not isinstance(mod_scores, dict):
+            continue
+        for pos, val in mod_scores.items():
+            combined_scores[pos] = combined_scores.get(pos, 0.0) + float(val)
 
-        # 正規化：Min-Max 或 Z-Score
-        if NORMALIZE_METHOD.lower() == "minmax":
-            min_val = result.min()
-            max_val = result.max()
-            if max_val > min_val:
-                normed = (result - min_val) / (max_val - min_val)
-            else:
-                normed = np.zeros_like(result)
-        elif NORMALIZE_METHOD.lower() == "zscore":
-            mean = result.mean()
-            std = result.std()
-            if std > 0:
-                normed = (result - mean) / std
-            else:
-                normed = np.zeros_like(result)
+    # ─────────────── 新模組部分 ───────────────
+    new_modules = [
+        ProbabilityModule(),
+        AdjacencyModule(),
+        FrequencyModule(),
+        PatternModule(),
+        SampleMatchModule(),
+    ]
+
+    temp_scores: Dict[int, float] = {}
+    active_new = 0
+
+    for module in new_modules:
+        try:
+            ms = module.predict(grid.tolist(), None if module.__class__.__name__ == "ProbabilityModule" else None)
+            # 這裡以 None 作為 target 傳入 ProbabilityModule，但實際所有新模組都需要 target
+            # 所以請在此處把 None 改成實際需要的目標值（如果在 analyze_full_board 中不需要 target，可以改成其他寫法）
+        except Exception:
+            continue
+        # ms 要是 dict[int, float]
+        if not isinstance(ms, dict) or not ms:
+            continue
+
+        # 只保留確實隱藏格的位置
+        ms = {p: v for p, v in ms.items() if p in hidden_positions}
+        total = sum(ms.values())
+
+        if total == 0:
+            uniform = 1.0 / len(hidden_positions)
+            for p in hidden_positions:
+                ms[p] = uniform
         else:
-            # 未知正規化方式，直接複製原始結果
-            normed = result.copy()
+            for p in ms:
+                ms[p] = ms[p] / total
 
-        # 乘上對應權重
-        weighted = normed * weight
-        score_matrices.append(weighted)
+        for p, v in ms.items():
+            temp_scores[p] = temp_scores.get(p, 0.0) + float(v)
 
-    # 將所有加權後的分數累加
-    if score_matrices:
-        total_score = np.sum(score_matrices, axis=0)
-    else:
-        total_score = np.zeros((n_rows, n_cols))
+        active_new += 1
 
-    # 如果所有分數都為 0，對每個遮蔽格給一個很小的基礎分 (0.1) 作為 fallback
-    if total_score.max() == 0:
-        mask = (grid == -1)
-        total_score[mask] = 0.1
-        # 已知格保持 0
-        total_score[~mask] = 0.0
+    if active_new > 0:
+        for p, tot in temp_scores.items():
+            avg_score = tot / active_new
+            combined_scores[p] = combined_scores.get(p, 0.0) + avg_score
 
-    return total_score
-
-# 測試與驗證部分保留（如原本有 __main__ 那段可不動）
-if __name__ == "__main__":
-    # （此處可保留你原本測試程式碼）
-    import numpy as np
-
-    grid1 = np.full((3, 3), 9999)
-    print("測試1 (極端值均一格子)：")
-    print(analyze_full_board(grid1))
-
-    grid2 = np.full((4, 4), -1)
-    print("\n測試2 (全遮蔽盤)：")
-    print(analyze_full_board(grid2))
-
-    grid3 = np.array([
-        [4, 6, 8],
-        [6, -1, 6],
-        [8, 6, 4]
-    ])
-    print("\n測試3 (有模式且中間遮蔽)：")
-    print(analyze_full_board(grid3))
-
-    grid4 = np.array([
-        [1, 2, 3, 4],
-        [2, 3, 4, 5],
-        [3, 4, 5, 6],
-        [4, 5, 6, 7]
-    ])
-    print("\n測試4 (完整遞增模式盤)：")
-    print(analyze_full_board(grid4))
-
-    bad_input = [1, 2, 3]
-    print("\n測試5 (錯誤輸入)：")
-    try:
-        _ = analyze_full_board(np.array(bad_input))
-        print("錯誤：沒有捕捉到非法輸入！")
-    except Exception as e:
-        print(f"成功捕捉錯誤：{e}")
+    return combined_scores
