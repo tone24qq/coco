@@ -1,319 +1,188 @@
-# new_module.py
-
 import numpy as np
-import math
-from typing import Tuple, List, Optional, Dict, Any
-from collections import deque
+from brain1 import analyze_neighbors
+from brain2 import analyze_clusters
+from brain3 import compute_distance_scores
 
-try:
-    import numba
-    from numba import njit
-except ImportError:
-    numba = None
-
-# 导入所有 GM 模块函数
-from brain1 import (
-    EXT_GM1_Proximity_Vec,
-    EXT_GM2_Heterogeneity_Vec,
-    EXT_GM3_PotentialField_Vec,
-    BaseModuleConfig as GM1_3_Config,
-)
-from brain2 import (
-    EXT_GM4_Spatial_Auto_Corr_Vec,
-    EXT_GM5_Line_Completion_Vec,
-    EXT_GM6_Symmetry_Potential_Vec,
-    EXT_GM7_Numeric_Gaps_Vec,
-    EXT_GM8_Edge_Affinity_Vec,
-    EXT_GM9_Center_Control_Vec,
-    EXT_GM10_BlockingValue_Vec,
-    EXT_GM11_PairCorrelation_Vec,
-    EXT_GM12_IslandAnalysis_Vec,
-    BaseModuleConfig as GM4_12_Config,
-)
-from brain3 import (
-    EXT_GM13_Sequence_Diversity_Vec,
-    EXT_GM14_Risk_Assessment_Vec,
-    EXT_GM15_Information_Gain_Vec,
-    EXT_GM16_Harmonic_Centrality_Vec,
-    EXT_GM17_Local_Entropy_Vec,
-    EXT_GM18_RL_Value_Estimation_Vec,
-    EXT_GM19_SkipPattern_Vec,
-    EXT_GM20_SkipPattern_Confidence_Vec,
-    EXT_GM21_ClusterBalance_Vec,
-    EXT_GM22_CoOccurrence_Vec,
-    EXT_GM23_MotifDetection_Vec,
-    EXT_GM24_TemporalCoherence_Vec,
-    EXT_GM25_StrategicDepth_Vec,
-    EXT_GM26_ContextualFlexibility_Vec,
-    BaseModuleConfig as GM13_26_Config,
-)
-
-
-class PuzzleTensorOps:
+def score_full_board(board):
     """
-    通用 N 维张量操作模块，结合 NumPy 和可选的 Numba 加速，用于拼图引擎和高性能计算。
+    Compute normalized scores for each masked cell being each missing number.
+    Returns a list of prediction dictionaries sorted by number.
     """
-
-    def __init__(self, tensor: np.ndarray):
-        """
-        tensor: 原始二维刮卡盘面，dtype=int，空格标记为 -1
-        """
-        self.tensor = tensor
-        self.rows, self.cols = tensor.shape
-
-    def get_indices(self) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        返回两个 shape=(rows, cols) 的 ndarray，分别表示行索引矩阵和列索引矩阵
-        """
-        return np.indices(self.tensor.shape)
-
-    def get_positions(self, mask: np.ndarray) -> np.ndarray:
-        """
-        mask: bool 型 ndarray，True 表示要收集的位置
-        返回 shape=(N,2) ndarray，每行是 (r, c) 坐标
-        """
-        coords = np.stack(np.where(mask), axis=1)
-        return coords.astype(int)
-
-    def manhattan_distance_matrix(
-        self,
-        rr: np.ndarray,
-        cc: np.ndarray,
-        r_rep: np.ndarray,
-        c_rep: np.ndarray,
-    ) -> np.ndarray:
-        """
-        计算 shape=(rows, cols, N) 的曼哈顿距离张量
-        [i,j,k] = |i - r_rep[k]| + |j - c_rep[k]|
-        rr, cc: np.indices 返回的行/列坐标矩阵，shape=(rows, cols)
-        r_rep, c_rep: 一维数组，表示已揭露或目标位置的坐标列表
-        """
-        rr_exp = rr[..., None]        # (rows, cols, 1)
-        cc_exp = cc[..., None]
-        r_rep_exp = r_rep[None, None, :]  # (1, 1, N)
-        c_rep_exp = c_rep[None, None, :]
-        return np.abs(rr_exp - r_rep_exp) + np.abs(cc_exp - c_rep_exp)
-
-    def sum_along_axis(self, tensor: np.ndarray, axis: int) -> np.ndarray:
-        """
-        对 ndarray 在指定 axis 上求和
-        """
-        return np.sum(tensor, axis=axis)
-
-    def connected_component_sizes(self, mask: np.ndarray) -> np.ndarray:
-        """
-        计算二维 mask 下的连通分量大小（只考虑 4 邻域）。
-        返回 shape=(rows, cols) ndarray，若 mask[i,j] 为 True，则值为对应连通簇的大小；否则为 0。
-        如果安装了 numba，会调用 JIT 加速版本；否则，用纯 Python 实现。
-        """
-        if numba is not None:
-            return self._ccs_numba(mask)
-        else:
-            return self._ccs_python(mask)
-
-    def _ccs_python(self, mask: np.ndarray) -> np.ndarray:
-        rows, cols = self.rows, self.cols
-        sizes = np.zeros((rows, cols), dtype=int)
-        visited = np.zeros((rows, cols), dtype=bool)
-
-        for i in range(rows):
-            for j in range(cols):
-                if mask[i, j] and not visited[i, j]:
-                    queue = deque([(i, j)])
-                    component = [(i, j)]
-                    visited[i, j] = True
-                    while queue:
-                        r, c = queue.popleft()
-                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                            nr, nc = r + dr, c + dc
-                            if (
-                                0 <= nr < rows
-                                and 0 <= nc < cols
-                                and mask[nr, nc]
-                                and not visited[nr, nc]
-                            ):
-                                visited[nr, nc] = True
-                                component.append((nr, nc))
-                                queue.append((nr, nc))
-                    comp_size = len(component)
-                    for (r0, c0) in component:
-                        sizes[r0, c0] = comp_size
-        return sizes
-
-    def _ccs_numba(self, mask: np.ndarray) -> np.ndarray:
-        """
-        numba 加速的连通分量。由于 numba 不支持动态列表，这里用固定大小队列模拟 BFS。
-        """
-        rows, cols = self.rows, self.cols
-
-        @njit
-        def bfs_all(mask_np):
-            sizes_np = np.zeros((rows, cols), dtype=np.int64)
-            visited_np = np.zeros((rows, cols), dtype=np.bool_)
-            for i0 in range(rows):
-                for j0 in range(cols):
-                    if mask_np[i0, j0] and not visited_np[i0, j0]:
-                        queue_r = np.empty(rows * cols, dtype=np.int64)
-                        queue_c = np.empty(rows * cols, dtype=np.int64)
-                        head = 0
-                        tail = 0
-                        queue_r[tail] = i0
-                        queue_c[tail] = j0
-                        visited_np[i0, j0] = True
-                        tail += 1
-                        comp_size = 0
-                        while head < tail:
-                            r = queue_r[head]
-                            c = queue_c[head]
-                            head += 1
-                            comp_size += 1
-                            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                                nr = r + dr
-                                nc = c + dc
-                                if (
-                                    0 <= nr < rows
-                                    and 0 <= nc < cols
-                                    and mask_np[nr, nc]
-                                    and not visited_np[nr, nc]
-                                ):
-                                    visited_np[nr, nc] = True
-                                    queue_r[tail] = nr
-                                    queue_c[tail] = nc
-                                    tail += 1
-                        # 第二次遍历组件，将 comp_size 写入 sizes_np
-                        head2 = 0
-                        tail2 = 0
-                        queue_r2 = np.empty(rows * cols, dtype=np.int64)
-                        queue_c2 = np.empty(rows * cols, dtype=np.int64)
-                        visited2 = np.zeros((rows, cols), dtype=np.bool_)
-                        queue_r2[tail2] = i0
-                        queue_c2[tail2] = j0
-                        visited2[i0, j0] = True
-                        tail2 += 1
-                        while head2 < tail2:
-                            r2 = queue_r2[head2]
-                            c2 = queue_c2[head2]
-                            head2 += 1
-                            sizes_np[r2, c2] = comp_size
-                            for dr2, dc2 in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                                nr2 = r2 + dr2
-                                nc2 = c2 + dc2
-                                if (
-                                    0 <= nr2 < rows
-                                    and 0 <= nc2 < cols
-                                    and mask_np[nr2, nc2]
-                                    and not visited2[nr2, nc2]
-                                ):
-                                    visited2[nr2, nc2] = True
-                                    queue_r2[tail2] = nr2
-                                    queue_c2[tail2] = nc2
-                                    tail2 += 1
-            return sizes_np
-
-        return bfs_all(mask)
-
-    def local_entropy(self, radius: int = 1) -> np.ndarray:
-        """
-        计算以每个空格为中心、半径为 radius 邻域内的香农熵，返回 shape=(rows, cols) 的 ndarray。
-        已填格位置返回 0。
-        """
-        rows, cols = self.rows, self.cols
-        ent = np.zeros((rows, cols), dtype=float)
-        for r in range(rows):
-            for c in range(cols):
-                if self.tensor[r, c] != -1:
-                    continue
-                values = []
-                for dr in range(-radius, radius + 1):
-                    for dc in range(-radius, radius + 1):
-                        nr, nc = r + dr, c + dc
-                        if 0 <= nr < rows and 0 <= nc < cols:
-                            val = self.tensor[nr, nc]
-                            if val != -1:
-                                values.append(val)
-                if not values:
-                    ent[r, c] = 0.0
-                else:
-                    counts = {}
-                    total = float(len(values))
-                    for v in values:
-                        counts[v] = counts.get(v, 0) + 1
-                    e = 0.0
-                    for cnt in counts.values():
-                        p = cnt / total
-                        e -= p * math.log2(p) if p > 0 else 0.0
-                    ent[r, c] = e
-        return ent
-
-    def score_full_board(
-        self,
-        configs: Dict[str, Any],
-        request_id: Optional[str] = "in-tensor"
-    ) -> np.ndarray:
-        """
-        对整张盘面使用 GM1–GM26 全模块打分，返回 shape=(rows, cols) 的合并归一后分数矩阵。
-        configs: {
-            'GM1': BaseModuleConfig(...),
-            'GM2': BaseModuleConfig(...),
-            ...
-            'GM26': BaseModuleConfig(...)
-        }
-        """
-        rows, cols = self.rows, self.cols
-        combined = np.zeros((rows, cols), dtype=float)
-
-        # 定义模块顺序及对应函数
-        modules = [
-            ("GM1", EXT_GM1_Proximity_Vec),
-            ("GM2", EXT_GM2_Heterogeneity_Vec),
-            ("GM3", EXT_GM3_PotentialField_Vec),
-            ("GM4", EXT_GM4_Spatial_Auto_Corr_Vec),
-            ("GM5", EXT_GM5_Line_Completion_Vec),
-            ("GM6", EXT_GM6_Symmetry_Potential_Vec),
-            ("GM7", EXT_GM7_Numeric_Gaps_Vec),
-            ("GM8", EXT_GM8_Edge_Affinity_Vec),
-            ("GM9", EXT_GM9_Center_Control_Vec),
-            ("GM10", EXT_GM10_BlockingValue_Vec),
-            ("GM11", EXT_GM11_PairCorrelation_Vec),
-            ("GM12", EXT_GM12_IslandAnalysis_Vec),
-            ("GM13", EXT_GM13_Sequence_Diversity_Vec),
-            ("GM14", EXT_GM14_Risk_Assessment_Vec),
-            ("GM15", EXT_GM15_Information_Gain_Vec),
-            ("GM16", EXT_GM16_Harmonic_Centrality_Vec),
-            ("GM17", EXT_GM17_Local_Entropy_Vec),
-            ("GM18", EXT_GM18_RL_Value_Estimation_Vec),
-            ("GM19", EXT_GM19_SkipPattern_Vec),
-            ("GM20", EXT_GM20_SkipPattern_Confidence_Vec),
-            ("GM21", EXT_GM21_ClusterBalance_Vec),
-            ("GM22", EXT_GM22_CoOccurrence_Vec),
-            ("GM23", EXT_GM23_MotifDetection_Vec),
-            ("GM24", EXT_GM24_TemporalCoherence_Vec),
-            ("GM25", EXT_GM25_StrategicDepth_Vec),
-            ("GM26", EXT_GM26_ContextualFlexibility_Vec),
-        ]
-
-        # 依次调用各模块，将各自分数累加到 combined
-        for name, func in modules:
-            cfg = configs.get(name)
-            try:
-                partial = func(self.tensor, cfg, request_id)
-                if not isinstance(partial, np.ndarray) or partial.shape != (rows, cols):
-                    raise ValueError(f"{name} 返回形状错误: {partial.shape}")
-            except Exception:
-                partial = np.zeros((rows, cols), dtype=float)
-            combined += partial
-
-        # 对所有空格位置做全图归一化
-        mask_empty = (self.tensor == -1)
-        if np.any(mask_empty):
-            mn = float(np.min(combined[mask_empty]))
-            mx = float(np.max(combined[mask_empty]))
-            if not math.isclose(mn, mx):
-                normalized = (combined - mn) / (mx - mn)
-            else:
-                normalized = np.zeros_like(combined)
-            combined = np.where(mask_empty, normalized, 0.0)
-        else:
-            combined[:] = 0.0
-
-        return combined
+    board_arr = np.array(board, dtype=int)
+    N, M = board_arr.shape
+    # Identify all masked cell coordinates
+    blank_coords = np.argwhere(board_arr == -1)
+    num_blanks = len(blank_coords)
+    if num_blanks == 0:
+        return []  # nothing to predict
+    # Map each masked cell to a blank index
+    blank_id_map = -np.ones(board_arr.shape, dtype=int)
+    for idx, (bi, bj) in enumerate(blank_coords):
+        blank_id_map[bi, bj] = idx
+    # Determine the set of missing numbers
+    present_nums = set(board_arr.flatten()) - {-1}
+    if present_nums:
+        max_present = max(present_nums)
+    else:
+        max_present = 0
+    # Estimate K (the highest number that was originally on the board)
+    total_cells = N * M
+    # Assume all numbers 1..K were placed; if some cells never get a number, K could be less than total_cells
+    K_val = max(max_present, len(present_nums) + (board_arr == -1).sum())
+    # Build missing numbers list
+    all_nums = set(range(1, K_val+1))
+    missing_numbers = sorted(list(all_nums - present_nums))
+    num_missing = len(missing_numbers)
+    # Prepare result matrix for scores
+    final_scores = np.zeros((num_blanks, num_missing), dtype=np.float32)
+    # ------------------ Stage 1: Neighbor-based analysis (Brain1) ------------------
+    (up_list, down_list, bridge_list,
+     known_frac, isolation_frac, extr_mask_neighbors) = analyze_neighbors(board_arr, blank_id_map,
+                                                                          {val: i for i, val in enumerate(missing_numbers)})
+    # Apply neighbor contributions
+    for (b_idx, c_idx, score) in up_list:
+        final_scores[b_idx, c_idx] += score
+    for (b_idx, c_idx, score) in down_list:
+        final_scores[b_idx, c_idx] += score
+    for (b_idx, c_idx, score) in bridge_list:
+        final_scores[b_idx, c_idx] += score
+    # Add neighbor baseline scores (known neighbor fraction and blank neighbor inverse fraction)
+    if num_missing > 0:
+        final_scores += known_frac[:, None].astype(np.float32)
+        final_scores += isolation_frac[:, None].astype(np.float32)
+    # ------------------ Stage 2: Cluster-based analysis (Brain2) ------------------
+    (cluster_ratio_scores, cluster_size_scores, cluster_slack_scores, cluster_density_scores,
+     cluster_min_vals, cluster_max_vals, cluster_anchor_count, region_map) = analyze_clusters(board_arr, blank_id_map,
+                                                                                              missing_numbers,
+                                                                                              {val: i for i, val in enumerate(missing_numbers)})
+    # Add cluster baseline scores
+    if num_missing > 0:
+        final_scores += cluster_ratio_scores[:, None].astype(np.float32)
+        final_scores += cluster_size_scores[:, None].astype(np.float32)
+        final_scores += cluster_slack_scores[:, None].astype(np.float32)
+        final_scores += cluster_density_scores[:, None].astype(np.float32)
+    # ------------------ Stage 3: Global analysis (Brain3) ------------------
+    # Determine global anchor coordinates if known
+    one_coord = None; K_coord = None
+    if 1 not in missing_numbers:
+        # Find position of known 1
+        loc = np.argwhere(board_arr == 1)
+        if loc.size > 0:
+            one_coord = tuple(loc[0])
+    if K_val not in missing_numbers:
+        loc = np.argwhere(board_arr == K_val)
+        if loc.size > 0:
+            K_coord = tuple(loc[0])
+    # Compute global distance-based score matrices
+    dist1_scores, distK_scores, center_scores = compute_distance_scores(blank_coords, missing_numbers,
+                                                                       one_coord, K_coord, K_val)
+    # Add global correlation scores
+    if dist1_scores is not None:
+        final_scores += dist1_scores
+    if distK_scores is not None:
+        final_scores += distK_scores
+    if center_scores is not None:
+        final_scores += center_scores
+    # ------------------ Stage 4: Eliminations (mask out impossible assignments) ------------------
+    # Eliminate extraneous blanks from neighbor or path analysis
+    extraneous_mask = extr_mask_neighbors.copy()
+    # Determine extraneous blanks via cluster path feasibility (GM25)
+    # If a cluster has two anchors, check each blank in it
+    extr_mask_path = np.zeros(num_blanks, dtype=bool)
+    two_anchor_clusters = np.where(cluster_anchor_count == 2)[0]
+    if two_anchor_clusters.size > 0:
+        # Map anchor values to coordinates for clusters
+        anchor_val_to_coord = {}
+        for cid in two_anchor_clusters:
+            # find coords of anchors by value
+            a_val = int(cluster_min_vals[cid]); b_val = int(cluster_max_vals[cid])
+            a_pos = np.argwhere(board_arr == a_val)
+            b_pos = np.argwhere(board_arr == b_val)
+            if a_pos.size and b_pos.size:
+                anchor_val_to_coord[a_val] = tuple(a_pos[0])
+                anchor_val_to_coord[b_val] = tuple(b_pos[0])
+        for idx, (bi, bj) in enumerate(blank_coords):
+            cid = region_map[bi, bj]
+            if cluster_anchor_count[cid] == 2:
+                a_val = int(cluster_min_vals[cid]); b_val = int(cluster_max_vals[cid])
+                if a_val in anchor_val_to_coord and b_val in anchor_val_to_coord:
+                    (ai, aj) = anchor_val_to_coord[a_val]
+                    (bi2, bj2) = anchor_val_to_coord[b_val]
+                    # Manhattan distance from cell to each anchor
+                    d1 = abs(bi - ai) + abs(bj - aj)
+                    d2 = abs(bi - bi2) + abs(bj - bj2)
+                    if d1 + d2 > (b_val - a_val):
+                        extr_mask_path[idx] = True
+    extraneous_mask |= extr_mask_path
+    # Apply elimination for extraneous blanks (set all scores to 0)
+    for idx in range(num_blanks):
+        if extraneous_mask[idx]:
+            final_scores[idx, :] = 0.0
+    # Anchor range viability (no candidate outside [A+1, B-1] for cluster anchors A, B)
+    for idx, (bi, bj) in enumerate(blank_coords):
+        cid = region_map[bi, bj]
+        if cluster_anchor_count[cid] == 2:
+            A = int(cluster_min_vals[cid]); B = int(cluster_max_vals[cid])
+            # eliminate candidates <= A or >= B
+            if num_missing > 0:
+                # find insertion indices (binary search) in missing_numbers
+                low_idx = np.searchsorted(missing_numbers, A+1)
+                high_idx = np.searchsorted(missing_numbers, B)
+                final_scores[idx, :low_idx] = 0.0
+                final_scores[idx, high_idx:] = 0.0
+        elif cluster_anchor_count[cid] == 1:
+            A = int(cluster_min_vals[cid]); B = int(cluster_max_vals[cid])
+            if A == 1 and B <= K_val:
+                # anchor at high side, eliminate >= B
+                high_idx = np.searchsorted(missing_numbers, B)
+                final_scores[idx, high_idx:] = 0.0
+            elif B == K_val and A >= 1:
+                # anchor at low side, eliminate <= A
+                low_idx = np.searchsorted(missing_numbers, A+1)
+                final_scores[idx, :low_idx] = 0.0
+    # Global distance viability (1 and K reachability)
+    if one_coord is not None:
+        (i1, j1) = one_coord
+        for idx, (bi, bj) in enumerate(blank_coords):
+            # Chebyshev distance (max of row,col diffs) for 8-dir moves or Manhattan for 4-dir; we use Manhattan:
+            dist1 = abs(bi - i1) + abs(bj - j1)
+            # Candidate must be at least dist1+1
+            low_val = dist1 + 1
+            if num_missing > 0:
+                low_idx = np.searchsorted(missing_numbers, low_val)
+                final_scores[idx, :low_idx] = 0.0
+    if K_coord is not None:
+        (iK, jK) = K_coord
+        for idx, (bi, bj) in enumerate(blank_coords):
+            distK = abs(bi - iK) + abs(bj - jK)
+            # Candidate must be at most K - distK
+            high_val = K_val - distK
+            if num_missing > 0:
+                high_idx = np.searchsorted(missing_numbers, high_val + 1)
+                final_scores[idx, high_idx:] = 0.0
+    # ------------------ Stage 5: Normalize and prepare output ------------------
+    # Normalize scores for each missing number
+    col_sums = final_scores.sum(axis=0, keepdims=True)
+    # Avoid division by zero
+    col_sums[col_sums == 0] = 1.0
+    prob_matrix = final_scores / col_sums
+    # Compile predictions: choose the most likely cell for each missing number
+    predictions = []
+    for j, num in enumerate(missing_numbers):
+        # identify best blank for number j
+        col = prob_matrix[:, j]
+        best_idx = int(np.argmax(col))
+        prob = float(col[best_idx])
+        if prob <= 0.0:
+            # skip numbers that couldn't be placed (unlikely if puzzle is consistent)
+            continue
+        cell_i, cell_j = blank_coords[best_idx]
+        predictions.append({
+            "number": int(num),
+            "row": int(cell_i),
+            "col": int(cell_j),
+            "probability": prob
+        })
+    # Sort predictions by number for readability
+    predictions.sort(key=lambda x: x["number"])
+    return predictions
