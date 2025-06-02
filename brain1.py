@@ -1,11 +1,10 @@
 # brain1.py
-# 第一部分：包含基础工具类与 GM1–GM3 三个向量化评分模块。
 
 import numpy as np
 import math
 import logging
 from collections import Counter
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,27 +13,18 @@ logger = logging.getLogger(__name__)
 
 class BaseModuleConfig(BaseModel):
     """
-    基础模块配置至少包括：
-    - enabled: bool
-    - weight: float
+    基础模块配置：- enabled: bool - weight: float
     """
     enabled: bool = Field(default=True, description="模块启用/禁用开关")
-    weight: float = Field(default=1.0, ge=0.0, description="模块权重：最终分数乘以此项")
+    weight: float = Field(default=1.0, ge=0.0, description="模块权重")
 
     class Config:
         validate_assignment = True
 
 
 class MathUtils:
-    """
-    通用数学工具：sigmoid、normalize_value、距离度量（曼哈顿、欧几里得）和熵计算。
-    """
-
     @staticmethod
     def sigmoid(x: float, k: float = 1.0) -> float:
-        """
-        安全型 sigmoid，避免 overflow。
-        """
         try:
             clamped = max(-700.0, min(700.0, -k * x))
             return 1.0 / (1.0 + math.exp(clamped))
@@ -45,36 +35,23 @@ class MathUtils:
     def normalize_value(
         value: float, min_val: float, max_val: float, clamp: bool = True
     ) -> float:
-        """
-        归一化到 [0,1]。
-        """
         if math.isclose(min_val, max_val):
             if math.isclose(value, min_val):
                 return 0.5
             return 0.0 if value < min_val else 1.0
-
         norm = (value - min_val) / (max_val - min_val)
         return float(max(0.0, min(1.0, norm))) if clamp else float(norm)
 
     @staticmethod
     def manhattan_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
-        """
-        曼哈顿距离 (L1)。
-        """
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
     @staticmethod
     def euclidean_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> float:
-        """
-        欧几里得距离 (L2)。
-        """
         return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
 
     @staticmethod
     def get_entropy(values: List[Any]) -> float:
-        """
-        计算 Shannon 熵。
-        """
         if not values:
             return 0.0
         counts = Counter(values)
@@ -88,10 +65,6 @@ class MathUtils:
 
 
 class BoardAnalyzerUtils:
-    """
-    提供棋盘相关工具：邻域值、梯度、行内序列检测等。
-    """
-
     @staticmethod
     def get_neighborhood_values(
         grid: np.ndarray,
@@ -102,9 +75,6 @@ class BoardAnalyzerUtils:
         val_func=None,
         include_center: bool = False,
     ) -> List[float]:
-        """
-        获取 (r,c) 邻域内非 -1 的值。
-        """
         if val_func is None:
             val_func = lambda x: float(x) if x != -1 else None
 
@@ -130,9 +100,6 @@ class BoardAnalyzerUtils:
         c: int,
         val_func=None,
     ) -> Tuple[float, float]:
-        """
-        计算 (r,c) 的 Sobel-like 梯度 (Gx,Gy)。
-        """
         if val_func is None:
             val_func = lambda x: float(x) if x != -1 else 0.0
 
@@ -169,9 +136,6 @@ class BoardAnalyzerUtils:
         check_geometric: bool = False,
         allow_gaps: int = 0,
     ) -> List[List[int]]:
-        """
-        在给定 1D 列表中查找所有长度 >= min_len 的算术或几何序列。
-        """
         sequences: List[List[int]] = []
         n = len(line)
         if n == 0:
@@ -262,11 +226,10 @@ class BoardAnalyzerUtils:
 def EXT_GM1_Proximity_Vec(
     grid: np.ndarray,
     config: BaseModuleConfig,
-    request_id: str | None = "N/A_GM1",
+    request_id: Optional[str] = "N/A_GM1",
 ) -> np.ndarray:
     """
-    (GM1–加权近邻模块)
-    Vectorized: 使用 NumPy 广播和掩码。
+    GM1 – 加权近邻
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
@@ -306,10 +269,10 @@ def EXT_GM1_Proximity_Vec(
 def EXT_GM2_Heterogeneity_Vec(
     grid: np.ndarray,
     config: BaseModuleConfig,
-    request_id: str | None = "N/A_GM2",
+    request_id: Optional[str] = "N/A_GM2",
 ) -> np.ndarray:
     """
-    (GM2–局部异质性模块)
+    GM2 – 局部异质性
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
@@ -341,10 +304,10 @@ def EXT_GM2_Heterogeneity_Vec(
 def EXT_GM3_PotentialField_Vec(
     grid: np.ndarray,
     config: BaseModuleConfig,
-    request_id: str | None = "N/A_GM3",
+    request_id: Optional[str] = "N/A_GM3",
 ) -> np.ndarray:
     """
-    (GM3–势场模块)
+    GM3 – 势场
     """
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
