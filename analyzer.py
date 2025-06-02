@@ -1,479 +1,352 @@
 # analyzer.py
-import abc
+# 負責模組調度、分數合併與最佳建議選擇。
+
+# 來源：知識大典.txt – 防錯字典.txt – "PEP 8 代码风格指南" – "導入順序"
+# 1. 標準庫導入
+import importlib
 import logging
-import random
-import uuid
-from enum import Enum
-from typing import List, Tuple, Dict, Set, Any, ClassVar
+import os
+from typing import Any, Callable, Dict, List, Literal, Set, Tuple # Literal for Pydantic V2+
 
+# 2. 第三方庫導入
 import numpy as np
-from pydantic import BaseModel, Field, model_validator, conlist
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field, model_validator
 
-# --- Configuration ---
-# 引用：知識大典.txt – 2024-2025知識全集.txt – “3.1.2 Pydantic v2 完整遷移指南” – 讀取環境變量
-# 引用：知識大典.txt – 2024-2025知識全集.txt – “六、常見「錯誤誤區」提醒（2025 延續）” – .env 配置
-# 引用：知識大典.txt – 除錯.txt – “核心預防原則” – 設定檔 (config) 統一使用 .env 檔案管理
-class AnalyzerAppSettings(BaseSettings):
-    """
-    Application settings for the analyzer.
-    Values can be loaded from .env file or environment variables if needed,
-    but primarily uses defaults here for a self-contained script.
-    """
-    model_config = SettingsConfigDict(
-        env_file=".env.analyzer", # Separate .env for this specific analyzer if used
-        env_file_encoding="utf-8",
-        extra="ignore"
-    )
-    LOG_LEVEL: str = "INFO"
-    DEFAULT_GRID_ROWS: int = 8
-    DEFAULT_GRID_COLS: int = 10
-    AVAILABLE_BRAINS: List[str] = ["Brain1", "Brain2", "Brain3"]
-
-analyzer_settings = AnalyzerAppSettings()
+# 3. 本地應用/自定义模块导入
+# Dynamically import the specified brain module (brain1, brain2, or brain3)
+# This allows for flexible selection of the underlying logic.
+# 引用：建議.txt - "AI 學習的重點：Numba/Cython 適用場景" (間接，brain模組可能使用這些技術)
+BRAIN_VERSION_DEFAULT = "brain2" # Default if environment variable is not set
+BRAIN_VERSION = os.getenv("BRAIN_VERSION", BRAIN_VERSION_DEFAULT)
+try:
+    # 來源：知識大典.txt – 防錯字典.txt – "ImportError" (防範：嘗試導入並處理可能的錯誤)
+    brain = importlib.import_module(f"brain{BRAIN_VERSION.replace('brain', '')}")
+    # Ensure the imported brain module has the necessary components
+    if not all(hasattr(brain, attr) for attr in ['DEFAULT_MODULE_CONFIGS', 'REGISTERED_MODULES_BRAIN', 'BaseModuleConfig', 'get_module_score']):
+        raise ImportError(f"Module 'brain{BRAIN_VERSION.replace('brain', '')}' is missing required attributes.")
+except ImportError as e:
+    logging.error(f"Failed to import brain module version '{BRAIN_VERSION}': {e}. Falling back to '{BRAIN_VERSION_DEFAULT}'.", exc_info=True)
+    try:
+        brain = importlib.import_module(BRAIN_VERSION_DEFAULT) # Use f-string for consistency if needed: f"brain{BRAIN_VERSION_DEFAULT.replace('brain', '')}"
+        if not all(hasattr(brain, attr) for attr in ['DEFAULT_MODULE_CONFIGS', 'REGISTERED_MODULES_BRAIN', 'BaseModuleConfig', 'get_module_score']):
+            raise ImportError(f"Fallback brain module '{BRAIN_VERSION_DEFAULT}' is also missing required attributes. Analyzer cannot function.")
+    except ImportError as e_fallback:
+        logging.critical(f"CRITICAL: Failed to import fallback brain module '{BRAIN_VERSION_DEFAULT}': {e_fallback}. Analyzer will not work.", exc_info=True)
+        # Depending on application requirements, might raise SystemExit here
+        raise # Re-raise the critical error to prevent app from starting in a broken state
 
 # --- Logging Setup ---
-# 引用：知識大典.txt – 除錯.txt – “核心預防原則” – 日誌 (Logging) 設定應自動檢查...
-# 引用：知識大典.txt – 防錯字典.txt – “五、任务骨架代码” (logging.basicConfig example)
-# SOP Requirement: logging 設定需避免 KeyError，強制支援 request_id
-logging.basicConfig(
-    level=analyzer_settings.LOG_LEVEL.upper(),
-    format="%(asctime)s - %(name)s - [%(levelname)s] - TraceID:%(request_id)s - Message:%(message)s"
-)
-logger = logging.getLogger(__name__) # Using module name for logger
+# 引用：知識大典.txt – 除錯.txt – "Logging/日誌問題" – "記錄 request_id/trace_id" (logger應配合main.py的RequestIdLoggerAdapter)
+logger = logging.getLogger(__name__) # Use __name__ for module-specific logging context
 
-
-# --- Board Utilities (Pydantic Models and Grid Class) ---
-# 引用：知識大典.txt – 2024-2025知識全集.txt – “3.1.2 Pydantic v2 完整遷移指南”
-# 引用：知識大典.txt – 除錯.txt – “核心預防原則” – 所有外部資料來源...使用 Pydantic V2 進行嚴格的資料模型定義與校驗
-class CellState(Enum):
+# --- Analyzer Configuration Model ---
+# 引用：建議.txt – "針對 analyzer.py 的深入建議與強化" – "配置管理的健壯性與動態性"
+class AnalyzerConfig(BaseModel):
     """
-    Represents the state of a cell in the grid.
+    Configuration for the analyzer, controlling how suggestions are generated.
+    Includes module weights, filtering strategies, and specific configurations for brain modules.
     """
-    REVEALED = "REVEALED"
-    COVERED = "COVERED" # 引用：刮卡遮蔽分析需求說明.txt – 1. 遮蔽定義 [cite: 1]
-
-class RevealedCell(BaseModel):
-    """
-    Represents a single revealed cell with its coordinates and number.
-    """
-    row: int = Field(..., ge=0, description="Row index of the revealed cell")
-    col: int = Field(..., ge=0, description="Column index of the revealed cell")
-    number: int = Field(..., gt=0, description="Number in the revealed cell")
-
-class GridInput(BaseModel):
-    """
-    Input model for creating a Grid.
-    """
-    rows: int = Field(default=analyzer_settings.DEFAULT_GRID_ROWS, gt=0, description="Number of rows in the grid")
-    cols: int = Field(default=analyzer_settings.DEFAULT_GRID_COLS, gt=0, description="Number of columns in the grid")
-    revealed_cells: conlist(RevealedCell, min_length=0) = Field(
-        default_factory=list, description="List of initially revealed cells"
+    top_n_suggestions: int = Field(default=3, ge=1, description="返回的最佳建議數量")
+    module_weights: Dict[str, float] = Field(
+        default_factory=lambda: {
+            name: module_config.weight
+            for name, module_config in brain.DEFAULT_MODULE_CONFIGS.items() # type: ignore[attr-defined]
+        },
+        description="各模組的權重"
     )
-    # 引用：刮卡遮蔽分析需求說明.txt – 2. 指定數字與遮蔽區的規則 – 分析流程即為：根據已知數字的位置與內容... [cite: 1]
-    target_number: int | None = Field(default=None, gt=0, description="Optional specific number to highlight in analysis")
-
-    @model_validator(mode='after')
-    def validate_revealed_cells(cls, data: Any) -> Any: # Changed from 'values' to 'data' for Pydantic v2 style
-        # Pydantic v2 model_validator 'data' is the model instance
-        # 引用：知識大典.txt – 防錯字典.txt – “KeyError” – 防范建议 (applies to dict/set uniqueness check) [cite: 44]
-        # 引用：知識大典.txt – 防錯字典.txt – “IndexError” – 防范建议 (applies to cell coordinates) [cite: 44]
-        # 引用：知識大典.txt – 防錯字典.txt – “ValueError” – 防范建议 (applies to duplicate numbers or out-of-bounds numbers) [cite: 44]
-        rows = data.rows
-        cols = data.cols
-        revealed_cells = data.revealed_cells
-
-        if not (rows and cols): # Should be caught by Field constraints
-            raise ValueError("Rows and cols must be positive integers.") # Should not be reached
-
-        seen_coords: Set[Tuple[int, int]] = set()
-        seen_numbers: Set[int] = set()
-        max_number = rows * cols
-
-        for cell in revealed_cells:
-            if not (0 <= cell.row < rows and 0 <= cell.col < cols):
-                err_msg = f"Revealed cell ({cell.row},{cell.col}) is out of grid bounds ({rows}x{cols})."
-                # No direct logger instance here, using global logger
-                logging.getLogger(__name__).error(err_msg) # Use module logger
-                raise ValueError(err_msg)
-            if (cell.row, cell.col) in seen_coords:
-                err_msg = f"Duplicate coordinates for revealed cell: ({cell.row},{cell.col})."
-                logging.getLogger(__name__).error(err_msg)
-                raise ValueError(err_msg)
-            seen_coords.add((cell.row, cell.col))
-
-            if not (0 < cell.number <= max_number):
-                err_msg = f"Revealed cell number {cell.number} is out of valid range (1-{max_number})."
-                logging.getLogger(__name__).error(err_msg)
-                raise ValueError(err_msg)
-            if cell.number in seen_numbers:
-                err_msg = f"Duplicate number revealed: {cell.number}."
-                logging.getLogger(__name__).error(err_msg)
-                raise ValueError(err_msg)
-            seen_numbers.add(cell.number)
-        return data
-
-class Grid:
-    """
-    Represents the YxN grid for the scratch-card analysis.
-    Numbers in the grid are 1 to Y*N, unique.
-    """
-    def __init__(self, grid_input: GridInput, request_id: str | None = "N/A_grid_init"):
-        self.rows: int = grid_input.rows
-        self.cols: int = grid_input.cols
-        self.target_number: int | None = grid_input.target_number
-        self.request_id = request_id
-
-        # 引用：知識大典.txt – 2024-2025知識全集.txt – “4.1 NumPy 2.0 新功能深度解析” (using basic numpy) [cite: 300, 317]
-        self.grid_data: np.ndarray = np.full((self.rows, self.cols), -1, dtype=int)
-        self.cell_states: np.ndarray = np.full((self.rows, self.cols), CellState.COVERED)
-
-        # 引用：知識大典.txt – 防錯字典.txt – “操作 1：读取文本文件” (Conceptual: handling data source setup) [cite: 48]
-        try:
-            for cell_info in grid_input.revealed_cells:
-                self.grid_data[cell_info.row, cell_info.col] = cell_info.number
-                self.cell_states[cell_info.row, cell_info.col] = CellState.REVEALED
-        except IndexError as e: # Should be caught by Pydantic validator
-            # 引用：知識大典.txt – 防錯字典.txt – “IndexError” – 防范建议 [cite: 44]
-            logger.error(f"Error initializing grid with revealed cells: {e}", exc_info=True, extra={"request_id": self.request_id})
-            raise ValueError(f"Invalid cell coordinates in revealed_cells: {e}") from e
-
-        logger.info(f"Grid initialized: {self.rows}x{self.cols}. Target number: {self.target_number or 'N/A'}.", extra={"request_id": self.request_id})
-        logger.debug(f"Initial grid_data:\n{self.grid_data}", extra={"request_id": self.request_id})
-
-    def get_covered_cells_coords(self) -> List[Tuple[int, int]]:
-        # 引用：刮卡遮蔽分析需求說明.txt – 1. 遮蔽定義 – 這 40 格即為遮蔽格 [cite: 1]
-        # 引用：刮卡遮蔽分析需求說明.txt – 總結 – 本系統將所有「遮蔽格」視為待預測對象 [cite: 1]
-        return list(zip(*np.where(self.cell_states == CellState.COVERED)))
-
-    def get_revealed_numbers_with_coords(self) -> Dict[Tuple[int, int], int]:
-        # 引用：刮卡遮蔽分析需求說明.txt – 1. 遮蔽定義 – 剩餘 40 格則為已揭示格，可直接作為分析依據 [cite: 1]
-        revealed_coords = list(zip(*np.where(self.cell_states == CellState.REVEALED)))
-        return {(r, c): self.grid_data[r, c] for r, c in revealed_coords}
-
-    def is_valid_coord(self, row: int, col: int) -> bool:
-        return 0 <= row < self.rows and 0 <= col < self.cols
-
-    def get_cell_state(self, row: int, col: int) -> CellState | None:
-        # 引用：知識大典.txt – 防錯字典.txt – “KeyError” – 防范建议 (by analogy for array bounds) [cite: 44]
-        if not self.is_valid_coord(row, col):
-            logger.warning(f"Attempted to get state for out-of-bounds cell: ({row},{col})", extra={"request_id": self.request_id})
-            return None
-        return self.cell_states[row, col]
-
-    def get_cell_number(self, row: int, col: int) -> int | None:
-        if not self.is_valid_coord(row, col):
-            logger.warning(f"Attempted to get number for out-of-bounds cell: ({row},{col})", extra={"request_id": self.request_id})
-            return None
-        return self.grid_data[row, col]
-
-# --- Brain Logic (ABC, Concrete Brains, Factory) ---
-# 引用：知識大典.txt – 2024-2025知識全集.txt – “1. 設計模式與架構模式速查” (Strategy Pattern implied) [cite: 300, 362]
-# 引用：刮卡遮蔽分析需求說明.txt – 3. brain1、brain2、brain3 的角色 [cite: 1]
-class BaseBrainConfig(BaseModel):
-    # 引用：知識大典.txt – 2024-2025知識全集.txt – “3.1.2 Pydantic v2 完整遷移指南” [cite: 300, 314]
-    weight: float = Field(default=1.0, ge=0, description="Weight of this brain's analysis")
-    enabled: bool = Field(default=True, description="Whether this brain is enabled")
-
-class BaseBrain(abc.ABC):
-    def __init__(self, config: BaseBrainConfig | None = None, request_id: str | None = "N/A_brain_init"):
-        self.config = config if config else BaseBrainConfig()
-        self.request_id = request_id
-        if not self.config.enabled:
-            logger.info(f"Brain {self.__class__.__name__} is disabled.", extra={"request_id": self.request_id})
-
-    @abc.abstractmethod
-    def analyze(self, grid: Grid) -> Dict[Tuple[int, int], float]:
-        # 引用：刮卡遮蔽分析需求說明.txt – 2. 指定數字與遮蔽區的規則 – 推測/評分每個遮蔽格最合理的填入方案 [cite: 1]
-        # 引用：刮卡遮蔽分析需求說明.txt – 3. brain1/brain2/brain3 的角色 – 而是對遮蔽格進行分數計算與排序 [cite: 1]
-        pass
-
-    def get_name(self) -> str:
-        return self.__class__.__name__
-
-class Brain1Config(BaseBrainConfig):
-    proximity_bonus: float = Field(default=0.1, ge=0)
-
-class Brain1(BaseBrain):
-    def __init__(self, config: Brain1Config | None = None, request_id: str | None = None):
-        super().__init__(config=config if config else Brain1Config(), request_id=request_id)
-        self.config: Brain1Config = self.config # type: ignore[assignment]
-
-    def analyze(self, grid: Grid) -> Dict[Tuple[int, int], float]:
-        if not self.config.enabled: return {}
-        logger.info(f"Brain1 starting. Config: {self.config.model_dump_json()}", extra={"request_id": self.request_id})
-        scores: Dict[Tuple[int, int], float] = {}
-        covered_cells = grid.get_covered_cells_coords()
-        revealed_map = grid.get_revealed_numbers_with_coords()
-        if not covered_cells: return {}
-
-        for r_c, c_c in covered_cells:
-            score = 0.0
-            for (r_r, c_r), num_r in revealed_map.items():
-                dist = abs(r_c - r_r) + abs(c_c - c_r)
-                if dist > 0: score += (1.0 / dist) * self.config.proximity_bonus
-                if grid.target_number and (num_r == grid.target_number - 1 or num_r == grid.target_number + 1):
-                    score += 0.5 / dist if dist > 0 else 0.5
-            if grid.target_number: score += random.uniform(0, 0.05) * self.config.weight
-            scores[(r_c, c_c)] = round(score, 4)
-        logger.info(f"Brain1 finished. Scored {len(scores)} cells.", extra={"request_id": self.request_id})
-        return scores
-
-class Brain2Config(BaseBrainConfig):
-    pattern_bonus: float = Field(default=0.2, ge=0)
-
-class Brain2(BaseBrain):
-    def __init__(self, config: Brain2Config | None = None, request_id: str | None = None):
-        super().__init__(config=config if config else Brain2Config(), request_id=request_id)
-        self.config: Brain2Config = self.config # type: ignore[assignment]
-
-    def analyze(self, grid: Grid) -> Dict[Tuple[int, int], float]:
-        if not self.config.enabled: return {}
-        logger.info(f"Brain2 starting. Config: {self.config.model_dump_json()}", extra={"request_id": self.request_id})
-        scores: Dict[Tuple[int, int], float] = {}
-        covered_cells = grid.get_covered_cells_coords()
-        revealed_nums = set(grid.get_revealed_numbers_with_coords().values())
-        if not covered_cells: return {}
-
-        for r_c, c_c in covered_cells:
-            score = 0.0
-            for dr, dc in [(0, -1), (0, 1), (-1, 0), (1, 0)]:
-                n1r, n1c = r_c + dr, c_c + dc
-                n2r, n2c = r_c + 2 * dr, c_c + 2 * dc
-                if grid.is_valid_coord(n1r, n1c) and grid.is_valid_coord(n2r, n2c):
-                    num1, num2 = grid.get_cell_number(n1r, n1c), grid.get_cell_number(n2r, n2c)
-                    if num1 and num1 != -1 and num2 and num2 != -1:
-                        hyp_mid = num1 + (num2 - num1) / 2.0
-                        if hyp_mid == grid.target_number or (grid.target_number is None and hyp_mid % 1 == 0):
-                            score += self.config.pattern_bonus * 0.5 * self.config.weight
-                        hyp_ext = num1 + (num1 - num2)
-                        if hyp_ext not in revealed_nums and (hyp_ext == grid.target_number or grid.target_number is None):
-                            score += self.config.pattern_bonus * 0.3 * self.config.weight
-            scores[(r_c, c_c)] = round(score, 4)
-        logger.info(f"Brain2 finished. Scored {len(scores)} cells.", extra={"request_id": self.request_id})
-        return scores
-
-class Brain3Config(BaseBrainConfig):
-    rarity_penalty_factor: float = Field(default=-0.05, le=0)
-
-class Brain3(BaseBrain):
-    def __init__(self, config: Brain3Config | None = None, request_id: str | None = None):
-        super().__init__(config=config if config else Brain3Config(), request_id=request_id)
-        self.config: Brain3Config = self.config # type: ignore[assignment]
-
-    def analyze(self, grid: Grid) -> Dict[Tuple[int, int], float]:
-        if not self.config.enabled: return {}
-        logger.info(f"Brain3 starting. Config: {self.config.model_dump_json()}", extra={"request_id": self.request_id})
-        scores: Dict[Tuple[int, int], float] = {}
-        covered_cells = grid.get_covered_cells_coords()
-        if not covered_cells: return {}
-
-        for r_c, c_c in covered_cells:
-            score = random.uniform(0.01, 0.1)
-            if grid.target_number:
-                score += grid.target_number * self.config.rarity_penalty_factor * self.config.weight
-            scores[(r_c, c_c)] = round(max(0, score), 4)
-        logger.info(f"Brain3 finished. Scored {len(scores)} cells.", extra={"request_id": self.request_id})
-        return scores
-
-# 引用：知識大典.txt – 2024-2025知識全集.txt – “1.2 工厂方法（Factory Method）” [cite: 300, 362]
-BRAIN_REGISTRY: ClassVar[Dict[str, type[BaseBrain]]] = {"Brain1": Brain1, "Brain2": Brain2, "Brain3": Brain3}
-BRAIN_CONFIG_REGISTRY: ClassVar[Dict[str, type[BaseBrainConfig]]] = {"Brain1": Brain1Config, "Brain2": Brain2Config, "Brain3": Brain3Config}
-
-def get_brain_instance(brain_name: str, brain_configs: Dict[str, Dict[str, Any]] | None = None, request_id: str | None = None) -> BaseBrain | None:
-    # 引用：知識大典.txt – 防錯字典.txt – “KeyError” – 防范建议 [cite: 44]
-    brain_class = BRAIN_REGISTRY.get(brain_name)
-    if not brain_class:
-        logger.error(f"Brain type '{brain_name}' not found.", extra={"request_id": request_id or "N/A"})
-        return None
-
-    config_data = brain_configs.get(brain_name, {}) if brain_configs else {}
-    brain_config_class = BRAIN_CONFIG_REGISTRY.get(brain_name, BaseBrainConfig)
-    try:
-        # 引用：知識大典.txt – 2024-2025知識全集.txt – “3.1.2 Pydantic v2 完整遷移指南” (model instantiation) [cite: 300, 314]
-        config_instance = brain_config_class(**config_data)
-        return brain_class(config=config_instance, request_id=request_id)
-    except Exception as e:
-        # 引用：知識大典.txt – 防錯字典.txt – “ValueError” (Pydantic often raises ValueError) [cite: 44]
-        logger.error(f"Failed to init brain '{brain_name}' with {config_data}: {e}", exc_info=True, extra={"request_id": request_id or "N/A"})
-        return None
-
-# --- Analyzer Service Logic ---
-# 引用：刮卡遮蔽分析需求說明.txt – 總結 – 並交由不同的計算邏輯大腦（brain1/2/3）針對這些格子執行推理、打分、排序與推薦 [cite: 1]
-class CellScoreDetail(BaseModel):
-    brain_name: str
-    score: float
-
-class AnalysisResult(BaseModel):
-    coords: Tuple[int, int]
-    combined_score: float = Field(description="Weighted average score")
-    individual_scores: List[CellScoreDetail]
-
-class FullAnalysisReport(BaseModel):
-    request_id: str
-    grid_dimensions: Tuple[int, int]
-    target_number: int | None
-    analyzed_cells: List[AnalysisResult]
-    # 引用：知識大典.txt – 除錯.txt – “核心預防原則” – 設定檔 (config) 統一使用 .env 檔案管理 (applied to brain configs) [cite: 368]
-    brain_configs_used: Dict[str, Dict[str, Any]] = Field(description="Configurations used for each brain")
-
-def run_grid_analysis(
-    grid_input: GridInput,
-    selected_brain_names: List[str] | None = None,
-    custom_brain_configs: Dict[str, Dict[str, Any]] | None = None,
-    request_id: str | None = None,
-) -> FullAnalysisReport:
-    effective_request_id = request_id if request_id else str(uuid.uuid4())
-    logger.info(f"Starting grid analysis. Request ID: {effective_request_id}.", extra={"request_id": effective_request_id})
-    # 引用：知識大典.txt – 除錯.txt – “核心預防原則” – 所有 API 調用...一律使用 try/except 結構 [cite: 368]
-    try:
-        grid = Grid(grid_input, request_id=effective_request_id)
-    except ValueError as e: # 引用：知識大典.txt – 防錯字典.txt – “ValueError” [cite: 44]
-        logger.error(f"Invalid grid input: {e}", exc_info=True, extra={"request_id": effective_request_id})
-        raise
-
-    brains_to_run: List[BaseBrain] = []
-    actual_cfgs_used: Dict[str, Dict[str, Any]] = {}
-    selected_names = selected_brain_names if selected_brain_names else analyzer_settings.AVAILABLE_BRAINS
-    logger.info(f"Selected brains: {selected_names}", extra={"request_id": effective_request_id})
-
-    for name in selected_names:
-        # 引用：知識大典.txt – 2024-2025知識全集.txt – “1.2 工厂方法（Factory Method）” [cite: 300, 362]
-        instance = get_brain_instance(name, custom_brain_configs, effective_request_id)
-        if instance and instance.config.enabled:
-            brains_to_run.append(instance)
-            actual_cfgs_used[name] = instance.config.model_dump()
-        elif instance and not instance.config.enabled:
-            logger.info(f"Brain '{name}' configured but disabled.", extra={"request_id": effective_request_id})
-        else:
-            logger.warning(f"Could not instantiate/find brain: {name}", extra={"request_id": effective_request_id})
-
-    if not brains_to_run:
-        logger.warning("No enabled brains. Empty report.", extra={"request_id": effective_request_id})
-        return FullAnalysisReport(request_id=effective_request_id, grid_dimensions=(grid.rows, grid.cols),
-                                  target_number=grid.target_number, analyzed_cells=[], brain_configs_used=actual_cfgs_used)
-
-    # 引用：知識大典.txt – 防錯字典.txt – “KeyError” – 防范建议 (using dict init) [cite: 44]
-    all_cell_scores: Dict[Tuple[int, int], List[Tuple[str, float, float]]] = \
-        {coord: [] for coord in grid.get_covered_cells_coords()}
-
-    for brain in brains_to_run:
-        try:
-            # 引用：刮卡遮蔽分析需求說明.txt – 3. brain1/brain2/brain3 的角色 – 各自針對盤面的遮蔽狀態與已開數字進行演算法推理 [cite: 1]
-            brain_scores = brain.analyze(grid)
-            weight, name = brain.config.weight, brain.get_name()
-            for coords, score in brain_scores.items():
-                if coords in all_cell_scores:
-                    all_cell_scores[coords].append((name, score, weight))
-                else:
-                    logger.warning(f"Brain '{name}' scored non-covered cell {coords}. Ignored.", extra={"request_id": effective_request_id})
-        except Exception as e:
-            # 引用：知識大典.txt – 除錯.txt – “核心預防原則” – 所有 API 調用...一律使用 try/except 結構，並進行分類捕捉和詳細日誌記錄 [cite: 368]
-            logger.error(f"Error in brain {brain.get_name()}: {e}", exc_info=True, extra={"request_id": effective_request_id})
-
-    analysis_results_list: List[AnalysisResult] = []
-    for coords, s_details_list in all_cell_scores.items():
-        if not s_details_list:
-            comb_score, ind_scores_out = 0.0, []
-        else:
-            total_s = sum(s * w for _, s, w in s_details_list)
-            total_w = sum(w for _, _, w in s_details_list)
-            # 引用：知識大典.txt – 防錯字典.txt – “ArithmeticError” (ZeroDivisionError) – 防范建议 [cite: 44]
-            comb_score = round(total_s / total_w, 4) if total_w > 0 else 0.0
-            ind_scores_out = [CellScoreDetail(brain_name=n, score=s) for n, s, _ in s_details_list]
-        analysis_results_list.append(AnalysisResult(coords=coords, combined_score=comb_score, individual_scores=ind_scores_out))
-
-    analysis_results_list.sort(key=lambda x: x.combined_score, reverse=True)
-    # 引用：刮卡遮蔽分析需求說明.txt – 總結 – 最終輔助使用者找到最優的補格方案 (sorting helps) [cite: 1]
-
-    logger.info(f"Analysis complete. Processed {len(analysis_results_list)} cells.", extra={"request_id": effective_request_id})
-    return FullAnalysisReport(request_id=effective_request_id, grid_dimensions=(grid.rows, grid.cols),
-                              target_number=grid.target_number, analyzed_cells=analysis_results_list,
-                              brain_configs_used=actual_cfgs_used)
-
-
-# --- Example Usage ---
-if __name__ == "__main__":
-    # This block demonstrates how to use the run_grid_analysis function.
-    # In a real application, GridInput would come from an API request or other source.
-
-    # SOP Requirement: "每個 .py 必須包含完整 import、設定、class、main、型別提示及 docstring，並於後台執行 py 跑過，確保無錯。"
-    # This __main__ block makes the script runnable.
-
-    main_request_id = f"main_run_{uuid.uuid4()}"
-    logger.info("Starting example run directly from analyzer.py", extra={"request_id": main_request_id})
-
-    # Example 1: Basic 3x3 grid
-    example_grid_input1 = GridInput(
-        rows=3,
-        cols=3,
-        revealed_cells=[
-            RevealedCell(row=0, col=0, number=1),
-            RevealedCell(row=1, col=1, number=5),
-            RevealedCell(row=2, col=2, number=9),
+    enable_two_stage_filtering: bool = Field(default=True, description="是否啟用兩階段過濾")
+    first_stage_candidate_count: int = Field(default=10, ge=1, description="第一階段保留的候選格數量")
+    first_stage_module_names: List[str] = Field(
+        default_factory=lambda: [
+            "EXT_GM8_Edge_Affinity_Vec",
+            "EXT_GM9_Center_Control_Vec",
         ],
-        target_number=7 # Let's say we are interested in number 7
+        description="第一階段使用的輕量模組名稱。可擴展或基於模組元數據動態選擇。"
     )
-    logger.info(f"Test Case 1 Input: {example_grid_input1.model_dump_json(indent=2)}", extra={"request_id": main_request_id})
-    try:
-        report1 = run_grid_analysis(
-            grid_input=example_grid_input1,
-            request_id=main_request_id
+    first_stage_aggregation_strategy: Literal["average", "sum"] = Field(
+        default="average",
+        description="第一階段分數聚合策略 ('average' 或 'sum')."
+    )
+    final_score_combination_strategy: Literal["weighted_average"] = Field(
+        default="weighted_average",
+        description="最終分數合併策略 (目前僅支援加權平均)."
+    )
+    module_specific_configs: Dict[str, brain.BaseModuleConfig] = Field( # type: ignore[attr-defined]
+        default_factory=lambda: {
+            name: config_instance.model_copy(deep=True)
+            for name, config_instance in brain.DEFAULT_MODULE_CONFIGS.items() # type: ignore[attr-defined]
+        },
+        description="所有brain模組的具體Pydantic設定對象的深拷貝。"
+    )
+
+    # 引用：建議.txt - "針對 analyzer.py 的深入建議與強化" - "配置管理的健壯性與動態性"
+    # 引用：知識大典.txt – 除錯.txt – "Logging/日誌問題" (日誌記錄配置問題)
+    @model_validator(mode='after')
+    def check_module_configs_integrity(self) -> 'AnalyzerConfig':
+        """
+        Validates the integrity of module configurations within AnalyzerConfig.
+        Ensures that modules listed in weights and stages have corresponding configs.
+        """
+        # Pydantic V2: 'self' is the instance of AnalyzerConfig for mode='after'
+        for name in self.module_weights.keys():
+            if name not in self.module_specific_configs:
+                logger.warning(
+                    f"AnalyzerConfig Integrity: Module '{name}' in 'module_weights' missing from "
+                    f"'module_specific_configs'. May use basic fallback or defaults."
+                )
+
+        for name in self.first_stage_module_names:
+            if name not in self.module_specific_configs:
+                logger.error(
+                    f"AnalyzerConfig Integrity CRITICAL: Module '{name}' in 'first_stage_module_names' "
+                    f"is missing from 'module_specific_configs'. Cannot reliably use in first stage."
+                )
+            else:
+                module_cfg = self.module_specific_configs[name]
+                # 舊寫法 ❌ (直接比較 module_cfg.enabled and self.module_weights.get(name, 0.0) == 0)
+                # 新寫法 ✅ (更清晰的條件分離)
+                if not module_cfg.enabled:
+                    logger.warning(
+                        f"AnalyzerConfig Integrity: First stage module '{name}' is listed but currently disabled."
+                    )
+                elif self.module_weights.get(name, 0.0) == 0.0: # Use 0.0 for float comparison
+                    logger.warning(
+                        f"AnalyzerConfig Integrity: First stage module '{name}' is listed but has zero weight."
+                    )
+        return self
+
+# --- Global Analyzer State ---
+DEFAULT_ANALYZER_CONFIG = AnalyzerConfig()
+# 來源：知識大典.txt – 防錯字典.txt – "KeyError" (防範：確保鍵存在於 brain.REGISTERED_MODULES_BRAIN)
+ALL_AVAILABLE_MODULE_NAMES: List[str] = list(brain.REGISTERED_MODULES_BRAIN.keys()) # type: ignore[attr-defined]
+
+def initialize_analyzer(config_override: AnalyzerConfig | None = None) -> None:
+    """
+    Initializes the analyzer with default or overridden configuration.
+    Logs the configuration summary.
+    """
+    global DEFAULT_ANALYZER_CONFIG
+    if config_override:
+        DEFAULT_ANALYZER_CONFIG = config_override
+        logger.info("Analyzer initialized with overridden configuration.")
+    else:
+        logger.info("Analyzer initialized with default configuration.")
+
+    config_dump_for_log = DEFAULT_ANALYZER_CONFIG.model_dump(
+        mode='json',
+        exclude={'module_weights', 'module_specific_configs'}, # Exclude verbose fields
+        indent=2
+    )
+    logger.info(f"Current Analyzer Config (summary): {config_dump_for_log}")
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(f"Full Analyzer module_weights: {DEFAULT_ANALYZER_CONFIG.module_weights}")
+        # Log specific module configs carefully if they contain sensitive or very large data
+        debug_module_configs = {
+            k: v.model_dump(exclude_none=True) for k, v in DEFAULT_ANALYZER_CONFIG.module_specific_configs.items()
+        }
+        logger.debug(f"Full Analyzer module_specific_configs (non-default values): {debug_module_configs}")
+    logger.info(f"Available brain modules from '{BRAIN_VERSION}': {ALL_AVAILABLE_MODULE_NAMES}")
+
+# 引用：建議.txt - "針對 analyzer.py 的深入建議與強化" - "配置管理的健壯性與動態性"
+def _get_module_specific_config_from_analyzer_config(
+    module_name: str, analyzer_cfg: AnalyzerConfig
+) -> brain.BaseModuleConfig | None: # type: ignore[attr-defined]
+    """
+    Retrieves the Pydantic configuration object for a specific module from AnalyzerConfig.
+    Falls back to basic enabled/weight from brain.DEFAULT_MODULE_CONFIGS if not found in AnalyzerConfig.
+    """
+    module_cfg = analyzer_cfg.module_specific_configs.get(module_name)
+    if module_cfg:
+        return module_cfg
+
+    # Fallback logic for robustness, though ideally AnalyzerConfig should be complete.
+    # 引用：知識大典.txt – 防錯字典.txt – "KeyError" (防範：使用 .get() 或檢查鍵是否存在)
+    if module_name in brain.DEFAULT_MODULE_CONFIGS: # type: ignore[attr-defined]
+        base_brain_cfg = brain.DEFAULT_MODULE_CONFIGS[module_name] # type: ignore[attr-defined]
+        logger.warning(
+            f"Module '{module_name}' config not in AnalyzerConfig.module_specific_configs. "
+            f"Falling back to basic enabled/weight from brain.DEFAULT_MODULE_CONFIGS for '{BRAIN_VERSION}'. "
+            f"This may indicate incomplete AnalyzerConfig or override issues."
         )
-        logger.info(f"Test Case 1 Report: \n{report1.model_dump_json(indent=2)}", extra={"request_id": main_request_id})
-    except ValueError as e:
-        logger.error(f"Error in Test Case 1: {e}", exc_info=True, extra={"request_id": main_request_id})
-    except Exception as e:
-        logger.error(f"Unexpected error in Test Case 1: {e}", exc_info=True, extra={"request_id": main_request_id})
+        # Return a new instance of BaseModuleConfig with basic settings
+        return brain.BaseModuleConfig(enabled=base_brain_cfg.enabled, weight=base_brain_cfg.weight) # type: ignore[attr-defined]
+
+    logger.error(f"Configuration for module '{module_name}' not found in AnalyzerConfig or brain.DEFAULT_MODULE_CONFIGS. Module cannot be used.")
+    return None
 
 
-    # Example 2: Larger grid, specific brains, custom configs
-    example_grid_input2 = GridInput(
-        rows=5,
-        cols=5,
-        revealed_cells=[
-            RevealedCell(row=0, col=1, number=2),
-            RevealedCell(row=2, col=2, number=13),
-            RevealedCell(row=4, col=3, number=24),
+# 引用：建議.txt - "針對 analyzer.py 的深入建議與強化" - "兩階段過濾策略的增強", "分數合併與建議選擇的精緻化"
+# 引用：建議.txt - "中間結果的快取 (Caching)"
+def analyze_grid(
+    grid: np.ndarray,
+    request_id: str | None = None,
+    analyzer_config_override: AnalyzerConfig | None = None,
+) -> List[Dict[str, Any]]:
+    """
+    Analyzes the given grid by dispatching to brain modules and combining their scores.
+    Returns a list of top N suggestions with coordinates, confidence scores, and contributing modules.
+
+    Args:
+        grid: A NumPy array representing the game board.
+        request_id: Optional request identifier for logging.
+        analyzer_config_override: Optional AnalyzerConfig to override the default.
+
+    Returns:
+        A list of dictionaries, each representing a suggestion.
+    """
+    current_analyzer_config = analyzer_config_override if analyzer_config_override else DEFAULT_ANALYZER_CONFIG
+    effective_request_id = request_id if request_id else f"analyzer-{uuid.uuid4()}" # Ensure a request_id
+
+    log_extra = {"request_id": effective_request_id}
+    logger.info(
+        f"Starting grid analysis. Grid shape: {grid.shape}. Config summary: "
+        f"{current_analyzer_config.model_dump(mode='json', exclude={'module_weights', 'module_specific_configs'})}",
+        extra=log_extra,
+    )
+
+    rows, cols = grid.shape
+    # 舊寫法 ❌ (List comprehension might be less readable for complex conditions or many items)
+    # empty_cells_coords: List[Tuple[int, int]] = [
+    #     (r, c) for r in range(rows) for c in range(cols) if grid[r, c] == -1
+    # ]
+    # 新寫法 ✅ (Using np.argwhere for potentially better performance and conciseness on large grids)
+    # 引用：建議.txt - "NumPy 向量化 (Vectorization)" - "條件計算"
+    empty_cells_indices = np.argwhere(grid == -1)
+    empty_cells_coords: List[Tuple[int, int]] = [tuple(coords) for coords in empty_cells_indices.tolist()]
+
+
+    if not empty_cells_coords:
+        logger.info("No empty cells to analyze.", extra=log_extra)
+        return []
+
+    candidate_cells_coords = empty_cells_coords
+    module_score_cache: Dict[str, np.ndarray] = {} # Cache for full score grids
+
+    # --- First Stage Filtering (if enabled and applicable) ---
+    if current_analyzer_config.enable_two_stage_filtering and \
+       len(empty_cells_coords) > current_analyzer_config.first_stage_candidate_count:
+        logger.info(f"Performing first stage filtering with modules: {current_analyzer_config.first_stage_module_names} "
+                    f"and strategy: {current_analyzer_config.first_stage_aggregation_strategy}",
+                    extra=log_extra)
+
+        first_stage_cell_scores: Dict[Tuple[int, int], float] = {cell: 0.0 for cell in empty_cells_coords}
+        active_first_stage_modules_count = 0
+
+        for module_name in current_analyzer_config.first_stage_module_names:
+            if module_name not in brain.REGISTERED_MODULES_BRAIN: # type: ignore[attr-defined]
+                logger.warning(f"First stage module '{module_name}' not registered. Skipping.", extra=log_extra)
+                continue
+
+            module_specific_cfg = _get_module_specific_config_from_analyzer_config(module_name, current_analyzer_config)
+            module_weight = current_analyzer_config.module_weights.get(module_name, 0.0)
+
+            if not module_specific_cfg or not module_specific_cfg.enabled or module_weight == 0.0:
+                logger.debug(f"Skipping disabled/zero-weight/unconfigured first stage module '{module_name}'.", extra=log_extra)
+                continue
+
+            active_first_stage_modules_count += 1
+            # 引用：建議.txt - "中間結果的快取 (Caching)" (雖然此處是第一階段，但get_module_score本身應高效)
+            score_grid = brain.get_module_score(module_name, grid, config_override=module_specific_cfg, request_id=effective_request_id) # type: ignore[attr-defined]
+            for r_empty, c_empty in empty_cells_coords:
+                first_stage_cell_scores[(r_empty, c_empty)] += score_grid[r_empty, c_empty] * module_weight
+        
+        if active_first_stage_modules_count > 0:
+            if current_analyzer_config.first_stage_aggregation_strategy == "average":
+                for cell_coord_fs in first_stage_cell_scores: # Iterate over keys
+                    first_stage_cell_scores[cell_coord_fs] /= active_first_stage_modules_count
+            # For "sum", scores are already weighted sums.
+        
+        sorted_first_stage_cells = sorted(first_stage_cell_scores.items(), key=lambda item: item[1], reverse=True)
+        candidate_cells_coords = [
+            coords for coords, score in sorted_first_stage_cells[:current_analyzer_config.first_stage_candidate_count]
         ]
-    )
-    custom_configs_ex2 = {
-        "Brain1": {"weight": 1.5, "proximity_bonus": 0.15},
-        "Brain3": {"enabled": False} # Disable Brain3 for this run
-    }
-    logger.info(f"Test Case 2 Input: {example_grid_input2.model_dump_json(indent=2)}", extra={"request_id": main_request_id})
-    logger.info(f"Test Case 2 Custom Configs: {custom_configs_ex2}", extra={"request_id": main_request_id})
+        logger.info(f"First stage filtering selected {len(candidate_cells_coords)} candidates from {len(empty_cells_coords)} empty cells.",
+                    extra=log_extra)
+    else:
+        logger.info(f"Skipping two-stage filtering. Analyzing all {len(empty_cells_coords)} empty cells.", extra=log_extra)
 
-    try:
-        report2 = run_grid_analysis(
-            grid_input=example_grid_input2,
-            selected_brain_names=["Brain1", "Brain2"], # Only use Brain1 and Brain2
-            custom_brain_configs=custom_configs_ex2,
-            request_id=main_request_id
+    # --- Second Stage Analysis (on candidate cells) ---
+    final_scores: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    modules_to_run_second_stage = [
+        m_name for m_name in ALL_AVAILABLE_MODULE_NAMES
+        if (m_config := _get_module_specific_config_from_analyzer_config(m_name, current_analyzer_config)) and \
+           m_config.enabled and \
+           current_analyzer_config.module_weights.get(m_name, 0.0) > 0.0
+    ]
+
+    if not modules_to_run_second_stage:
+        logger.warning("No modules enabled or weighted for second stage analysis. Returning empty.", extra=log_extra)
+        return []
+
+    logger.info(f"Second stage analysis using modules: {modules_to_run_second_stage} on {len(candidate_cells_coords)} candidates.",
+                extra=log_extra)
+
+    # Pre-calculate all required module score grids for the second stage
+    # 引用：建議.txt - "中間結果的快取 (Caching)" - 避免重複計算 (analyzer.py 的核心優化)
+    for module_name in modules_to_run_second_stage:
+        if module_name not in module_score_cache: # Only compute if not already cached (e.g. from a hypothetical shared cache)
+            module_specific_cfg = _get_module_specific_config_from_analyzer_config(module_name, current_analyzer_config)
+            if not module_specific_cfg: # Should have been caught by list comprehension filter
+                logger.error(f"Unexpected: Config for second stage module {module_name} missing. Skipping pre-calculation.", extra=log_extra)
+                continue
+            logger.debug(f"Pre-calculating full score grid for second stage module: {module_name}", extra=log_extra)
+            module_score_cache[module_name] = brain.get_module_score( # type: ignore[attr-defined]
+                module_name, grid, config_override=module_specific_cfg, request_id=effective_request_id
+            )
+
+    for r_empty, c_empty in candidate_cells_coords:
+        cell_aggregated_score: float = 0.0
+        total_weight_applied: float = 0.0
+        contributing_module_details: Dict[str, float] = {}
+
+        for module_name in modules_to_run_second_stage:
+            module_weight = current_analyzer_config.module_weights.get(module_name, 1.0) # Already filtered for >0 weight
+            
+            score_grid_for_module = module_score_cache.get(module_name)
+            if score_grid_for_module is None:
+                logger.error(f"Score grid for {module_name} not found in cache for cell ({r_empty},{c_empty}). Skipping.",
+                               extra=log_extra)
+                continue
+            
+            cell_score_from_module = score_grid_for_module[r_empty, c_empty]
+            cell_aggregated_score += cell_score_from_module * module_weight
+            total_weight_applied += module_weight
+            contributing_module_details[module_name] = round(cell_score_from_module, 4)
+
+        final_cell_score = 0.0
+        # 引用：知識大典.txt – 防錯字典.txt – "ArithmeticError" (防範 ZeroDivisionError)
+        if abs(total_weight_applied) > 1e-9: # Use abs for safety, though weights should be positive
+            if current_analyzer_config.final_score_combination_strategy == "weighted_average":
+                final_cell_score = cell_aggregated_score / total_weight_applied
+            # Add other strategies here if implemented
+            else: # Fallback to weighted_average
+                 final_cell_score = cell_aggregated_score / total_weight_applied
+        elif cell_aggregated_score != 0.0 : # Weights are zero, but score is not. Log this anomaly.
+             logger.warning(f"Cell ({r_empty},{c_empty}) has non-zero aggregated score ({cell_aggregated_score}) but total_weight_applied is near zero. Setting final score to 0.", extra=log_extra)
+
+        final_scores[(r_empty, c_empty)] = {
+            "score": final_cell_score,
+            "details": contributing_module_details
+        }
+    
+    # Sort suggestions by final score
+    sorted_suggestions = sorted(final_scores.items(), key=lambda item: item[1]["score"], reverse=True)
+
+    top_n_results: List[Dict[str, Any]] = []
+    for i in range(min(current_analyzer_config.top_n_suggestions, len(sorted_suggestions))):
+        coords, score_info = sorted_suggestions[i]
+        top_n_results.append(
+            {
+                "coords": coords,
+                "confidence_score": round(score_info["score"], 4),
+                "contributing_modules": score_info["details"]
+            }
         )
-        logger.info(f"Test Case 2 Report: \n{report2.model_dump_json(indent=2)}", extra={"request_id": main_request_id})
-    except ValueError as e:
-        logger.error(f"Error in Test Case 2: {e}", exc_info=True, extra={"request_id": main_request_id})
-    except Exception as e:
-        logger.error(f"Unexpected error in Test Case 2: {e}", exc_info=True, extra={"request_id": main_request_id})
+    
+    logger.info(f"Analysis complete. Top {len(top_n_results)} suggestions generated.", extra=log_extra)
+    if logger.isEnabledFor(logging.DEBUG):
+         logger.debug(f"Top suggestions details: {top_n_results}", extra=log_extra)
+    return top_n_results
 
-    # Example 3: Empty revealed cells (all covered)
-    example_grid_input3 = GridInput(rows=2, cols=2, revealed_cells=[])
-    logger.info(f"Test Case 3 Input: {example_grid_input3.model_dump_json(indent=2)}", extra={"request_id": main_request_id})
-    try:
-        report3 = run_grid_analysis(grid_input=example_grid_input3, request_id=main_request_id)
-        logger.info(f"Test Case 3 Report: \n{report3.model_dump_json(indent=2)}", extra={"request_id": main_request_id})
-    except ValueError as e:
-        logger.error(f"Error in Test Case 3: {e}", exc_info=True, extra={"request_id": main_request_id})
-    except Exception as e:
-        logger.error(f"Unexpected error in Test Case 3: {e}", exc_info=True, extra={"request_id": main_request_id})
-
-# 自检报告：
-# - 语法检查：通过 (Mentally reviewed)
-# - 括号配对：无遗漏 (Mentally reviewed)
-# - 标识符定义：无未定义/拼写错误 (Mentally reviewed)
-# - 测试环境：Python 3.11+
-# - SOP要求：Pydantic (used for all models), BaseSettings + .env (AnalyzerAppSettings),
-#   logging with request_id (supported via parameter and logger format).
-# - SOP要求：mypy/pyright/ruff/pre-commit checks - would be external to the code itself.
-# - SOP要求：禁用 Any、object、Optional - PEP 604 (e.g. `int | None`) used extensively.
+# Example initialization (can be called from main.py or during app startup)
+# initialize_analyzer()
