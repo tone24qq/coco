@@ -1,66 +1,225 @@
-import numpy as np
+# new_module.py
 
-def ex27(grid: np.ndarray) -> np.ndarray:
-    """
-    新增模式：跨行連續數列檢測。
-    將整個盤面視為按行連續展開的一維序列，若整體為等差序列且僅缺少一個數字，則標記該缺失位置。
-    """
-    output = np.zeros(grid.shape, dtype=float)
-    # 將盤面按行優先展平為一維
-    rows, cols = grid.shape
-    flat = grid.flatten()
-    # 若整體僅有一處缺失
-    missing_indices = np.where(flat == -1)[0]
-    if flat.size == 0 or missing_indices.size != 1:
-        return output  # 僅處理單一缺失的情況
-    miss_idx = missing_indices[0]
-    known = np.delete(flat, miss_idx)
-    # 判斷已知部分是否等差序列（允許序列首尾缺一值）
-    if known.size < 2:
-        return output
-    diffs = np.diff(known)
-    # 以已知部分最常見的差值作為序列公差
-    # （這裡假設除缺失處外序列公差一致）
-    diff_values, diff_counts = np.unique(diffs, return_counts=True)
-    if diff_values.size == 0:
-        return output
-    common_diff = diff_values[np.argmax(diff_counts)]
-    # 檢查是否除一處外所有差值相等且那一處差值正好是 common_diff 的兩倍
-    double_gap_indices = np.where(diffs == 2 * common_diff)[0]
-    if diffs.size > 0 and double_gap_indices.size == 1:
-        # 存在一個雙倍差，認定那裡是缺失點
-        pass
-    # 確認所有已知差值等於 common_diff
-    if np.all((diffs == common_diff) | (diffs == 2 * common_diff)):
-        # 預測缺失值可能位置合理，標記輸出
-        # 換算缺失索引回 2D 座標
-        r, c = divmod(miss_idx, cols)
-        output[r, c] = 1.0
-    return output
+import math
+import random
 
-def ex28(grid: np.ndarray) -> np.ndarray:
+class ProbabilityModule:
     """
-    新增模式：跨列連續數列檢測。
-    將盤面視為按列連續展開的一維序列進行等差序列檢測，原理同 ex27。
+    对所有隐藏格均匀分配概率（基线模块）。
     """
-    output = np.zeros(grid.shape, dtype=float)
-    # 將盤面按列優先展平為一維
-    rows, cols = grid.shape
-    flat = grid.T.flatten()  # 轉置後展平，相當於列序展開
-    missing_indices = np.where(flat == -1)[0]
-    if flat.size == 0 or missing_indices.size != 1:
-        return output
-    miss_idx = missing_indices[0]
-    known = np.delete(flat, miss_idx)
-    if known.size < 2:
-        return output
-    diffs = np.diff(known)
-    diff_values, diff_counts = np.unique(diffs, return_counts=True)
-    if diff_values.size == 0:
-        return output
-    common_diff = diff_values[np.argmax(diff_counts)]
-    if np.all((diffs == common_diff) | (diffs == 2 * common_diff)):
-        # 換算缺失索引回原始 2D 座標（列序展開轉回矩陣坐標）
-        c, r = divmod(miss_idx, rows)
-        output[r, c] = 1.0
-    return output
+    def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
+        rows = len(grid)
+        cols = len(grid[0]) if rows else 0
+        hidden = [
+            i * cols + j + 1
+            for i in range(rows)
+            for j in range(cols)
+            if grid[i][j] == -1
+        ]
+        if not hidden:
+            return {}
+        prob = 1.0 / len(hidden)
+        return {pos: prob for pos in hidden}
+
+
+class AdjacencyModule:
+    """
+    根据邻近已揭示数字与目标数字的差距，对隐藏格打分。
+    如果相邻格数字与 target 越接近，该隐藏格得分越高。
+    """
+    def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
+        rows = len(grid)
+        cols = len(grid[0]) if rows else 0
+        scores: dict[int, float] = {}
+        directions = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+
+        for i in range(rows):
+            for j in range(cols):
+                if grid[i][j] == -1:
+                    pos_id = i * cols + j + 1
+                    score = 0.0
+                    for di, dj in directions:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < rows and 0 <= nj < cols and grid[ni][nj] != -1:
+                            diff = abs(grid[ni][nj] - target)
+                            score += 1.0 / (diff + 1.0)
+                    scores[pos_id] = score
+
+        # 如果全为 0，就退回均匀分布
+        if scores and all(v == 0 for v in scores.values()):
+            for k in scores:
+                scores[k] = 1.0
+
+        return scores
+
+
+class FrequencyModule:
+    """
+    将所有数字按「低 ≤ N/2」、「高 > N/2」分两类，统计四个象限内已揭示 目标类别 的个数，
+    选择已揭示最少的象限，给予该象限隐藏格更高权重。
+    """
+    def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
+        rows = len(grid)
+        cols = len(grid[0]) if rows else 0
+        N = rows * cols
+        if N == 0:
+            return {}
+
+        half = N / 2.0
+        target_cat = 'low' if target <= half else 'high'
+
+        mid_row = rows // 2
+        mid_col = cols // 2
+        quad_count = {'Q1': 0, 'Q2': 0, 'Q3': 0, 'Q4': 0}
+        quad_hidden: dict[str, list[int]] = {'Q1': [], 'Q2': [], 'Q3': [], 'Q4': []}
+
+        for i in range(rows):
+            for j in range(cols):
+                if i < mid_row:
+                    q = 'Q1' if j < mid_col else 'Q2'
+                else:
+                    q = 'Q3' if j < mid_col else 'Q4'
+
+                if grid[i][j] == -1:
+                    quad_hidden[q].append(i * cols + j + 1)
+                else:
+                    val_cat = 'low' if grid[i][j] <= half else 'high'
+                    if val_cat == target_cat:
+                        quad_count[q] += 1
+
+        min_cnt = min(quad_count.values())
+        candidates = [q for q, cnt in quad_count.items() if cnt == min_cnt]
+
+        scores: dict[int, float] = {}
+        for q, hidden_list in quad_hidden.items():
+            base = 2.0 if q in candidates else 1.0
+            for pos in hidden_list:
+                scores[pos] = base
+
+        return scores
+
+
+class PatternModule:
+    """
+    深度检测“行范围”或“列余数”两种排列模式：
+      1. 行范围模式：假设每行为一个连续数字区间（如 8×10 卡：1–10、11–20…）
+      2. 列余数模式：假设每列数字末位相同（第 j 列对应末位 j+1，最后一列对应 0）
+    如果都不符合，则退回“半区启发式”：target 属于后半片区域则偏好下半行，否则偏好上半行。
+    """
+    def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
+        rows = len(grid)
+        cols = len(grid[0]) if rows else 0
+        if rows == 0 or cols == 0:
+            return {}
+
+        range_size = math.ceil((rows * cols) / rows)
+        # 检测“行范围模式”
+        row_pattern = True
+        for i in range(rows):
+            for j in range(cols):
+                if grid[i][j] != -1:
+                    val = grid[i][j]
+                    start = i * range_size + 1
+                    end = (i + 1) * range_size
+                    if not (start <= val <= end):
+                        row_pattern = False
+                        break
+            if not row_pattern:
+                break
+
+        # 检测“列余数模式”
+        col_pattern = True
+        for j in range(cols):
+            for i in range(rows):
+                if grid[i][j] != -1:
+                    val = grid[i][j]
+                    last_digit = val % 10
+                    expected = 0 if j == cols - 1 else (j + 1)
+                    if last_digit != expected:
+                        col_pattern = False
+                        break
+            if not col_pattern:
+                break
+
+        scores: dict[int, float] = {}
+        if row_pattern:
+            target_row = (target - 1) // range_size
+            if 0 <= target_row < rows:
+                for j in range(cols):
+                    if grid[target_row][j] == -1:
+                        pos_id = target_row * cols + j + 1
+                        scores[pos_id] = 1.0
+
+        elif col_pattern:
+            last_digit = target % 10
+            target_col = (last_digit - 1) if last_digit != 0 else (cols - 1)
+            if 0 <= target_col < cols:
+                for i in range(rows):
+                    if grid[i][target_col] == -1:
+                        pos_id = i * cols + target_col + 1
+                        scores[pos_id] = 1.0
+
+        else:
+            mid = (rows * cols) / 2.0
+            for i in range(rows):
+                for j in range(cols):
+                    if grid[i][j] == -1:
+                        pos_id = i * cols + j + 1
+                        if target > mid:
+                            scores[pos_id] = 1.5 if i >= rows // 2 else 1.0
+                        else:
+                            scores[pos_id] = 1.5 if i < rows // 2 else 1.0
+
+        return scores
+
+
+class SampleMatchModule:
+    """
+    如果部分揭示与已知样本完全或高度匹配，就用该样本位置直接预测 target。
+    否则返回空字典，让其他模块统筹判断。
+    """
+    def __init__(self):
+        # 示例：随机生成一个 8×10 样本；实际请替换为读取你自己的 Excel/ZIP 样本
+        N = 8 * 10
+        nums = list(range(1, N + 1))
+        random.shuffle(nums)
+        sample1 = [nums[i*10:(i+1)*10] for i in range(8)]
+        self.samples = [sample1]
+
+    def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
+        rows = len(grid)
+        cols = len(grid[0]) if rows else 0
+        if rows == 0 or cols == 0:
+            return {}
+
+        best_sample = None
+        best_score = -1.0
+        for sample in self.samples:
+            if len(sample) != rows or len(sample[0]) != cols:
+                continue
+            match = 0
+            total_revealed = 0
+            for i in range(rows):
+                for j in range(cols):
+                    if grid[i][j] != -1:
+                        total_revealed += 1
+                        if sample[i][j] == grid[i][j]:
+                            match += 1
+            if total_revealed == 0:
+                continue
+            sc = match / total_revealed
+            if sc > best_score:
+                best_score = sc
+                best_sample = sample
+            if sc == 1.0:
+                break
+
+        scores: dict[int, float] = {}
+        if best_sample and best_score > 0:
+            for i in range(rows):
+                for j in range(cols):
+                    if best_sample[i][j] == target and grid[i][j] == -1:
+                        pos_id = i * cols + j + 1
+                        scores[pos_id] = 1.0 if best_score == 1.0 else 0.5
+
+        return scores
