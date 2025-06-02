@@ -10,6 +10,9 @@ from typing import Any, Callable, Dict, List, Literal, Set, Tuple # Literal for 
 import brain1
 import brain2
 import brain3
+# 選擇要用哪個大腦
+BRAIN_VERSION = os.environ.get("BRAIN_VERSION", "brain3")  # 預設用 brain3.py
+brain = importlib.import_module(BRAIN_VERSION)
 # 2. 第三方庫導入
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
