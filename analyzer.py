@@ -31,7 +31,7 @@ except ImportError as e:
         if not all(hasattr(brain, attr) for attr in ['DEFAULT_MODULE_CONFIGS', 'REGISTERED_MODULES_BRAIN', 'BaseModuleConfig', 'get_module_score']):
             raise ImportError(f"Fallback brain module '{BRAIN_VERSION_DEFAULT}' is also missing required attributes. Analyzer cannot function.")
     except ImportError as e_fallback:
-        logging.critical(f"CRITICAL: Failed to import fallback brain module '{BRAIN_VERSION_DEFAULT}': {e_fallback}. Analyzer will not work.", exc_info=True)
+        logging.critical(f"CRITICAL: Failed to import fallback brain3 module '{BRAIN_VERSION_DEFAULT}': {e_fallback}. Analyzer will not work.", exc_info=True)
         # Depending on application requirements, might raise SystemExit here
         raise # Re-raise the critical error to prevent app from starting in a broken state
 
