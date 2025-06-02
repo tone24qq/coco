@@ -8,21 +8,21 @@ from typing import List, Tuple, Any, Optional, Dict
 
 from pydantic import BaseModel, Field
 
-from new_module import PuzzleTensorOps  # 外接张量模块
-
 logger = logging.getLogger(__name__)
 
 
 class BaseModuleConfig(BaseModel):
     """
-    基础模块配置：- enabled: bool - weight: float - 其余模块可添加特定字段
+    基础模块配置：通用字段（enabled、weight），以及各模块可能使用的额外参数。
     """
     enabled: bool = Field(default=True, description="模块启用/禁用开关")
     weight: float = Field(default=1.0, ge=0.0, description="模块权重")
-    # GM17 特定参数示例
+    # GM17 用到的局部熵半径
     radius: Optional[int] = Field(default=1, ge=1, description="局部熵半径")
-    # GM24 特定参数示例
-    historical_sequence: Optional[List[Tuple[int, int]]] = Field(default=None, description="揭露历史顺序")
+    # GM24 用到的历史揭露序列
+    historical_sequence: Optional[List[Tuple[int, int]]] = Field(
+        default=None, description="揭露历史顺序"
+    )
 
 
 def EXT_GM13_Sequence_Diversity_Vec(
@@ -47,7 +47,7 @@ def EXT_GM13_Sequence_Diversity_Vec(
             potential_vals = list(set(range(1, max_val + 1)) - set(grid.flatten()))
             best_div = 0.0
             for val in potential_vals:
-                # 检查行、列、对角线可能的等差/等值
+                # 检查四个方向的连线
                 for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
                     seq_count = 1
                     # 向前
@@ -93,18 +93,15 @@ def EXT_GM14_Risk_Assessment_Vec(
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
-    total_empty = np.sum(grid == -1)
+    total_empty = int(np.sum(grid == -1))
 
     for r in range(rows):
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            # 若填入后剩余空格数
             rem_empty = total_empty - 1
-            # 简化示例：风险 = rem_empty / total_empty
-            scores[r, c] = float(rem_empty) / (
-                float(total_empty) if total_empty > 0 else 1.0
-            )
+            # 示例风险值：剩余空格比率
+            scores[r, c] = float(rem_empty) / (float(total_empty) if total_empty > 0 else 1.0)
 
     mask = (grid == -1)
     if np.any(mask):
@@ -188,16 +185,19 @@ def EXT_GM16_Harmonic_Centrality_Vec(
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
+    # 在函数内部导入 PuzzleTensorOps，避免循环导入
+    from new_module import PuzzleTensorOps
+
     pto = PuzzleTensorOps(grid)
-    # 假设 PTo 提供 global_nodes_positions()
-    # nodes: list of (r,c) 包括空格和已填; 强调空格
+    # 假设 PuzzleTensorOps.get_indices() 返回两个 shape=(rows,cols) 的数组
     rr, cc = pto.get_indices()
     mask = (grid == -1)
     coords = np.stack(np.where(mask), axis=1)
-    scores = np.zeros_like(grid, dtype=float)
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
 
     for (r, c) in coords:
-        # 对每个空格计算到所有其他节点的距离倒数和
+        # 计算该空格到所有已揭示位置的距离倒数和
         all_nodes = np.stack(np.where(grid != -1), axis=1)
         if all_nodes.size == 0:
             scores[r, c] = 0.0
@@ -232,8 +232,12 @@ def EXT_GM17_Local_Entropy_Vec(
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
+    # 在函数内部导入 PuzzleTensorOps，避免循环导入
+    from new_module import PuzzleTensorOps
+
     pto = PuzzleTensorOps(grid)
     ent = pto.local_entropy(radius=config.radius)
+
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     mask = (grid == -1)
@@ -265,7 +269,11 @@ def EXT_GM18_RL_Value_Estimation_Vec(
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
-    # 示例：混合行密度（GM1）、中心控制（GM9）和间隙（GM7）
+    # 示例：混合 GM1、GM7、GM9 的得分
+    # 这里只做示例性调用，真实逻辑可更复杂
+    from brain1 import EXT_GM1_Proximity_Vec, EXT_GM2_Heterogeneity_Vec
+    from brain2 import EXT_GM7_Numeric_Gaps_Vec, EXT_GM9_Center_Control_Vec
+
     gm1 = EXT_GM1_Proximity_Vec(grid, config, request_id)
     gm7 = EXT_GM7_Numeric_Gaps_Vec(grid, config, request_id)
     gm9 = EXT_GM9_Center_Control_Vec(grid, config, request_id)
@@ -313,7 +321,6 @@ def EXT_GM19_SkipPattern_Vec(
                         seq_indices.append(grid[rr, cc])
                     else:
                         seq_indices.append(-1)
-                # 计算跳格比例
                 filled = [v for v in seq_indices if v != -1]
                 if len(filled) < 2:
                     continue
@@ -346,7 +353,6 @@ def EXT_GM20_SkipPattern_Confidence_Vec(
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            # 若满足 GM19，再检查等差三连
             if base_scores[r, c] > 0:
                 for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
                     neighbors = []
@@ -375,14 +381,14 @@ def EXT_GM21_ClusterBalance_Vec(
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
+    # 在函数内部导入 PuzzleTensorOps，避免循环依赖
+    from new_module import PuzzleTensorOps
+
     rows, cols = grid.shape
-    # 将盘面划分为 3×3 区域
-    region_rows = 3
-    region_cols = 3
+    region_rows, region_cols = 3, 3
     r_step = math.ceil(rows / region_rows)
     c_step = math.ceil(cols / region_cols)
 
-    # 统计每个区域已揭露格子数
     region_counts = np.zeros((region_rows, region_cols), dtype=int)
     revealed_coords = np.stack(np.where(grid != -1), axis=1)
     for (r, c) in revealed_coords:
@@ -390,14 +396,12 @@ def EXT_GM21_ClusterBalance_Vec(
         cc = min(c // c_step, region_cols - 1)
         region_counts[rr, cc] += 1
 
-    # 计算区域分布标准差
     counts_list = region_counts.flatten().tolist()
     mean_cnt = float(np.mean(counts_list))
     var_cnt = float(np.mean([(x - mean_cnt) ** 2 for x in counts_list]))
     std_cnt = math.sqrt(var_cnt)
 
-    # 连通分量（只针对已揭露）
-    mask_revealed = grid != -1
+    mask_revealed = (grid != -1)
     pto = PuzzleTensorOps(grid)
     comp_sizes = pto.connected_component_sizes(mask=mask_revealed)
 
@@ -406,8 +410,6 @@ def EXT_GM21_ClusterBalance_Vec(
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            # 模拟将其标记为已揭露后所在区域变化
-            # 复制 region_counts
             tmp_counts = region_counts.copy()
             rr = min(r // r_step, region_rows - 1)
             cc = min(c // c_step, region_cols - 1)
@@ -416,7 +418,6 @@ def EXT_GM21_ClusterBalance_Vec(
             mean2 = float(np.mean(cnts))
             var2 = float(np.mean([(x - mean2) ** 2 for x in cnts]))
             std2 = math.sqrt(var2)
-            # 平衡分：标准差减小越多越好
             bal_score = max(0.0, std_cnt - std2)
             scores[r, c] = bal_score
 
@@ -449,7 +450,6 @@ def EXT_GM22_CoOccurrence_Vec(
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
 
-    # 统计当前盘面已揭露数值的邻近共现次数
     revealed_coords = np.stack(np.where(grid != -1), axis=1)
     for r in range(rows):
         for c in range(cols):
@@ -487,12 +487,10 @@ def EXT_GM23_MotifDetection_Vec(
     if not config.enabled:
         return np.zeros_like(grid, dtype=float)
 
-    # 示例只检测 “三连” 模式
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
 
     motifs = []
-    # 生成所有可能的三连模式坐标组合 (行、列、对角线)
     for dr, dc in [(0, 1), (1, 0), (1, 1), (1, -1)]:
         for r in range(rows):
             for c in range(cols):
@@ -503,7 +501,6 @@ def EXT_GM23_MotifDetection_Vec(
     for motif in motifs:
         vals = [grid[rr, cc] for rr, cc in motif]
         if vals.count(vals[0]) == 2 and -1 in vals:
-            # 若存在两已揭露且相同，记录缺失位置
             target_val = vals[0]
             for idx, (rr, cc) in enumerate(motif):
                 if grid[rr, cc] == -1:
@@ -542,7 +539,6 @@ def EXT_GM24_TemporalCoherence_Vec(
     if not seq:
         return scores
 
-    # 简单：若当前空格在历史序列中下一个位置，则高分
     last = seq[-1]
     for r in range(rows):
         for c in range(cols):
@@ -580,12 +576,11 @@ def EXT_GM25_StrategicDepth_Vec(
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
 
-    # 简化：模拟两步后赢奖概率（示例）
+    # 简化示例：每个空格赋固定分值
     for r in range(rows):
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            # 假设若此处揭露数字为 1，则后续都有价值
             scores[r, c] = 0.5
 
     mask_empty = (grid == -1)
@@ -617,8 +612,7 @@ def EXT_GM26_ContextualFlexibility_Vec(
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
 
-    # 简化：根据空格剩余数量调整分数
-    total_empty = np.sum(grid == -1)
+    total_empty = int(np.sum(grid == -1))
     for r in range(rows):
         for c in range(cols):
             if grid[r, c] != -1:
