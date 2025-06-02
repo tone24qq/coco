@@ -9,6 +9,13 @@ class GridInput(BaseModel):
 
 app = FastAPI()
 
+@app.get("/")
+async def root():
+    """
+    根路由始終回傳 200，避免 404。
+    """
+    return {"status": "Service is running"}
+
 @app.post("/analyze")
 async def analyze(input: GridInput = Body(...)):
     """
