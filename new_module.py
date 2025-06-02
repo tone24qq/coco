@@ -5,7 +5,7 @@ import random
 
 class ProbabilityModule:
     """
-    对所有隐藏格均匀分配概率（基线）。
+    對所有隱藏格均勻分配概率（基線）。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -24,8 +24,8 @@ class ProbabilityModule:
 
 class AdjacencyModule:
     """
-    根据邻近已知数值与 target 的差距打分。
-    差距越小，得分越高；如果所有相邻都没贡献，则退回均匀分布（设为 1）。
+    根據鄰近已揭示數字與 target 的差距打分。
+    差距越小，分數越高；若都沒鄰近貢獻，則將所有隱藏格設為 1。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -54,9 +54,8 @@ class AdjacencyModule:
 
 class FrequencyModule:
     """
-    将所有数字按“低 ≤ N/2”、“高 > N/2”分两类，
-    统计四个象限内与 target 同类已揭示数字的数量，
-    选择数量最少的象限，将该象限的隐藏格设为权重 2.0，其他象限设为 1.0。
+    將所有數字分「低 ≤ N/2」與「高 > N/2」，統計四象限內已揭示目標類別數量，
+    給被選中（最少已揭示）的象限內隱藏格權重 2，其餘為 1。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -101,10 +100,10 @@ class FrequencyModule:
 
 class PatternModule:
     """
-    深度检测“行范围”或“列余数”两种排列：
-      1. 行范围模式：假设每行是连续数值区间（如 1–10、11–20…）
-      2. 列余数模式：假设每列数字末位相同（第 j 列对应末位 j+1，最后一列对应 0）
-    如果都不成立，则退回“半区启发式”：若 target > N/2，则偏好下半行，否则偏好上半行。
+    深度檢測「行範圍模式」或「列餘數模式」：
+      1. 行範圍模式：假設每行是連續號段 (e.g. 1–10、11–20…)。
+      2. 列餘數模式：假設每列數字末位相同 (j 列末位 = j+1，最後一列末位 = 0)。
+    若皆不符，則套用「半區啟發式」：target > N/2 偏好下半，否則偏好上半。
     """
     def predict(self, grid: list[list[int]], target: int) -> dict[int, float]:
         rows = len(grid)
@@ -114,7 +113,7 @@ class PatternModule:
 
         range_size = math.ceil((rows * cols) / rows)
 
-        # 检测“行范围模式”
+        # 檢測行範圍模式
         row_pattern = True
         for i in range(rows):
             for j in range(cols):
@@ -128,7 +127,7 @@ class PatternModule:
             if not row_pattern:
                 break
 
-        # 检测“列余数模式”
+        # 檢測列餘數模式
         col_pattern = True
         for j in range(cols):
             for i in range(rows):
@@ -176,11 +175,10 @@ class PatternModule:
 
 class SampleMatchModule:
     """
-    如果部分揭示与已知样本高度匹配，就用该样本位置预测 target；
-    否则返回空字典，让其他模块决定。
+    如果部分揭示與樣本吻合度高，直接用該樣本位置預測 target；否則回空字典。
     """
     def __init__(self):
-        # 示例：随机生成一个 8×10 样本；你可以改为加载你的真实样本
+        # 範例：隨機生成 8×10 樣本，實際請替換為你的 Excel/ZIP 樣本
         N = 8 * 10
         nums = list(range(1, N + 1))
         random.shuffle(nums)
