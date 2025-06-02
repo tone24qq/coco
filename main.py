@@ -3,7 +3,7 @@
 import os
 import logging
 import asyncio
-from typing import Optional
+from typing import Optional, Any
 
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
@@ -11,10 +11,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 
-from pydantic import BaseSettings, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 from analyzer import compute_combined_scores
-from brain1 import EXT_GM1_Proximity_Vec, EXT_GM2_Heterogeneity_Vec, EXT_GM3_PotentialField_Vec
+from brain1 import (
+    EXT_GM1_Proximity_Vec,
+    EXT_GM2_Heterogeneity_Vec,
+    EXT_GM3_PotentialField_Vec,
+    BaseModuleConfig as GM1_3_Config,
+)
 from brain2 import (
     EXT_GM4_Spatial_Auto_Corr_Vec,
     EXT_GM5_Line_Completion_Vec,
@@ -25,6 +31,7 @@ from brain2 import (
     EXT_GM10_BlockingValue_Vec,
     EXT_GM11_PairCorrelation_Vec,
     EXT_GM12_IslandAnalysis_Vec,
+    BaseModuleConfig as GM4_12_Config,
 )
 from brain3 import (
     EXT_GM13_Sequence_Diversity_Vec,
@@ -41,8 +48,8 @@ from brain3 import (
     EXT_GM24_TemporalCoherence_Vec,
     EXT_GM25_StrategicDepth_Vec,
     EXT_GM26_ContextualFlexibility_Vec,
+    BaseModuleConfig as GM13_26_Config,
 )
-from brain1 import BaseModuleConfig
 
 logger = logging.getLogger("ScratchcardAnalyzerAPI")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -128,9 +135,9 @@ async def healthz():
 
 @app.post("/analyze")
 async def analyze(request: Request):
-    payload = await request.json()
     try:
-        grid = payload["grid"]
+        payload = await request.json()
+        grid = payload.get("grid")
         if not isinstance(grid, list) or not all(isinstance(row, list) for row in grid):
             raise ValueError("Invalid grid format")
         import numpy as np
@@ -140,72 +147,43 @@ async def analyze(request: Request):
         logger.error(f"[analyze] 🛑 Invalid input: {e}")
         raise HTTPException(status_code=400, detail="Invalid input format")
 
-    # Example: All modules use the same BaseModuleConfig for simplicity; can be extended
-    default_config = BaseModuleConfig(enabled=True, weight=1.0)
+    # Construct configurations for GM1–GM26
+    default_cfg_1_3 = GM1_3_Config(enabled=True, weight=1.0)
+    default_cfg_4_12 = GM4_12_Config(enabled=True, weight=1.0)
+    default_cfg_13_26 = GM13_26_Config(enabled=True, weight=1.0)
+
     module_configs = {
-        "GM1": default_config,
-        "GM2": default_config,
-        "GM3": default_config,
-        "GM4": default_config,
-        "GM5": default_config,
-        "GM6": default_config,
-        "GM7": default_config,
-        "GM8": default_config,
-        "GM9": default_config,
-        "GM10": default_config,
-        "GM11": default_config,
-        "GM12": default_config,
-        "GM13": default_config,
-        "GM14": default_config,
-        "GM15": default_config,
-        "GM16": default_config,
-        "GM17": default_config,
-        "GM18": default_config,
-        "GM19": default_config,
-        "GM20": default_config,
-        "GM21": default_config,
-        "GM22": default_config,
-        "GM23": default_config,
-        "GM24": default_config,
-        "GM25": default_config,
-        "GM26": default_config,
+        "GM1": default_cfg_1_3,
+        "GM2": default_cfg_1_3,
+        "GM3": default_cfg_1_3,
+        "GM4": default_cfg_4_12,
+        "GM5": default_cfg_4_12,
+        "GM6": default_cfg_4_12,
+        "GM7": default_cfg_4_12,
+        "GM8": default_cfg_4_12,
+        "GM9": default_cfg_4_12,
+        "GM10": default_cfg_4_12,
+        "GM11": default_cfg_4_12,
+        "GM12": default_cfg_4_12,
+        "GM13": default_cfg_13_26,
+        "GM14": default_cfg_13_26,
+        "GM15": default_cfg_13_26,
+        "GM16": default_cfg_13_26,
+        "GM17": default_cfg_13_26,
+        "GM18": default_cfg_13_26,
+        "GM19": default_cfg_13_26,
+        "GM20": default_cfg_13_26,
+        "GM21": default_cfg_13_26,
+        "GM22": default_cfg_13_26,
+        "GM23": default_cfg_13_26,
+        "GM24": default_cfg_13_26,
+        "GM25": default_cfg_13_26,
+        "GM26": default_cfg_13_26,
     }
 
-    # Collect module functions in order
-    module_functions = [
-        ("GM1", EXT_GM1_Proximity_Vec),
-        ("GM2", EXT_GM2_Heterogeneity_Vec),
-        ("GM3", EXT_GM3_PotentialField_Vec),
-        ("GM4", EXT_GM4_Spatial_Auto_Corr_Vec),
-        ("GM5", EXT_GM5_Line_Completion_Vec),
-        ("GM6", EXT_GM6_Symmetry_Potential_Vec),
-        ("GM7", EXT_GM7_Numeric_Gaps_Vec),
-        ("GM8", EXT_GM8_Edge_Affinity_Vec),
-        ("GM9", EXT_GM9_Center_Control_Vec),
-        ("GM10", EXT_GM10_BlockingValue_Vec),
-        ("GM11", EXT_GM11_PairCorrelation_Vec),
-        ("GM12", EXT_GM12_IslandAnalysis_Vec),
-        ("GM13", EXT_GM13_Sequence_Diversity_Vec),
-        ("GM14", EXT_GM14_Risk_Assessment_Vec),
-        ("GM15", EXT_GM15_Information_Gain_Vec),
-        ("GM16", EXT_GM16_Harmonic_Centrality_Vec),
-        ("GM17", EXT_GM17_Local_Entropy_Vec),
-        ("GM18", EXT_GM18_RL_Value_Estimation_Vec),
-        ("GM19", EXT_GM19_SkipPattern_Vec),
-        ("GM20", EXT_GM20_SkipPattern_Confidence_Vec),
-        ("GM21", EXT_GM21_ClusterBalance_Vec),
-        ("GM22", EXT_GM22_CoOccurrence_Vec),
-        ("GM23", EXT_GM23_MotifDetection_Vec),
-        ("GM24", EXT_GM24_TemporalCoherence_Vec),
-        ("GM25", EXT_GM25_StrategicDepth_Vec),
-        ("GM26", EXT_GM26_ContextualFlexibility_Vec),
-    ]
-
-    # Compute combined scores
+    # Compute combined scores using the analyzer that calls PuzzleTensorOps.score_full_board
     try:
-        results = compute_combined_scores(
-            grid_array, module_functions, module_configs, request_id=str(id(request))
-        )
+        results = compute_combined_scores(grid_array, module_configs, request_id=str(id(request)))
     except Exception as e:
         logger.error(f"[analyze] 🛑 Runtime error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
