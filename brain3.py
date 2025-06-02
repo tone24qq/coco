@@ -1,87 +1,105 @@
 import numpy as np
 
-def compute_distance_scores(blank_coords, missing_numbers, one_coord=None, K_coord=None, K_val=None):
+def ex19(grid: np.ndarray) -> np.ndarray:
     """
-    Compute global distance correlation scores for each blank vs. each candidate number.
-    Returns dist1_scores, distK_scores, center_scores as 2D numpy arrays.
+    檢測水平二項和遞推模式（類 Fibonacci）。如果有連續三格橫列，
+    當中一格缺失且已知兩格符合前兩項和等於第三項的關係，則標記缺失格。
     """
-    num_blanks = len(blank_coords)
-    num_missing = len(missing_numbers)
-    if num_missing == 0 or num_blanks == 0:
-        # No scores if no blanks or no missing numbers
-        return None, None, None
-    # Initialize score matrices
-    dist1_scores = np.zeros((num_blanks, num_missing), dtype=np.float32)
-    distK_scores = np.zeros((num_blanks, num_missing), dtype=np.float32)
-    center_scores = np.zeros((num_blanks, num_missing), dtype=np.float32)
-    # Compute Manhattan distances from global anchors if available
-    if one_coord is not None:
-        (i1, j1) = one_coord
-        dist1 = np.abs(blank_coords[:,0] - i1) + np.abs(blank_coords[:,1] - j1)
-        # Vectorize difference with (candidate - 1)
-        cand_minus1 = np.array(missing_numbers, dtype=np.int32) - 1
-        # Compute score = 1/(|dist - (cand-1)| + 1)
-        diff1 = np.abs(dist1[:, None] - cand_minus1[None, :])
-        dist1_scores = (1.0 / (diff1 + 1)).astype(np.float32)
-    if K_coord is not None and K_val is not None:
-        (iK, jK) = K_coord
-        distK = np.abs(blank_coords[:,0] - iK) + np.abs(blank_coords[:,1] - jK)
-        K_minus_cand = K_val - np.array(missing_numbers, dtype=np.int32)
-        diffK = np.abs(distK[:, None] - K_minus_cand[None, :])
-        distK_scores = (1.0 / (diffK + 1)).astype(np.float32)
-    # Compute center proximity correlation (assumes mid-sequence near center)
-    if K_val is None:
-        K_val = max(missing_numbers) if missing_numbers else 0
-    center_i = (blank_coords[:,0].max() + blank_coords[:,0].min()) / 2.0
-    center_j = (blank_coords[:,1].max() + blank_coords[:,1].min()) / 2.0
-    # Compute normalized radial distance for each blank
-    # Use farthest corner distance for normalization
-    max_i = blank_coords[:,0].max(); min_i = blank_coords[:,0].min()
-    max_j = blank_coords[:,1].max(); min_j = blank_coords[:,1].min()
-    corners = np.array([[min_i, min_j], [min_i, max_j], [max_i, min_j], [max_i, max_j]])
-    corner_dists = np.sqrt(((corners - np.array([center_i, center_j]))**2).sum(axis=1))
-    max_center_dist = corner_dists.max() if corner_dists.size > 0 else 1.0
-    blank_radial = np.sqrt(((blank_coords - np.array([center_i, center_j]))**2).sum(axis=1)) / (max_center_dist + 1e-9)
-    # Normalize candidate sequence position around mid-point
-    mid_val = (K_val + 1) / 2.0
-    cand_midness = np.abs(np.array(missing_numbers, dtype=np.float32) - mid_val) / ((K_val - 1)/2.0 if K_val > 1 else 1.0)
-    # Compute center correlation score = 1 - |blank_radius - cand_midness|
-    center_scores = (1.0 - np.abs(blank_radial[:, None] - cand_midness[None, :])).astype(np.float32)
-    return dist1_scores, distK_scores, center_scores
+    output = np.zeros(grid.shape, dtype=float)
+    a = grid[:, :-2]
+    b = grid[:, 1:-1]
+    c = grid[:, 2:]
+    # 水平 情況1：末格缺失，已知 a, b，若 c 應為 a+b
+    mask_last = (c == -1) & (a != -1) & (b != -1)
+    output[:, 2:][mask_last] = 1.0  # 直接標記缺失處（實際數值應為 a+b，但此處僅標記位置）
+    # 水平 情況2：首格缺失，已知 b, c，若 b 應為 a+c => a = b - c
+    mask_first = (a == -1) & (b != -1) & (c != -1)
+    output[:, :-2][mask_first] = 1.0
+    # 水平 情況3：中格缺失，已知 a, c，若 c = a + b => b = c - a
+    mask_mid = (b == -1) & (a != -1) & (c != -1)
+    output[:, 1:-1][mask_mid] = 1.0
+    return output
 
-def apply_eliminations(final_matrix, blank_coords, cluster_min_vals, cluster_max_vals, cluster_anchor_count,
-                       one_coord=None, K_coord=None, K_val=None):
+def ex20(grid: np.ndarray) -> np.ndarray:
     """
-    Apply elimination (score masking) based on anchor reachability and path constraints.
-    Modifies final_matrix in place by setting certain entries to 0.
+    檢測垂直二項和遞推模式（類 Fibonacci）。縱向版本。
     """
-    num_blanks, num_missing = final_matrix.shape
-    # Map missing numbers for quick search
-    # Ensure sorted missing list for binary search
-    missing_nums = None
-    if num_missing > 0:
-        missing_nums = sorted((final_matrix.shape[1] * [0]) or [])
-        # Actually, we rely on missing_numbers sorted input in new_module, so skip here.
-        pass
-    # Cluster anchor range elimination (GM10 and cluster anchor viability)
-    for idx, (ci, cj) in enumerate(blank_coords):
-        cid = cluster_anchor_count.size > 0 and cluster_anchor_count.dtype != float and cluster_anchor_count[0] == 0
-        # Actually cluster_anchor_count is an array, not indicator; retrieve cluster id:
-        # We assume region_map is accessible globally in new_module to get cluster id by blank coordinate.
-        # We'll handle this elimination in new_module directly where region_map is available.
-        pass
+    output = np.zeros(grid.shape, dtype=float)
+    a = grid[:-2, :]
+    b = grid[1:-1, :]
+    c = grid[2:, :]
+    mask_last = (c == -1) & (a != -1) & (b != -1)
+    output[2:, :][mask_last] = 1.0
+    mask_first = (a == -1) & (b != -1) & (c != -1)
+    output[:-2, :][mask_first] = 1.0
+    mask_mid = (b == -1) & (a != -1) & (c != -1)
+    output[1:-1, :][mask_mid] = 1.0
+    return output
 
-def identify_extraneous_by_path(blank_coords, anchor_values, anchor_positions, cluster_anchor_count, cluster_min_vals, cluster_max_vals):
+def ex21(grid: np.ndarray) -> np.ndarray:
     """
-    Identify extraneous blanks via cluster path length feasibility (GM25).
-    Returns a boolean mask of extraneous blanks.
+    檢測多方向移動平均模式。如果某中心格缺失，且上下相加等於左右相加（代表中心應為兩者平均），則標記中心格。
     """
-    num_blanks = len(blank_coords)
-    extraneous_mask = np.zeros(num_blanks, dtype=bool)
-    # Prepare a lookup for anchor positions by value
-    anchor_pos_map = {val: tuple(pos) for val, pos in zip(anchor_values, anchor_positions)}
-    for idx, (ci, cj) in enumerate(blank_coords):
-        # Determine cluster context if two anchors
-        # (In new_module, we can pass cluster id and anchor values for that cluster)
-        pass
-    return extraneous_mask
+    output = np.zeros(grid.shape, dtype=float)
+    if grid.shape[0] < 3 or grid.shape[1] < 3:
+        return output
+    center = grid[1:-1, 1:-1]
+    up    = grid[:-2, 1:-1]
+    down  = grid[2:, 1:-1]
+    left  = grid[1:-1, :-2]
+    right = grid[1:-1, 2:]
+    # 中心缺失，四鄰皆知且上下和等於左右和（代表中心為兩者平均值）
+    mask = (center == -1) & (up != -1) & (down != -1) & (left != -1) & (right != -1) \
+           & ((up + down) == (left + right)) & (((up + down) % 2) == 0)
+    output[1:-1, 1:-1][mask] = 1.0
+    return output
+
+def ex22(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測豎直對稱模式。如果盤面上下對稱且某位置一側缺失，則標記該缺失位置。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    n_rows, n_cols = grid.shape
+    # 僅考慮偶數或奇數行數皆可，奇數中央行無需匹配
+    top = grid[:n_rows//2, :]
+    bottom = grid[-(n_rows//2):, :][::-1, :]  # 反轉下半部以便與上半部對齊
+    # 上半缺，下半同位置有值
+    mask_top_missing = (top == -1) & (bottom != -1)
+    output[:n_rows//2, :][mask_top_missing] = 1.0
+    # 下半缺，上半有值
+    mask_bottom_missing = (top != -1) & (bottom == -1)
+    output[-(n_rows//2):, :][::-1, :][mask_bottom_missing] = 1.0
+    return output
+
+def ex23(grid: np.ndarray) -> np.ndarray:
+    """
+    檢測水平對稱模式。如果盤面左右對稱且某位置一側缺失，則標記該缺失位置。
+    """
+    output = np.zeros(grid.shape, dtype=float)
+    n_rows, n_cols = grid.shape
+    # 左右半部（忽略正中央列如果為奇數寬度）
+    left = grid[:, :n_cols//2]
+    right = grid[:, -(n_cols//2):][:, ::-1]  # 反轉右半部
+    mask_left_missing = (left == -1) & (right != -1)
+    output[:, :n_cols//2][mask_left_missing] = 1.0
+    mask_right_missing = (left != -1) & (right == -1)
+    output[:, -(n_cols//2):][:, ::-1][mask_right_missing] = 1.0
+    return output
+
+def ex24(grid: np.ndarray) -> np.ndarray:
+    """
+    （保留）未實作模式。當前回傳全零矩陣。
+    """
+    return np.zeros(grid.shape, dtype=float)
+
+def ex25(grid: np.ndarray) -> np.ndarray:
+    """
+    （保留）未實作模式。當前回傳全零矩陣。
+    """
+    return np.zeros(grid.shape, dtype=float)
+
+def ex26(grid: np.ndarray) -> np.ndarray:
+    """
+    （保留）未實作模式。當前回傳全零矩陣。
+    """
+    return np.zeros(grid.shape, dtype=float)
