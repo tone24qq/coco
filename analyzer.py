@@ -7,7 +7,9 @@ import importlib
 import logging
 import os
 from typing import Any, Callable, Dict, List, Literal, Set, Tuple # Literal for Pydantic V2+
-
+import brain1
+import brain2
+import brain3
 # 2. 第三方庫導入
 import numpy as np
 from pydantic import BaseModel, Field, model_validator
