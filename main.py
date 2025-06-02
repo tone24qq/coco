@@ -1,35 +1,34 @@
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
+from typing import Any
 import numpy as np
 from analyzer import analyze_full_board
 
 class CombinedInput(BaseModel):
-    new_card: dict[str, any]       # 定義 new_card（欄位型別可依需求調整）
-    grid: list[list[int]]          # 定義 grid
+    new_card: dict[str, Any]
+    grid: list[list[int]]
 
-    class Config:
-        extra = "forbid"           # 嚴格只允許 new_card 與 grid，其他欄位通通報錯
-        # 如果你想直接忽略多餘欄位，可改成 extra = "ignore"
+    model_config = {
+        # 允許欄位值中包含任意型別，以免 Pydantic 無法為 Any 生成 schema
+        "arbitrary_types_allowed": True
+    }
 
 app = FastAPI()
 
-# 支援 GET "/" 回 200
 @app.get("/")
 async def root():
     return {"status": "Service is running"}
 
-# 支援 HEAD "/" 回 200（可選）
 @app.head("/")
 async def root_head():
     return {}
 
 @app.post("/analyze")
 async def analyze(input: CombinedInput = Body(...)):
-    # 這裡就可以同時使用 input.new_card 和 input.grid
     the_new_card = input.new_card
     grid = input.grid
 
-    # 以下針對 grid 做驗證與分析
+    # 基本驗證：檢查 grid 不為空且為矩形，且大小不超過 100×100
     if grid is None:
         raise HTTPException(status_code=422, detail="No grid data provided.")
     row_lengths = [len(row) for row in grid]
@@ -40,19 +39,24 @@ async def analyze(input: CombinedInput = Body(...)):
         raise HTTPException(status_code=422, detail="Grid must be non-empty 2D array.")
     if n_rows > 100 or n_cols > 100:
         raise HTTPException(status_code=422, detail=f"Grid size {n_rows}x{n_cols} exceeds 100x100 limit.")
+
+    # 轉成 NumPy 陣列並檢查維度
     try:
         arr = np.array(grid, dtype=int)
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid grid data type: {e}")
     if arr.ndim != 2:
         raise HTTPException(status_code=422, detail="Grid data is not a 2D matrix.")
+
+    # 執行分析
     try:
         score_matrix = analyze_full_board(arr)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+
     return {
-        "score_matrix": score_matrix.tolist(),
-        "new_card_received": the_new_card  # 或者你想怎麼處理 new_card 再回傳
+        "new_card_received": the_new_card,
+        "score_matrix": score_matrix.tolist()
     }
 
 if __name__ == "__main__":
