@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings
 from typing import List, Dict, Any, Tuple, cast
 from typing import Callable
 from dotenv import load_dotenv
+class AnalyzerConfig(BaseModel)
 
 load_dotenv()
 
