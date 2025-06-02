@@ -3,26 +3,13 @@
 import numpy as np
 from typing import Dict, List
 
-# ── 1. 导入 brain1.py / brain2.py / brain3.py 中定义的所有 exXX 函数 ──
-#    下列函数名必须与你在这三个文件里实际定义好的函数一致
-from brain1 import (
-    ex1, ex3, ex4, ex5, ex6, ex7, ex8, ex9, ex16, ex17, ex18, ex19
-)
-from brain2 import (
-    ex10, ex11, ex12, ex13, ex14, ex15
-)
-from brain3 import (
-    ex19 as ex19_b3,  # 如果 brain3.py 也有 ex19，与 brain1 冲突时用别名
-    ex20,
-    ex21,
-    ex22,
-    ex23,
-    ex24,
-    ex25,
-    ex26
-)
+# 1. 导入你在 brain1.py / brain2.py / brain3.py 里实际写的函数
+#    这些行必须和你的文件里一模一样，否则会 ImportError
+from brain1 import EXT_A2, EXT_M3, EXT_M10
+from brain2 import EXT_D3, EXT_F10, EXT_M6
+from brain3 import EXT_P4, EXT_R7, EXT_L1
 
-# ── 2. 导入 new_module.py 中新增的 5 个预测模块类 ──
+# 2. 导入我写在 new_module.py 中的 5 个模块
 from new_module import (
     ProbabilityModule,
     AdjacencyModule,
@@ -33,20 +20,25 @@ from new_module import (
 
 class Analyzer:
     """
-    将“原有 exXX 模块”与“新增的 5 个预测模块”整合，
-    返回隐藏格的综合评分 {位置ID: 分数}。
+    整合：先调用 brain1.py/brain2.py/brain3.py 里的 EXT_… 函数，
+    得到 {posID: score}；再调用 new_module.py 的 5 个模块同样得到 {posID:score}，
+    最后归一化并平均后加到 combined_scores，输出 {posID:综合得分}。
     """
 
     def __init__(self):
-        # 1. 保留原本的 exXX 函数
+        # 1. 保留你原有的所有 EXT_* 函数
         self.registered_modules = [
-            ex1, ex3, ex4, ex5, ex6, ex7, ex8, ex9,
-            ex10, ex11, ex12, ex13, ex14, ex15,
-            ex16, ex17, ex18, ex19, ex19_b3, ex20,
-            ex21, ex22, ex23, ex24, ex25, ex26
+            EXT_A2,
+            EXT_M3,
+            EXT_M10,
+            EXT_D3,
+            EXT_F10,
+            EXT_M6,
+            EXT_P4,
+            EXT_R7,
+            EXT_L1,
         ]
-
-        # 2. 将 5 个新模块实例化
+        # 2. 把 5 个新模块实例化
         self.new_modules = [
             ProbabilityModule(),
             AdjacencyModule(),
@@ -57,18 +49,16 @@ class Analyzer:
 
     def analyze(self, grid: np.ndarray, target: int) -> Dict[int, float]:
         """
-        分析整张卡片：
-        - grid: 2D numpy array，隐藏格用 -1 表示
-        - target: 要预测的数字
-
-        返回 {位置ID: 分数}，位置ID 以 1 开始，逐行优先编号。
+        grid: 2D numpy array，-1 表示隐藏格
+        target: 要查找的数字
+        返回 {posID: 综合分数}
         """
         if grid.ndim != 2:
-            raise ValueError("analyze: 输入必须是 2 维数组")
+            raise ValueError("analyze: 输入必须是 2D numpy array")
 
         rows, cols = grid.shape
 
-        # 先收集所有隐藏格的位置 ID（1-based，逐行优先）
+        # 先收集所有隐藏格的 posID（1-based，逐行优先）
         hidden_positions: List[int] = [
             i * cols + j + 1
             for i in range(rows)
@@ -78,24 +68,20 @@ class Analyzer:
         if not hidden_positions:
             return {}
 
-        # ── 3. 调用“原有 exXX 模块”，它们返回 numpy.ndarray，
-        #       需把对应位置取出来并加到 combined_scores ──
+        # ─── 调用“你原来的 EXT_* 函数” ───
         combined_scores: Dict[int, float] = {}
         for func in self.registered_modules:
             try:
-                output_arr = func(grid)  # 接口：func(grid: np.ndarray) -> np.ndarray
+                mod_scores: Dict[int, float] = func(grid)  # 假设它们都返回 {posID:score}
             except Exception:
                 continue
-            if not isinstance(output_arr, np.ndarray):
+            if not isinstance(mod_scores, dict):
                 continue
-            # output_arr.shape 应该与 grid.shape 相同，值为 0 或 1
-            for i in range(rows):
-                for j in range(cols):
-                    if output_arr[i, j] != 0 and grid[i, j] == -1:
-                        pos_id = i * cols + j + 1
-                        combined_scores[pos_id] = combined_scores.get(pos_id, 0.0) + float(output_arr[i, j])
+            for pos, val in mod_scores.items():
+                if pos in hidden_positions:
+                    combined_scores[pos] = combined_scores.get(pos, 0.0) + float(val)
 
-        # ── 4. 调用“5 个新模块”，它们返回 {posID: raw_score} ──
+        # ─── 调用“我写的 5 个新模块”，再归一化+平均 ───
         temp_scores: Dict[int, float] = {}
         active_new = 0
 
@@ -107,17 +93,17 @@ class Analyzer:
             if not isinstance(ms, dict) or not ms:
                 continue
 
-            # 只保留真正隐藏格的位置
+            # 只保留 hidden_positions 中的键
             ms = {p: v for p, v in ms.items() if p in hidden_positions}
             total = sum(ms.values())
 
             if total == 0:
-                # 若全为 0，则退回均匀分布
+                # 若所有值为0，就退回均匀分布
                 uniform = 1.0 / len(hidden_positions)
                 for p in hidden_positions:
                     ms[p] = uniform
             else:
-                # 正规化：使得该模块所有评分之和 = 1
+                # 归一化：让该模块输出加起来等于1
                 for p in ms:
                     ms[p] = ms[p] / total
 
@@ -125,7 +111,7 @@ class Analyzer:
                 temp_scores[p] = temp_scores.get(p, 0.0) + float(v)
             active_new += 1
 
-        # 所有新模块都正规化并加到 temp_scores 后，取平均并累加到 combined_scores
+        # 把所有新模块平均后加到 combined_scores
         if active_new > 0:
             for p, tot in temp_scores.items():
                 avg_score = tot / active_new
