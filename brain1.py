@@ -389,6 +389,6 @@ def EXT_GM1_Row_Control_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
 
 def EXT_GM2_Col_Flow_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     effective_request_id = request_id or "N/A_brain_GM2"
-    logger.debug("Executing EXT_GM2_Col_Flow_Vec", extra={'request_id': effective_request_id}')
+    logger.debug("Executing EXT_GM2_Col_Flow_Vec", extra={'request_id': effective_request_id})
 
     return EXT_GM1_Row_Control_Vec(grid.T, request_id).T
