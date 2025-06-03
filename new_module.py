@@ -1,66 +1,45 @@
-import numpy as np
+def analyze(board, target):
+    """
+    Brain4 (NewModule): Difference Pattern Analysis.
+    Finds places where two numbers in the same row or column have exactly one hidden cell between them,
+    and the hidden cell would be the numeric midpoint. If the midpoint equals the target, flag that cell.
+    """
+    results = []
+    rows = len(board)
+    cols = len(board[0]) if rows > 0 else 0
 
-def ex27(grid: np.ndarray) -> np.ndarray:
-    """
-    新增模式：跨行連續數列檢測。
-    將整個盤面視為按行連續展開的一維序列，若整體為等差序列且僅缺少一個數字，則標記該缺失位置。
-    """
-    output = np.zeros(grid.shape, dtype=float)
-    # 將盤面按行優先展平為一維
-    rows, cols = grid.shape
-    flat = grid.flatten()
-    # 若整體僅有一處缺失
-    missing_indices = np.where(flat == -1)[0]
-    if flat.size == 0 or missing_indices.size != 1:
-        return output  # 僅處理單一缺失的情況
-    miss_idx = missing_indices[0]
-    known = np.delete(flat, miss_idx)
-    # 判斷已知部分是否等差序列（允許序列首尾缺一值）
-    if known.size < 2:
-        return output
-    diffs = np.diff(known)
-    # 以已知部分最常見的差值作為序列公差
-    # （這裡假設除缺失處外序列公差一致）
-    diff_values, diff_counts = np.unique(diffs, return_counts=True)
-    if diff_values.size == 0:
-        return output
-    common_diff = diff_values[np.argmax(diff_counts)]
-    # 檢查是否除一處外所有差值相等且那一處差值正好是 common_diff 的兩倍
-    double_gap_indices = np.where(diffs == 2 * common_diff)[0]
-    if diffs.size > 0 and double_gap_indices.size == 1:
-        # 存在一個雙倍差，認定那裡是缺失點
-        pass
-    # 確認所有已知差值等於 common_diff
-    if np.all((diffs == common_diff) | (diffs == 2 * common_diff)):
-        # 預測缺失值可能位置合理，標記輸出
-        # 換算缺失索引回 2D 座標
-        r, c = divmod(miss_idx, cols)
-        output[r, c] = 1.0
-    return output
+    # Horizontal difference pattern: two known numbers with one gap between them
+    for r in range(rows):
+        for c in range(cols - 2):
+            if (board[r][c] is not None and board[r][c+2] is not None 
+                    and board[r][c+1] is None):
+                left_val = board[r][c]
+                right_val = board[r][c+2]
+                # If the difference is even, there is a well-defined midpoint
+                if (right_val - left_val) % 2 == 0:
+                    mid_val = (left_val + right_val) // 2
+                    if mid_val == target:
+                        results.append({
+                            "row": r, "col": c+1,
+                            "confidence": 0.9,
+                            "module": "Brain4",
+                            "reason": f"Difference pattern: {left_val} and {right_val} in row {r} are evenly spaced around {mid_val} (target)."
+                        })
 
-def ex28(grid: np.ndarray) -> np.ndarray:
-    """
-    新增模式：跨列連續數列檢測。
-    將盤面視為按列連續展開的一維序列進行等差序列檢測，原理同 ex27。
-    """
-    output = np.zeros(grid.shape, dtype=float)
-    # 將盤面按列優先展平為一維
-    rows, cols = grid.shape
-    flat = grid.T.flatten()  # 轉置後展平，相當於列序展開
-    missing_indices = np.where(flat == -1)[0]
-    if flat.size == 0 or missing_indices.size != 1:
-        return output
-    miss_idx = missing_indices[0]
-    known = np.delete(flat, miss_idx)
-    if known.size < 2:
-        return output
-    diffs = np.diff(known)
-    diff_values, diff_counts = np.unique(diffs, return_counts=True)
-    if diff_values.size == 0:
-        return output
-    common_diff = diff_values[np.argmax(diff_counts)]
-    if np.all((diffs == common_diff) | (diffs == 2 * common_diff)):
-        # 換算缺失索引回原始 2D 座標（列序展開轉回矩陣坐標）
-        c, r = divmod(miss_idx, rows)
-        output[r, c] = 1.0
-    return output
+    # Vertical difference pattern: two known numbers with one gap between them
+    for c in range(cols):
+        for r in range(rows - 2):
+            if (board[r][c] is not None and board[r+2][c] is not None 
+                    and board[r+1][c] is None):
+                top_val = board[r][c]
+                bottom_val = board[r+2][c]
+                if (bottom_val - top_val) % 2 == 0:
+                    mid_val = (top_val + bottom_val) // 2
+                    if mid_val == target:
+                        results.append({
+                            "row": r+1, "col": c,
+                            "confidence": 0.9,
+                            "module": "Brain4",
+                            "reason": f"Difference pattern: {top_val} and {bottom_val} in col {c} are evenly spaced around {mid_val} (target)."
+                        })
+    return results
