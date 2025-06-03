@@ -1,126 +1,90 @@
-import numpy as np
+from pydantic import BaseModel
 import math
 import brain1, brain2, brain3, new_module
 
-# 模組權重設定：使用者可自行調整 ex1～ex28 的權重
-MODULE_WEIGHTS = {i: 1.0 for i in range(1, 29)}
+class PredictionResult(BaseModel):
+    """Structured prediction result from a module."""
+    row: int
+    col: int
+    confidence: float
+    module: str
+    reason: str
+    predicted_value: int
 
-# 正規化方式："minmax" 或 "zscore"
-NORMALIZE_METHOD = "minmax"
+# In-memory cache to store results for already-analyzed boards
+_cache = {}
 
-def analyze_full_board(grid: np.ndarray) -> np.ndarray:
+def analyze_board(board: list, target_number: int):
     """
-    統一分析入口。對傳入的數字盤面 (grid) 執行所有模組分析，
-    再將各模組回傳的分數矩陣做正規化並加權合併，最終回傳整張分數矩陣。
-    如果所有分數都為 0，代表無任何模組有信心，則對每個遮蔽格給一個小基礎分 (0.1) 作為 fallback。
+    Analyze the given board to find likely positions of the target_number in hidden cells.
+    Returns a list of top 3 predictions (each with coordinates, confidence, and contributing reasons).
     """
-    # 防呆：若非 NumPy 陣列，自動轉換
-    if not isinstance(grid, np.ndarray):
-        grid = np.array(grid)
-    if grid.ndim != 2:
-        raise ValueError("Input grid 必須為 2D numpy array。")
-    grid = grid.astype(float)  # 轉為浮點型，保留 -1 等特殊數值
-    n_rows, n_cols = grid.shape
+    # Create a hashable key for the board state (tuple of tuples) and target for caching
+    board_key = tuple(tuple(x for x in row) for row in board)
+    cache_key = (target_number, board_key)
+    if cache_key in _cache:
+        # Return cached result if this board-target combination was analyzed before
+        return _cache[cache_key]
 
-    # 動態蒐集所有 exXX 模組函式
-    modules = []
-    for module in (brain1, brain2, brain3, new_module):
-        for name in dir(module):
-            if name.startswith("ex") and name[2:].isdigit():
-                func = getattr(module, name)
-                if callable(func):
-                    modules.append(func)
-    # 按函式名稱中的數字排序 (ex1, ex2, ...)
-    modules.sort(key=lambda f: int(f.__name__[2:]))
+    predictions = []  # collect predictions from all modules
 
-    # 執行所有模組並收集分數矩陣
-    score_matrices = []
-    for func in modules:
-        mod_num = int(func.__name__[2:])
-        weight = MODULE_WEIGHTS.get(mod_num, 1.0)
+    # List of modules to run (module name, module reference)
+    modules = [
+        ("Brain1", brain1),
+        ("Brain2", brain2),
+        ("Brain3", brain3),
+        ("Brain4", new_module)  # treat new_module as Brain4 for naming purposes
+    ]
+    for name, module in modules:
+        # Each module returns a list of prediction dicts
         try:
-            result = func(grid)
+            module_preds = module.analyze(board, target_number)
         except Exception as e:
-            # 模組執行失敗時，用全零矩陣取代，並列印錯誤訊息
-            result = np.zeros((n_rows, n_cols))
-            print(f"Module ex{mod_num} 執行錯誤：{e}")
-        result = np.array(result, dtype=float)
-        if result.shape != grid.shape:
-            # 若輸出形狀不符，用全零矩陣取代
-            result = np.zeros((n_rows, n_cols), dtype=float)
+            module_preds = []
+        for pred in module_preds:
+            # Ensure each prediction dict has unified keys and values
+            pred['module'] = pred.get('module', name)             # module name
+            pred['predicted_value'] = target_number               # target number as predicted value
+            # Create a PredictionResult object for type validation and consistency
+            try:
+                pred_model = PredictionResult(**pred)
+            except Exception as e:
+                continue  # skip invalid predictions if any
+            predictions.append(pred_model)
 
-        # 正規化：Min-Max 或 Z-Score
-        if NORMALIZE_METHOD.lower() == "minmax":
-            min_val = result.min()
-            max_val = result.max()
-            if max_val > min_val:
-                normed = (result - min_val) / (max_val - min_val)
-            else:
-                normed = np.zeros_like(result)
-        elif NORMALIZE_METHOD.lower() == "zscore":
-            mean = result.mean()
-            std = result.std()
-            if std > 0:
-                normed = (result - mean) / std
-            else:
-                normed = np.zeros_like(result)
+    # Combine predictions for the same cell from multiple modules
+    combined_results = {}
+    for pred in predictions:
+        pos = (pred.row, pred.col)
+        if pos not in combined_results:
+            # Initialize combined result for this position
+            combined_results[pos] = {
+                "row": pred.row,
+                "col": pred.col,
+                "confidence": pred.confidence,
+                "contributions": [ 
+                    {"module": pred.module, "reason": pred.reason, "confidence": pred.confidence} 
+                ]
+            }
         else:
-            # 未知正規化方式，直接複製原始結果
-            normed = result.copy()
+            # If position already has contributions, combine confidence and append reason
+            existing_conf = combined_results[pos]["confidence"]
+            new_conf = pred.confidence
+            # Combine confidence assuming independent evidence: P = 1 - (1-p1)*(1-p2)*...
+            combined_conf = 1 - (1 - existing_conf) * (1 - new_conf)
+            combined_results[pos]["confidence"] = round(combined_conf, 3)
+            combined_results[pos]["contributions"].append({
+                "module": pred.module,
+                "reason": pred.reason,
+                "confidence": pred.confidence
+            })
 
-        # 乘上對應權重
-        weighted = normed * weight
-        score_matrices.append(weighted)
+    # Remove any entries that have effectively 0 confidence (e.g., eliminated by patterns)
+    combined_results = {pos: data for pos, data in combined_results.items() if data["confidence"] > 0.0}
 
-    # 將所有加權後的分數累加
-    if score_matrices:
-        total_score = np.sum(score_matrices, axis=0)
-    else:
-        total_score = np.zeros((n_rows, n_cols))
+    # Select the top 3 positions by confidence
+    top3 = sorted(combined_results.values(), key=lambda x: x["confidence"], reverse=True)[:3]
 
-    # 如果所有分數都為 0，對每個遮蔽格給一個很小的基礎分 (0.1) 作為 fallback
-    if total_score.max() == 0:
-        mask = (grid == -1)
-        total_score[mask] = 0.1
-        # 已知格保持 0
-        total_score[~mask] = 0.0
-
-    return total_score
-
-# 測試與驗證部分保留（如原本有 __main__ 那段可不動）
-if __name__ == "__main__":
-    # （此處可保留你原本測試程式碼）
-    import numpy as np
-
-    grid1 = np.full((3, 3), 9999)
-    print("測試1 (極端值均一格子)：")
-    print(analyze_full_board(grid1))
-
-    grid2 = np.full((4, 4), -1)
-    print("\n測試2 (全遮蔽盤)：")
-    print(analyze_full_board(grid2))
-
-    grid3 = np.array([
-        [4, 6, 8],
-        [6, -1, 6],
-        [8, 6, 4]
-    ])
-    print("\n測試3 (有模式且中間遮蔽)：")
-    print(analyze_full_board(grid3))
-
-    grid4 = np.array([
-        [1, 2, 3, 4],
-        [2, 3, 4, 5],
-        [3, 4, 5, 6],
-        [4, 5, 6, 7]
-    ])
-    print("\n測試4 (完整遞增模式盤)：")
-    print(analyze_full_board(grid4))
-
-    bad_input = [1, 2, 3]
-    print("\n測試5 (錯誤輸入)：")
-    try:
-        _ = analyze_full_board(np.array(bad_input))
-        print("錯誤：沒有捕捉到非法輸入！")
-    except Exception as e:
-        print(f"成功捕捉錯誤：{e}")
+    # Store result in cache and return
+    _cache[cache_key] = top3
+    return top3
