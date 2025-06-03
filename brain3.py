@@ -166,7 +166,7 @@ def EXT_GM16_Harmonic_Centrality_Vec(grid: np.ndarray, request_id: Optional[str]
 
 def EXT_GM17_Entropy_Minimization_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     effective_request_id = request_id or "N/A_brain_GM17"
-    logger.debug("Executing EXT_GM17_Entropy_Minimization_Vec", extra={'request_id': effective_request_id}')
+    logger.debug("Executing EXT_GM17_Entropy_Minimization_Vec", extra={'request_id': effective_request_id})
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
