@@ -1,11 +1,11 @@
 # main14.py
 """
-main14.py：FastAPI 應用，提供 /predict Endpoint，並在背景不斷更新樣本權重與做防禦檢查。
+main14.py：FastAPI 應用，提供 /predict Endpoint，
+並整合「模組融合 + 歷史先驗」邏輯。
 """
 
 import asyncio
 import os
-import time
 import logging
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -18,8 +18,10 @@ from analyzer11 import (
     fuse_scores,
     get_topk_positions,
     get_weights_for_shape,
-    maybe_reload_memory  # 建議在 analyzer11.py 裡實作此函式，以檔案變動方式觸發重載
+    get_target_prior,      # ← 確保 analyzer11.py 已實作此函式
+    maybe_reload_memory
 )
+from new_module3 import REGISTERED_MODULES_BRAIN
 
 # 設定日誌輸出
 logging.basicConfig(
@@ -43,47 +45,55 @@ class PredictResponse(BaseModel):
     predictions: list[dict]
     error: str | None = None
 
+
 @app.on_event("startup")
 async def startup_event():
     """
-    啟動時觸發：每隔 60 秒檢查一次 memory_data 資料夾是否有更新，
-    若有則自動 reload MEMORY_SAMPLES 並更新權重。
+    啟動時建立背景任務：每隔 60 秒檢查一次 memory_data 資料夾，如有更新則 reload
     """
     async def _periodic_reload():
         while True:
             try:
-                maybe_reload_memory()  # analyzer11.py 裡實作檔案變動檢查與重載
+                maybe_reload_memory()  # 每次檢查，若有新樣本自動重載 & 重算權重
             except Exception as e:
-                logger.error(f"Background reload 發生錯誤：{e}")
-            await asyncio.sleep(60)  # 每 60 秒檢查一次
+                logger.error(f"背景重載發生錯誤：{e}")
+            await asyncio.sleep(60)
 
-    # 啟動背景任務
     asyncio.create_task(_periodic_reload())
 
 
 @app.exception_handler(ValidationError)
 async def validation_exception_handler(request: Request, exc: ValidationError):
     """
-    捕捉 Pydantic 驗證錯誤，回 400 並回傳欄位錯誤訊息。
+    捕捉 Pydantic 驗證錯誤，回 HTTP 400 並回傳易懂訊息
     """
     return JSONResponse(
         status_code=400,
         content={"predictions": [], "error": "請求參數驗證失敗: " + str(exc)}
     )
+
+
 @app.get("/")
 @app.head("/")
 async def root():
+    """
+    根路由：回傳簡單狀態，避免 404 被外部定期 HEAD 拋錯
+    """
     return {"status": "OK"}
+
+
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest):
     """
     /predict Endpoint：
-    1. 驗證請求內容
-    2. 動態載入最新權重（已在背景自動更新）
+    1. 驗證請求內容（grid & target）
+    2. 把 target 在 grid 中臨時遮蔽
     3. 收集各模組分數、正規化、融合（根據當前卡片尺寸選權重）
-    4. 取 Top-3 並回傳
+    4. 取得「歷史先驗」prior
+    5. 加權融合 fused_scores + prior → final_scores
+    6. 取 Top-3 並回傳
     """
-    # --- 1) 驗證 grid 是否為非空的矩形且尺寸 <= 50×50 ---
+    # --- 1) 驗證 grid 是否為非空矩形且尺寸 ≤ 50×50 ---
     grid = req.grid
     target = req.target
 
@@ -100,12 +110,11 @@ async def predict(req: PredictRequest):
             logger.error("Grid 不是矩形")
             raise HTTPException(status_code=400, detail="Grid 必須為矩形")
 
-    # 驗證 cell 值：必須是 int，且要么為 -1，要么 > 0，不可重複
+    # 驗證每個格位值：必須是 int，且要么 -1，要么 > 0，不可重複
     seen = set()
     for r in range(rows):
-        row = grid[r]
         for c in range(cols):
-            val = row[c]
+            val = grid[r][c]
             if not isinstance(val, int):
                 logger.error("Grid 含非整數值")
                 raise HTTPException(status_code=400, detail="Grid 值必須是整數")
@@ -129,40 +138,50 @@ async def predict(req: PredictRequest):
         logger.error("Target 已存在於 Grid 中")
         raise HTTPException(status_code=400, detail="Target 已存在於 Grid 中")
 
-    # --- 2) 執行推論流程 ---
+    # --- 2) 開始推論流程 ---
     try:
         arr = np.array(grid, dtype=int)
-        blank_count = int(np.sum(arr == -1))
-        logger.info(f"[Predict] target={target}, shape={rows}x{cols}, blanks={blank_count}")
 
-        # 動態取權重：根據當前 shape 先不重新計算，因為背景任務已在定期 reload
-        # collect_all_scores 可改為非同步函式，但目前保持同步運算
+        # 2.1) 找到 target 所在位置 → 臨時遮蔽
+        positions = np.argwhere(arr == target)
+        if positions.shape[0] == 0:
+            logger.error("Grid 中找不到 target")
+            raise HTTPException(status_code=400, detail="Grid 中找不到 target")
+        r0, c0 = int(positions[0][0]), int(positions[0][1])
+        arr[r0, c0] = -1
+
+        # 2.2) collect_all_scores + normalize
         tensor = collect_all_scores(arr, request_id="API")
         if tensor.size == 0:
             logger.error("No modules returned any scores")
             raise HTTPException(status_code=500, detail="No scoring modules available")
-
         tensor_norm = normalize_tensor(tensor, method="minmax")
 
-        # 依照 grid.shape 取得最佳權重；如果沒有，就回傳 global 或等權
+        # 2.3) 根據 shape 取得加權向量 → fused_scores
         weights_dict = get_weights_for_shape((rows, cols))
         if weights_dict:
-            # 模組名稱順序需與 new_module3.REGISTERED_MODULES_BRAIN 保持一致
-            from new_module3 import REGISTERED_MODULES_BRAIN
             module_names = list(REGISTERED_MODULES_BRAIN.keys())
             weights_list = [weights_dict.get(name, 0.0) for name in module_names]
-            fused = fuse_scores(tensor_norm, weights=weights_list)
+            fused_scores = fuse_scores(tensor_norm, weights=weights_list)
         else:
-            fused = fuse_scores(tensor_norm, weights=None)
+            fused_scores = fuse_scores(tensor_norm, weights=None)
 
-        topk = get_topk_positions(fused, arr, k=3)
+        # 2.4) 取得先驗 prior（histogram of true_pos for this shape,target）
+        prior = get_target_prior((rows, cols), target)  # shape=(rows,cols)
+
+        # 2.5) 加權融合 fused_scores 與 prior → final_scores
+        α = 0.7
+        final_scores = α * fused_scores + (1 - α) * prior
+
+        # 2.6) 取 Top-3（僅在 arr == -1 的空格範圍內選分數最高）
+        topk = get_topk_positions(final_scores, arr, k=3)
         predictions = []
-        total_fused = float(np.nansum(fused[arr == -1])) if np.any(arr == -1) else 1.0
-        for (r, c), score in topk:
-            confidence = float(score / total_fused) if total_fused > 0 else 0.0
+        total = float(np.nansum(final_scores[arr == -1])) if np.any(arr == -1) else 1.0
+        for (rr, cc), sc in topk:
+            confidence = float(sc / total) if total > 0 else 0.0
             predictions.append({
-                "row": r + 1,      # 1-based index
-                "col": c + 1,
+                "row": rr + 1,   # 回傳 1-based index
+                "col": cc + 1,
                 "confidence": round(confidence, 6)
             })
 
@@ -170,9 +189,8 @@ async def predict(req: PredictRequest):
         return {"predictions": predictions, "error": None}
 
     except HTTPException as e:
-        # 已知錯誤直接回傳
+        # 已知錯誤直接拋出
         raise e
     except Exception as e:
-        # 統一記錄例外，避免回傳機密
         logger.exception("未知錯誤於 /predict")
         raise HTTPException(status_code=500, detail="Internal server error")
