@@ -171,7 +171,31 @@ def maybe_reload_memory():
         GLOBAL_WEIGHTS = compute_global_weights_from_memory()
         SHAPE_WEIGHTS = compute_shape_weights_from_memory()
 
+def get_target_prior(shape: tuple[int,int], target: int) -> np.ndarray:
+    """
+    取得同尺寸 (rows,cols) 且相同 target 的「歷史出現機率先驗」矩陣。
+    如果找不到符合條件的樣本，就回等機率分布（均勻）。
+    """
+    rows, cols = shape
+    heatmap = np.zeros((rows, cols), dtype=float)
 
+    # 累計「同 shape + 同 target」樣本的 true_pos
+    for sample in MEMORY_SAMPLES:
+        if sample.get("card_shape") != shape:
+            continue
+        if sample.get("target") != target:
+            continue
+        r0, c0 = sample.get("true_pos", (None, None))
+        if r0 is None or c0 is None:
+            continue
+        if 0 <= r0 < rows and 0 <= c0 < cols:
+            heatmap[r0, c0] += 1.0
+
+    total = heatmap.sum()
+    if total > 0.0:
+        return heatmap / total   # 歸一化成機率
+    # 沒有任何樣本時，回均勻分布
+    return np.ones((rows, cols), dtype=float) / (rows * cols)
 def get_weights_for_shape(shape: Tuple[int,int]) -> Dict[str, float]:
     """
     根據傳入的 (rows,cols)，
