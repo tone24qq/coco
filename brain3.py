@@ -205,7 +205,7 @@ def EXT_GM17_Entropy_Minimization_Vec(grid: np.ndarray, request_id: Optional[str
 
 def EXT_GM18_RL_Value_Est_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     effective_request_id = request_id or "N/A_brain_GM18"
-    logger.debug("Executing EXT_GM18_RL_Value_Est_Vec", extra={'request_id': effective_request_id}')
+    logger.debug("Executing EXT_GM18_RL_Value_Est_Vec", extra={'request_id': effective_request_id})
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
@@ -259,7 +259,7 @@ def EXT_GM18_RL_Value_Est_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
 
 def EXT_GM19_Masked_Number_Skip_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     effective_request_id = request_id or "N/A_brain_GM19"
-    logger.debug("Executing EXT_GM19_Masked_Number_Skip_Pattern_Vec", extra={'request_id': effective_request_id}')
+    logger.debug("Executing EXT_GM19_Masked_Number_Skip_Pattern_Vec", extra={'request_id': effective_request_id}）
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
@@ -289,7 +289,7 @@ def EXT_GM19_Masked_Number_Skip_Pattern_Vec(grid: np.ndarray, request_id: Option
 
 def EXT_GM20_Bonus_for_Filling_Internal_Gap_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     effective_request_id = request_id or "N/A_brain_GM20"
-    logger.debug("Executing EXT_GM20_Bonus_for_Filling_Internal_Gap_Vec", extra={'request_id': effective_request_id}')
+    logger.debug("Executing EXT_GM20_Bonus_for_Filling_Internal_Gap_Vec", extra={'request_id': effective_request_id})
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
