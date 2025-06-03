@@ -1,29 +1,12 @@
 # main14.py
-"""
-main14.py：FastAPI 應用，提供 /predict Endpoint，
-並整合「模組融合 + 歷史先驗」邏輯。請複製以下內容，直接覆蓋原檔。
-"""
 
-import asyncio
-import os
-import logging
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ValidationError
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, conlist, conint
 import numpy as np
+import logging
+from analyzer11 import collect_all_scores, normalize_tensor, fuse_scores, get_topk_positions
 
-from analyzer11 import (
-    collect_all_scores,
-    normalize_tensor,
-    fuse_scores,
-    get_topk_positions,
-    get_weights_for_shape,
-    get_target_prior,      # ← 確保 analyzer11.py 已實作此函式
-    maybe_reload_memory
-)
-from new_module3 import REGISTERED_MODULES_BRAIN
-
-# 設定日誌輸出
+# ---------------- 日志 & 常量 ----------------
 logging.basicConfig(
     filename="predict.log",
     level=logging.INFO,
@@ -31,166 +14,97 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-
-# 最大允許 grid 大小
 MAX_ROWS = 50
 MAX_COLS = 50
 
-class PredictRequest(BaseModel):
-    grid: list[list[int]]
-    target: int
+# ---------------- Pydantic 模型 ----------------
+class AnalyzeRequest(BaseModel):
+    grid: conlist(conlist(int, min_items=1, max_items=MAX_COLS), min_items=1, max_items=MAX_ROWS)
+    target: conint(gt=0)
 
-class PredictResponse(BaseModel):
+    # 验证 grid 矩形
+    @classmethod
+    def validate_grid(cls, v):
+        row_len = len(v[0])
+        for row in v:
+            if len(row) != row_len:
+                raise ValueError("Grid 必须为矩形 (所有行长度相同)")
+        return v
+
+    # 验证 target 不在 grid 中
+    @classmethod
+    def validate_target(cls, v, values):
+        grid = values.get("grid", [])
+        flat = [val for row in grid for val in row if val != -1]
+        if v in flat:
+            raise ValueError("Target 已存在于 Grid 中")
+        return v
+
+    # Pydantic 目前版本使用 validator 装饰器写法：
+    @staticmethod
+    def __get_validators__():
+        yield from BaseModel.__get_validators__()
+
+    @classmethod
+    def __modify_schema__(cls, field_schema):
+        # 如果使用更高版本 pydantic，可用 @validator 装饰器替代
+        pass
+
+
+class AnalyzeResponse(BaseModel):
     predictions: list[dict]
     error: str | None = None
 
 
-@app.on_event("startup")
-async def startup_event():
-    """
-    啟動時建立背景任務：每隔 60 秒檢查一次 memory_data 資料夾，如有更新則 reload
-    """
-    async def _periodic_reload():
-        while True:
-            try:
-                maybe_reload_memory()  # 每次檢查，若有新樣本自動重載 & 重算權重
-            except Exception as e:
-                logger.error(f"背景重載發生錯誤：{e}")
-            await asyncio.sleep(60)
+# ---------------- FastAPI App 初始化 ----------------
+app = FastAPI(
+    title="刮卡分析 API",
+    version="1.0.0",
+    description="基于向量化模块+历史先验，预测刮刮卡被遮空格最可能的数字 (Top‐3)"
+)
 
-    asyncio.create_task(_periodic_reload())
-
-
-@app.exception_handler(ValidationError)
-async def validation_exception_handler(request: Request, exc: ValidationError):
-    """
-    捕捉 Pydantic 驗證錯誤，回 HTTP 400 並回傳易懂訊息
-    """
-    return JSONResponse(
-        status_code=400,
-        content={"predictions": [], "error": "請求參數驗證失敗: " + str(exc)}
-    )
-
-
-@app.get("/")
-@app.head("/")
-async def root():
-    """
-    根路由：回傳簡單狀態，避免 404 被外部定期 HEAD 拋錯
-    """
-    return {"status": "OK"}
-
-
-@app.post("/predict", response_model=PredictResponse)
-async def predict(req: PredictRequest):
-    """
-    /predict Endpoint：
-    1. 驗證請求內容（grid & target）
-    2. 把 target 在 grid 中臨時遮蔽
-    3. 收集各模組分數、正規化、融合（根據當前卡片尺寸選權重）
-    4. 取得「歷史先驗」prior
-    5. 加權融合 fused_scores + prior → final_scores
-    6. 取 Top-3 並回傳
-    """
-    # --- 1) 驗證 grid 是否為非空矩形且尺寸 ≤ 50×50 ---
+# 原来的 /analyze 路由
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(req: AnalyzeRequest):
     grid = req.grid
     target = req.target
 
     rows = len(grid)
-    if rows == 0:
-        logger.error("收到空 Grid")
-        raise HTTPException(status_code=400, detail="Grid 不能為空")
     cols = len(grid[0])
+    # 验证 grid 尺寸
     if rows > MAX_ROWS or cols > MAX_COLS:
-        logger.error(f"Grid 大小 {rows}x{cols} 超過 {MAX_ROWS}x{MAX_COLS}")
-        raise HTTPException(status_code=400, detail=f"Grid 大小超過 {MAX_ROWS}×{MAX_COLS} 限制")
-    for row in grid:
-        if len(row) != cols:
-            logger.error("Grid 不是矩形")
-            raise HTTPException(status_code=400, detail="Grid 必須為矩形")
+        raise HTTPException(status_code=400, detail=f"Grid 大小超出 {MAX_ROWS}×{MAX_COLS} 限制")
 
-    # 驗證每個格位值：必須是 int，且要么 -1，要么 > 0，不可重複
-    seen = set()
-    for r in range(rows):
-        for c in range(cols):
-            val = grid[r][c]
-            if not isinstance(val, int):
-                logger.error("Grid 含非整數值")
-                raise HTTPException(status_code=400, detail="Grid 值必須是整數")
-            if val != -1 and val <= 0:
-                logger.error("Grid 含非正值或非 -1")
-                raise HTTPException(status_code=400, detail="Grid 值必須為正整數或 -1")
-            if val != -1:
-                if val in seen:
-                    logger.error("Grid 含重複值")
-                    raise HTTPException(status_code=400, detail="Grid 內含重複值")
-                seen.add(val)
+    # 转 numpy
+    arr = np.array(grid, dtype=int)
+    mask_missing = (arr == -1)
+    blank_count = int(np.sum(mask_missing))
+    logger.info(f"[Analyze] target={target}, grid={rows}x{cols}, blanks={blank_count}")
 
-    # 驗證 target
-    if not isinstance(target, int):
-        logger.error("Target 不是整數")
-        raise HTTPException(status_code=400, detail="Target 必須是整數")
-    if target <= 0:
-        logger.error("Target 非正整數")
-        raise HTTPException(status_code=400, detail="Target 必須為正整數")
-    if target in seen:
-        logger.error("Target 已存在於 Grid 中")
-        raise HTTPException(status_code=400, detail="Target 已存在於 Grid 中")
+    if blank_count == 0:
+        # 没有任何 -1→无法预测
+        return {"predictions": [], "error": None}
 
-    # --- 2) 開始推論流程 ---
     try:
-        arr = np.array(grid, dtype=int)
-
-        # 2.1) 找到 target 所在位置 → 臨時遮蔽
-        positions = np.argwhere(arr == target)
-        if positions.shape[0] == 0:
-            logger.error("Grid 中找不到 target")
-            raise HTTPException(status_code=400, detail="Grid 中找不到 target")
-        r0, c0 = int(positions[0][0]), int(positions[0][1])
-        arr[r0, c0] = -1
-
-        # 2.2) collect_all_scores + normalize
         tensor = collect_all_scores(arr, request_id="API")
         if tensor.size == 0:
-            logger.error("No modules returned any scores")
-            raise HTTPException(status_code=500, detail="No scoring modules available")
+            return {"predictions": [], "error": "无可用评分模块"}
         tensor_norm = normalize_tensor(tensor, method="minmax")
-
-        # 2.3) 根據 shape 取得加權向量 → fused_scores
-        weights_dict = get_weights_for_shape((rows, cols))
-        if weights_dict:
-            module_names = list(REGISTERED_MODULES_BRAIN.keys())
-            weights_list = [weights_dict.get(name, 0.0) for name in module_names]
-            fused_scores = fuse_scores(tensor_norm, weights=weights_list)
-        else:
-            fused_scores = fuse_scores(tensor_norm, weights=None)
-
-        # 2.4) 取得先驗 prior（histogram of true_pos for this shape,target）
-        prior = get_target_prior((rows, cols), target)  # shape=(rows,cols)
-
-        # 2.5) 加權融合 fused_scores 與 prior → final_scores
-        α = 0.7
-        final_scores = α * fused_scores + (1 - α) * prior
-
-        # 2.6) 取 Top-3（只在 arr == -1 的空格挑分數最高）
-        topk = get_topk_positions(final_scores, arr, k=3)
-        predictions = []
-        total = float(np.nansum(final_scores[arr == -1])) if np.any(arr == -1) else 1.0
-        for (rr, cc), sc in topk:
-            confidence = float(sc / total) if total > 0 else 0.0
-            predictions.append({
-                "row": rr + 1,   # 回傳 1-based index
-                "col": cc + 1,
-                "confidence": round(confidence, 6)
-            })
-
-        logger.info(f"[Predict] Top-3 => {predictions}")
-        return {"predictions": predictions, "error": None}
-
-    except HTTPException as e:
-        # 已知錯誤直接拋出
-        raise e
+        fused = fuse_scores(tensor_norm, weights=None)
+        topk = get_topk_positions(fused, arr, k=3)
+        preds = []
+        for (r, c, conf) in topk:
+            # 转成 1-based
+            preds.append({"row": r + 1, "col": c + 1, "confidence": round(conf, 6)})
+        return {"predictions": preds, "error": None}
     except Exception as e:
-        logger.exception("未知錯誤於 /predict")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.exception("分析失败")
+        raise HTTPException(status_code=500, detail="服务器内部错误")
+
+
+# **新增的根目录 POST / 路由**
+# 它与 /analyze 一模一样，只是路径变成 "/"
+@app.post("/", response_model=AnalyzeResponse)
+async def root_analyze(req: AnalyzeRequest):
+    # 直接调用 analyze() 里的逻辑
+    return await analyze(req)
