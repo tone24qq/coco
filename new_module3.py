@@ -3,7 +3,7 @@
 new_module3.py：整合並註冊所有從 brain1.py、brain2.py、brain3.py 搬運來的 EXT_*_Vec 函式。
 最終產出 REGISTERED_MODULES_BRAIN dict，以供 analyzer11.py 動態呼叫。
 """
-
+from typing import Dict, Callable
 import numpy as np
 
 from brain1 import (
@@ -40,7 +40,8 @@ from brain3 import (
 )
 
 # 全部註冊至此 dict，方便 analyzer11.py 動態遍歷
-REGISTERED_MODULES_BRAIN: dict[str, callable[np.ndarray, str]] = {
+REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, str], np.ndarray]] = {
+    # …
     "EXT_A2_Weighted_Proximity_Vec": EXT_A2_Weighted_Proximity_Vec,
     "EXT_M3_Local_Heterogeneity_Vec": EXT_M3_Local_Heterogeneity_Vec,
     "EXT_D3_Potential_Field_Vec": EXT_D3_Potential_Field_Vec,
