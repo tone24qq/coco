@@ -1,4 +1,6 @@
-from fastapi import FastAPI, HTTPException
+# main14.py
+
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, conlist, validator, conint, Field
 import numpy as np
 import logging
@@ -52,11 +54,15 @@ app = FastAPI(
     description="基于向量化模块+历史先验，预测刮刮卡被遮空格最可能的数字 (Top‐3)"
 )
 
-# 健康检查：允许 GET / 或 HEAD /
+# 健康检查：让 GET / 始终返回 200
 @app.get("/")
 async def health_check():
-    # 只要平台发 GET /，返回 200，就代表服务在线
     return {"status": "OK"}
+
+# 显式处理 HEAD /，也返回 200（不返回 body 内容）
+@app.head("/")
+async def health_check_head():
+    return Response(status_code=200)
 
 # 原本的 /analyze 路由
 @app.post("/analyze", response_model=AnalyzeResponse)
