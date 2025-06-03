@@ -1,7 +1,7 @@
 # main14.py
 """
 main14.py：FastAPI 應用，提供 /predict Endpoint，
-並整合「模組融合 + 歷史先驗」邏輯。
+並整合「模組融合 + 歷史先驗」邏輯。請複製以下內容，直接覆蓋原檔。
 """
 
 import asyncio
@@ -173,7 +173,7 @@ async def predict(req: PredictRequest):
         α = 0.7
         final_scores = α * fused_scores + (1 - α) * prior
 
-        # 2.6) 取 Top-3（僅在 arr == -1 的空格範圍內選分數最高）
+        # 2.6) 取 Top-3（只在 arr == -1 的空格挑分數最高）
         topk = get_topk_positions(final_scores, arr, k=3)
         predictions = []
         total = float(np.nansum(final_scores[arr == -1])) if np.any(arr == -1) else 1.0
