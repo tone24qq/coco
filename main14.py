@@ -70,7 +70,10 @@ async def validation_exception_handler(request: Request, exc: ValidationError):
         status_code=400,
         content={"predictions": [], "error": "請求參數驗證失敗: " + str(exc)}
     )
-
+@app.get("/")
+@app.head("/")
+async def root():
+    return {"status": "OK"}
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: PredictRequest):
     """
