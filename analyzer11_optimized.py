@@ -1,6 +1,6 @@
-“””
+"""
 analyzer11_optimized.py - 優化版分析器，支援動態權重調整
-“””
+"""
 
 import os
 import json
