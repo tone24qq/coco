@@ -1,9 +1,9 @@
 # vectorized_brain_modules.py
 
-“””
+"""
 完全向量化的大腦評分模組 - 優化版本
 包含所有 26 個 EXT_*_Vec 函式的高效向量化實現
-“””
+"""
 
 import numpy as np
 import scipy.ndimage as ndi
