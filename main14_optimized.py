@@ -1,6 +1,6 @@
-“””
+"""
 main14_optimized.py - 優化版主程式，更簡潔的 API 設計
-“””
+"""
 
 import os
 import time
