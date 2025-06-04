@@ -1,7 +1,7 @@
-“””
+"""
 vectorized_modules.py - 完全向量化的評分模組實現
 所有函數都使用 NumPy 向量化操作，無顯式 for 循環
-“””
+"""
 
 import numpy as np
 from numba import njit, prange
