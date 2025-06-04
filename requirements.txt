@@ -1,7 +1,10 @@
-fastapi>=0.95.0
-uvicorn>=0.22.0
-numpy>=1.24.0
-scipy>=1.10.0
-httpx>=0.24.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.22.0     # [standard] 會順帶安裝 uvloop、httptools 等效能套件
+numpy>=1.24                   # 1.24+ 對應 SciPy 1.11 與 Numba 0.59
+scipy>=1.11
+numba>=0.59                   # 可選；26 個 EXT_* 函式若用 @njit 會大提速
+httpx>=0.24
+pydantic>=2.6                 # 明確列出核心 pydantic 版本
 pydantic-settings>=2.0.3
-python-dotenv>=1.0.0
+python-dotenv>=1.0
+python-multipart>=0.0.7       # ↑↑ 如果 FastAPI 需要收檔案（圖片 / Excel），建議加
