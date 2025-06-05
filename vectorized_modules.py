@@ -1,5 +1,5 @@
 """
-vectorized_modules.py - 4模組接口定義
+vectorized_modules.py - Interface definitions for 4 modules
 """
 from vectorized_brain_modules import VectorizedBrainModules
 
