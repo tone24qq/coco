@@ -1,20 +1,69 @@
 """
-vectorized_brain_modules.py - 4模組向量化實現，整合熱力圖邏輯
+vectorized_brain_modules.py - Vectorized implementation of 4 modules with JSON-based heatmap
 """
 import numpy as np
 from scipy.ndimage import convolve
 import numba as nb
 import logging
 import time
+import json
+from pathlib import Path
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
 class VectorizedBrainModules:
-    """4模組向量化分析器"""
+    """Vectorized analyzer with 4 modules"""
     
+    def __init__(self):
+        """Initialize with cached heatmap from JSON samples"""
+        self.heatmap_cache = None
+        self._load_heatmap()
+
+    def _load_heatmap(self) -> None:
+        """Load JSON samples and build normalized heatmap (from 讀取熱力圖教學.txt)"""
+        try:
+            samples_dir = Path(__file__).parent / "samples" / "data"
+            if not samples_dir.exists():
+                logger.warning(f"Samples directory {samples_dir} does not exist")
+                self.heatmap_cache = None
+                return
+            
+            json_files = list(samples_dir.glob("*.json"))
+            if not json_files:
+                logger.warning(f"No JSON files found in {samples_dir}")
+                self.heatmap_cache = None
+                return
+            
+            first = json.loads(json_files[0].read_text(encoding='utf-8'))
+            rows, cols = len(first["grid"]), len(first["grid"][0])
+            heatmap = np.zeros((rows, cols), dtype=np.int32)
+            
+            for json_file in json_files:
+                try:
+                    data = json.loads(json_file.read_text(encoding='utf-8'))
+                    r = data["answer"]["row"] - 1  # 1-based to 0-based
+                    c = data["answer"]["col"] - 1
+                    if 0 <= r < rows and 0 <= c < cols:
+                        heatmap[r, c] += 1
+                    else:
+                        logger.warning(f"Invalid position in {json_file}: row={r+1}, col={c+1}")
+                except Exception as e:
+                    logger.error(f"Failed to load {json_file}: {e}")
+            
+            # Normalize to 0-1 (avoid division by zero)
+            min_val, max_val = heatmap.min(), heatmap.max()
+            if max_val > min_val:
+                self.heatmap_cache = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
+            else:
+                self.heatmap_cache = np.zeros_like(heatmap, dtype=np.float32)
+            logger.info(f"Loaded heatmap from {len(json_files)} JSON samples, shape={heatmap.shape}")
+        except Exception as e:
+            logger.error(f"Heatmap loading failed: {e}")
+            self.heatmap_cache = None
+
     def edge_proximity_fusion(self, grid: np.ndarray) -> np.ndarray:
-        """模組1：邊緣鄰近融合，低值偏邊緣"""
+        """Module 1: Edge proximity fusion, low values near edges"""
         try:
             rows, cols = grid.shape
             legal_mask = (grid == -1).astype(np.float32)
@@ -35,12 +84,12 @@ class VectorizedBrainModules:
             scores = np.where(legal_mask, scores / max_val, 0)
             return scores
         except Exception as e:
-            logger.error(f"EdgeProximityFusion 失敗: {e}")
+            logger.error(f"EdgeProximityFusion failed: {e}")
             return np.zeros_like(grid, dtype=np.float32)
 
     @nb.njit(parallel=True)
     def sequence_tail_analyzer(grid: np.ndarray) -> np.ndarray:
-        """模組2：序列尾數分析，等差數列"""
+        """Module 2: Sequence tail analysis, arithmetic sequences"""
         rows, cols = grid.shape
         scores = np.zeros((rows, cols), dtype=np.float32)
         blank_mask = (grid == -1)
@@ -67,31 +116,24 @@ class VectorizedBrainModules:
         return scores
 
     def connectivity_heatmap(self, grid: np.ndarray) -> np.ndarray:
-        """模組3：連通熱圖，基於已知數字分佈（融合熱力圖邏輯）"""
+        """Module 3: Connectivity heatmap from JSON samples (from 讀取熱力圖教學.txt)"""
         try:
             rows, cols = grid.shape
             legal_mask = (grid == -1).astype(np.float32)
-            filled_mask = (grid > 0).astype(np.float32)
             
-            # 卷積計算鄰域密度（模擬熱力圖）
-            kernel = np.ones((3, 3), dtype=np.float32) / 8
-            kernel[1, 1] = 0
-            heatmap = convolve(filled_mask, kernel, mode='constant')
+            if self.heatmap_cache is None or self.heatmap_cache.shape != (rows, cols):
+                logger.warning("No valid heatmap available, using uniform scores")
+                scores = np.where(legal_mask, 0.5, 0)
+            else:
+                scores = np.where(legal_mask, self.heatmap_cache, 0)
             
-            # 加入數值加權（模擬歷史樣本的熱力分佈）
-            value_weights = np.where(filled_mask, grid / (rows * cols), 0)
-            value_heatmap = convolve(value_weights, kernel, mode='constant')
-            
-            # 融合密度與數值熱圖
-            combined_heatmap = 0.7 * heatmap + 0.3 * value_heatmap
-            scores = np.where(legal_mask, combined_heatmap / np.max(combined_heatmap + 1e-8), 0)
             return scores
         except Exception as e:
-            logger.error(f"ConnectivityHeatmap 失敗: {e}")
+            logger.error(f"ConnectivityHeatmap failed: {e}")
             return np.zeros_like(grid, dtype=np.float32)
 
     def entropy_risk_fusion(self, grid: np.ndarray) -> np.ndarray:
-        """模組4：熵風險融合，局部熵"""
+        """Module 4: Entropy risk fusion, local entropy"""
         try:
             rows, cols = grid.shape
             legal_mask = (grid == -1).astype(np.float32)
@@ -112,17 +154,17 @@ class VectorizedBrainModules:
             scores = np.where(legal_mask, scores / np.max(scores + 1e-8), 0)
             return scores
         except Exception as e:
-            logger.error(f"EntropyRiskFusion 失敗: {e}")
+            logger.error(f"EntropyRiskFusion failed: {e}")
             return np.zeros_like(grid, dtype=np.float32)
 
     def test_with_masking(
         self, original_grid: np.ndarray, n_mask: int = 40, target: int = 7, n_trials: int = 20
     ) -> Tuple[float, float]:
-        """隨機遮蔽測試，計算命中率"""
+        """Random masking test to compute hit rate"""
         try:
             true_positions = np.where(original_grid == target)
             if len(true_positions[0]) == 0:
-                raise ValueError(f"目標數字 {target} 不存在於盤面")
+                raise ValueError(f"Target number {target} not found in grid")
             
             accuracies = []
             for trial in range(n_trials):
@@ -140,23 +182,23 @@ class VectorizedBrainModules:
                 for r, c, conf in results:
                     if original_grid[r, c] == target:
                         correct = True
-                        logger.info(f"試驗 {trial+1}: 預測位置 {(r,c)}, 信心分數 {conf:.3f}, 正確")
+                        logger.info(f"Trial {trial+1}: Predicted position {(r,c)}, confidence {conf:.3f}, correct")
                         break
                 if not correct:
-                    logger.info(f"試驗 {trial+1}: 預測失敗")
+                    logger.info(f"Trial {trial+1}: Prediction failed")
                 
                 accuracies.append(1.0 if correct else 0.0)
             
             mean_acc = np.mean(accuracies)
             std_acc = np.std(accuracies)
-            logger.info(f"平均命中率: {mean_acc:.3f} ({mean_acc*100:.1f}%), 標準差: {std_acc:.3f}")
+            logger.info(f"Average hit rate: {mean_acc:.3f} ({mean_acc*100:.1f}%), std: {std_acc:.3f}")
             return mean_acc, std_acc
         except Exception as e:
-            logger.error(f"測試失敗: {e}")
+            logger.error(f"Masking test failed: {e}")
             return 0.0, 0.0
 
 def performance_test():
-    """性能測試"""
+    """Performance test"""
     test_grid = np.random.randint(-1, 60, (6, 10))
     test_grid[test_grid == 0] = -1
     brain = VectorizedBrainModules()
@@ -170,11 +212,11 @@ def performance_test():
     ]
     elapsed = time.time() - start_time
     
-    print(f"4模組計算時間: {elapsed:.4f}秒")
+    print(f"4 modules computed in {elapsed:.4f} seconds")
     return scores
 
 def run_masking_test():
-    """運行隨機遮蔽測試"""
+    """Run random masking test"""
     sample_grid = np.array([
         [ 1,  2,  3,  4,  5,  6,  7,  8,  9, 10],
         [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
@@ -186,7 +228,7 @@ def run_masking_test():
     brain = VectorizedBrainModules()
     np.random.seed(42)
     mean_acc, std_acc = brain.test_with_masking(sample_grid, n_mask=40, target=7, n_trials=20)
-    print(f"最終結果: 平均命中率 {mean_acc*100:.1f}%, 標準差 {std_acc:.3f}")
+    print(f"Final result: Average hit rate {mean_acc*100:.1f}%, std {std_acc:.3f}")
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
