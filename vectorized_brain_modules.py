@@ -131,7 +131,7 @@ class VectorizedBrainModules:
                 scores = scores / np.max(scores + 1e-8)  # Re-normalize
             return scores
         except Exception as e:
-            logger.error(f"ConnectivityHeatmap failed: {e}"")
+            logger.error(f"ConnectivityHeatmap failed: {e}")
             return np.zeros_like(grid, dtype=np.float32)
 
     def entropy_risk_fusion(self, grid: np.ndarray) -> np.ndarray:
