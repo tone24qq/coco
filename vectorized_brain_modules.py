@@ -30,7 +30,17 @@ class VectorizedBrainModules:
 
     def _load_heatmap(self) -> None:
         """Load JSON samples and build normalized heatmap.
-        
+
+        samples_dir = Path(__file__).parent / "samples" / "data"
+        logger.info(f"[DEBUG] Looking for JSON under: {samples_dir}")
+        logger.info(f"[DEBUG] samples_dir.exists() = {samples_dir.exists()}")
+        logger.info(f"[DEBUG] samples_dir.is_dir() = {samples_dir.is_dir()}")
+        if samples_dir.exists() and samples_dir.is_dir():
+            file_list = list(samples_dir.glob("*.json"))
+            logger.info(f"[DEBUG] Found these JSON files: {[f.name for f in file_list]}")
+        else:
+            logger.warning(f"[WARN] samples/data 目錄不存在或不是資料夾")
+
         Notes:
             Loads JSON files from samples/data directory, expects 'grid' and 'answer' keys.
             Normalizes heatmap to [0, 1] based on answer positions.
