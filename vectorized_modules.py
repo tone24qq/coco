@@ -1,11 +1,13 @@
+"""
+vectorized_modules.py - 4模組接口定義
+"""
+from vectorized_brain_modules import VectorizedBrainModules
 
-"""Stub of vectorized_modules – syntactically correct, no-op implementations."""
-import numpy as np
-
-def proximity_score(grid: np.ndarray) -> np.ndarray:
-    """Return uniform score matrix (0.5)."""
-    return np.full(grid.shape, 0.5, dtype=np.float32)
+brain = VectorizedBrainModules()
 
 SCORING_MODULES = {
-    'proximity_score': proximity_score,
+    'edge_proximity_fusion': brain.edge_proximity_fusion,
+    'sequence_tail_analyzer': brain.sequence_tail_analyzer,
+    'connectivity_heatmap': brain.connectivity_heatmap,
+    'entropy_risk_fusion': brain.entropy_risk_fusion
 }
