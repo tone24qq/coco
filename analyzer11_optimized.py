@@ -272,8 +272,7 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
 def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     """Compute difference trend scores based on adjacent known numbers.
     
-    Args:
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+   
         
     Returns:
         np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
