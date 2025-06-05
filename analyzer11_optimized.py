@@ -1,4 +1,3 @@
-```python
 """
 analyzer11_optimized.py - 優化的分析器，包含 4 個模組，無歷史先驗
 """
@@ -87,7 +86,8 @@ def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np
         
     返回:
         2D 熱圖，包含融合後的分數。
-        
+
+
     異常:
         ValueError: 如果輸入無效。
         Exception: 如果融合失敗。
@@ -320,4 +320,3 @@ def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -
     except Exception as e:
         logger.error(f"[{request_id}] 分析失敗: {e}")
         raise
-
