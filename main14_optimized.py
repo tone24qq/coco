@@ -31,7 +31,8 @@ app.add_middleware(
 )
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "Service is running."}
+    print("✅ / route is working")
+    return {"status": "ok", "message": "Service is alive."}
 # ---------- 單筆分析 Request/Response Model ----------
 class AnalyzeRequest(BaseModel):
     grid: List[List[int]] = Field(
