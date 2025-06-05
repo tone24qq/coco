@@ -1,5 +1,6 @@
+```python
 """
-analyzer11_optimized.py - Optimized analyzer with 4 modules, no historical priors
+analyzer11_optimized.py - 優化的分析器，包含 4 個模組，無歷史先驗
 """
 import numpy as np
 import logging
@@ -11,26 +12,25 @@ from vectorized_modules import SCORING_MODULES
 
 logger = logging.getLogger(__name__)
 
-# Module constants
-DEFAULT_K = 3  # Default top-k value for position selection
-NORMALIZATION_EPSILON = 1e-8  # Small epsilon for normalization to avoid division by zero
+DEFAULT_K = 3
+NORMALIZATION_EPSILON = 1e-8
 
 def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.ndarray:
-    """Collect scores from all scoring modules into a 3D tensor.
+    """從所有評分模組收集分數，生成 3D 張量。
     
-    Args:
-        grid: 2D integer array with -1 indicating blank cells.
-        brain: Instance containing scoring modules.
+    參數:
+        grid: 2D 整數陣列，-1 表示空白格。
+        brain: 包含評分模組的實例。
         
-    Returns:
-        3D tensor of shape [num_modules, rows, cols] with scores.
+    返回:
+        形狀為 [模組數, 行數, 列數] 的 3D 張量，包含分數。
         
-    Raises:
-        ValueError: If grid is invalid.
-        Exception: If any scoring module fails.
+    異常:
+        ValueError: 如果 grid 無效。
+        Exception: 如果任何評分模組失敗。
     """
     if not (isinstance(grid, np.ndarray) and grid.ndim == 2 and np.issubdtype(grid.dtype, np.integer)):
-        raise ValueError("Grid must be a 2D integer numpy array")
+        raise ValueError("Grid 必須是 2D 整數 numpy 陣列")
     
     try:
         rows, cols = grid.shape
@@ -40,29 +40,29 @@ def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.nd
         for i, (module_name, module_func) in enumerate(SCORING_MODULES.items()):
             start_time = time.time()
             tensor[i] = module_func(grid)
-            logger.debug(f"{module_name} took {time.time() - start_time:.4f} seconds")
+            logger.debug(f"{module_name} 耗時 {time.time - start_time:.4f} 秒")
         
-        logger.debug("Collected scores from all modules")
+        logger.debug("已收集所有模組的分數")
         return tensor
     except Exception as e:
-        logger.error(f"Score collection failed: {e}")
+        logger.error(f"分數收集失敗: {e}")
         raise
 
 def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
-    """Vectorized tensor normalization using min-max scaling.
+    """使用 min-max 縮放進行向量化的張量正規化。
     
-    Args:
-        tensor: 3D tensor of shape [num_modules, rows, cols] with raw scores.
+    參數:
+        tensor: 形狀為 [模組數, 行數, 列數] 的 3D 張量，包含原始分數。
         
-    Returns:
-        Normalized 3D tensor with values in [0, 1].
+    返回:
+        正規化後的值在 [0, 1] 的 3D 張量。
         
-    Raises:
-        ValueError: If tensor is invalid.
-        Exception: If normalization fails.
+    異常:
+        ValueError: 如果張量無效。
+        Exception: 如果正規化失敗。
     """
     if not (isinstance(tensor, np.ndarray) and tensor.ndim == 3):
-        raise ValueError("Tensor must be a 3D numpy array")
+        raise ValueError("張量必須是 3D numpy 陣列")
     
     try:
         num_modules = tensor.shape[0]
@@ -75,25 +75,25 @@ def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
         normalized = (tensor.reshape(num_modules, -1) - mins) / ranges
         return normalized.reshape(tensor.shape)
     except Exception as e:
-        logger.error(f"Normalization failed: {e}")
+        logger.error(f"正規化失敗: {e}")
         raise
 
 def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np.ndarray:
-    """Vectorized score fusion with optional weighted combination.
+    """向量化的分數融合，支持可選的加權組合。
     
-    Args:
-        normed: Normalized 3D tensor of shape [num_modules, rows, cols].
-        weights: List of weights for each module, defaults to equal weights.
+    參數:
+        normed: 形狀為 [模組數, 行數, 列數] 的正規化 3D 張量。
+        weights: 每個模組的權重列表，預設為均等權重。
         
-    Returns:
-        2D heatmap with fused scores.
+    返回:
+        2D 熱圖，包含融合後的分數。
         
-    Raises:
-        ValueError: If inputs are invalid.
-        Exception: If fusion fails.
+    異常:
+        ValueError: 如果輸入無效。
+        Exception: 如果融合失敗。
     """
     if not (isinstance(normed, np.ndarray) and normed.ndim == 3):
-        raise ValueError("Normed tensor must be a 3D numpy array")
+        raise ValueError("正規化張量必須是 3D numpy 陣列")
     
     try:
         num_modules = normed.shape[0]
@@ -104,26 +104,26 @@ def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np
         weights = weights.reshape(-1, 1, 1)
         return np.sum(normed * weights, axis=0)
     except Exception as e:
-        logger.error(f"Score fusion failed: {e}")
+        logger.error(f"分數融合失敗: {e}")
         raise
 
 def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) -> List[Tuple[int, int, float]]:
-    """Get top-k highest-scoring positions from fused scores.
+    """從融合分數中獲取前 k 個最高分數的位置。
     
-    Args:
-        fused: 2D array of fused scores.
-        grid: 2D integer array with -1 indicating blank cells.
-        k: Number of top positions to return, defaults to 3.
+    參數:
+        fused: 2D 融合分數陣列。
+        grid: 2D 整數陣列，-1 表示空白格。
+        k: 返回的前 k 個位置數量，預設為 3。
         
-    Returns:
-        List of (row, col, confidence) tuples.
+    返回:
+        包含 (行, 列, 置信度) 元組的列表。
         
-    Raises:
-        ValueError: If inputs are invalid.
-        Exception: If top-k selection fails.
+    異常:
+        ValueError: 如果輸入無效。
+        Exception: 如果 top-k 選擇失敗。
     """
     if not (isinstance(fused, np.ndarray) and fused.ndim == 2 and isinstance(grid, np.ndarray) and grid.ndim == 2):
-        raise ValueError("Fused and grid must be 2D numpy arrays")
+        raise ValueError("融合分數和 grid 必須是 2D numpy 陣列")
     
     try:
         blank_mask = (grid == -1)
@@ -132,7 +132,7 @@ def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) 
         num_blanks = np.sum(blank_mask)
         
         if num_blanks == 0:
-            logger.warning("No blank cells to analyze")
+            logger.warning("無空白格可分析")
             return []
         
         k = min(k, num_blanks)
@@ -149,26 +149,26 @@ def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) 
         
         return results
     except Exception as e:
-        logger.error(f"Top-K selection failed: {e}")
+        logger.error(f"Top-K 選擇失敗: {e}")
         raise
 
 def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
-    """Detect row/column skip patterns and return a heatmap.
+    """檢測行/列跳躍模式並返回熱圖。
     
-    Args:
-        grid: 2D integer array with -1 indicating blank cells.
+    參數:
+        grid: 2D 整數陣列，-1 表示空白格。
         
-    Returns:
-        2D heatmap with scores indicating likelihood based on skip patterns.
+    返回:
+        2D 熱圖，包含基於跳躍模式可能性的分數。
     """
     if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
-        raise ValueError("Grid must be a 2D numpy array")
+        raise ValueError("Grid 必須是 2D numpy 陣列")
     
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
     
-    for axis in range(2):  # 0 for rows, 1 for columns
+    for axis in range(2):
         data = grid if axis == 0 else grid.T
         size = cols if axis == 0 else rows
         
@@ -191,17 +191,17 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     return heatmap
 
 def compute_focus_score(grid: np.ndarray) -> np.ndarray:
-    """Compute focus score based on local density of known numbers in a 3x3 window.
+    """基於 3x3 窗口內已知數字的局部密度計算焦點分數。
     
-    Args:
-        grid: 2D integer array with -1 indicating blank cells.
+    參數:
+        grid: 2D 整數陣列，-1 表示空白格。
         
-    Returns:
-        2D heatmap with scores based on local density.
+    返回:
+        2D 熱圖，包含基於局部密度的分數。
     """
     from scipy.signal import convolve2d
     if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
-        raise ValueError("Grid must be a 2D numpy array")
+        raise ValueError("Grid 必須是 2D numpy 陣列")
     
     kernel = np.ones((3, 3), dtype=np.float32)
     density = convolve2d((grid > 0).astype(np.float32), kernel, mode='same', boundary='symm')
@@ -209,25 +209,21 @@ def compute_focus_score(grid: np.ndarray) -> np.ndarray:
     return np.where(grid == -1, density / (max_density + NORMALIZATION_EPSILON), 0)
 
 def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
-    """Detect mirror sequences after horizontal/vertical mirroring.
+    """檢測水平/垂直鏡像後的序列模式。
     
-    Args:
-        grid: 2D integer array with -1 indicating blank cells.
+    參數:
+        grid: 2D 整數陣列，-1 表示空白格。
         
-    Returns:
-        2D heatmap with scores for potential mirror sequence completions.
-        
-    Notes:
-        Scores are assigned if mirroring suggests a consecutive number (e.g., 3,4,-1 -> 5).
+    返回:
+        2D 熱圖，包含基於鏡像序列完成可能性的分數。
     """
     if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
-        raise ValueError("Grid must be a 2D numpy array")
+        raise ValueError("Grid 必須是 2D numpy 陣列")
     
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
     
-    # Horizontal mirror
     h_mirrored = grid[:, ::-1]
     for i in range(rows):
         row = h_mirrored[i]
@@ -240,10 +236,9 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
                     if expected == sorted_filled[-2] + 2:
                         heatmap[i, cols-1-j] = 0.8
     
-    # Vertical mirror
     v_mirrored = grid[::-1, :]
     for j in range(cols):
-        col = v_mirrored,No newline at end of file
+        col = v_mirrored[:, j]
         filled = col[col > 0]
         if len(filled) >= 2:
             sorted_filled = np.sort(filled)
@@ -256,16 +251,16 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     return heatmap
 
 def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
-    """Compute difference trend scores based on arithmetic progression likelihood.
+    """基於相鄰已知數字的算術進展可能性計算差異趨勢分數。
     
-    Args:
-        grid: 2D integer array with -1 indicating blank cells.
+    參數:
+        grid: 2D 整數陣列，-1 表示空白格。
         
-    Returns:
-        2D heatmap with scores based on arithmetic progression likelihood.
+    返回:
+        2D 熱圖，包含基於算術進展可能性的分數。
     """
     if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
-        raise ValueError("Grid must be a 2D numpy array")
+        raise ValueError("Grid 必須是 2D numpy 陣列")
     
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
@@ -289,29 +284,28 @@ def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     return heatmap
 
 def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -> List[Tuple[int, int, float]]:
-    """Main analysis function with 4 modules, no historical priors.
+    """主分析函數，包含 4 個模組，無歷史先驗。
     
-    Args:
-        grid: 2D integer array with -1 indicating blank cells.
-        target: Target number to predict (non-negative).
-        request_id: Identifier for logging, defaults to "API".
+    參數:
+        grid: 2D 整數陣列，-1 表示空白格。
+        target: 預測的目標數字（非負）。
+        request_id: 日誌識別符，預設為 "API"。
         
-    Returns:
-        List of top-k (row, col, confidence) positions.
+    返回:
+        包含前 k 個 (行, 列, 置信度) 位置的列表。
         
-    Raises:
-        ValueError: If grid or target is invalid.
+    異常:
+        ValueError: 如果 grid 或 target 無效。
     """
-    logger.info(f"[{request_id}] Starting analysis: target={target}, grid={grid.shape}")
+    logger.info(f"[{request_id}] 開始分析: target={target}, grid={grid.shape}")
     
     try:
-        # Input validation
         if not (isinstance(grid, np.ndarray) and grid.ndim == 2 and np.issubdtype(grid.dtype, np.integer)):
-            raise ValueError("Grid must be a 2D integer numpy array")
+            raise ValueError("Grid 必須是 2D 整數 numpy 陣列")
         if target < 0:
-            raise ValueError("Target cannot be negative")
+            raise ValueError("目標數字不能為負")
         if not np.any(grid == -1):
-            raise ValueError("Grid must contain at least one blank cell (-1)")
+            raise ValueError("Grid 必須包含至少一個空白格 (-1)")
         
         start_time = time.time()
         
@@ -321,8 +315,10 @@ def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -
         fused = fuse_scores(normed)
         results = get_topk_positions(fused, grid, k=DEFAULT_K)
         
-        logger.info(f"[{request_id}] Analysis completed in {time.time() - start_time:.4f} seconds")
+        logger.info(f"[{request_id}] 分析完成，耗時 {time.time() - start_time:.4f} 秒")
         return results
     except Exception as e:
-        logger.error(f"[{request_id}] Analysis failed: {e}")
+        logger.error(f"[{request_id}] 分析失敗: {e}")
         raise
+```
+
