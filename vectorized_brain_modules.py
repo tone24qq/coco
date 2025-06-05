@@ -1,8 +1,8 @@
 """
-vectorized_brain_modules.py - Vectorized implementation of 4 modules with JSON-based heatmap
+vectorized_brain_modules.py - Vectorized implementation of 4 modules with dynamic heatmap scaling
 """
 import numpy as np
-from scipy.ndimage import convolve
+from scipy.ndimage import convolve, zoom
 import numba as nb
 import logging
 import time
@@ -21,7 +21,7 @@ class VectorizedBrainModules:
         self._load_heatmap()
 
     def _load_heatmap(self) -> None:
-        """Load JSON samples and build normalized heatmap (from 讀取熱力圖教學.txt)"""
+        """Load JSON samples and build normalized heatmap"""
         try:
             samples_dir = Path(__file__).parent / "samples" / "data"
             if not samples_dir.exists():
@@ -51,7 +51,6 @@ class VectorizedBrainModules:
                 except Exception as e:
                     logger.error(f"Failed to load {json_file}: {e}")
             
-            # Normalize to 0-1 (avoid division by zero)
             min_val, max_val = heatmap.min(), heatmap.max()
             if max_val > min_val:
                 self.heatmap_cache = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
@@ -116,27 +115,30 @@ class VectorizedBrainModules:
         return scores
 
     def connectivity_heatmap(self, grid: np.ndarray) -> np.ndarray:
-        """Module 3: Connectivity heatmap from JSON samples (from 讀取熱力圖教學.txt)"""
+        """Module 3: Connectivity heatmap with dynamic scaling"""
         try:
             rows, cols = grid.shape
             legal_mask = (grid == -1).astype(np.float32)
             
-            if self.heatmap_cache is None or self.heatmap_cache.shape != (rows, cols):
-                logger.warning("No valid heatmap available, using uniform scores")
+            if self.heatmap_cache is None:
+                logger.warning("No valid heatmap, using uniform scores")
                 scores = np.where(legal_mask, 0.5, 0)
             else:
-                scores = np.where(legal_mask, self.heatmap_cache, 0)
-            
+                # Scale heatmap to match input grid size
+                zoom_factors = (rows / self.heatmap_cache.shape[0], cols / self.heatmap_cache.shape[1])
+                resized_heatmap = zoom(self.heatmap_cache, zoom_factors, order=1)
+                scores = np.where(legal_mask, resized_heatmap, 0)
+                scores = scores / np.max(scores + 1e-8)  # Re-normalize
             return scores
         except Exception as e:
-            logger.error(f"ConnectivityHeatmap failed: {e}")
+            logger.error(f"ConnectivityHeatmap failed: {e}"")
             return np.zeros_like(grid, dtype=np.float32)
 
     def entropy_risk_fusion(self, grid: np.ndarray) -> np.ndarray:
         """Module 4: Entropy risk fusion, local entropy"""
         try:
             rows, cols = grid.shape
-            legal_mask = (grid == -1).astype(np.float32)
+            legal_mask = np.where(grid == -1) == -1).astype(np.float32)
             
             scores = np.zeros((rows, cols), dtype=np.float32)
             for r in range(rows):
@@ -160,17 +162,23 @@ class VectorizedBrainModules:
     def test_with_masking(
         self, original_grid: np.ndarray, n_mask: int = 40, target: int = 7, n_trials: int = 20
     ) -> Tuple[float, float]:
-        """Random masking test to compute hit rate"""
+        """Random masking test for arbitrary grid sizes"""
         try:
             true_positions = np.where(original_grid == target)
             if len(true_positions[0]) == 0:
                 raise ValueError(f"Target number {target} not found in grid")
             
             accuracies = []
+            max_mask = min(n_mask, original_grid.size - len(true_positions[0]))
+            
             for trial in range(n_trials):
                 grid = original_grid.copy()
-                indices = np.random.choice(original_grid.size, n_mask, replace=False)
-                grid.flat[indices] = -1
+                valid_indices = np.where(grid != target)[0]
+                if len(valid_indices) < max_mask:
+                    max_mask = len(valid_indices)
+                if max_mask > 0:
+                    indices = np.random.choice(valid_indices, max_mask, replace=False)
+                    grid.flat[indices] = -1
                 
                 for r, c in zip(true_positions[0], true_positions[1]):
                     grid[r, c] = -1
@@ -182,7 +190,7 @@ class VectorizedBrainModules:
                 for r, c, conf in results:
                     if original_grid[r, c] == target:
                         correct = True
-                        logger.info(f"Trial {trial+1}: Predicted position {(r,c)}, confidence {conf:.3f}, correct")
+                        logger.info(f"Trial {trial+1}: Predicted {(r,c)}, confidence {conf:.3f}, correct")
                         break
                 if not correct:
                     logger.info(f"Trial {trial+1}: Prediction failed")
@@ -198,8 +206,8 @@ class VectorizedBrainModules:
             return 0.0, 0.0
 
 def performance_test():
-    """Performance test"""
-    test_grid = np.random.randint(-1, 60, (6, 10))
+    """Performance test for arbitrary grid"""
+    test_grid = np.random.randint(-1, 400, (20, 20))  # Test with 20x20
     test_grid[test_grid == 0] = -1
     brain = VectorizedBrainModules()
     
@@ -216,15 +224,9 @@ def performance_test():
     return scores
 
 def run_masking_test():
-    """Run random masking test"""
-    sample_grid = np.array([
-        [ 1,  2,  3,  4,  5,  6,  7,  8,  9, 10],
-        [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
-        [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
-        [31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
-        [41, 42, 43, 44, 45, 46, 47, 48, 49, 50],
-        [51, 52, 53, 54, 55, 56,  7, 58, 59, 60]
-    ])
+    """Run random masking test for 20x20 grid"""
+    sample_grid = np.arange(1, 401).reshape(20, 20)  # 20x20 example
+    sample_grid[10, 10] = 7  # Target 7
     brain = VectorizedBrainModules()
     np.random.seed(42)
     mean_acc, std_acc = brain.test_with_masking(sample_grid, n_mask=40, target=7, n_trials=20)
