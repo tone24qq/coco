@@ -1,6 +1,5 @@
-"""
-vectorized_brain_modules.py - Vectorized implementation of scoring modules with dynamic heatmap scaling
-"""
+# vectorized_brain_modules.py
+
 import numpy as np
 from scipy.ndimage import convolve, zoom
 from scipy.signal import convolve2d
@@ -29,68 +28,61 @@ class VectorizedBrainModules:
         logger.info(f"Initialized VectorizedBrainModules with {len(self.module_list)} scoring modules")
 
     def _load_heatmap(self) -> None:
-        """Load JSON samples and build normalized heatmap.
-
-        samples_dir = Path(__file__).parent / "samples" / "data"
-        logger.info(f"[DEBUG] Looking for JSON under: {samples_dir}")
-        logger.info(f"[DEBUG] samples_dir.exists() = {samples_dir.exists()}")
-        logger.info(f"[DEBUG] samples_dir.is_dir() = {samples_dir.is_dir()}")
-        if samples_dir.exists() and samples_dir.is_dir():
-            file_list = list(samples_dir.glob("*.json"))
-            logger.info(f"[DEBUG] Found these JSON files: {[f.name for f in file_list]}")
-        else:
-            logger.warning(f"[WARN] samples/data 目錄不存在或不是資料夾")
-
-        Notes:
-            Loads JSON files from samples/data directory, expects 'grid' and 'answer' keys.
-            Normalizes heatmap to [0, 1] based on answer positions.
-        """
+        """Load JSON samples and build normalized heatmap."""
         try:
             samples_dir = Path(__file__).parent / "samples" / "data"
-            if not samples_dir.exists():
-                logger.warning(f"Samples directory {samples_dir} does not exist")
+            logger.info(f"[DEBUG] Looking for JSON under: {samples_dir}")
+            logger.info(f"[DEBUG] samples_dir.exists() = {samples_dir.exists()}")
+            logger.info(f"[DEBUG] samples_dir.is_dir() = {samples_dir.is_dir()}")
+            if samples_dir.exists() and samples_dir.is_dir():
+                file_list = list(samples_dir.glob("*.json"))
+                logger.info(f"[DEBUG] Found these JSON files: {[f.name for f in file_list]}")
+            else:
+                logger.warning(f"[WARN] samples/data 目錄不存在或不是資料夾")
                 self.heatmap_cache = None
                 return
-            
+
             json_files = list(samples_dir.glob("*.json"))
             if not json_files:
                 logger.warning(f"No JSON files found in {samples_dir}")
                 self.heatmap_cache = None
                 return
-            
+
             first = json.loads(json_files[0].read_text(encoding='utf-8'))
-            if not isinstance(first.get("grid"), list) or not isinstance(first.get("answer"), dict):
-                logger.error("Invalid JSON format: 'grid' or 'answer' missing or incorrect")
+            if not isinstance(first.get("grid"), list) or not first.get("answer"):
+                logger.error("Invalid JSON format in first sample")
                 self.heatmap_cache = None
                 return
+
             rows, cols = len(first["grid"]), len(first["grid"][0])
             heatmap = np.zeros((rows, cols), dtype=np.int32)
-            
+
             for json_file in json_files:
-                try:
-                    data = json.loads(json_file.read_text(encoding='utf-8'))
-                    if not (isinstance(data.get("grid"), list) and 
-                            len(data["grid"]) == rows and len(data["grid"][0]) == cols):
-                        logger.warning(f"Invalid grid shape in {json_file}, expected ({rows}, {cols})")
-                        continue
-                    if not (isinstance(data.get("answer"), dict) and "row" in data["answer"] and "col" in data["answer"]):
-                        logger.warning(f"Invalid answer format in {json_file}")
-                        continue
-                    r = data["answer"]["row"] - 1  # 1-based to 0-based
-                    c = data["answer"]["col"] - 1
+                data = json.loads(json_file.read_text(encoding='utf-8'))
+                # shape consistency check
+                if not (isinstance(data.get("grid"), list)
+                        and len(data["grid"]) == rows
+                        and len(data["grid"][0]) == cols):
+                    logger.warning(f"Invalid grid shape in {json_file.name}, skipping")
+                    continue
+                ans = data.get("answer")
+                if isinstance(ans, dict) and "row" in ans and "col" in ans:
+                    r = ans["row"] - 1
+                    c = ans["col"] - 1
                     if 0 <= r < rows and 0 <= c < cols:
                         heatmap[r, c] += 1
                     else:
-                        logger.warning(f"Invalid position in {json_file}: row={r+1}, col={c+1}")
-                except Exception as e:
-                    logger.error(f"Failed to load {json_file}: {e}")
-            
+                        logger.warning(f"Answer out of range in {json_file.name}")
+                else:
+                    logger.warning(f"Invalid answer format in {json_file.name}")
+
             min_val, max_val = heatmap.min(), heatmap.max()
             if max_val > min_val:
                 self.heatmap_cache = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
             else:
                 self.heatmap_cache = np.zeros_like(heatmap, dtype=np.float32)
-            logger.info(f"Loaded heatmap from {len(json_files)} JSON samples, shape={heatmap.shape}")
+
+            logger.info(f"Loaded heatmap from {len(json_files)} JSON samples, shape=({rows}, {cols})")
         except Exception as e:
             logger.error(f"Heatmap loading failed: {e}")
             self.heatmap_cache = None
