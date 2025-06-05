@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_K = 3
 NORMALIZATION_EPSILON = 1e-8
 
+
 def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.ndarray:
     """從所有評分模組收集分數，生成 3D 張量。
     
@@ -47,6 +48,7 @@ def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.nd
         logger.error(f"分數收集失敗: {e}")
         raise
 
+
 def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
     """使用 min-max 縮放進行向量化的張量正規化。
     
@@ -77,6 +79,7 @@ def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
         logger.error(f"正規化失敗: {e}")
         raise
 
+
 def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np.ndarray:
     """向量化的分數融合，支持可選的加權組合。
     
@@ -86,8 +89,7 @@ def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np
         
     返回:
         2D 熱圖，包含融合後的分數。
-
-
+        
     異常:
         ValueError: 如果輸入無效。
         Exception: 如果融合失敗。
@@ -107,7 +109,10 @@ def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np
         logger.error(f"分數融合失敗: {e}")
         raise
 
-def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) -> List[Tuple[int, int, float]]:
+
+def get_topk_positions(
+    fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K
+) -> List[Tuple[int, int, float]]:
     """從融合分數中獲取前 k 個最高分數的位置。
     
     參數:
@@ -122,14 +127,19 @@ def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) 
         ValueError: 如果輸入無效。
         Exception: 如果 top-k 選擇失敗。
     """
-    if not (isinstance(fused, np.ndarray) and fused.ndim == 2 and isinstance(grid, np.ndarray) and grid.ndim == 2):
+    if not (
+        isinstance(fused, np.ndarray)
+        and fused.ndim == 2
+        and isinstance(grid, np.ndarray)
+        and grid.ndim == 2
+    ):
         raise ValueError("融合分數和 grid 必須是 2D numpy 陣列")
     
     try:
         blank_mask = (grid == -1)
         masked_scores = np.where(blank_mask, fused, -np.inf)
         flat_scores = masked_scores.flatten()
-        num_blanks = np.sum(blank_mask)
+        num_blanks = int(np.sum(blank_mask))
         
         if num_blanks == 0:
             logger.warning("無空白格可分析")
@@ -140,17 +150,18 @@ def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) 
         top_k_indices = top_k_indices[np.argsort(flat_scores[top_k_indices])[::-1]]
         
         results = []
-        total_score = np.sum(masked_scores[blank_mask])
+        total_score = float(np.sum(masked_scores[blank_mask]))
         for idx in top_k_indices:
             r = idx // grid.shape[1]
             c = idx % grid.shape[1]
-            confidence = fused[r, c] / total_score if total_score > 0 else 0
+            confidence = (fused[r, c] / total_score) if total_score > 0 else 0.0
             results.append((r, c, confidence))
         
         return results
     except Exception as e:
         logger.error(f"Top-K 選擇失敗: {e}")
         raise
+
 
 def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     """檢測行/列跳躍模式並返回熱圖。
@@ -169,8 +180,10 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     blank_mask = (grid == -1)
     
     for axis in range(2):
+        # 如果 axis == 0，對應在「橫向」掃描 row
+        # 如果 axis == 1，對應在「縱向」掃描 col（對 grid.T 使用相同邏輯）
         data = grid if axis == 0 else grid.T
-        size = cols if axis == 0 else rows
+        size = rows if axis == 0 else cols  # 修正：橫向用 rows，縱向用 cols
         
         for i in range(size):
             row = data[i]
@@ -180,15 +193,18 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
             differences = np.diff(filled_indices)
             common_diff = np.median(differences) if len(differences) > 0 else 1
             
-            for j in range(size):
-                if (blank_mask[i, j] if axis == 0 else blank_mask[j, i]):
-                    next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
+            for j in range(rows if axis == 0 else cols):
+                # 橫向時：blank_mask[i, j]；縱向時：blank_mask[j, i]
+                is_blank = blank_mask[i, j] if axis == 0 else blank_mask[j, i]
+                if is_blank:
+                    next_expected = filled_indices[-1] + common_diff
                     if abs(j - next_expected) <= 1:
                         if axis == 0:
                             heatmap[i, j] = 0.9
                         else:
                             heatmap[j, i] = 0.9
     return heatmap
+
 
 def compute_focus_score(grid: np.ndarray) -> np.ndarray:
     """基於 3x3 窗口內已知數字的局部密度計算焦點分數。
@@ -200,13 +216,15 @@ def compute_focus_score(grid: np.ndarray) -> np.ndarray:
         2D 熱圖，包含基於局部密度的分數。
     """
     from scipy.signal import convolve2d
+
     if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
         raise ValueError("Grid 必須是 2D numpy 陣列")
     
     kernel = np.ones((3, 3), dtype=np.float32)
     density = convolve2d((grid > 0).astype(np.float32), kernel, mode='same', boundary='symm')
-    max_density = np.max(density)
-    return np.where(grid == -1, density / (max_density + NORMALIZATION_EPSILON), 0)
+    max_density = float(np.max(density))
+    return np.where(grid == -1, density / (max_density + NORMALIZATION_EPSILON), 0.0)
+
 
 def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     """檢測水平/垂直鏡像後的序列模式。
@@ -224,6 +242,7 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
     
+    # 水平鏡像 (left-right)
     h_mirrored = grid[:, ::-1]
     for i in range(rows):
         row = h_mirrored[i]
@@ -231,11 +250,12 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
         if len(filled) >= 2:
             sorted_filled = np.sort(filled)
             for j in range(cols):
-                if blank_mask[i, cols-1-j]:
-                    expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
-                    if expected == sorted_filled[-2] + 2:
-                        heatmap[i, cols-1-j] = 0.8
+                if blank_mask[i, cols - 1 - j]:
+                    expected = (sorted_filled[-1] + 1) if (sorted_filled[-1] < rows * cols) else 0
+                    if expected == (sorted_filled[-2] + 2):
+                        heatmap[i, cols - 1 - j] = 0.8
     
+    # 垂直鏡像 (top-bottom)
     v_mirrored = grid[::-1, :]
     for j in range(cols):
         col = v_mirrored[:, j]
@@ -243,12 +263,13 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
         if len(filled) >= 2:
             sorted_filled = np.sort(filled)
             for i in range(rows):
-                if blank_mask[rows-1-i, j]:
-                    expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
-                    if expected == sorted_filled[-2] + 2:
-                        heatmap[rows-1-i, j] = 0.8
+                if blank_mask[rows - 1 - i, j]:
+                    expected = (sorted_filled[-1] + 1) if (sorted_filled[-1] < rows * cols) else 0
+                    if expected == (sorted_filled[-2] + 2):
+                        heatmap[rows - 1 - i, j] = 0.8
     
     return heatmap
+
 
 def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     """基於相鄰已知數字的算術進展可能性計算差異趨勢分數。
@@ -268,22 +289,28 @@ def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     
     for i in range(rows):
         for j in range(cols):
-            if blank_mask[i, j]:
-                neighbors = []
-                for di, dj in [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]:
-                    ni, nj = i + di, j + dj
-                    if 0 <= ni < rows and 0 <= nj < cols and grid[ni, nj] > 0:
-                        neighbors.append(grid[ni, nj])
-                if len(neighbors) >= 2:
-                    differences = np.diff(sorted(neighbors))
-                    median_diff = np.median(differences)
-                    expected = neighbors[0] + median_diff * (len(neighbors) + 1)
-                    if 1 <= expected <= rows * cols:
-                        heatmap[i, j] = 0.7 / (1 + abs(expected - np.mean(neighbors)))
+            if not blank_mask[i, j]:
+                continue
+            neighbors = []
+            for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < rows and 0 <= nj < cols and grid[ni, nj] > 0:
+                    neighbors.append(grid[ni, nj])
+            if len(neighbors) < 2:
+                continue
+            sorted_neighbors = sorted(neighbors)
+            differences = np.diff(sorted_neighbors)
+            median_diff = np.median(differences)
+            expected = sorted_neighbors[0] + median_diff * (len(neighbors) + 1)
+            if 1 <= expected <= rows * cols:
+                heatmap[i, j] = 0.7 / (1 + abs(expected - np.mean(neighbors)))
     
     return heatmap
 
-def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -> List[Tuple[int, int, float]]:
+
+def analyze_with_prior(
+    grid: np.ndarray, target: int, request_id: str = "API"
+) -> List[Tuple[int, int, float]]:
     """主分析函數，包含 4 個模組，無歷史先驗。
     
     參數:
