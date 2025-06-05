@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(**name**)
 
 class VectorizedBrainModules:
-“”“完全向量化的大腦評分模組類別”””
+"""完全向量化的大腦評分模組類別"""
 
 ```
 def __init__(self):
@@ -988,7 +988,7 @@ def _compute_internal_gap_bonus(self, grid: np.ndarray, legal_mask: np.ndarray, 
 # 使用示例和性能測試
 
 def performance_test():
-“”“性能測試函數”””
+"""性能測試函數"""
 import time
 
 ```
@@ -1015,6 +1015,6 @@ print(f"計算的特徵數量: {len(all_features)}")
 return brain, all_features
 ```
 
-if **name** == “**main**”:
+if **name** == "**main**":
 brain, features = performance_test()
-print(“向量化大腦模組載入完成！”)
+print("向量化大腦模組載入完成！")

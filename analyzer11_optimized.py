@@ -29,8 +29,8 @@ _score_cache = {}
 _cache_hits = 0
 _cache_misses = 0
 
-def _load_memory_folder(folder_path: str = “memory_data”):
-“”“載入歷史樣本”””
+def _load_memory_folder(folder_path: str = "memory_data"):
+"""載入歷史樣本"""
 global MEMORY_SAMPLES, _last_memory_load_time
 MEMORY_SAMPLES.clear()
 
@@ -64,7 +64,7 @@ logger.info(f"載入了 {len(MEMORY_SAMPLES)} 個歷史樣本")
 ```
 
 def compute_weights_from_memory() -> Tuple[Dict[str, float], Dict[Tuple[int, int], Dict[str, float]]]:
-“”“從歷史樣本計算權重”””
+"""從歷史樣本計算權重"""
 if not MEMORY_SAMPLES:
 return {}, {}
 
@@ -127,7 +127,7 @@ return global_weights, shape_weights
 ```
 
 def get_adaptive_weights(grid: np.ndarray, target: int) -> np.ndarray:
-“”“根據當前網格和目標數字獲取自適應權重”””
+"""根據當前網格和目標數字獲取自適應權重"""
 rows, cols = grid.shape
 shape = (rows, cols)
 
@@ -151,8 +151,8 @@ for name in SCORING_MODULES:
 return np.array(weights, dtype=np.float32)
 ```
 
-def collect_all_scores(grid: np.ndarray, request_id: str = “API”) -> np.ndarray:
-“”“收集所有評分模組的分數（向量化版本）”””
+def collect_all_scores(grid: np.ndarray, request_id: str = "API") -> np.ndarray:
+"""收集所有評分模組的分數（向量化版本）"""
 rows, cols = grid.shape
 num_modules = len(SCORING_MODULES)
 
@@ -195,8 +195,8 @@ if len(_score_cache) > 1000:
 return tensor
 ```
 
-def normalize_tensor(tensor: np.ndarray, method: str = “minmax”) -> np.ndarray:
-“”“向量化張量正規化”””
+def normalize_tensor(tensor: np.ndarray, method: str = "minmax") -> np.ndarray:
+"""向量化張量正規化"""
 num_modules = tensor.shape[0]
 
 ```
@@ -228,7 +228,7 @@ else:
 ```
 
 def fuse_scores(normed: np.ndarray, weights: Optional[np.ndarray] = None) -> np.ndarray:
-“”“向量化分數融合”””
+"""向量化分數融合"""
 if weights is None:
 # 等權平均
 return np.mean(normed, axis=0)
@@ -238,7 +238,7 @@ weights = weights.reshape(-1, 1, 1)
 return np.sum(normed * weights, axis=0)
 
 def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = 3) -> List[Tuple[int, int, float]]:
-“”“獲取前k個最高分位置（優化版）”””
+"""獲取前k個最高分位置（優化版）"""
 # 創建空格遮罩
 blank_mask = (grid == -1)
 
@@ -272,9 +272,9 @@ for idx in top_k_indices:
 return results
 ```
 
-def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = “API”) -> List[Tuple[int, int, float]]:
-“”“主分析函數，整合歷史先驗”””
-logger.info(f”[{request_id}] 開始分析 target={target}, grid={grid.shape}”)
+def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -> List[Tuple[int, int, float]]:
+"""主分析函數，整合歷史先驗"""
+logger.info(f"[{request_id}] 開始分析 target={target}, grid={grid.shape}")
 
 ```
 # 1. 收集所有評分
@@ -331,5 +331,5 @@ return results
 _load_memory_folder()
 GLOBAL_WEIGHTS, SHAPE_WEIGHTS = compute_weights_from_memory()
 
-logger.info(f”已註冊 {len(SCORING_MODULES)} 個評分模組”)
-logger.info(f”模組列表: {list(SCORING_MODULES.keys())}”)
+logger.info(f"已註冊 {len(SCORING_MODULES)} 個評分模組")
+logger.info(f"模組列表: {list(SCORING_MODULES.keys())}")

@@ -9,13 +9,13 @@ from scipy.ndimage import convolve, distance_transform_edt
 from scipy.signal import convolve2d
 from scipy.stats import entropy
 import warnings
-warnings.filterwarnings(‘ignore’)
+warnings.filterwarnings('ignore')
 
 # 工具函數
 
 @njit
 def get_neighbors_vectorized(grid, mask):
-“”“向量化取得鄰居值”””
+"""向量化取得鄰居值"""
 rows, cols = grid.shape
 neighbors = np.zeros((rows, cols, 8), dtype=np.float32)
 
@@ -46,7 +46,7 @@ return neighbors
 # 1. 鄰近性評分 (完全向量化)
 
 def proximity_score(grid: np.ndarray) -> np.ndarray:
-“”“基於鄰近已知數字的評分”””
+"""基於鄰近已知數字的評分"""
 rows, cols = grid.shape
 blank_mask = (grid == -1).astype(np.float32)
 known_mask = (grid > 0).astype(np.float32)
@@ -65,7 +65,7 @@ return scores.astype(np.float32)
 # 2. 密度評分 (完全向量化)
 
 def density_score(grid: np.ndarray) -> np.ndarray:
-“”“基於周圍已知數字密度的評分”””
+"""基於周圍已知數字密度的評分"""
 blank_mask = (grid == -1).astype(np.float32)
 known_mask = (grid > 0).astype(np.float32)
 
@@ -81,7 +81,7 @@ return scores.astype(np.float32)
 # 3. 梯度評分 (完全向量化)
 
 def gradient_score(grid: np.ndarray) -> np.ndarray:
-“”“基於數值梯度的評分”””
+"""基於數值梯度的評分"""
 blank_mask = (grid == -1).astype(np.float32)
 
 ```
@@ -109,7 +109,7 @@ return scores.astype(np.float32)
 # 4. 模式匹配評分 (完全向量化)
 
 def pattern_match_score(grid: np.ndarray) -> np.ndarray:
-“”“基於局部模式的評分”””
+"""基於局部模式的評分"""
 rows, cols = grid.shape
 blank_mask = (grid == -1).astype(np.float32)
 
@@ -140,7 +140,7 @@ return scores.astype(np.float32)
 
 @njit(parallel=True)
 def connectivity_score_numba(grid: np.ndarray) -> np.ndarray:
-“”“基於連通區域大小的評分”””
+"""基於連通區域大小的評分"""
 rows, cols = grid.shape
 scores = np.zeros((rows, cols), dtype=np.float32)
 blank_mask = (grid == -1)
@@ -182,7 +182,7 @@ return scores
 # 6. 對稱性評分 (完全向量化)
 
 def symmetry_score(grid: np.ndarray) -> np.ndarray:
-“”“基於對稱性的評分”””
+"""基於對稱性的評分"""
 rows, cols = grid.shape
 blank_mask = (grid == -1).astype(np.float32)
 
@@ -208,7 +208,7 @@ return scores.astype(np.float32)
 # 7. 邊緣評分 (完全向量化)
 
 def edge_score(grid: np.ndarray) -> np.ndarray:
-“”“基於邊緣位置的評分”””
+"""基於邊緣位置的評分"""
 rows, cols = grid.shape
 blank_mask = (grid == -1).astype(np.float32)
 
@@ -230,7 +230,7 @@ return scores.astype(np.float32)
 # 8. 中心評分 (完全向量化)
 
 def center_score(grid: np.ndarray) -> np.ndarray:
-“”“基於中心位置的評分”””
+"""基於中心位置的評分"""
 rows, cols = grid.shape
 blank_mask = (grid == -1).astype(np.float32)
 
@@ -255,7 +255,7 @@ return scores.astype(np.float32)
 
 @njit(parallel=True)
 def sequence_score_numba(grid: np.ndarray) -> np.ndarray:
-“”“基於潛在序列完成的評分”””
+"""基於潛在序列完成的評分"""
 rows, cols = grid.shape
 scores = np.zeros((rows, cols), dtype=np.float32)
 blank_mask = (grid == -1)
@@ -300,7 +300,7 @@ return scores
 # 10. 熵評分 (向量化)
 
 def entropy_score(grid: np.ndarray) -> np.ndarray:
-“”“基於局部熵的評分”””
+"""基於局部熵的評分"""
 rows, cols = grid.shape
 blank_mask = (grid == -1).astype(np.float32)
 
@@ -335,16 +335,16 @@ return scores * blank_mask
 # 註冊所有評分函數
 
 SCORING_MODULES = {
-‘proximity_score’: proximity_score,
-‘density_score’: density_score,
-‘gradient_score’: gradient_score,
-‘pattern_match_score’: pattern_match_score,
-‘connectivity_score’: connectivity_score_numba,
-‘symmetry_score’: symmetry_score,
-‘edge_score’: edge_score,
-‘center_score’: center_score,
-‘sequence_score’: sequence_score_numba,
-‘entropy_score’: entropy_score,
+'proximity_score': proximity_score,
+'density_score': density_score,
+'gradient_score': gradient_score,
+'pattern_match_score': pattern_match_score,
+'connectivity_score': connectivity_score_numba,
+'symmetry_score': symmetry_score,
+'edge_score': edge_score,
+'center_score': center_score,
+'sequence_score': sequence_score_numba,
+'entropy_score': entropy_score,
 }
 # === 自動掛入 26 個 EXT_* 向量化函式 =========================
 try:

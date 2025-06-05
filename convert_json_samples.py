@@ -1,7 +1,7 @@
 # convert_json_samples.py
 """
 脚本功能：把原始卡片 JSON（放在 json_samples/ 目录下）逐张清洗并拆解样本，
-输出“记忆样本”到 memory_data/all.json，每个样本带 grid, target, true_pos, scores, fused_score, timestamp 等字段。
+输出"记忆样本"到 memory_data/all.json，每个样本带 grid, target, true_pos, scores, fused_score, timestamp 等字段。
 
 使用方法：
 1. 确保本脚本位于 project_root 目录下。
@@ -32,7 +32,7 @@ OUTPUT_PATH = "memory_data/all.json"
 # 确保 memory_data 目录存在
 os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
 
-# 用来存放所有拆解出来的“遮蔽样本”的列表
+# 用来存放所有拆解出来的"遮蔽样本"的列表
 all_samples = []
 
 
@@ -104,7 +104,7 @@ def load_and_clean(json_path: str) -> np.ndarray:
 
 def process_card(arr: np.ndarray, source_name: str) -> list[dict]:
     """
-    给一个“已清洗”的卡片阵列 arr (shape = (rows, cols)，元素要么正整数，要么 -1)，
+    给一个"已清洗"的卡片阵列 arr (shape = (rows, cols)，元素要么正整数，要么 -1)，
     对 arr 里每个 >0 的值当作 target：
       a) 找到 target 在 arr 中的位置 (r,c)，复制 arr 为 grid_masked，把 (r,c) 设为 -1；
       b) 调用 collect_all_scores(grid_masked) → 得到 tensor (形状 (num_mod, rows, cols))；

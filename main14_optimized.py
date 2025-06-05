@@ -44,24 +44,24 @@ total_process_time = 0.0
 # 背景任務管理
 
 async def periodic_memory_update():
-“”“定期更新記憶體資料”””
+"""定期更新記憶體資料"""
 while True:
 await asyncio.sleep(300)  # 每5分鐘
 try:
 _load_memory_folder()
 global GLOBAL_WEIGHTS, SHAPE_WEIGHTS
 GLOBAL_WEIGHTS, SHAPE_WEIGHTS = compute_weights_from_memory()
-logger.info(“已更新記憶體資料和權重”)
+logger.info("已更新記憶體資料和權重")
 except Exception as e:
-logger.error(f”更新記憶體資料失敗: {e}”)
+logger.error(f"更新記憶體資料失敗: {e}")
 
 # Pydantic 模型
 
 class AnalyzeRequest(BaseModel):
-“”“簡化的分析請求模型”””
-grid: List[List[int]] = Field(…, description=“2D網格，-1表示空格”)
-target: Optional[int] = Field(None, description=“目標數字”)
-top_k: int = Field(3, ge=1, le=10, description=“返回前K個結果”)
+"""簡化的分析請求模型"""
+grid: List[List[int]] = Field(…, description="2D網格，-1表示空格")
+target: Optional[int] = Field(None, description="目標數字")
+top_k: int = Field(3, ge=1, le=10, description="返回前K個結果")
 
 ```
 @validator('grid')
@@ -89,21 +89,21 @@ class Config:
 ```
 
 class Position(BaseModel):
-“”“位置結果模型”””
-row: int = Field(…, ge=0, description=“行索引（0-based）”)
-col: int = Field(…, ge=0, description=“列索引（0-based）”)
-confidence: float = Field(…, ge=0, le=1, description=“信心分數”)
+"""位置結果模型"""
+row: int = Field(…, ge=0, description="行索引（0-based）")
+col: int = Field(…, ge=0, description="列索引（0-based）")
+confidence: float = Field(…, ge=0, le=1, description="信心分數")
 
 class AnalyzeResponse(BaseModel):
-“”“分析響應模型”””
-positions: List[Position] = Field(…, description=“推薦位置列表”)
-grid_shape: tuple[int, int] = Field(…, description=“網格形狀”)
-process_time: float = Field(…, description=“處理時間（秒）”)
-cache_hit: bool = Field(False, description=“是否命中快取”)
+"""分析響應模型"""
+positions: List[Position] = Field(…, description="推薦位置列表")
+grid_shape: tuple[int, int] = Field(…, description="網格形狀")
+process_time: float = Field(…, description="處理時間（秒）")
+cache_hit: bool = Field(False, description="是否命中快取")
 
 class HealthResponse(BaseModel):
-“”“健康檢查響應”””
-status: str = “healthy”
+"""健康檢查響應"""
+status: str = "healthy"
 uptime_seconds: float
 total_requests: int
 average_process_time: float
@@ -115,9 +115,9 @@ modules_count: int
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-“”“應用生命週期管理”””
+"""應用生命週期管理"""
 # 啟動時
-logger.info(“正在啟動 FastAPI 應用…”)
+logger.info("正在啟動 FastAPI 應用…")
 
 ```
 # 創建背景任務
@@ -137,9 +137,9 @@ except asyncio.CancelledError:
 # 創建 FastAPI 應用
 
 app = FastAPI(
-title=“數獨/數字卡片 AI 分析服務”,
-description=“使用向量化計算和歷史學習的高效位置推薦服務”,
-version=“2.0.0”,
+title="數獨/數字卡片 AI 分析服務",
+description="使用向量化計算和歷史學習的高效位置推薦服務",
+version="2.0.0",
 lifespan=lifespan
 )
 
@@ -147,15 +147,15 @@ lifespan=lifespan
 
 app.add_middleware(
 CORSMiddleware,
-allow_origins=[”*”],
+allow_origins=["*"],
 allow_credentials=True,
-allow_methods=[”*”],
-allow_headers=[”*”],
+allow_methods=["*"],
+allow_headers=["*"],
 )
 
 # 請求計數中間件
 
-@app.middleware(“http”)
+@app.middleware("http")
 async def count_requests(request, call_next):
 global request_count
 request_count += 1
@@ -164,9 +164,9 @@ return response
 
 # API 路由
 
-@app.get(”/health”, response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse)
 async def health_check():
-“”“健康檢查端點”””
+"""健康檢查端點"""
 uptime = (datetime.now() - startup_time).total_seconds()
 avg_time = total_process_time / request_count if request_count > 0 else 0
 
@@ -183,9 +183,9 @@ return HealthResponse(
 )
 ```
 
-@app.post(”/analyze”, response_model=AnalyzeResponse)
+@app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest):
-“”“主要分析端點”””
+"""主要分析端點"""
 global total_process_time
 
 ```
@@ -232,11 +232,11 @@ except Exception as e:
     raise HTTPException(status_code=500, detail="內部伺服器錯誤")
 ```
 
-@app.post(”/analyze/batch”)
+@app.post("/analyze/batch")
 async def analyze_batch(requests: List[AnalyzeRequest]):
-“”“批量分析端點”””
+"""批量分析端點"""
 if len(requests) > 10:
-raise HTTPException(status_code=400, detail=“批量請求最多支援10個”)
+raise HTTPException(status_code=400, detail="批量請求最多支援10個")
 
 ```
 results = []
@@ -250,9 +250,9 @@ for req in requests:
 return {"results": results}
 ```
 
-@app.get(”/stats”)
+@app.get("/stats")
 async def get_stats():
-“”“獲取服務統計資訊”””
+"""獲取服務統計資訊"""
 from analyzer11_optimized import _cache_hits, _cache_misses, MEMORY_SAMPLES
 
 ```
@@ -287,15 +287,15 @@ return {
 }
 ```
 
-@app.post(”/cache/clear”)
+@app.post("/cache/clear")
 async def clear_cache():
-“”“清除快取”””
+"""清除快取"""
 _score_cache.clear()
-return {“message”: “快取已清除”}
+return {"message": "快取已清除"}
 
-@app.post(”/memory/reload”)
+@app.post("/memory/reload")
 async def reload_memory(background_tasks: BackgroundTasks):
-“”“重新載入記憶體資料”””
+"""重新載入記憶體資料"""
 def reload_task():
 _load_memory_folder()
 global GLOBAL_WEIGHTS, SHAPE_WEIGHTS
@@ -310,27 +310,27 @@ return {"message": "正在背景重新載入記憶體資料"}
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-logger.error(f”未處理的異常: {exc}”, exc_info=True)
+logger.error(f"未處理的異常: {exc}", exc_info=True)
 return JSONResponse(
 status_code=500,
-content={“detail”: “內部伺服器錯誤”}
+content={"detail": "內部伺服器錯誤"}
 )
 
 # 啟動資訊
 
-@app.on_event(“startup”)
+@app.on_event("startup")
 async def startup_info():
 from analyzer11_optimized import SCORING_MODULES
-logger.info(f”服務啟動完成”)
-logger.info(f”已載入 {len(SCORING_MODULES)} 個評分模組”)
-logger.info(f”API 文檔: http://localhost:8014/docs”)
+logger.info(f"服務啟動完成")
+logger.info(f"已載入 {len(SCORING_MODULES)} 個評分模組")
+logger.info(f"API 文檔: http://localhost:8014/docs")
 
-if **name** == “**main**”:
+if **name** == "**main**":
 import uvicorn
 uvicorn.run(
-“main14_optimized:app”,
-host=“0.0.0.0”,
+"main14_optimized:app",
+host="0.0.0.0",
 port=8014,
 reload=True,
-log_level=“info”
+log_level="info"
 )
