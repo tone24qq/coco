@@ -343,48 +343,38 @@ class VectorizedBrainModules:
         return self._compute_focus_score_logic(grid)
 
     def _detect_mirror_sequences_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Detect mirror sequences after horizontal/vertical mirroring (private helper).
-        
-        Args:
-            grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-            
-        Returns:
-            np.ndarray: 2D heatmap with scores for mirror sequence completions.
-            
-        Notes:
-            Assigns 0.8 score if mirroring suggests a consecutive number.
-        """
-        rows, cols = grid.shape
-        heatmap = np.zeros((rows, cols), dtype=np.float32)
-        blank_mask = (grid == -1)
-        
-        # Horizontal mirror
-        h_mirrored = grid[:, ::-1]
-        for i in range(rows):
-            row = h_mirrored[i]
-            filled = row[row > 0]
-            if len(filled) >= 2:
-                sorted_filled = np.sort(filled)
-                for j in range(cols):
-                    if blank_mask[i, cols-1-j]:
-                        expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
-                        if expected == sorted_filled[-2] + 2:
-                            heatmap[i, cols-1-j] = 0.8
-        
-        # Vertical mirror
-        v_mirrored = grid[::-1, :]
-        for j in range(cols):
-            col = v_mirrored[:, j]
-            filled = col[col > 0]
-            if len(filled) >= 2:
-                sorted_filled = np.sort(filled)
-                for i in range(rows):
-                    if blank_mask[rows-1-i, j]:
-                        expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
-                        if expected == sorted_filled[-2] + 2:
-                            heatmap[rows-1-i, j] = 0.8
-        
-        return heatmap
+    """Detect mirror sequences after horizontal/vertical mirroring (private helper)."""
+    rows, cols = grid.shape
+    heatmap = np.zeros((rows, cols), dtype=np.float32)
+    blank_mask = (grid == -1)
+    
+    # Horizontal mirror
+    h_mirrored = grid[:, ::-1]
+    for i in range(rows):
+        row = h_mirrored[i]
+        filled = row[row > 0]
+        if len(filled) >= 2:
+            sorted_filled = np.sort(filled)
+            for j in range(cols):
+                if blank_mask[i, cols-1-j]:
+                    expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
+                    if expected > 0 and expected == sorted_filled[-2] + 2:
+                        heatmap[i, cols-1-j] = 0.8
+    
+    # Vertical mirror
+    v_mirrored = grid[::-1, :]
+    for j in range(cols):
+        col = v_mirrored[:, j]
+        filled = col[col > 0]
+        if len(filled) >= 2:
+            sorted_filled = np.sort(filled)
+            for i in range(rows):
+                if blank_mask[rows-1-i, j]:
+                    expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
+                    if expected > 0 and expected == sorted_filled[-2] + 2:
+                        heatmap[rows-1-i, j] = 0.8
+    
+    return heatmap
 
     @scoring_module
     def detect_mirror_sequences(self, grid: np.ndarray) -> np.ndarray:
