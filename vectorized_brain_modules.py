@@ -183,6 +183,7 @@ class VectorizedBrainModules:
         return self._entropy_risk_logic(grid)
 
     class VectorizedBrainModules:
+    pass  # <-- auto inserted
     
 
     def _detect_skip_patterns_logic(self, grid: np.ndarray) -> np.ndarray:
