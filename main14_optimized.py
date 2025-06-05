@@ -1,13 +1,13 @@
 # main14_optimized.py
 
 import os
+import logging
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 import numpy as np
 import asyncio
 import concurrent.futures
 import time
 import psutil
-import logging
-logging.basicConfig(level=logging.INFO, format="%(message)s")
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -258,6 +258,11 @@ def health_check():
             }
         )
 
+@app.on_event("startup")
+def on_startup():
+    logging.getLogger(__name__).info("[Startup] Instantiating VectorizedBrainModules to load heatmap…")
+    VectorizedBrainModules()
+    logging.getLogger(__name__).info("[Startup] VectorizedBrainModules instantiation complete.")
 
 # Middleware for concurrency limit
 @app.middleware("http")
