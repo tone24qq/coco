@@ -182,30 +182,19 @@ class VectorizedBrainModules:
             return np.zeros_like(grid, dtype=np.float32)
         return self._entropy_risk_logic(grid)
 
+    class VectorizedBrainModules:
+    ...
+
     def _detect_skip_patterns_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Detect row/column skip patterns (private helper).
-        
-        Args:
-            grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-            
-        Returns:
-            np.ndarray: 2D heatmap with scores for skip pattern likelihood.
-            
-        Notes:
-            Uses median difference of filled indices to identify regular skips, assigning 0.9 to matching blanks.
-        """
+        """Detect row/column skip patterns (private helper)."""
         rows, cols = grid.shape
         heatmap = np.zeros((rows, cols), dtype=np.float32)
         blank_mask = (grid == -1)
         
-        for axis in range(2):  # 0 for rows, 1 for columns
-            if axis == 0:
-                data = grid
-                size = cols
-            else:
-                data = grid.T
-                size = rows
-                
+        for axis in range(2):
+            data = grid if axis == 0 else grid.T
+            size = rows if axis == 0 else cols
+
             for i in range(size):
                 row = data[i]
                 filled_indices = np.where(row > 0)[0]
@@ -213,12 +202,18 @@ class VectorizedBrainModules:
                     continue
                 differences = np.diff(filled_indices)
                 common_diff = np.median(differences) if len(differences) > 0 else 1
-                for j in range(size):
-                    if blank_mask[i, j] if axis == 0 else blank_mask[j, i]:
-                        next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
-                        if abs(j - next_expected) <= 1:
-                            heatmap[i, j] if axis == 0 else heatmap[j, i] = 0.9
-                            
+
+                for j in range(rows if axis == 0 else cols):
+                    is_blank = blank_mask[i, j] if axis == 0 else blank_mask[j, i]
+                    if not is_blank:
+                        continue
+                    next_expected = filled_indices[-1] + common_diff
+                    if abs(j - next_expected) <= 1:
+                        if axis == 0:
+                            heatmap[i, j] = 0.9
+                        else:
+                            heatmap[j, i] = 0.9
+
         return heatmap
 
     @scoring_module
@@ -229,6 +224,7 @@ class VectorizedBrainModules:
             return np.zeros_like(grid, dtype=np.float32)
         return self._detect_skip_patterns_logic(grid)
 
+    
     def _compute_focus_score_logic(self, grid: np.ndarray) -> np.ndarray:
         """Compute focus score based on local density (private helper).
         
