@@ -79,7 +79,8 @@ def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np
         weights (Optional[List[float]]): List of weights for each module, defaults to equal weights.
         
     Returns:
-        np.ndarray: 2D fused score array of shape [rows, cols].
+    np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
+
         
     Raises:
         Exception: If fusion fails due to invalid input dimensions.
