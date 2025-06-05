@@ -1,205 +1,191 @@
-"""
-main14_optimized.py - Optimized FastAPI with robust keep-alive, health, and analysis modules
-"""
+# main14_optimized.py
 
 import os
-import time
-import logging
-import asyncio
-from typing import List
-from datetime import datetime
-from contextlib import asynccontextmanager
-
 import numpy as np
-import httpx
+import asyncio
+import concurrent.futures
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
+from typing import List, Tuple, Any
 
-from analyzer11_optimized import analyze_with_prior
+from analyzer11_optimized import analyze_with_prior  # 請確保這個函式已按照先前建議做了輸入檢查
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
+app = FastAPI()
 
-startup_time = datetime.now()
-request_count = 0
-total_process_time = 0.0
-
-async def keep_alive_task(port: str):
-    """Ping /health every 200s to prevent idle shutdown"""
-    url = f"http://127.0.0.1:{port}/health"
-    client = httpx.AsyncClient(timeout=5.0)
-
-    # Wait until service is fully ready
-    for i in range(5):
-        try:
-            response = await client.get(url)
-            if response.status_code == 200:
-                logger.info(f"Keep-alive initial OK at attempt {i+1}")
-                break
-        except Exception:
-            pass
-        await asyncio.sleep(1)
-
-    # Periodic ping
-    while True:
-        try:
-            response = await client.get(url)
-            if response.status_code == 200:
-                logger.info("Keep-alive: status=200 OK")
-            else:
-                logger.warning(f"Keep-alive non-200: {response.status_code}")
-        except Exception as e:
-            logger.warning(f"Keep-alive failed (non-fatal): {e}")
-        await asyncio.sleep(200)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifecycle, starts keep-alive task"""
-    logger.info("Starting FastAPI application")
-    port = os.getenv("PORT", "10000")
-    task = asyncio.create_task(keep_alive_task(port))
-    yield
-    task.cancel()
-    logger.info("Shutting down FastAPI application")
-
-app = FastAPI(
-    title="Number Card AI Analysis Service",
-    description="Efficient position recommendation with vectorized 4-module analysis",
-    version="2.0.0",
-    lifespan=lifespan
-)
-
+# ---------- CORS 設定（如有需要，可保留或移除） ----------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
-async def root():
-    return PlainTextResponse("橘子 AI 分析服務正常運行中 🍊", status_code=200)
-
+# ---------- 單筆分析 Request/Response Model ----------
 class AnalyzeRequest(BaseModel):
-    grid: List[List[int]] = Field(..., description="2D grid, -1 for blanks")
-    target: int = Field(..., description="Target number")
-    top_k: int = Field(3, ge=1, le=10, description="Return top K results")
-
-    @validator('grid')
-    def validate_grid(cls, v):
-        if not v or not v[0]:
-            raise ValueError("Grid cannot be empty")
-        rows = len(v)
-        cols = len(v[0])
-        if not all(len(row) == cols for row in v):
-            raise ValueError("Grid must be rectangular")
-        return v
-
-class Position(BaseModel):
-    row: int = Field(..., ge=0)
-    col: int = Field(..., ge=0)
-    confidence: float = Field(..., ge=0, le=1)
+    grid: List[List[int]] = Field(
+        ...,
+        description="二維整數矩陣，空格請用 -1 表示。例如 [[-1, 5], [3, -1]]"
+    )
+    target: int = Field(..., ge=0, description="欲分析的目標數字（非負整數）")
+    request_id: str = Field("single_req", description="可選的請求識別字串")
 
 class AnalyzeResponse(BaseModel):
-    positions: List[Position]
-    grid_shape: tuple[int, int]
-    process_time: float
-
-class HealthResponse(BaseModel):
-    status: str = Field("healthy")
-    uptime_seconds: float
-    total_requests: int
-    average_process_time: float
-    modules_count: int
-
-@app.middleware("http")
-async def count_requests(request, call_next):
-    global request_count
-    request_count += 1
-    response = await call_next(request)
-    return response
-
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    uptime = (datetime.now() - startup_time).total_seconds()
-    avg_time = total_process_time / request_count if request_count else 0
-    from vectorized_modules import SCORING_MODULES
-    return HealthResponse(
-        uptime_seconds=uptime,
-        total_requests=request_count,
-        average_process_time=avg_time,
-        modules_count=len(SCORING_MODULES)
+    positions: List[Tuple[int, int, float]] = Field(
+        ...,
+        description="前三個最推薦的 (row, col, confidence) 三元組"
     )
 
-@app.post("/analyze", response_model=AnalyzeResponse)
-async def analyze(request: AnalyzeRequest):
-    global total_process_time
+# ---------- 多筆 Batch 分析 Request/Response Model ----------
+class AnalyzeBatchRequest(BaseModel):
+    grids: List[List[List[int]]] = Field(
+        ...,
+        description="一組二維整數矩陣清單。每個矩陣都必須含有 -1 代表空格。"
+    )
+    targets: List[int] = Field(
+        ...,
+        description="與 `grids` 一一對應的目標數字清單（每張卡片的 target）。"
+    )
+    request_id: str = Field("batch_req", description="可選的 batch 請求識別字串")
+
+# ---------- 共用的 Grid 驗證函式 ----------
+def validate_grid(grid_list: Any) -> np.ndarray:
+    """
+    將傳入的 List[List[int]] 轉成 np.ndarray，並做格式檢查：
+      1. 必須是 2D 列表
+      2. 陣列元素必須都是整數
+      3. 必須至少含有一個 -1（代表空格）
+      4. 不能出現 0 或空值來代表空格
+    驗證通過後回傳 np.ndarray，若不符合則拋 HTTPException。
+    """
     try:
-        grid = np.array(request.grid, dtype=np.int32)
-        if not np.any(grid == -1):
-            raise HTTPException(status_code=400, detail="No blank cells in grid")
+        arr = np.array(grid_list)
+    except Exception:
+        raise HTTPException(status_code=422, detail="格式錯誤：傳入值無法轉成 numpy 陣列。")
 
-        start_time = time.time()
-        results = analyze_with_prior(grid, request.target, request_id=str(request_count))
-        process_time = time.time() - start_time
-        total_process_time += process_time
+    # 1. 檢查是否 2D
+    if arr.ndim != 2:
+        raise HTTPException(status_code=422, detail="格式錯誤：grid 必須是二維陣列 (2D)。")
 
-        positions = [
-            Position(row=r, col=c, confidence=conf)
-            for r, c, conf in results[:request.top_k]
-        ]
-        return AnalyzeResponse(
-            positions=positions,
-            grid_shape=grid.shape,
-            process_time=process_time
+    # 2. 檢查是否整數型態
+    if not np.issubdtype(arr.dtype, np.integer):
+        raise HTTPException(status_code=422, detail="格式錯誤：grid 中的所有元素必須是整數。")
+
+    # 3. 檢查是否至少含有一個 -1
+    if not np.any(arr == -1):
+        raise HTTPException(
+            status_code=422,
+            detail="格式錯誤：grid 中必須至少含有一個 -1 來表示空格。如果你把空格設成 0，請改用 -1。"
         )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+
+    # 4. 檢查不能用 0 代表空格（若出現 0，但 0 也可能是有效數字，僅做警示）
+    #    依使用場景而定，可改成嚴格禁止 0 或僅當 0 不在候選值範圍內才警告。
+    #    這裡示範如果完全不允許 0 出現：
+    if np.any(arr == 0):
+        raise HTTPException(
+            status_code=422,
+            detail="格式錯誤：請勿用 0 代表空格，空格請統一用 -1。"
+        )
+
+    return arr
+
+# ---------- 單筆分析 Endpoint ----------
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
+    # Step 1: 先做基本檢查
+    grid_arr = validate_grid(request.grid)
+
+    # Step 2: 檢查 target
+    if request.target < 0:
+        raise HTTPException(status_code=422, detail="格式錯誤：target 必須是非負整數。")
+
+    # Step 3: 呼叫 CPU 密集型的分析函式
+    try:
+        # 如果想非同步，也可改成：
+        # result = await asyncio.to_thread(analyze_with_prior, grid_arr, request.target, request.request_id)
+        result = analyze_with_prior(grid_arr, request.target, request.request_id)
+    except ValueError as ve:
+        # 若 analyze_with_prior 本身也做了輸入檢查並拋 ValueError，可一併捕捉
+        raise HTTPException(status_code=422, detail=str(ve))
     except Exception as e:
-        logger.error(f"Analysis failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # 其他意外錯誤
+        raise HTTPException(status_code=500, detail=f"伺服器內部錯誤：{e}")
 
-@app.post("/analyze/batch")
-async def analyze_batch(requests: List[AnalyzeRequest]):
-    if len(requests) > 10:
-        raise HTTPException(status_code=400, detail="Batch requests limited to 10")
+    return AnalyzeResponse(positions=result)
 
-    results = []
-    for req in requests:
+# ---------- Batch 分析 Endpoint（同時並行處理多張卡） ----------
+@app.post("/analyze/batch", response_model=List[AnalyzeResponse])
+async def analyze_batch(request: AnalyzeBatchRequest) -> List[AnalyzeResponse]:
+    # Step 1: 長度檢查
+    if len(request.grids) != len(request.targets):
+        raise HTTPException(status_code=422, detail="grids 與 targets 長度必須一致。")
+
+    # Step 2: 逐一驗證並轉成 numpy.ndarray
+    num_cards = len(request.grids)
+    np_grids: List[np.ndarray] = []
+    for idx, grid_list in enumerate(request.grids):
         try:
-            result = await analyze(req)
-            results.append({"success": True, "data": result.dict()})
-        except HTTPException as e:
-            results.append({"success": False, "error": e.detail})
-    return {"results": results}
+            arr = validate_grid(grid_list)
+        except HTTPException as he:
+            # 如果第 idx 張卡就有問題，回傳明確錯誤
+            raise HTTPException(
+                status_code=422,
+                detail=f"第 {idx+1} 張卡的格式有誤：{he.detail}"
+            )
+        np_grids.append(arr)
 
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
+    # Step 3: 驗證 targets
+    for idx, tgt in enumerate(request.targets):
+        if not isinstance(tgt, int) or tgt < 0:
+            raise HTTPException(
+                status_code=422,
+                detail=f"第 {idx+1} 個 target 必須是非負整數，目前是：{tgt}"
+            )
 
-@app.on_event("startup")
-async def startup_info():
-    from vectorized_modules import SCORING_MODULES
-    logger.info("Service started")
-    logger.info(f"Loaded {len(SCORING_MODULES)} scoring modules")
-    logger.info("API docs: http://localhost:10000/docs")
+    # Step 4: 並行呼叫 analyze_with_prior
+    results: List[Any] = [None] * num_cards
+    loop = asyncio.get_running_loop()
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        "main14_optimized:app",
-        host="0.0.0.0",
-        port=10000,
-        reload=True,
-        log_level="info"
-    )
+    # 可自行調整 max_workers 至較適合的值 (例如 CPU 核心數)
+    max_workers = min(4, num_cards)  # 最多開 4 線程，或卡片數量少就用對應數量
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        tasks = []
+        for i in range(num_cards):
+            # 每張卡用不同 request_id（方便 log 區分）
+            rid = f"{request.request_id}_{i+1}"
+            tasks.append(
+                loop.run_in_executor(
+                    executor,
+                    analyze_with_prior,
+                    np_grids[i],
+                    request.targets[i],
+                    rid
+                )
+            )
+        # 等待所有並行任務完成
+        completed = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Step 5: 檢查是否有任何異常
+    responses: List[AnalyzeResponse] = []
+    for idx, res in enumerate(completed):
+        if isinstance(res, Exception):
+            # 如果其中某張卡分析過程出錯，就回傳對應錯誤
+            # 但完整設計可改成「部分成功，部分失敗」的回應結構
+            raise HTTPException(
+                status_code=500,
+                detail=f"第 {idx+1} 張卡分析失敗：{res}"
+            )
+        # 若成功，就包成 AnalyzeResponse
+        responses.append(AnalyzeResponse(positions=res))
+
+    return responses
+
+# ---------- 簡單的 Health Check Endpoint ----------
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "timestamp": asyncio.get_event_loop().time()}
+
+
+# --------------- 若有需要，可直接啟動此檔案 ---------------
+# uvicorn main14_optimized:app --host 0.0.0.0 --port 10000
