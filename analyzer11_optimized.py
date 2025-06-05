@@ -268,24 +268,19 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
                     if expected == sorted_filled[-2] + 2:
                         heatmap[rows-1-i, j] = 0.8
     
-    return heatmap
+    def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
+    """
+    Compute difference trend scores based on adjacent known numbers.
 
-def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
-    """Compute difference trend scores based on adjacent known numbers.
-    
-   
-        
     Returns:
         np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
 
+    Notes:
+        Scores are higher where blank cells fit an arithmetic sequence with neighbors.
     """
     # 👉 這裡是函式實作區
     ...
 
-        
-    Notes:
-        Scores are higher where blank cells fit an arithmetic sequence with neighbors.
-    """
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
