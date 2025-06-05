@@ -343,7 +343,17 @@ class VectorizedBrainModules:
         return self._compute_focus_score_logic(grid)
 
     def _detect_mirror_sequences_logic(self, grid: np.ndarray) -> np.ndarray:
-    """Detect mirror sequences after horizontal/vertical mirroring (private helper)."""
+    """Detect mirror sequences after horizontal/vertical mirroring (private helper).
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        
+    Returns:
+        np.ndarray: 2D heatmap with scores for mirror sequence completions.
+        
+    Notes:
+        Assigns 0.8 score if mirroring suggests a consecutive number.
+    """
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
@@ -376,20 +386,20 @@ class VectorizedBrainModules:
     
     return heatmap
 
-    @scoring_module
-    def detect_mirror_sequences(self, grid: np.ndarray) -> np.ndarray:
-        """Detect mirror sequences after horizontal/vertical mirroring.
+@scoring_module
+def detect_mirror_sequences(self, grid: np.ndarray) -> np.ndarray:
+    """Detect mirror sequences after horizontal/vertical mirroring.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
         
-        Args:
-            grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-            
-        Returns:
-            np.ndarray: 2D heatmap with normalized scores.
-        """
-        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for detect_mirror_sequences")
-            return np.zeros((1, 1), dtype=np.float32)
-        return self._detect_mirror_sequences_logic(grid)
+    Returns:
+        np.ndarray: 2D heatmap with normalized scores.
+    """
+    if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+        logger.error("Invalid grid input for detect_mirror_sequences")
+        return np.zeros((1, 1), dtype=np.float32)
+    return self._detect_mirror_sequences_logic(grid)
 
     def _compute_difference_trend_logic(self, grid: np.ndarray) -> np.ndarray:
         """Compute difference trend scores based on adjacent known numbers (private helper).
