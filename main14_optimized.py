@@ -98,6 +98,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/", tags=["Meta"])
+async def root():
+    """Root endpoint for platform check (e.g., uptime, render health check)"""
+    return {"message": "橘子 AI 分析服務已啟動", "status": "OK"}
+
 @app.middleware("http")
 async def count_requests(request, call_next):
     """Count requests"""
