@@ -171,11 +171,15 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
                 continue
             differences = np.diff(filled_indices)
             common_diff = np.median(differences) if len(differences) > 0 else 1
-            for j in range(size):
-                if blank_mask[i, j] if axis == 0 else blank_mask[j, i]:
-                    next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
-                    if abs(j - next_expected) <= 1:
-                        heatmap[i, j] if axis == 0 else heatmap[j, i] = 0.9
+for j in range(size):
+    if (blank_mask[i, j] if axis == 0 else blank_mask[j, i]):
+        next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
+        if abs(j - next_expected) <= 1:
+            if axis == 0:
+                heatmap[i, j] = 0.9
+            else:
+                heatmap[j, i] = 0.9
+
                     
     return heatmap
 
