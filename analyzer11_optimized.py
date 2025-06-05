@@ -40,7 +40,7 @@ def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.nd
         for i, (module_name, module_func) in enumerate(SCORING_MODULES.items()):
             start_time = time.time()
             tensor[i] = module_func(grid)
-            logger.debug(f"{module_name} 耗時 {time.time - start_time:.4f} 秒")
+            logger.debug(f"{module_name} 耗時 {time.time() - start_time:.4f} 秒")
         
         logger.debug("已收集所有模組的分數")
         return tensor
@@ -320,5 +320,4 @@ def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -
     except Exception as e:
         logger.error(f"[{request_id}] 分析失敗: {e}")
         raise
-```
 
