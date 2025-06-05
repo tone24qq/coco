@@ -171,27 +171,49 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
                 continue
             differences = np.diff(filled_indices)
             common_diff = np.median(differences) if len(differences) > 0 else 1
-for j in range(size):
-    if (blank_mask[i, j] if axis == 0 else blank_mask[j, i]):
-        next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
-        if abs(j - next_expected) <= 1:
-            if axis == 0:
-                heatmap[i, j] = 0.9
-            else:
-                heatmap[j, i] = 0.9
+def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
+    """Detect row/column skip patterns and return a heatmap."""
+    rows, cols = grid.shape
+    heatmap = np.zeros((rows, cols), dtype=np.float32)
+    blank_mask = (grid == -1)
 
-                    
+    for axis in range(2):  # 0 for rows, 1 for columns
+        if axis == 0:
+            data = grid
+            size = cols
+        else:
+            data = grid.T
+            size = rows
+
+        for i in range(size):
+            row = data[i]
+            filled_indices = np.where(row > 0)[0]
+            if len(filled_indices) < 2:
+                continue
+            differences = np.diff(filled_indices)
+            common_diff = np.median(differences) if len(differences) > 0 else 1
+
+            for j in range(size):
+                if (blank_mask[i, j] if axis == 0 else blank_mask[j, i]):
+                    next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
+                    if abs(j - next_expected) <= 1:
+                        if axis == 0:
+                            heatmap[i, j] = 0.9
+                        else:
+                            heatmap[j, i] = 0.9
+
     return heatmap
 
 def compute_focus_score(grid: np.ndarray) -> np.ndarray:
-    """Compute focus score based on local density of known numbers in a 3x3 window.
-    
+    """
+    Compute focus score based on local density of known numbers in a 3x3 window.
+
     Args:
         grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-        
+
     Returns:
         np.ndarray: 2D heatmap with scores based on local density.
-        
+
     Notes:
         Uses a 3x3 convolution to compute density, normalized by max value.
     """
@@ -203,12 +225,14 @@ def compute_focus_score(grid: np.ndarray) -> np.ndarray:
 
 def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     """Detect mirror sequences after horizontal/vertical mirroring.
-    
+
     Args:
         grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-        
+
     Returns:
         np.ndarray: 2D heatmap with scores for potential mirror sequence completions.
+    """
+
         
     Notes:
         Scores are assigned if mirroring suggests a consecutive number (e.g., 3,4,-1 -> 5).
