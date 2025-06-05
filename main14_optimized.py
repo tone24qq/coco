@@ -29,7 +29,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.get("/")
+def read_root():
+    return {"status": "ok", "message": "Service is running."}
 # ---------- 單筆分析 Request/Response Model ----------
 class AnalyzeRequest(BaseModel):
     grid: List[List[int]] = Field(
