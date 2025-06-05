@@ -277,6 +277,7 @@ def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
         
     Returns:
         np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
+
     """
     # 👉 這裡是函式實作區
     ...
