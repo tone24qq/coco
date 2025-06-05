@@ -1,5 +1,6 @@
 # main14_optimized.py
 
+from vectorized_brain_modules import VectorizedBrainModules
 import os
 import logging
 logging.basicConfig(level=logging.INFO, format="%(message)s")
