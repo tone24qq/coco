@@ -1,156 +1,316 @@
 """
-分析器（priors‑only 版）
-====================================
-*   只依據 `priors.npz` 熱力圖推論格子機率
-*   如有 `data/meta_model.pkl`，自動載入並使用 LogisticRegression 分數
-*   行、列皆回傳 **1‑base** 座標，方便與 Excel/JSON 對應
-*   熱重載：`priors.npz` 被覆寫後無須重啟服務
-
-用法 (CLI 範例)：
-```bash
-python -m analyzer_priors sample.json   # 顯示 Top‑3 推薦
-```
-或在 FastAPI：
-```python
-from analyzer_priors import predict
-results = predict(sample_dict, topk=5)
-```
+analyzer11_optimized.py - Optimized analyzer with 4 modules, no historical priors
 """
-from __future__ import annotations
-
-import json
-import os
-import time
-from pathlib import Path
-from typing import List, Dict
-
 import numpy as np
+import logging
+import time
+from typing import List, Tuple, Optional
 
-try:
-    import joblib
-except ModuleNotFoundError:
-    joblib = None  # 在無 meta_model 時可省略安裝
+from vectorized_brain_modules import VectorizedBrainModules
+from vectorized_modules import SCORING_MODULES
 
-# --------------------------------------------------
-# 路徑與全域資源
-# --------------------------------------------------
-BASE = Path(__file__).resolve().parent
-_PRIOR_PATH = BASE / "data" / "priors" / "priors.npz"
-_MODEL_PATH = BASE / "data" / "meta_model.pkl"
+logger = logging.getLogger(__name__)
 
-# 內部快取（熱重載 priors）
-_PRIORS: np.lib.npyio.NpzFile | None = None
-_PRIOR_MTIME: float = 0.0
-_MODEL: object | None = None
+# Module constants
+DEFAULT_K = 3  # Default top-k value for position selection
+NORMALIZATION_EPSILON = 1e-8  # Small epsilon for normalization to avoid division by zero
 
-# --------------------------------------------------
-# 輔助：載入 / 熱重載 priors
-# --------------------------------------------------
-
-def _ensure_priors() -> None:
-    global _PRIORS, _PRIOR_MTIME
-    if not _PRIOR_PATH.exists():
-        raise FileNotFoundError(f"找不到先驗檔 {_PRIOR_PATH}")
-    mtime = _PRIOR_PATH.stat().st_mtime
-    if _PRIORS is None or mtime > _PRIOR_MTIME:
-        _PRIORS = np.load(_PRIOR_PATH)
-        _PRIOR_MTIME = mtime
-
-# --------------------------------------------------
-# 輔助：載入 meta‑model（若存在）
-# --------------------------------------------------
-
-def _ensure_model() -> None:
-    global _MODEL
-    if _MODEL is not None:
-        return
-    if _MODEL_PATH.exists() and joblib is not None:
-        _MODEL = joblib.load(_MODEL_PATH)
-    else:
-        _MODEL = None
-
-# --------------------------------------------------
-# 主函式：predict
-# --------------------------------------------------
-
-def predict(sample: Dict, topk: int = 3) -> List[Dict]:
-    """給定單張樣本 (dict)，回傳 Top‑k 推荐格
-
-    Parameters
-    ----------
-    sample : Dict
-        需含 `grid` (2D list) 和選填 `target` 欄位。
-    topk : int
-        回傳前 k 名格子 (預設 3)。
+def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.ndarray:
+    """Collect scores from all scoring modules into a 3D tensor.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        brain (VectorizedBrainModules): Instance containing scoring modules.
+        
+    Returns:
+        np.ndarray: 3D tensor of shape [num_modules, rows, cols] with scores.
+        
+    Raises:
+        Exception: If any scoring module fails.
     """
-    _ensure_priors()
-    _ensure_model()
-
-    grid = np.asarray(sample["grid"], dtype=object)
-    R, C = grid.shape
-    size = f"{R}x{C}"
-
-    # 位置熱力圖
-    pos_prior = (_PRIORS.get(f"{size}_pos") if _PRIORS is not None else None)
-    if pos_prior is None:
-        pos_prior = np.full((R, C), 1.0 / (R * C), dtype=np.float32)
-
-    # 號碼熱力圖（若有 target 且 priors 統計過）
-    target_num = sample.get("target", -1)
-    num_prior = (_PRIORS.get(f"{size}_num{target_num}") if target_num != -1 else None)
-    if num_prior is None:
-        num_prior = pos_prior
-
-    # 特徵構建（pos_prior, num_prior, center）
-    center = 1 - (np.abs(np.arange(R) - (R + 1) / 2)[:, None] +
-                  np.abs(np.arange(C) - (C + 1) / 2)[None, :]) / (R + C)
-
-    X = np.stack([pos_prior, num_prior, center], axis=-1).reshape(-1, 3)
-
-    if _MODEL is None:
-        # 無分類器 → fallback 為位置熱力圖
-        scores = pos_prior.ravel()
-    else:
-        scores = _MODEL.predict_proba(X)[:, 1]
-
-    # 取 Top‑k (若 -1 表示已填數字就跳過)
-    blank_mask = (grid == -1)
-    if not blank_mask.any():
-        # 若無空格，任意回空
-        return []
-
-    masked_scores = np.where(blank_mask.ravel(), scores, -np.inf)
-    k = min(topk, int(blank_mask.sum()))
-    idx_topk = np.argpartition(masked_scores, -k)[-k:]
-    idx_topk = idx_topk[np.argsort(masked_scores[idx_topk])[::-1]]
-
-    total = masked_scores[idx_topk].sum()
-    results = []
-    for idx in idx_topk:
-        r, c = divmod(int(idx), C)
-        score = masked_scores[idx]
-        results.append({
-            "row": r + 1,
-            "col": c + 1,
-            "score": float(score if total == 0 else score / total)
-        })
-    return results
-
-# --------------------------------------------------
-# CLI 入口（可直接 python analyzer_priors.py file.json）
-# --------------------------------------------------
-if __name__ == "__main__":
-    import argparse, sys
-
-    parser = argparse.ArgumentParser(description="Scratchcard predictor (priors only)")
-    parser.add_argument("json_file", help="path to sample json")
-    parser.add_argument("--topk", type=int, default=3, help="how many positions to return")
-    args = parser.parse_args()
-
     try:
-        sample = json.load(open(args.json_file, encoding="utf-8"))
+        rows, cols = grid.shape
+        num_modules = len(SCORING_MODULES)
+        tensor = np.zeros((num_modules, rows, cols), dtype=np.float32)
+        
+        for i, (module_name, module_func) in enumerate(SCORING_MODULES.items()):
+            start_time = time.time()
+            tensor[i] = module_func(grid)
+            end_time = time.time()
+            logger.debug(f"{module_name} took {end_time - start_time:.4f} seconds")
+        
+        logger.debug("Collected scores from all modules")
+        return tensor
     except Exception as e:
-        sys.exit(f"讀取樣本失敗: {e}")
+        logger.error(f"Score collection failed: {e}")
+        raise
 
-    preds = predict(sample, topk=args.topk)
-    print(json.dumps(preds, ensure_ascii=False, indent=2))
+def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
+    """Vectorized tensor normalization using min-max scaling.
+    
+    Args:
+        tensor (np.ndarray): 3D tensor of shape [num_modules, rows, cols] with raw scores.
+        
+    Returns:
+        np.ndarray: Normalized 3D tensor with values in [0, 1].
+        
+    Raises:
+        Exception: If normalization fails due to invalid tensor shape.
+    """
+    try:
+        num_modules = tensor.shape[0]
+        mins = tensor.reshape(num_modules, -1).min(axis=1, keepdims=True)
+        maxs = tensor.reshape(num_modules, -1).max(axis=1, keepdims=True)
+        
+        ranges = maxs - mins
+        ranges[ranges < NORMALIZATION_EPSILON] = 1.0
+        
+        normalized = (tensor.reshape(num_modules, -1) - mins) / ranges
+        return normalized.reshape(tensor.shape)
+    except Exception as e:
+        logger.error(f"Normalization failed: {e}")
+        raise
+
+def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np.ndarray:
+    """Vectorized score fusion with optional weighted combination.
+    
+    Args:
+        normed (np.ndarray): Normalized 3D tensor of shape [num_modules, rows, cols].
+        weights (Optional[List[float]]): List of weights for each module, defaults to equal weights.
+        
+    Returns:
+        np.ndarray: 2D fused score array of shape [rows, cols].
+        
+    Raises:
+        Exception: If fusion fails due to invalid input dimensions.
+    
+    Notes:
+        If weights is None, equal weights (1/num_modules) are used.
+    """
+    try:
+        num_modules = normed.shape[0]
+        if weights is None:
+            weights = np.array([1.0 / num_modules] * num_modules, dtype=np.float32)
+        else:
+            weights = np.array(weights, dtype=np.float32) / np.sum(weights)  # Normalize weights
+        weights = weights.reshape(-1, 1, 1)
+        return np.sum(normed * weights, axis=0)
+    except Exception as e:
+        logger.error(f"Score fusion failed: {e}")
+        raise
+
+def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) -> List[Tuple[int, int, float]]:
+    """Get top-k highest-scoring positions from fused scores.
+    
+    Args:
+        fused (np.ndarray): 2D array of fused scores.
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        k (int): Number of top positions to return, defaults to 3.
+        
+    Returns:
+        List[Tuple[int, int, float]]: List of (row, col, confidence) tuples.
+        
+    Raises:
+        Exception: If top-k selection fails due to invalid grid or scores.
+    """
+    try:
+        blank_mask = (grid == -1)
+        masked_scores = np.where(blank_mask, fused, -np.inf)
+        flat_scores = masked_scores.flatten()
+        num_blanks = np.sum(blank_mask)
+        
+        if num_blanks == 0:
+            logger.warning("No blank cells to analyze")
+            return []
+        
+        k = min(k, num_blanks)
+        top_k_indices = np.argpartition(flat_scores, -k)[-k:]
+        top_k_indices = top_k_indices[np.argsort(flat_scores[top_k_indices])[::-1]]
+        
+        results = []
+        total_score = np.sum(masked_scores[blank_mask])
+        for idx in top_k_indices:
+            r = idx // grid.shape[1]
+            c = idx % grid.shape[1]
+            confidence = fused[r, c] / total_score if total_score > 0 else 0
+            results.append((r, c, confidence))
+        
+        return results
+    except Exception as e:
+        logger.error(f"Top-K selection failed: {e}")
+        raise
+
+def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
+    """Detect row/column skip patterns and return a heatmap.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        
+    Returns:
+        np.ndarray: 2D heatmap with scores indicating likelihood based on skip patterns.
+        
+    Notes:
+        Scores are higher where blank cells align with regular skip intervals (e.g., every 2nd cell).
+    """
+    rows, cols = grid.shape
+    heatmap = np.zeros((rows, cols), dtype=np.float32)
+    blank_mask = (grid == -1)
+    
+    for axis in range(2):  # 0 for rows, 1 for columns
+        if axis == 0:
+            data = grid
+            size = cols
+        else:
+            data = grid.T
+            size = rows
+            
+        for i in range(size):
+            row = data[i]
+            filled_indices = np.where(row > 0)[0]
+            if len(filled_indices) < 2:
+                continue
+            differences = np.diff(filled_indices)
+            common_diff = np.median(differences) if len(differences) > 0 else 1
+            for j in range(size):
+                if blank_mask[i, j] if axis == 0 else blank_mask[j, i]:
+                    next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
+                    if abs(j - next_expected) <= 1:
+                        heatmap[i, j] if axis == 0 else heatmap[j, i] = 0.9
+                    
+    return heatmap
+
+def compute_focus_score(grid: np.ndarray) -> np.ndarray:
+    """Compute focus score based on local density of known numbers in a 3x3 window.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        
+    Returns:
+        np.ndarray: 2D heatmap with scores based on local density.
+        
+    Notes:
+        Uses a 3x3 convolution to compute density, normalized by max value.
+    """
+    from scipy.signal import convolve2d
+    kernel = np.ones((3, 3), dtype=np.float32)
+    density = convolve2d((grid > 0).astype(np.float32), kernel, mode='same', boundary='symm')
+    max_density = np.max(density)
+    return np.where(grid == -1, density / (max_density + NORMALIZATION_EPSILON), 0)
+
+def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
+    """Detect mirror sequences after horizontal/vertical mirroring.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        
+    Returns:
+        np.ndarray: 2D heatmap with scores for potential mirror sequence completions.
+        
+    Notes:
+        Scores are assigned if mirroring suggests a consecutive number (e.g., 3,4,-1 -> 5).
+    """
+    rows, cols = grid.shape
+    heatmap = np.zeros((rows, cols), dtype=np.float32)
+    blank_mask = (grid == -1)
+    
+    # Horizontal mirror
+    h_mirrored = grid[:, ::-1]
+    for i in range(rows):
+        row = h_mirrored[i]
+        filled = row[row > 0]
+        if len(filled) >= 2:
+            sorted_filled = np.sort(filled)
+            for j in range(cols):
+                if blank_mask[i, cols-1-j]:
+                    expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
+                    if expected == sorted_filled[-2] + 2:
+                        heatmap[i, cols-1-j] = 0.8
+    
+    # Vertical mirror
+    v_mirrored = grid[::-1, :]
+    for j in range(cols):
+        col = v_mirrored[:, j]
+        filled = col[col > 0]
+        if len(filled) >= 2:
+            sorted_filled = np.sort(filled)
+            for i in range(rows):
+                if blank_mask[rows-1-i, j]:
+                    expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
+                    if expected == sorted_filled[-2] + 2:
+                        heatmap[rows-1-i, j] = 0.8
+    
+    return heatmap
+
+def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
+    """Compute difference trend scores based on adjacent known numbers.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        
+    Returns:
+        np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
+        
+    Notes:
+        Scores are higher where blank cells fit an arithmetic sequence with neighbors.
+    """
+    rows, cols = grid.shape
+    heatmap = np.zeros((rows, cols), dtype=np.float32)
+    blank_mask = (grid == -1)
+    
+    for i in range(rows):
+        for j in range(cols):
+            if blank_mask[i, j]:
+                neighbors = []
+                for di, dj in [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]:
+                    ni, nj = i + di, j + dj
+                    if 0 <= ni < rows and 0 <= nj < cols and grid[ni, nj] > 0:
+                        neighbors.append(grid[ni, nj])
+                if len(neighbors) >= 2:
+                    differences = np.diff(sorted(neighbors))
+                    median_diff = np.median(differences)
+                    expected = neighbors[0] + median_diff * (len(neighbors) + 1)
+                    if 1 <= expected <= rows * cols:
+                        heatmap[i, j] = 0.7 / (1 + abs(expected - np.mean(neighbors)))
+    
+    return heatmap
+
+def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -> List[Tuple[int, int, float]]:
+    """Main analysis function with 4 modules, no historical priors.
+    
+    Args:
+        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        target (int): Target number to predict (non-negative).
+        request_id (str): Identifier for logging, defaults to "API".
+        
+    Returns:
+        List[Tuple[int, int, float]]: List of top-k (row, col, confidence) positions.
+        
+    Raises:
+        ValueError: If grid is invalid or target is out of range.
+    """
+    logger.info(f"[{request_id}] Starting analysis: target={target}, grid={grid.shape}")
+    
+    try:
+        # Input validation
+        if not (isinstance(grid, np.ndarray) and grid.ndim == 2 and np.issubdtype(grid.dtype, np.integer)):
+            raise ValueError("Grid must be a 2D integer numpy array")
+        if target < 0:
+            raise ValueError("Target cannot be negative")
+        if not np.any(grid == -1):
+            raise ValueError("Grid must contain at least one blank cell (-1)")
+        
+        start_time = time.time()
+        
+        brain = VectorizedBrainModules()  # Singleton handled by vectorized_modules
+        tensor = collect_all_scores(grid, brain)
+        normed = normalize_tensor(tensor)
+        fused = fuse_scores(normed)
+        results = get_topk_positions(fused, grid, k=DEFAULT_K)
+        
+        process_time = time.time() - start_time
+        logger.info(f"[{request_id}] Analysis completed in {process_time:.4f} seconds")
+        
+        return results
+    except Exception as e:
+        logger.error(f"[{request_id}] Analysis failed: {e}")
+        raise
