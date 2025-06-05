@@ -7,7 +7,7 @@ import concurrent.futures
 import time
 import psutil
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -29,10 +29,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-@app.get("/")
+
+# ---------- 根路由：同時支援 GET 和 HEAD ----------
+@app.api_route("/", methods=["GET", "HEAD"])
 def read_root():
     print("✅ / route is working")
+    # FastAPI/Starlette 會自動在 HEAD 請求時剃掉 body
     return {"status": "ok", "message": "Service is alive."}
+
+
 # ---------- 單筆分析 Request/Response Model ----------
 class AnalyzeRequest(BaseModel):
     grid: List[List[int]] = Field(
@@ -42,11 +47,13 @@ class AnalyzeRequest(BaseModel):
     target: int = Field(..., ge=0, description="欲分析的目標數字（非負整數）")
     request_id: str = Field("single_req", description="可選的請求識別字串")
 
+
 class AnalyzeResponse(BaseModel):
     positions: List[Tuple[int, int, float]] = Field(
         ...,
         description="前三個最推薦的 (row, col, confidence) 三元組"
     )
+
 
 # ---------- 多筆 Batch 分析 Request/Response Model ----------
 class AnalyzeBatchRequest(BaseModel):
@@ -59,6 +66,7 @@ class AnalyzeBatchRequest(BaseModel):
         description="與 `grids` 一一對應的目標數字清單（每張卡片的 target）。"
     )
     request_id: str = Field("batch_req", description="可選的 batch 請求識別字串")
+
 
 # ---------- 共用的 Grid 驗證函式 ----------
 def validate_grid(grid_list: Any) -> np.ndarray:
@@ -99,6 +107,7 @@ def validate_grid(grid_list: Any) -> np.ndarray:
 
     return arr
 
+
 def _validate_and_convert_batch(request: AnalyzeBatchRequest) -> Tuple[List[np.ndarray], List[int]]:
     """Validate and convert batch request grids and targets.
     
@@ -127,6 +136,7 @@ def _validate_and_convert_batch(request: AnalyzeBatchRequest) -> Tuple[List[np.n
             raise HTTPException(status_code=422, detail=f"第 {idx+1} 個 target 必須是非負整數，目前是：{tgt}")
 
     return np_grids, request.targets
+
 
 async def _run_batch_tasks(grids: List[np.ndarray], targets: List[int], request_id: str) -> List[AnalyzeResponse]:
     """Run batch analysis tasks with timeout and parallelism.
@@ -175,6 +185,7 @@ async def _run_batch_tasks(grids: List[np.ndarray], targets: List[int], request_
 
     return responses
 
+
 # ---------- 單筆分析 Endpoint ----------
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
@@ -195,10 +206,13 @@ async def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
         logger.error(f"[{request.request_id}] Analysis failed in {end_time - start_time:.4f} seconds: {e}")
         return JSONResponse(
             status_code=500 if not isinstance(e, HTTPException) else e.status_code,
-            content={"code": str(e.status_code) if isinstance(e, HTTPException) else "500",
-                     "message": str(e),
-                     "detail": str(e.__cause__) if hasattr(e, "__cause__") else None}
+            content={
+                "code": str(e.status_code) if isinstance(e, HTTPException) else "500",
+                "message": str(e),
+                "detail": str(e.__cause__) if hasattr(e, "__cause__") else None
+            }
         )
+
 
 # ---------- Batch 分析 Endpoint ----------
 @app.post("/analyze/batch", response_model=List[AnalyzeResponse])
@@ -217,10 +231,13 @@ async def analyze_batch(request: AnalyzeBatchRequest) -> List[AnalyzeResponse]:
         logger.error(f"[{request.request_id}] Batch analysis failed in {end_time - start_time:.4f} seconds: {e}")
         return JSONResponse(
             status_code=500 if not isinstance(e, HTTPException) else e.status_code,
-            content={"code": str(e.status_code) if isinstance(e, HTTPException) else "500",
-                     "message": str(e),
-                     "detail": str(e.__cause__) if hasattr(e, "__cause__") else None}
+            content={
+                "code": str(e.status_code) if isinstance(e, HTTPException) else "500",
+                "message": str(e),
+                "detail": str(e.__cause__) if hasattr(e, "__cause__") else None
+            }
         )
+
 
 # ---------- 簡單的 Health Check Endpoint ----------
 @app.get("/health")
@@ -233,8 +250,13 @@ def health_check():
         logger.error(f"Health check failed in {end_time - start_time:.4f} seconds: {e}")
         return JSONResponse(
             status_code=500,
-            content={"code": "500", "message": str(e), "detail": str(e.__cause__) if hasattr(e, "__cause__") else None}
+            content={
+                "code": "500",
+                "message": str(e),
+                "detail": str(e.__cause__) if hasattr(e, "__cause__") else None
+            }
         )
+
 
 # Middleware for concurrency limit
 @app.middleware("http")
@@ -246,6 +268,7 @@ async def limit_concurrency(request, call_next):
         )
     response = await call_next(request)
     return response
+
 
 # --------------- 若有需要，可直接啟動此檔案 ---------------
 # uvicorn main14_optimized:app --host 0.0.0.0 --port 10000
