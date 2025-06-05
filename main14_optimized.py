@@ -1,13 +1,15 @@
 """
-main14_optimized.py - 優化版 FastAPI 主程式，整合4模組分析器
+main14_optimized.py - Optimized FastAPI with 4-module analyzer, keep-alive task
 """
 import time
 import logging
+import asyncio
 from typing import List
 from datetime import datetime
 from contextlib import asynccontextmanager
 
 import numpy as np
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -25,16 +27,170 @@ startup_time = datetime.now()
 request_count = 0
 total_process_time = 0.0
 
+async def keep_alive_task():
+    """Background task, calls /health every 200s to prevent idle shutdown"""
+    client = httpx.AsyncClient(timeout=10.0)
+    while True:
+        try:
+            response = await client.get("http://localhost:8014/health")
+            logger.info(f"Keep-alive: Health check status={response.status_code}")
+        except Exception as e:
+            logger.error(f"Keep-alive failed: {e}")
+        await asyncio.sleep(200)
+
 class AnalyzeRequest(BaseModel):
-    """分析請求模型"""
-    grid: List[List[int]] = Field(..., description="2D網格，-1表示空格")
-    target: int = Field(..., description="目標數字")
-    top_k: int = Field(3, ge=1, le=10, description="返回前K個結果")
+    """Analysis request model"""
+    grid: List[List[int]] = Field(..., description="2D grid, -1 for blanks")
+    target: int = Field(..., description="Target number")
+    top_k: int = Field(3, ge=1, le=10, description="Return top K results")
     
     @validator('grid')
     def validate_grid(cls, v):
         if not v or not v[0]:
-            raise ValueError("網格不能為空")
+            raise ValueError("Grid cannot be empty")
         rows = len(v)
         cols = len(v[0])
-        if not all(len(row) == cols
+        if not all(len(row) == cols for row in v):
+            raise ValueError("Grid must be rectangular")
+        return v
+
+class Position(BaseModel):
+    """Position result model"""
+    row: int = Field(..., ge=0, description="Row index (0-based)")
+    col: int = Field(..., ge=0, description="Column index (0-based)")
+    confidence: float = Field(..., ge=0, le=1, description="Confidence score")
+
+class AnalyzeResponse(BaseModel):
+    """Analysis response model"""
+    positions: List[Position] = Field(..., description="List of recommended positions")
+    grid_shape: tuple[int, int] = Field(..., description="Grid shape")
+    process_time: float = Field(..., description="Processing time (seconds)")
+
+class HealthResponse(BaseModel):
+    """Health check response"""
+    status: str = Field("healthy", description="Service status")
+    uptime_seconds: float
+    total_requests: int
+    average_process_time: float
+    modules_count: int
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifecycle, starts keep-alive task"""
+    logger.info("Starting FastAPI application")
+    task = asyncio.create_task(keep_alive_task())
+    yield
+    task.cancel()
+    logger.info("Shutting down FastAPI application")
+
+app = FastAPI(
+    title="Number Card AI Analysis Service",
+    description="Efficient position recommendation with vectorized 4-module analysis",
+    version="2.0.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.middleware("http")
+async def count_requests(request, call_next):
+    """Count requests"""
+    global request_count
+    request_count += 1
+    response = await call_next(request)
+    return response
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint"""
+    uptime = (datetime.now() - startup_time).total_seconds()
+    avg_time = total_process_time / request_count if request_count > 0 else 0
+    
+    from vectorized_modules import SCORING_MODULES
+    return HealthResponse(
+        uptime_seconds=uptime,
+        total_requests=request_count,
+        average_process_time=avg_time,
+        modules_count=len(SCORING_MODULES)
+    )
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(request: AnalyzeRequest):
+    """Main analysis endpoint"""
+    global total_process_time
+    
+    try:
+        grid = np.array(request.grid, dtype=np.int32)
+        
+        if not np.any(grid == -1):
+            raise HTTPException(status_code=400, detail="No blank cells in grid")
+        
+        start_time = time.time()
+        results = analyze_with_prior(grid, request.target, request_id=str(request_count))
+        process_time = time.time() - start_time
+        total_process_time += process_time
+        
+        positions = [
+            Position(row=r, col=c, confidence=conf)
+            for r, c, conf in results[:request.top_k]
+        ]
+        
+        return AnalyzeResponse(
+            positions=positions,
+            grid_shape=grid.shape,
+            process_time=process_time
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.post("/analyze/batch")
+async def analyze_batch(requests: List[AnalyzeRequest]):
+    """Batch analysis endpoint"""
+    if len(requests) > 10:
+        raise HTTPException(status_code=400, detail="Batch requests limited to 10")
+    
+    results = []
+    for req in requests:
+        try:
+            result = await analyze(req)
+            results.append({"success": True, "data": result.dict()})
+        except HTTPException as e:
+            results.append({"success": False, "error": e.detail})
+    
+    return {"results": results}
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request, exc):
+    """Handle uncaught exceptions"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+
+@app.on_event("startup")
+async def startup_info():
+    """Log startup info"""
+    from vectorized_modules import SCORING_MODULES
+    logger.info("Service started")
+    logger.info(f"Loaded {len(SCORING_MODULES)} scoring modules")
+    logger.info("API docs: http://localhost:8014/docs")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main14_optimized:app",
+        host="0.0.0.0",
+        port=8014,
+        reload=True,
+        log_level="info"
+    )
