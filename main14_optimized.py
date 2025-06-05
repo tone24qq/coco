@@ -7,6 +7,7 @@ import concurrent.futures
 import time
 import psutil
 import logging
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
