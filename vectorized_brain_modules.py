@@ -124,11 +124,10 @@ class VectorizedBrainModules:
                 logger.warning("No valid heatmap, using uniform scores")
                 scores = np.where(legal_mask, 0.5, 0)
             else:
-                # Scale heatmap to match input grid size
                 zoom_factors = (rows / self.heatmap_cache.shape[0], cols / self.heatmap_cache.shape[1])
                 resized_heatmap = zoom(self.heatmap_cache, zoom_factors, order=1)
                 scores = np.where(legal_mask, resized_heatmap, 0)
-                scores = scores / np.max(scores + 1e-8)  # Re-normalize
+                scores = scores / np.max(scores + 1e-8)
             return scores
         except Exception as e:
             logger.error(f"ConnectivityHeatmap failed: {e}")
@@ -138,7 +137,7 @@ class VectorizedBrainModules:
         """Module 4: Entropy risk fusion, local entropy"""
         try:
             rows, cols = grid.shape
-            legal_mask = np.where(grid == -1) == -1).astype(np.float32)
+            legal_mask = (grid == -1).astype(np.float32)
             
             scores = np.zeros((rows, cols), dtype=np.float32)
             for r in range(rows):
@@ -173,12 +172,13 @@ class VectorizedBrainModules:
             
             for trial in range(n_trials):
                 grid = original_grid.copy()
-                valid_indices = np.where(grid != target)[0]
-                if len(valid_indices) < max_mask:
-                    max_mask = len(valid_indices)
-                if max_mask > 0:
-                    indices = np.random.choice(valid_indices, max_mask, replace=False)
-                    grid.flat[indices] = -1
+                valid_indices = np.where(grid != target)
+                indices = np.random.choice(
+                    np.arange(grid.size)[valid_indices[0] * grid.shape[1] + valid_indices[1]], 
+                    max_mask, 
+                    replace=False
+                )
+                grid.flat[indices] = -1
                 
                 for r, c in zip(true_positions[0], true_positions[1]):
                     grid[r, c] = -1
@@ -207,7 +207,7 @@ class VectorizedBrainModules:
 
 def performance_test():
     """Performance test for arbitrary grid"""
-    test_grid = np.random.randint(-1, 400, (20, 20))  # Test with 20x20
+    test_grid = np.random.randint(-1, 400, (20, 20))
     test_grid[test_grid == 0] = -1
     brain = VectorizedBrainModules()
     
@@ -225,8 +225,8 @@ def performance_test():
 
 def run_masking_test():
     """Run random masking test for 20x20 grid"""
-    sample_grid = np.arange(1, 401).reshape(20, 20)  # 20x20 example
-    sample_grid[10, 10] = 7  # Target 7
+    sample_grid = np.arange(1, 401).reshape(20, 20)
+    sample_grid[10, 10] = 7
     brain = VectorizedBrainModules()
     np.random.seed(42)
     mean_acc, std_acc = brain.test_with_masking(sample_grid, n_mask=40, target=7, n_trials=20)
