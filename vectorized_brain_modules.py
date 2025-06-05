@@ -183,7 +183,7 @@ class VectorizedBrainModules:
         return self._entropy_risk_logic(grid)
 
     class VectorizedBrainModules:
-    ...
+    
 
     def _detect_skip_patterns_logic(self, grid: np.ndarray) -> np.ndarray:
         """Detect row/column skip patterns (private helper)."""
