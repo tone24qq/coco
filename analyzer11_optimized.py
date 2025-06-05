@@ -19,15 +19,19 @@ def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.nd
     """Collect scores from all scoring modules into a 3D tensor.
     
     Args:
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-        brain (VectorizedBrainModules): Instance containing scoring modules.
+        grid: 2D integer array with -1 indicating blank cells.
+        brain: Instance containing scoring modules.
         
     Returns:
-        np.ndarray: 3D tensor of shape [num_modules, rows, cols] with scores.
+        3D tensor of shape [num_modules, rows, cols] with scores.
         
     Raises:
+        ValueError: If grid is invalid.
         Exception: If any scoring module fails.
     """
+    if not (isinstance(grid, np.ndarray) and grid.ndim == 2 and np.issubdtype(grid.dtype, np.integer)):
+        raise ValueError("Grid must be a 2D integer numpy array")
+    
     try:
         rows, cols = grid.shape
         num_modules = len(SCORING_MODULES)
@@ -36,8 +40,7 @@ def collect_all_scores(grid: np.ndarray, brain: VectorizedBrainModules) -> np.nd
         for i, (module_name, module_func) in enumerate(SCORING_MODULES.items()):
             start_time = time.time()
             tensor[i] = module_func(grid)
-            end_time = time.time()
-            logger.debug(f"{module_name} took {end_time - start_time:.4f} seconds")
+            logger.debug(f"{module_name} took {time.time() - start_time:.4f} seconds")
         
         logger.debug("Collected scores from all modules")
         return tensor
@@ -49,14 +52,18 @@ def normalize_tensor(tensor: np.ndarray) -> np.ndarray:
     """Vectorized tensor normalization using min-max scaling.
     
     Args:
-        tensor (np.ndarray): 3D tensor of shape [num_modules, rows, cols] with raw scores.
+        tensor: 3D tensor of shape [num_modules, rows, cols] with raw scores.
         
     Returns:
-        np.ndarray: Normalized 3D tensor with values in [0, 1].
+        Normalized 3D tensor with values in [0, 1].
         
     Raises:
-        Exception: If normalization fails due to invalid tensor shape.
+        ValueError: If tensor is invalid.
+        Exception: If normalization fails.
     """
+    if not (isinstance(tensor, np.ndarray) and tensor.ndim == 3):
+        raise ValueError("Tensor must be a 3D numpy array")
+    
     try:
         num_modules = tensor.shape[0]
         mins = tensor.reshape(num_modules, -1).min(axis=1, keepdims=True)
@@ -75,25 +82,25 @@ def fuse_scores(normed: np.ndarray, weights: Optional[List[float]] = None) -> np
     """Vectorized score fusion with optional weighted combination.
     
     Args:
-        normed (np.ndarray): Normalized 3D tensor of shape [num_modules, rows, cols].
-        weights (Optional[List[float]]): List of weights for each module, defaults to equal weights.
+        normed: Normalized 3D tensor of shape [num_modules, rows, cols].
+        weights: List of weights for each module, defaults to equal weights.
         
     Returns:
-    np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
-
+        2D heatmap with fused scores.
         
     Raises:
-        Exception: If fusion fails due to invalid input dimensions.
-    
-    Notes:
-        If weights is None, equal weights (1/num_modules) are used.
+        ValueError: If inputs are invalid.
+        Exception: If fusion fails.
     """
+    if not (isinstance(normed, np.ndarray) and normed.ndim == 3):
+        raise ValueError("Normed tensor must be a 3D numpy array")
+    
     try:
         num_modules = normed.shape[0]
         if weights is None:
             weights = np.array([1.0 / num_modules] * num_modules, dtype=np.float32)
         else:
-            weights = np.array(weights, dtype=np.float32) / np.sum(weights)  # Normalize weights
+            weights = np.array(weights, dtype=np.float32) / np.sum(weights)
         weights = weights.reshape(-1, 1, 1)
         return np.sum(normed * weights, axis=0)
     except Exception as e:
@@ -104,16 +111,20 @@ def get_topk_positions(fused: np.ndarray, grid: np.ndarray, k: int = DEFAULT_K) 
     """Get top-k highest-scoring positions from fused scores.
     
     Args:
-        fused (np.ndarray): 2D array of fused scores.
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-        k (int): Number of top positions to return, defaults to 3.
+        fused: 2D array of fused scores.
+        grid: 2D integer array with -1 indicating blank cells.
+        k: Number of top positions to return, defaults to 3.
         
     Returns:
-        List[Tuple[int, int, float]]: List of (row, col, confidence) tuples.
+        List of (row, col, confidence) tuples.
         
     Raises:
-        Exception: If top-k selection fails due to invalid grid or scores.
+        ValueError: If inputs are invalid.
+        Exception: If top-k selection fails.
     """
+    if not (isinstance(fused, np.ndarray) and fused.ndim == 2 and isinstance(grid, np.ndarray) and grid.ndim == 2):
+        raise ValueError("Fused and grid must be 2D numpy arrays")
+    
     try:
         blank_mask = (grid == -1)
         masked_scores = np.where(blank_mask, fused, -np.inf)
@@ -145,55 +156,30 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     """Detect row/column skip patterns and return a heatmap.
     
     Args:
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
+        grid: 2D integer array with -1 indicating blank cells.
         
     Returns:
-        np.ndarray: 2D heatmap with scores indicating likelihood based on skip patterns.
-        
-    Notes:
-        Scores are higher where blank cells align with regular skip intervals (e.g., every 2nd cell).
+        2D heatmap with scores indicating likelihood based on skip patterns.
     """
+    if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
+        raise ValueError("Grid must be a 2D numpy array")
+    
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
     
     for axis in range(2):  # 0 for rows, 1 for columns
-        if axis == 0:
-            data = grid
-            size = cols
-        else:
-            data = grid.T
-            size = rows
+        data = grid if axis == 0 else grid.T
+        size = cols if axis == 0 else rows
+        
+        for i in range(size):
+            row = data[i]
+            filled_indices = np.where(row > 0)[0]
+            if len(filled_indices) < 2:
+                continue
+            differences = np.diff(filled_indices)
+            common_diff = np.median(differences) if len(differences) > 0 else 1
             
-        for i in range(size):
-            row = data[i]
-            filled_indices = np.where(row > 0)[0]
-            if len(filled_indices) < 2:
-                continue
-            differences = np.diff(filled_indices)
-            common_diff = np.median(differences) if len(differences) > 0 else 1
-def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
-    """Detect row/column skip patterns and return a heatmap."""
-    rows, cols = grid.shape
-    heatmap = np.zeros((rows, cols), dtype=np.float32)
-    blank_mask = (grid == -1)
-
-    for axis in range(2):  # 0 for rows, 1 for columns
-        if axis == 0:
-            data = grid
-            size = cols
-        else:
-            data = grid.T
-            size = rows
-
-        for i in range(size):
-            row = data[i]
-            filled_indices = np.where(row > 0)[0]
-            if len(filled_indices) < 2:
-                continue
-            differences = np.diff(filled_indices)
-            common_diff = np.median(differences) if len(differences) > 0 else 1
-
             for j in range(size):
                 if (blank_mask[i, j] if axis == 0 else blank_mask[j, i]):
                     next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
@@ -202,23 +188,21 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
                             heatmap[i, j] = 0.9
                         else:
                             heatmap[j, i] = 0.9
-
     return heatmap
 
 def compute_focus_score(grid: np.ndarray) -> np.ndarray:
-    """
-    Compute focus score based on local density of known numbers in a 3x3 window.
-
+    """Compute focus score based on local density of known numbers in a 3x3 window.
+    
     Args:
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-
+        grid: 2D integer array with -1 indicating blank cells.
+        
     Returns:
-        np.ndarray: 2D heatmap with scores based on local density.
-
-    Notes:
-        Uses a 3x3 convolution to compute density, normalized by max value.
+        2D heatmap with scores based on local density.
     """
     from scipy.signal import convolve2d
+    if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
+        raise ValueError("Grid must be a 2D numpy array")
+    
     kernel = np.ones((3, 3), dtype=np.float32)
     density = convolve2d((grid > 0).astype(np.float32), kernel, mode='same', boundary='symm')
     max_density = np.max(density)
@@ -226,18 +210,19 @@ def compute_focus_score(grid: np.ndarray) -> np.ndarray:
 
 def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     """Detect mirror sequences after horizontal/vertical mirroring.
-
+    
     Args:
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-
+        grid: 2D integer array with -1 indicating blank cells.
+        
     Returns:
-        np.ndarray: 2D heatmap with scores for potential mirror sequence completions.
-    """
-
+        2D heatmap with scores for potential mirror sequence completions.
         
     Notes:
         Scores are assigned if mirroring suggests a consecutive number (e.g., 3,4,-1 -> 5).
     """
+    if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
+        raise ValueError("Grid must be a 2D numpy array")
+    
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
@@ -258,7 +243,7 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     # Vertical mirror
     v_mirrored = grid[::-1, :]
     for j in range(cols):
-        col = v_mirrored[:, j]
+        col = v_mirrored,No newline at end of file
         filled = col[col > 0]
         if len(filled) >= 2:
             sorted_filled = np.sort(filled)
@@ -268,19 +253,20 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
                     if expected == sorted_filled[-2] + 2:
                         heatmap[rows-1-i, j] = 0.8
     
-    def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
-    """
-    Compute difference trend scores based on adjacent known numbers.
+    return heatmap
 
+def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
+    """Compute difference trend scores based on arithmetic progression likelihood.
+    
+    Args:
+        grid: 2D integer array with -1 indicating blank cells.
+        
     Returns:
-        np.ndarray: 2D heatmap with scores based on arithmetic progression likelihood.
-
-    Notes:
-        Scores are higher where blank cells fit an arithmetic sequence with neighbors.
+        2D heatmap with scores based on arithmetic progression likelihood.
     """
-    # 👉 這裡是函式實作區
-    ...
-
+    if not (isinstance(grid, np.ndarray) and grid.ndim == 2):
+        raise ValueError("Grid must be a 2D numpy array")
+    
     rows, cols = grid.shape
     heatmap = np.zeros((rows, cols), dtype=np.float32)
     blank_mask = (grid == -1)
@@ -306,15 +292,15 @@ def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -
     """Main analysis function with 4 modules, no historical priors.
     
     Args:
-        grid (np.ndarray): 2D integer array with -1 indicating blank cells.
-        target (int): Target number to predict (non-negative).
-        request_id (str): Identifier for logging, defaults to "API".
+        grid: 2D integer array with -1 indicating blank cells.
+        target: Target number to predict (non-negative).
+        request_id: Identifier for logging, defaults to "API".
         
     Returns:
-        List[Tuple[int, int, float]]: List of top-k (row, col, confidence) positions.
+        List of top-k (row, col, confidence) positions.
         
     Raises:
-        ValueError: If grid is invalid or target is out of range.
+        ValueError: If grid or target is invalid.
     """
     logger.info(f"[{request_id}] Starting analysis: target={target}, grid={grid.shape}")
     
@@ -329,15 +315,13 @@ def analyze_with_prior(grid: np.ndarray, target: int, request_id: str = "API") -
         
         start_time = time.time()
         
-        brain = VectorizedBrainModules()  # Singleton handled by vectorized_modules
+        brain = VectorizedBrainModules()
         tensor = collect_all_scores(grid, brain)
         normed = normalize_tensor(tensor)
         fused = fuse_scores(normed)
         results = get_topk_positions(fused, grid, k=DEFAULT_K)
         
-        process_time = time.time() - start_time
-        logger.info(f"[{request_id}] Analysis completed in {process_time:.4f} seconds")
-        
+        logger.info(f"[{request_id}] Analysis completed in {time.time() - start_time:.4f} seconds")
         return results
     except Exception as e:
         logger.error(f"[{request_id}] Analysis failed: {e}")
