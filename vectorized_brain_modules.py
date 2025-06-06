@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Tuple
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 def scoring_module(fn):
     """Decorator to mark a method as a scoring module."""
@@ -20,13 +21,14 @@ class VectorizedBrainModules:
     """Vectorized analyzer with multiple scoring modules for grid analysis."""
     
     def __init__(self):
-        """Initialize with cached heatmaps from JSON samples."""
-        self.heatmap_cache = {}  # Dict to store heatmaps by size
+        """Initialize with cached heatmap from JSON samples."""
+        self.heatmap_cache = {}
         self._load_heatmap()
-        self.module_list = [method for method in self.__class__.__dict__.values() 
-                           if callable(method) and getattr(method, 'is_scoring', False)]
+        self.module_list = [
+            method for method in self.__class__.__dict__.values() 
+            if callable(method) and getattr(method, 'is_scoring', False)
+        ]
         logger.info(f"Initialized VectorizedBrainModules with {len(self.module_list)} scoring modules")
-        logger.debug(f"Heatmap cache contains {len(self.heatmap_cache)} sizes: {list(self.heatmap_cache.keys())}")
 
     def _load_heatmap(self) -> None:
         """Load JSON samples and build normalized heatmaps for each grid size."""
@@ -47,16 +49,16 @@ class VectorizedBrainModules:
                 self.heatmap_cache = {}
                 return
 
-            # Group files by grid size
             size_to_files = {}
             for json_file in json_files:
                 try:
                     data = json.loads(json_file.read_text(encoding='utf-8'))
-                    if not isinstance(data.get("grid"), list) or not data.get("grid"):
+                    grid = data.get("grid")
+                    if not isinstance(grid, list) or not grid:
                         logger.warning(f"Invalid or empty grid in {json_file.name}, skipping")
                         continue
-                    rows, cols = len(data["grid"]), len(data["grid"][0])
-                    if not all(len(row) == cols for row in data["grid"]):
+                    rows, cols = len(grid), len(grid[0])
+                    if not all(isinstance(row, list) and len(row) == cols for row in grid):
                         logger.warning(f"Inconsistent row lengths in {json_file.name}, skipping")
                         continue
                     size_key = (rows, cols)
@@ -80,22 +82,35 @@ class VectorizedBrainModules:
                         else:
                             logger.warning(f"Invalid answer format in {json_file.name}, skipping")
                             continue
-                        
-                        if 0 <= r < rows and 0 <= c < cols:
-                            heatmap[r, c] += 1
-                            valid_files += 1
-                        else:
-                            logger.warning(f"Answer out of range in {json_file.name}: row={r+1}, col={c+1}")
+
+                        # Check valid range
+                        if not (0 <= r < rows and 0 <= c < cols):
+                            logger.warning(
+                                f"答案超出 {json_file.name} 的範圍：row={ans[0]}, col={ans[1]}, grid_size=({rows},{cols})"
+                            )
+                            continue
+
+                        heatmap[r, c] += 1
+                        valid_files += 1
                     except Exception as e:
                         logger.warning(f"Failed to process {json_file.name}: {e}, skipping")
 
                 # Normalize heatmap
-                min_val, max_val = heatmap.min(), heatmap.max()
-                if max_val > min_val:
-                    self.heatmap_cache[size_key] = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
+                if valid_files > 0:
+                    min_val, max_val = heatmap.min(), heatmap.max()
+                    if max_val > min_val:
+                        norm = (heatmap - min_val) / (max_val - min_val + 1e-8)
+                    else:
+                        norm = np.zeros_like(heatmap, dtype=np.float32)
+                    self.heatmap_cache[size_key] = norm.astype(np.float32)
+                    logger.info(
+                        f"Loaded heatmap for size {size_key} from {valid_files} valid JSON samples"
+                    )
                 else:
-                    self.heatmap_cache[size_key] = np.zeros_like(heatmap, dtype=np.float32)
-                logger.info(f"Loaded heatmap for size {size_key} from {valid_files} valid JSON samples, shape=({rows}, {cols})")
+                    # No valid samples for this size
+                    logger.warning(f"大小 {size_key} 沒有有效答案，跳過熱圖")
+                    # Still create a zeroed entry so caching knows this size was attempted
+                    self.heatmap_cache[size_key] = np.zeros((rows, cols), dtype=np.float32)
 
             if not self.heatmap_cache:
                 logger.warning("No valid heatmaps loaded")
@@ -126,7 +141,10 @@ class VectorizedBrainModules:
             logger.debug(f"Using exact heatmap match for size {target_size}")
         else:
             # Choose closest size by minimizing area difference
-            size_diffs = [(size, abs(size[0] * size[1] - rows * cols)) for size in self.heatmap_cache]
+            size_diffs = [
+                (size, abs(size[0] * size[1] - rows * cols)) 
+                for size in self.heatmap_cache
+            ]
             closest_size = min(size_diffs, key=lambda x: x[1])[0]
             heatmap = self.heatmap_cache[closest_size]
             logger.debug(f"Using closest heatmap size {closest_size} for grid size {target_size}")
@@ -135,229 +153,178 @@ class VectorizedBrainModules:
         zoom_factors = (rows / heatmap.shape[0], cols / heatmap.shape[1])
         resized_heatmap = zoom(heatmap, zoom_factors, order=1)
         scores = np.where(legal_mask, resized_heatmap, 0)
-        return (scores / (np.max(scores + 1e-8) or 1.0)).astype(np.float32)
-
-    def _edge_proximity_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute edge proximity scores (private helper)."""
-        rows, cols = grid.shape
-        legal_mask = (grid == -1).astype(np.float32)
-        filled_mask = (grid > 0).astype(np.float32)
         
-        radius = 2
-        size = 2 * radius + 1
-        y, x = np.ogrid[-radius:radius+1, -radius:radius+1]
-        distances = np.abs(x) + np.abs(y)
-        distances[radius, radius] = np.inf
-        kernel = 1.0 / (distances ** 1.5 + 1e-8)
-        kernel[radius, radius] = 0
-        
-        value_weights = np.where(filled_mask, grid * 0.1, 0)
-        scores = convolve(value_weights, kernel, mode='constant')
-        
-        max_val = np.max(scores[legal_mask]) if np.any(legal_mask) else 1.0
-        return np.where(legal_mask, scores / (max_val or 1.0), 0).astype(np.float32)
-
-    @scoring_module
-    def edge_proximity_fusion(self, grid: np.ndarray) -> np.ndarray:
-        """Module 1: Edge proximity fusion, low values near edges."""
-        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for edge_proximity_fusion")
-            return np.zeros((1, 1), dtype=np.float32)
-        return self._edge_proximity_logic(grid)
-
-    def _sequence_tail_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute sequence tail scores (private helper)."""
-        if not np.issubdtype(grid.dtype, np.integer):
-            grid = grid.astype(np.int32)
-        rows, cols = grid.shape
-        scores = np.zeros((rows, cols), dtype=np.float32)
-        blank_mask = (grid == -1)
-        
-        directions = [(0,1), (1,0), (1,1), (1,-1), (0,-1), (-1,0), (-1,-1), (-1,1)]
-        
-        for r in nb.prange(rows):
-            for c in range(cols):
-                if not blank_mask[r, c]:
-                    continue
-                max_score = 0.0
-                for dr, dc in directions:
-                    r1, c1 = r + dr, c + dc
-                    r2, c2 = r + 2*dr, c + 2*dc
-                    if (0 <= r1 < rows and 0 <= c1 < cols and 
-                        0 <= r2 < rows and 0 <= c2 < cols and
-                        grid[r1, c1] > 0 and grid[r2, c2] > 0):
-                        v1, v2 = grid[r1, c1], grid[r2, c2]
-                        if (v2 - v1) % 2 == 0:
-                            expected = (v1 + v2) // 2
-                            if 1 <= expected <= rows * cols:
-                                max_score = max(max_score, 0.8)
-                scores[r, c] = max_score
-        return scores
-
-    @scoring_module
-    @nb.njit(parallel=True)
-    def sequence_tail_analyzer(self, grid: np.ndarray) -> np.ndarray:
-        """Module 2: Sequence tail analysis, arithmetic sequences."""
-        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for sequence_tail_analyzer")
-            return np.zeros((1, 1), dtype=np.float32)
-        return self._sequence_tail_logic(grid)
+        max_score = np.max(scores) + 1e-8
+        return (scores / max_score).astype(np.float32)
 
     @scoring_module
     def connectivity_heatmap(self, grid: np.ndarray) -> np.ndarray:
-        """Module 3: Connectivity heatmap with dynamic scaling."""
+        """Module 1: Return heatmap-based connectivity scores for blank cells."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
             logger.error("Invalid grid input for connectivity_heatmap")
             return np.zeros((1, 1), dtype=np.float32)
         return self._connectivity_heatmap_logic(grid)
 
-    def _entropy_risk_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute entropy risk scores (private helper)."""
+    def _edge_proximity_logic(self, grid: np.ndarray) -> np.ndarray:
+        """Compute edge proximity scores (private helper)."""
         rows, cols = grid.shape
         legal_mask = (grid == -1).astype(np.float32)
         
-        scores = np.zeros((rows, cols), dtype=np.float32)
-        for r in range(rows):
-            for c in range(cols):
-                if not legal_mask[r, c]:
-                    continue
-                window = grid[max(0, r-1):r+2, max(0, c-1):c+2]
-                valid_vals = window[window > 0]
-                if len(valid_vals) > 1:
-                    counts = np.bincount(valid_vals.astype(np.int32))
-                    probs = counts[counts > 0] / (len(valid_vals) + 1e-8)
-                    entropy = -np.sum(probs * np.log2(probs + 1e-10))
-                    scores[r, c] = entropy / (np.log2(len(valid_vals) + 1e-10) or 1.0)
-        
-        return np.where(legal_mask, scores / (np.max(scores + 1e-8) or 1.0), 0).astype(np.float32)
-
-    @scoring_module
-    def entropy_risk_fusion(self, grid: np.ndarray) -> np.ndarray:
-        """Module 4: Entropy risk fusion, local entropy."""
-        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for entropy_risk_fusion")
-            return np.zeros((1, 1), dtype=np.float32)
-        return self._entropy_risk_logic(grid)
-
-    def _detect_skip_patterns_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Detect row/column skip patterns (private helper)."""
-        rows, cols = grid.shape
-        heatmap = np.zeros((rows, cols), dtype=np.float32)
-        blank_mask = (grid == -1)
-        
-        for axis in range(2):  # 0 for rows, 1 for columns
-            if axis == 0:
-                data = grid
-                size = cols
-            else:
-                data = grid.T
-                size = rows
-                
-            for i in range(size):
-                row = data[i]
-                filled_indices = np.where(row > 0)[0]
-                if len(filled_indices) < 2:
-                    continue
-                differences = np.diff(filled_indices)
-                common_diff = np.median(differences) if len(differences) > 0 else 1
-                for j in range(size):
-                    if blank_mask[i, j] if axis == 0 else blank_mask[j, i]:
-                        next_expected = filled_indices[-1] + common_diff if filled_indices.size > 0 else j
-                        if abs(j - next_expected) <= 1:
-                            if axis == 0:
-                                heatmap[i, j] = 0.9
-                            else:
-                                heatmap[j, i] = 0.9
-                            
-        return heatmap
-
-    @scoring_module
-    def detect_skip_patterns(self, grid: np.ndarray) -> np.ndarray:
-        """Module 5: Detect row/column skip patterns."""
-        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for detect_skip_patterns")
-            return np.zeros((1, 1), dtype=np.float32)
-        return self._detect_skip_patterns_logic(grid)
-
-    def _compute_focus_score_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute focus score based on local density (private helper)."""
-        kernel = np.ones((3, 3), dtype=np.float32)
-        density = convolve2d((grid > 0).astype(np.float32), kernel, mode='same', boundary='symm')
-        max_density = np.max(density) or 1.0
-        return np.where(grid == -1, density / max_density, 0).astype(np.float32)
-
-    @scoring_module
-    def compute_focus_score(self, grid: np.ndarray) -> np.ndarray:
-        """Module 6: Compute focus score based on local density."""
-        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for compute_focus_score")
-            return np.zeros((1, 1), dtype=np.float32)
-        return self._compute_focus_score_logic(grid)
-
-    def _detect_mirror_sequences_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Detect mirror sequences after horizontal/vertical mirroring (private helper)."""
-        rows, cols = grid.shape
-        heatmap = np.zeros((rows, cols), dtype=np.float32)
-        blank_mask = (grid == -1)
-        
-        # Horizontal mirror
-        h_mirrored = grid[:, ::-1]
+        # Distance to nearest filled cell (Manhattan)
+        distance_map = np.full((rows, cols), np.inf, dtype=np.float32)
+        filled_positions = np.argwhere(grid > 0)
         for i in range(rows):
-            row = h_mirrored[i]
-            filled = row[row > 0]
-            if len(filled) >= 2:
-                sorted_filled = np.sort(filled)
-                for j in range(cols):
-                    if blank_mask[i, cols-1-j]:
-                        expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
-                        if expected > 0 and expected == sorted_filled[-2] + 2:
-                            heatmap[i, cols-1-j] = 0.8
-        
-        # Vertical mirror
-        v_mirrored = grid[::-1, :]
-        for j in range(cols):
-            col = v_mirrored[:, j]
-            filled = col[col > 0]
-            if len(filled) >= 2:
-                sorted_filled = np.sort(filled)
-                for i in range(rows):
-                    if blank_mask[rows-1-i, j]:
-                        expected = sorted_filled[-1] + 1 if sorted_filled[-1] < rows * cols else 0
-                        if expected > 0 and expected == sorted_filled[-2] + 2:
-                            heatmap[rows-1-i, j] = 0.8
-        
-        return heatmap
+            for j in range(cols):
+                if grid[i, j] == -1:
+                    # compute min Manhattan distance to any filled cell
+                    dist = np.min(np.abs(filled_positions - np.array([i, j])).sum(axis=1)) \
+                           if filled_positions.size else max(rows, cols)
+                    distance_map[i, j] = dist
+
+        # Invert distance so smaller actual distance → higher score
+        max_dist = np.nanmax(distance_map[np.isfinite(distance_map)]) if np.isfinite(distance_map).any() else 1
+        score_map = (max_dist - distance_map) / (max_dist + 1e-8)
+        return np.where(legal_mask, score_map.astype(np.float32), 0)
 
     @scoring_module
-    def detect_mirror_sequences(self, grid: np.ndarray) -> np.ndarray:
-        """Module 7: Detect mirror sequences after horizontal/vertical mirroring."""
+    def edge_proximity(self, grid: np.ndarray) -> np.ndarray:
+        """Module 2: Score blank cells by proximity to known (non-blank) cells."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error("Invalid grid input for detect_mirror_sequences")
+            logger.error("Invalid grid input for edge_proximity")
             return np.zeros((1, 1), dtype=np.float32)
-        return self._detect_mirror_sequences_logic(grid)
+        return self._edge_proximity_logic(grid)
+
+    def _uniform_score_logic(self, grid: np.ndarray) -> np.ndarray:
+        """Compute uniform scores for blank cells."""
+        rows, cols = grid.shape
+        legal_mask = (grid == -1).astype(np.float32)
+        return np.where(legal_mask, 1.0 / (rows * cols), 0).astype(np.float32)
+
+    @scoring_module
+    def uniform_score(self, grid: np.ndarray) -> np.ndarray:
+        """Module 3: Return uniform distribution over blank cells."""
+        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+            logger.error("Invalid grid input for uniform_score")
+            return np.zeros((1, 1), dtype=np.float32)
+        return self._uniform_score_logic(grid)
+
+    def _center_bias_logic(self, grid: np.ndarray) -> np.ndarray:
+        """Compute center-bias scores (private helper)."""
+        rows, cols = grid.shape
+        x = np.arange(cols) - (cols - 1) / 2
+        y = (np.arange(rows) - (rows - 1) / 2)[:, np.newaxis]
+        d2 = x**2 + y**2
+        max_d2 = np.max(d2)
+        bias = 1 - (d2 / (max_d2 + 1e-8))
+        legal_mask = (grid == -1).astype(np.float32)
+        return np.where(legal_mask, bias.astype(np.float32), 0)
+
+    @scoring_module
+    def center_bias(self, grid: np.ndarray) -> np.ndarray:
+        """Module 4: Score blank cells by distance to center of grid."""
+        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+            logger.error("Invalid grid input for center_bias")
+            return np.zeros((1, 1), dtype=np.float32)
+        return self._center_bias_logic(grid)
+
+    def _neighbor_count_logic(self, grid: np.ndarray) -> np.ndarray:
+        """Compute neighbor-based scores (private helper)."""
+        rows, cols = grid.shape
+        kernel = np.ones((3, 3), dtype=np.float32)
+        kernel[1, 1] = 0
+        filled_mask = (grid > 0).astype(np.float32)
+        neighbor_count = convolve2d(filled_mask, kernel, mode="same", boundary="fill", fillvalue=0)
+        legal_mask = (grid == -1).astype(np.float32)
+        max_count = np.max(neighbor_count) if neighbor_count.size else 1
+        scores = neighbor_count / (max_count + 1e-8)
+        return np.where(legal_mask, scores.astype(np.float32), 0)
+
+    @scoring_module
+    def neighbor_count(self, grid: np.ndarray) -> np.ndarray:
+        """Module 5: Score blank cells by count of adjacent filled cells."""
+        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+            logger.error("Invalid grid input for neighbor_count")
+            return np.zeros((1, 1), dtype=np.float32)
+        return self._neighbor_count_logic(grid)
+
+    def _row_column_balance_logic(self, grid: np.ndarray) -> np.ndarray:
+        """Compute row-column balance scores (private helper)."""
+        rows, cols = grid.shape
+        filled = (grid > 0).astype(np.float32)
+        row_sum = np.sum(filled, axis=1)[:, np.newaxis]
+        col_sum = np.sum(filled, axis=0)[np.newaxis, :]
+        total = row_sum + col_sum
+        legal_mask = (grid == -1).astype(np.float32)
+        max_val = np.max(total) if total.size else 1
+        scores = 1 - (total / (max_val + 1e-8))
+        return np.where(legal_mask, scores.astype(np.float32), 0)
+
+    @scoring_module
+    def row_column_balance(self, grid: np.ndarray) -> np.ndarray:
+        """Module 6: Score blank cells by balancing filled counts in row/column."""
+        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+            logger.error("Invalid grid input for row_column_balance")
+            return np.zeros((1, 1), dtype=np.float32)
+        return self._row_column_balance_logic(grid)
+
+    def _predict_arithmetic_sequence_logic(self, grid: np.ndarray) -> np.ndarray:
+        """Compute arithmetic sequence prediction scores (private helper)."""
+        rows, cols = grid.shape
+        legal_mask = (grid == -1).astype(np.float32)
+        heatmap = np.zeros((rows, cols), dtype=np.float32)
+        # Check each blank position for possible arithmetic sequence in row or column
+        for i in range(rows):
+            row_vals = grid[i, :]
+            known = np.argwhere(row_vals > 0).flatten()
+            if known.size >= 2:
+                diffs = np.diff(row_vals[known])
+                if np.all(diffs == diffs[0]):
+                    expected = row_vals[known[0]] + diffs[0] * (np.arange(cols) - known[0])
+                    for j in np.where(legal_mask[i, :] == 1)[0]:
+                        if expected[j] == expected[j]:  # not NaN
+                            heatmap[i, j] += 0.8
+        for j in range(cols):
+            col_vals = grid[:, j]
+            known = np.argwhere(col_vals > 0).flatten()
+            if known.size >= 2:
+                diffs = np.diff(col_vals[known])
+                if np.all(diffs == diffs[0]):
+                    expected = col_vals[known[0]] + diffs[0] * (np.arange(rows) - known[0])
+                    for i in np.where(legal_mask[:, j] == 1)[0]:
+                        if expected[i] == expected[i]:
+                            heatmap[i, j] += 0.8
+        return np.where(legal_mask, heatmap, 0).astype(np.float32)
+
+    @scoring_module
+    def predict_arithmetic_sequence(self, grid: np.ndarray) -> np.ndarray:
+        """Module 7: Predict blank by arithmetic sequences in rows/columns."""
+        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+            logger.error("Invalid grid input for predict_arithmetic_sequence")
+            return np.zeros((1, 1), dtype=np.float32)
+        return self._predict_arithmetic_sequence_logic(grid)
 
     def _compute_difference_trend_logic(self, grid: np.ndarray) -> np.ndarray:
         """Compute difference trend scores based on adjacent known numbers (private helper)."""
         rows, cols = grid.shape
+        legal_mask = (grid == -1).astype(np.float32)
         heatmap = np.zeros((rows, cols), dtype=np.float32)
-        blank_mask = (grid == -1)
-        
         for i in range(rows):
             for j in range(cols):
-                if blank_mask[i, j]:
+                if grid[i, j] == -1:
+                    # gather known neighbors in 8 directions
                     neighbors = []
-                    for di, dj in [(-1,0), (1,0), (0,-1), (0,1), (-1,-1), (-1,1), (1,-1), (1,1)]:
-                        ni, nj = i + di, j + dj
-                        if 0 <= ni < rows and 0 <= nj < cols and grid[ni, nj] > 0:
-                            neighbors.append(grid[ni, nj])
+                    for di in [-1, 0, 1]:
+                        for dj in [-1, 0, 1]:
+                            ni, nj = i + di, j + dj
+                            if 0 <= ni < rows and 0 <= nj < cols and grid[ni, nj] > 0:
+                                neighbors.append(grid[ni, nj])
                     if len(neighbors) >= 2:
                         differences = np.diff(sorted(neighbors))
                         median_diff = np.median(differences)
                         expected = neighbors[0] + median_diff * (len(neighbors) + 1)
                         if 1 <= expected <= rows * cols:
                             heatmap[i, j] = 0.7 / (1 + abs(expected - np.mean(neighbors)))
-        
-        return heatmap
+        return np.where(legal_mask, heatmap, 0).astype(np.float32)
 
     @scoring_module
     def compute_difference_trend(self, grid: np.ndarray) -> np.ndarray:
@@ -366,3 +333,50 @@ class VectorizedBrainModules:
             logger.error("Invalid grid input for compute_difference_trend")
             return np.zeros((1, 1), dtype=np.float32)
         return self._compute_difference_trend_logic(grid)
+
+
+# Example usage and test harness
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate and inspect heatmaps from JSON samples.")
+    parser.add_argument(
+        "--list-sizes",
+        action="store_true",
+        help="List all grid sizes for which heatmaps have been loaded."
+    )
+    parser.add_argument(
+        "--show-heatmap",
+        nargs=2,
+        type=int,
+        metavar=('ROWS', 'COLS'),
+        help="Print the normalized heatmap for a specific size (ROWS, COLS)."
+    )
+    args = parser.parse_args()
+
+    vbm = VectorizedBrainModules()
+
+    if args.list_sizes:
+        sizes = sorted(vbm.heatmap_cache.keys())
+        print("Loaded heatmap sizes:")
+        for size in sizes:
+            print(f"  - {size}, sum of values: {np.sum(vbm.heatmap_cache[size]):.4f}")
+        exit(0)
+
+    if args.show_heatmap:
+        size = (args.show_heatmap[0], args.show_heatmap[1])
+        hm = vbm.heatmap_cache.get(size)
+        if hm is None:
+            print(f"No heatmap found for size {size}. Available: {list(vbm.heatmap_cache.keys())}")
+        else:
+            print(f"Heatmap for size {size}:")
+            print(hm)
+        exit(0)
+
+    # If no args provided, simply list sizes
+    sizes = sorted(vbm.heatmap_cache.keys())
+    if sizes:
+        print("Loaded heatmap sizes:")
+        for size in sizes:
+            print(f"  - {size}, sum of values: {np.sum(vbm.heatmap_cache[size]):.4f}")
+    else:
+        print("No valid heatmaps loaded.")
