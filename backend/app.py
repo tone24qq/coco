@@ -10,6 +10,10 @@ from analyzer import analyze_board
 app = FastAPI()
 solver = ScratchSolver()
 
+@app.get("/")
+async def root():
+    return {"status": "API is running", "endpoint": "POST /analyze/ for Excel analysis"}
+
 @app.post("/analyze/")
 async def analyze(file: UploadFile = File(...),
                  weights: str = Form(None),
