@@ -200,23 +200,23 @@ async def analyze_folder(weights: str = Form(None), mode: str = Form("heatmap"))
     logger.info(f"Scanning folder: {folder_path}")
     if not os.path.exists(folder_path):
         logger.error(f"Folder {folder_path} does not exist")
-        return JSONResponse(status_code=400, content={"error": f"資料夾 {folder_path} 不存在"})
+        return JSONResponse(content={"error": f"資料夾 {folder_path} 不存在"})
 
     files = os.listdir(folder_path)
     logger.info(f"Found {len(files)} files in {folder_path}: {files}")
     if not files:
         logger.warning(f"No files found in {folder_path}")
-        return JSONResponse(status_code=400, content={"error": f"資料夾 {folder_path} 為空"})
+        return JSONResponse(content={"content": f"資料夾 {folder_path} 為空"})
 
     try:
         w_dict = parse_weights(weights)
-    except ValueError as e:
+    except Exception as e:
         logger.error(f"Weight parsing error: {str(e)}")
         return JSONResponse(status_code=400, content={"error": str(e)})
 
     return_predictions = (mode == "predict")
     results = []
-    for filename in files:
+    for idx, filename in enumerate(files):
         filepath = os.path.join(folder_path, filename)
         ext = os.path.splitext(filename)[1].lower()
         if ext not in [".json", ".csv", ".xls", ".xlsx"]:
