@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
 import numpy as np
 import json
@@ -6,14 +6,21 @@ import pandas as pd
 from io import BytesIO
 import os
 import zipfile
+import logging
 from modules import ScratchSolver
 from analyzer import analyze_board
+
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 solver = ScratchSolver()
 
-@app.get("/")
-async def root():
+@app.get("/", include_in_schema=False)
+@app.head("/", include_in_schema=False)
+async def root(request: Request):
+    logger.info("Root endpoint accessed")
     return {"status": "API is running", "endpoints": ["POST /analyze/", "POST /analyze-batch/", "POST /analyze-folder/"]}
 
 def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool) -> dict:
@@ -41,6 +48,7 @@ def parse_weights(weights: str) -> dict:
     }
 
 def load_file_content(filepath: str) -> list:
+    logger.info(f"Processing file: {filepath}")
     ext = os.path.splitext(filepath)[1].lower()
     grids = []
     if ext == ".json":
@@ -58,6 +66,7 @@ def load_file_content(filepath: str) -> list:
     elif ext in [".xls", ".xlsx"]:
         xls = pd.ExcelFile(filepath)
         for sheet_name in xls.sheet_names:
+            logger.info(f"Processing sheet: {sheet_name}")
             df = pd.read_excel(filepath, sheet_name=sheet_name, header=None, dtype=str)
             df = df.fillna("")
             cleaned_data = []
@@ -72,6 +81,7 @@ async def analyze(file: UploadFile = File(...),
                  weights: str = Form(None),
                  mode: str = Form("heatmap")):
     filename = file.filename.lower()
+    logger.info(f"Analyzing uploaded file: {filename}")
     if not filename.endswith((".xls", ".xlsx", ".json", ".csv")):
         return JSONResponse(status_code=400, content={"error": "不支援的檔案格式"})
 
@@ -95,6 +105,7 @@ async def analyze(file: UploadFile = File(...),
         try:
             xls = pd.ExcelFile(BytesIO(content))
             for sheet_name in xls.sheet_names:
+                logger.info(f"Processing sheet: {sheet_name}")
                 df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None, dtype=str)
                 df = df.fillna("")
                 cleaned_data = []
@@ -124,6 +135,7 @@ async def analyze_batch(file: UploadFile = File(...),
                        weights: str = Form(None),
                        mode: str = Form("heatmap")):
     filename = file.filename.lower()
+    logger.info(f"Analyzing batch file: {filename}")
     if not filename.endswith(".zip"):
         return JSONResponse(status_code=400, content={"error": "請上傳 ZIP 檔案"})
 
@@ -143,6 +155,7 @@ async def analyze_batch(file: UploadFile = File(...),
                         xls = pd.ExcelFile(BytesIO(f.read()))
                         file_results = {"filename": zip_info.filename, "sheets": []}
                         for sheet_name in xls.sheet_names:
+                            logger.info(f"Processing sheet: {sheet_name}")
                             df = pd.read_excel(BytesIO(f.read()), sheet_name=sheet_name, header=None, dtype=str)
                             df = df.fillna("")
                             cleaned_data = []
@@ -184,30 +197,42 @@ async def analyze_batch(file: UploadFile = File(...),
 @app.post("/analyze-folder/")
 async def analyze_folder(weights: str = Form(None), mode: str = Form("heatmap")):
     folder_path = "samples/data/"
+    logger.info(f"Scanning folder: {folder_path}")
     if not os.path.exists(folder_path):
+        logger.error(f"Folder {folder_path} does not exist")
         return JSONResponse(status_code=400, content={"error": f"資料夾 {folder_path} 不存在"})
+
+    files = os.listdir(folder_path)
+    logger.info(f"Found {len(files)} files in {folder_path}: {files}")
+    if not files:
+        logger.warning(f"No files found in {folder_path}")
+        return JSONResponse(status_code=400, content={"error": f"資料夾 {folder_path} 為空"})
 
     try:
         w_dict = parse_weights(weights)
     except ValueError as e:
+        logger.error(f"Weight parsing error: {str(e)}")
         return JSONResponse(status_code=400, content={"error": str(e)})
 
     return_predictions = (mode == "predict")
     results = []
-    for filename in os.listdir(folder_path):
+    for filename in files:
         filepath = os.path.join(folder_path, filename)
         ext = os.path.splitext(filename)[1].lower()
         if ext not in [".json", ".csv", ".xls", ".xlsx"]:
+            logger.info(f"Skipping non-supported file: {filename}")
             continue
         try:
             grids = load_file_content(filepath)
             file_results = {"filename": filename, "sheets": []}
             for idx, grid in enumerate(grids):
+                logger.info(f"Processing grid {idx+1} in {filename}")
                 result = process_grid(grid, w_dict, return_predictions)
                 result["sheet"] = f"Sheet{idx+1}" if ext in [".xls", ".xlsx"] else "data"
                 file_results["sheets"].append(result)
             results.append(file_results)
         except Exception as e:
+            logger.error(f"Error processing {filename}: {str(e)}")
             results.append({"filename": filename, "error": f"檔案處理失敗: {str(e)}"})
 
     return JSONResponse(content={"results": results})
