@@ -43,24 +43,44 @@ class VectorizedBrainModules:
             json_files = list(samples_dir.glob("*.json"))
             logger.info(f"[DEBUG] Found {len(json_files)} JSON files: {[f.name for f in json_files]}")
             if not json_files:
-                logger.warning(f"No JSON files found in {samples_dir}")
+                logger.warning(f"[WARN] No JSON files found in {samples_dir}")
                 self.heatmap_cache = {}
                 return
+
+            def clean_grid_value(value):
+                """Clean grid value per Excel preprocessing rules."""
+                if value is None or value == "":
+                    return ""  # Blank cells are ""
+                value = str(value).strip()  # Treat as string
+                # Character conversion: O→0, I→1
+                value = value.replace("O", "0").replace("o", "0").replace("I", "1").replace("i", "1")
+                # Convert to int if pure numeric string
+                if value.isdigit():
+                    return int(value)
+                # Clear non-numeric or invalid values
+                return ""
 
             # Group files by grid size
             size_to_files = {}
             for json_file in json_files:
                 try:
                     data = json.loads(json_file.read_text(encoding='utf-8'))
-                    if not isinstance(data.get("grid"), list) or not data.get("grid"):
+                    grid = data.get("grid")
+                    if not isinstance(grid, list) or not grid:
                         logger.warning(f"[WARN] Invalid or empty grid in {json_file.name}, skipping")
                         continue
-                    rows, cols = len(data["grid"]), len(data["grid"][0])
-                    if not all(len(row) == cols for row in data["grid"]):
+
+                    # Clean grid values
+                    cleaned_grid = [[clean_grid_value(cell) for cell in row] for row in grid]
+                    rows, cols = len(cleaned_grid), len(cleaned_grid[0]) if cleaned_grid else 0
+                    if not all(len(row) == cols for row in cleaned_grid):
                         logger.warning(f"[WARN] Inconsistent row lengths in {json_file.name}, skipping")
                         continue
+
                     size_key = (rows, cols)
+                    data["grid"] = cleaned_grid  # Update data with cleaned grid
                     size_to_files.setdefault(size_key, []).append((json_file, data))
+                    logger.debug(f"[DEBUG] File {json_file.name} has grid size {size_key}, cleaned grid: {cleaned_grid}")
                 except Exception as e:
                     logger.warning(f"[WARN] Failed to parse {json_file.name}: {e}, skipping")
 
@@ -73,9 +93,11 @@ class VectorizedBrainModules:
                 for json_file, data in files:
                     try:
                         ans = data.get("answer")
-                        if ans is None:
-                            logger.warning(f"[WARN] Answer is None in {json_file.name}, skipping")
+                        if ans is None or ans == "":
+                            logger.warning(f"[WARN] Answer is None or empty in {json_file.name}, skipping")
                             continue
+
+                        r, c = None, None
                         if isinstance(ans, dict) and "row" in ans and "col" in ans:
                             try:
                                 r, c = int(ans["row"]) - 1, int(ans["col"]) - 1  # 1-based to 0-based
@@ -84,7 +106,7 @@ class VectorizedBrainModules:
                                 continue
                         elif isinstance(ans, list) and len(ans) == 2:
                             try:
-                                r, c = int(ans[0]) - 1, int(ans[1]) - 1  # Support list format
+                                r, c = int(ans[0]) - 1, int(ans[1]) - 1  # 1-based to 0-based
                             except (TypeError, ValueError):
                                 logger.warning(f"[WARN] Invalid list values in {json_file.name}: {ans}, skipping")
                                 continue
@@ -92,11 +114,17 @@ class VectorizedBrainModules:
                             logger.warning(f"[WARN] Invalid answer format in {json_file.name}: {ans}, skipping")
                             continue
 
+                        # Handle [-1, -1] or invalid indices
+                        if r == -1 and c == -1:
+                            logger.debug(f"[DEBUG] Skipping {json_file.name} with answer [-1, -1]")
+                            continue
+
                         if 0 <= r < rows and 0 <= c < cols:
                             heatmap[r, c] += 1
                             valid_files += 1
+                            logger.debug(f"[DEBUG] Added answer [row={r+1}, col={c+1}] from {json_file.name} to heatmap")
                         else:
-                            logger.warning(f"[WARN] Answer out of range in {json_file.name}: row={r+1}, col={c+1}")
+                            logger.warning(f"[WARN] Answer out of range in {json_file.name}: row={r+1}, col={c+1}, grid_size=({rows},{cols})")
                     except Exception as e:
                         logger.warning(f"[WARN] Failed to process {json_file.name}: {e}, skipping")
 
@@ -106,7 +134,7 @@ class VectorizedBrainModules:
                     self.heatmap_cache[size_key] = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
                 else:
                     self.heatmap_cache[size_key] = np.zeros_like(heatmap, dtype=np.float32)
-                logger.info(f"Loaded heatmap for size {size_key} from {valid_files} valid JSON samples, shape=({rows}, {cols})")
+                logger.info(f"[INFO] Loaded heatmap for size {size_key} from {valid_files} valid JSON samples, shape=({rows}, {cols})")
 
             if not self.heatmap_cache:
                 logger.warning(f"[WARN] No valid heatmaps loaded")
