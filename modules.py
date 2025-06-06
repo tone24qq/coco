@@ -155,7 +155,7 @@ class ScratchSolver:
                         best_score, best_tail = s, t
                 score[i, j] = best_score
                 if best_tail >= 0:
-                    candidates = [v for x, y in known_positions if int(grid[x, y] % 10) == best_tail]
+                    candidates = [grid[x, y] for x, y in known_positions if int(grid[x, y] % 10) == best_tail]
                     if candidates:
                         pred[i, j] = min(candidates) + (best_tail * 10) if min(candidates) < 50 else -1
         return score, pred
