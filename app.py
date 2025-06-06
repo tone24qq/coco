@@ -14,7 +14,7 @@ solver = ScratchSolver()
 
 @app.get("/")
 async def root():
-    return {"status": "API is running", "endpoint": "POST /analyze/ or /analyze-batch/ for Excel analysis"}
+    return {"status": "API is running", "endpoints": ["POST /analyze/", "POST /analyze-batch/", "POST /analyze-folder/"]}
 
 def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool) -> dict:
     if grid.size == 0 or grid.shape[0] > 20 or grid.shape[1] > 20:
@@ -39,6 +39,33 @@ def parse_weights(weights: str) -> dict:
         "conn": 0.15,
         "tail": 0.15
     }
+
+def load_file_content(filepath: str) -> list:
+    ext = os.path.splitext(filepath)[1].lower()
+    grids = []
+    if ext == ".json":
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        grids = [np.array(data)]
+    elif ext == ".csv":
+        df = pd.read_csv(filepath, header=None, dtype=str)
+        df = df.fillna("")
+        cleaned_data = []
+        for row in df.values:
+            cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
+            cleaned_data.append(cleaned_row)
+        grids = [np.array(cleaned_data)]
+    elif ext in [".xls", ".xlsx"]:
+        xls = pd.ExcelFile(filepath)
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(filepath, sheet_name=sheet_name, header=None, dtype=str)
+            df = df.fillna("")
+            cleaned_data = []
+            for row in df.values:
+                cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
+                cleaned_data.append(cleaned_row)
+            grids.append(np.array(cleaned_data))
+    return grids
 
 @app.post("/analyze/")
 async def analyze(file: UploadFile = File(...),
@@ -151,5 +178,36 @@ async def analyze_batch(file: UploadFile = File(...),
                         results.append(file_results)
     except zipfile.BadZipFile:
         return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔案"})
+
+    return JSONResponse(content={"results": results})
+
+@app.post("/analyze-folder/")
+async def analyze_folder(weights: str = Form(None), mode: str = Form("heatmap")):
+    folder_path = "samples/data/"
+    if not os.path.exists(folder_path):
+        return JSONResponse(status_code=400, content={"error": f"資料夾 {folder_path} 不存在"})
+
+    try:
+        w_dict = parse_weights(weights)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+    return_predictions = (mode == "predict")
+    results = []
+    for filename in os.listdir(folder_path):
+        filepath = os.path.join(folder_path, filename)
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in [".json", ".csv", ".xls", ".xlsx"]:
+            continue
+        try:
+            grids = load_file_content(filepath)
+            file_results = {"filename": filename, "sheets": []}
+            for idx, grid in enumerate(grids):
+                result = process_grid(grid, w_dict, return_predictions)
+                result["sheet"] = f"Sheet{idx+1}" if ext in [".xls", ".xlsx"] else "data"
+                file_results["sheets"].append(result)
+            results.append(file_results)
+        except Exception as e:
+            results.append({"filename": filename, "error": f"檔案處理失敗: {str(e)}"})
 
     return JSONResponse(content={"results": results})
