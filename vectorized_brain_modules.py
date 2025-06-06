@@ -32,16 +32,12 @@ class VectorizedBrainModules:
         """Load JSON samples and build normalized heatmaps for each grid size."""
         try:
             samples_dir = Path(__file__).parent / "samples" / "data"
-            logger.info(f"[DEBUG] Looking for JSON under: {samples_dir}")
-            logger.info(f"[DEBUG] samples_dir.exists() = {samples_dir.exists()}")
-            logger.info(f"[DEBUG] samples_dir.is_dir() = {samples_dir.is_dir()}")
             if not (samples_dir.exists() and samples_dir.is_dir()):
-                logger.warning(f"[WARN] samples/data directory does not exist or is not a directory")
+                logger.warning(f"[WARN] samples/data directory does not exist")
                 self.heatmap_cache = {}
                 return
 
             json_files = list(samples_dir.glob("*.json"))
-            logger.info(f"[DEBUG] Found {len(json_files)} JSON files: {[f.name for f in json_files]}")
             if not json_files:
                 logger.warning(f"[WARN] No JSON files found in {samples_dir}")
                 self.heatmap_cache = {}
@@ -52,12 +48,9 @@ class VectorizedBrainModules:
                 if value is None or value == "":
                     return ""  # Blank cells are ""
                 value = str(value).strip()  # Treat as string
-                # Character conversion: O→0, I→1
                 value = value.replace("O", "0").replace("o", "0").replace("I", "1").replace("i", "1")
-                # Convert to int if pure numeric string
                 if value.isdigit():
                     return int(value)
-                # Clear non-numeric or invalid values
                 return ""
 
             # Group files by grid size
@@ -67,7 +60,7 @@ class VectorizedBrainModules:
                     data = json.loads(json_file.read_text(encoding='utf-8'))
                     grid = data.get("grid")
                     if not isinstance(grid, list) or not grid:
-                        logger.warning(f"[WARN] Invalid or empty grid in {json_file.name}, skipping")
+                        logger.warning(f"[WARN] Invalid grid in {json_file.name}, skipping")
                         continue
 
                     # Clean grid values
@@ -78,9 +71,7 @@ class VectorizedBrainModules:
                         continue
 
                     size_key = (rows, cols)
-                    data["grid"] = cleaned_grid  # Update data with cleaned grid
-                    size_to_files.setdefault(size_key, []).append((json_file, data))
-                    logger.debug(f"[DEBUG] File {json_file.name} has grid size {size_key}, cleaned grid: {cleaned_grid}")
+                    size_to_files.setdefault(size_key, []).append((json_file, data, cleaned_grid))
                 except Exception as e:
                     logger.warning(f"[WARN] Failed to parse {json_file.name}: {e}, skipping")
 
@@ -90,7 +81,7 @@ class VectorizedBrainModules:
                 heatmap = np.zeros((rows, cols), dtype=np.int32)
                 valid_files = 0
 
-                for json_file, data in files:
+                for json_file, data, cleaned_grid in files:
                     try:
                         ans = data.get("answer")
                         if ans is None or ans == "":
@@ -114,7 +105,6 @@ class VectorizedBrainModules:
                             logger.warning(f"[WARN] Invalid answer format in {json_file.name}: {ans}, skipping")
                             continue
 
-                        # Handle [-1, -1] or invalid indices
                         if r == -1 and c == -1:
                             logger.debug(f"[DEBUG] Skipping {json_file.name} with answer [-1, -1]")
                             continue
@@ -122,19 +112,20 @@ class VectorizedBrainModules:
                         if 0 <= r < rows and 0 <= c < cols:
                             heatmap[r, c] += 1
                             valid_files += 1
-                            logger.debug(f"[DEBUG] Added answer [row={r+1}, col={c+1}] from {json_file.name} to heatmap")
                         else:
                             logger.warning(f"[WARN] Answer out of range in {json_file.name}: row={r+1}, col={c+1}, grid_size=({rows},{cols})")
                     except Exception as e:
                         logger.warning(f"[WARN] Failed to process {json_file.name}: {e}, skipping")
 
-                # Normalize heatmap
-                min_val, max_val = heatmap.min(), heatmap.max()
-                if max_val > min_val:
-                    self.heatmap_cache[size_key] = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
+                if valid_files > 0:
+                    min_val, max_val = heatmap.min(), heatmap.max()
+                    if max_val > min_val:
+                        self.heatmap_cache[size_key] = ((heatmap - min_val) / (max_val - min_val + 1e-8)).astype(np.float32)
+                    else:
+                        self.heatmap_cache[size_key] = np.zeros_like(heatmap, dtype=np.float32)
+                    logger.info(f"[INFO] Loaded heatmap for size {size_key} from {valid_files} valid JSON samples")
                 else:
-                    self.heatmap_cache[size_key] = np.zeros_like(heatmap, dtype=np.float32)
-                logger.info(f"[INFO] Loaded heatmap for size {size_key} from {valid_files} valid JSON samples, shape=({rows}, {cols})")
+                    logger.warning(f"[WARN] No valid answers for size {size_key}, skipping heatmap")
 
             if not self.heatmap_cache:
                 logger.warning(f"[WARN] No valid heatmaps loaded")
@@ -143,7 +134,7 @@ class VectorizedBrainModules:
             self.heatmap_cache = {}
 
     def _connectivity_heatmap_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute connectivity heatmap scores (private helper)."""
+        """Compute connectivity heatmap scores."""
         rows, cols = grid.shape
         legal_mask = (grid == -1).astype(np.float32)
         
@@ -151,26 +142,21 @@ class VectorizedBrainModules:
             logger.warning(f"[WARN] No valid heatmap available, using uniform scores")
             return np.where(legal_mask, 0.5, 0).astype(np.float32)
         
-        # Find closest heatmap size
         target_size = (rows, cols)
         if target_size in self.heatmap_cache:
             heatmap = self.heatmap_cache[target_size]
-            logger.debug(f"[DEBUG] Using exact heatmap match for size {target_size}")
         else:
-            # Choose closest size by minimizing area difference
             size_diffs = [(size, abs(size[0] * size[1] - rows * cols)) for size in self.heatmap_cache]
             closest_size = min(size_diffs, key=lambda x: x[1])[0]
             heatmap = self.heatmap_cache[closest_size]
-            logger.debug(f"[DEBUG] Using closest heatmap size {closest_size} for grid size {target_size}")
-        
-        # Resize heatmap to match grid
-        zoom_factors = (rows / heatmap.shape[0], cols / heatmap.shape[1])
-        resized_heatmap = zoom(heatmap, zoom_factors, order=1)
-        scores = np.where(legal_mask, resized_heatmap, 0)
+            zoom_factors = (rows / heatmap.shape[0], cols / heatmap.shape[1])
+            heatmap = zoom(heatmap, zoom_factors, order=1)
+
+        scores = np.where(legal_mask, heatmap, 0)
         return (scores / (np.max(scores + 1e-8) or 1.0)).astype(np.float32)
 
     def _edge_proximity_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute edge proximity scores (private helper)."""
+        """Compute edge proximity scores."""
         rows, cols = grid.shape
         legal_mask = (grid == -1).astype(np.float32)
         filled_mask = (grid > 0).astype(np.float32)
@@ -191,14 +177,14 @@ class VectorizedBrainModules:
 
     @scoring_module
     def edge_proximity_fusion(self, grid: np.ndarray) -> np.ndarray:
-        """Module 1: Edge proximity fusion, low values near edges."""
+        """Module 1: Edge proximity fusion."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for edge_proximity_fusion")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._edge_proximity_logic(grid)
 
     def _sequence_tail_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute sequence tail scores (private helper)."""
+        """Compute sequence tail scores."""
         if not np.issubdtype(grid.dtype, np.integer):
             grid = grid.astype(np.int32)
         rows, cols = grid.shape
@@ -229,22 +215,22 @@ class VectorizedBrainModules:
     @scoring_module
     @nb.njit(parallel=True)
     def sequence_tail_analyzer(self, grid: np.ndarray) -> np.ndarray:
-        """Module 2: Sequence tail analysis, arithmetic sequences."""
+        """Module 2: Sequence tail analysis."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for sequence_tail_analyzer")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._sequence_tail_logic(grid)
 
     @scoring_module
     def connectivity_heatmap(self, grid: np.ndarray) -> np.ndarray:
-        """Module 3: Connectivity heatmap with dynamic scaling."""
+        """Module 3: Connectivity heatmap."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for connectivity_heatmap")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._connectivity_heatmap_logic(grid)
 
     def _entropy_risk_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute entropy risk scores (private helper)."""
+        """Compute entropy risk scores."""
         rows, cols = grid.shape
         legal_mask = (grid == -1).astype(np.float32)
         
@@ -265,19 +251,19 @@ class VectorizedBrainModules:
 
     @scoring_module
     def entropy_risk_fusion(self, grid: np.ndarray) -> np.ndarray:
-        """Module 4: Entropy risk fusion, local entropy."""
+        """Module 4: Entropy risk fusion."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for entropy_risk_fusion")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._entropy_risk_logic(grid)
 
     def _detect_skip_patterns_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Detect row/column skip patterns (private helper)."""
+        """Detect row/column skip patterns."""
         rows, cols = grid.shape
         heatmap = np.zeros((rows, cols), dtype=np.float32)
         blank_mask = (grid == -1)
         
-        for axis in range(2):  # 0 for rows, 1 for columns
+        for axis in range(2):
             if axis == 0:
                 data = grid
                 size = cols
@@ -305,14 +291,14 @@ class VectorizedBrainModules:
 
     @scoring_module
     def detect_skip_patterns(self, grid: np.ndarray) -> np.ndarray:
-        """Module 5: Detect row/column skip patterns."""
+        """Module 5: Detect skip patterns."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for detect_skip_patterns")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._detect_skip_patterns_logic(grid)
 
     def _compute_focus_score_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute focus score based on local density (private helper)."""
+        """Compute focus score based on local density."""
         kernel = np.ones((3, 3), dtype=np.float32)
         density = convolve2d((grid > 0).astype(np.float32), kernel, mode='same', boundary='symm')
         max_density = np.max(density) or 1.0
@@ -320,19 +306,18 @@ class VectorizedBrainModules:
 
     @scoring_module
     def compute_focus_score(self, grid: np.ndarray) -> np.ndarray:
-        """Module 6: Compute focus score based on local density."""
+        """Module 6: Compute focus score."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for compute_focus_score")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._compute_focus_score_logic(grid)
 
     def _detect_mirror_sequences_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Detect mirror sequences after horizontal/vertical mirroring (private helper)."""
+        """Detect mirror sequences."""
         rows, cols = grid.shape
         heatmap = np.zeros((rows, cols), dtype=np.float32)
         blank_mask = (grid == -1)
         
-        # Horizontal mirror
         h_mirrored = grid[:, ::-1]
         for i in range(rows):
             row = h_mirrored[i]
@@ -345,7 +330,6 @@ class VectorizedBrainModules:
                         if expected > 0 and expected == sorted_filled[-2] + 2:
                             heatmap[i, cols-1-j] = 0.8
         
-        # Vertical mirror
         v_mirrored = grid[::-1, :]
         for j in range(cols):
             col = v_mirrored[:, j]
@@ -362,14 +346,14 @@ class VectorizedBrainModules:
 
     @scoring_module
     def detect_mirror_sequences(self, grid: np.ndarray) -> np.ndarray:
-        """Module 7: Detect mirror sequences after horizontal/vertical mirroring."""
+        """Module 7: Detect mirror sequences."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for detect_mirror_sequences")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._detect_mirror_sequences_logic(grid)
 
     def _compute_difference_trend_logic(self, grid: np.ndarray) -> np.ndarray:
-        """Compute difference trend scores based on adjacent known numbers (private helper)."""
+        """Compute difference trend scores."""
         rows, cols = grid.shape
         heatmap = np.zeros((rows, cols), dtype=np.float32)
         blank_mask = (grid == -1)
@@ -393,8 +377,8 @@ class VectorizedBrainModules:
 
     @scoring_module
     def compute_difference_trend(self, grid: np.ndarray) -> np.ndarray:
-        """Module 8: Compute difference trend scores based on adjacent known numbers."""
+        """Module 8: Compute difference trend."""
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            logger.error(f"[ERROR] Invalid grid input for compute_difference_trend")
+            logger.error(f"[ERROR] Invalid grid input")
             return np.zeros((1, 1), dtype=np.float32)
         return self._compute_difference_trend_logic(grid)
