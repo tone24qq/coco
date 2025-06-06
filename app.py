@@ -7,6 +7,7 @@ from io import BytesIO
 import os
 import zipfile
 import logging
+
 from modules import ScratchSolver
 from analyzer import analyze_board
 
@@ -17,11 +18,71 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 solver = ScratchSolver()
 
-@app.get("/", include_in_schema=False)
-@app.head("/", include_in_schema=False)
-async def root(request: Request):
-    logger.info("Root endpoint accessed")
-    return {"status": "API is running", "endpoints": ["POST /analyze/", "POST /analyze-batch/", "POST /analyze-folder/"]}
+@app.on_event("startup")
+async def startup_process_samples():
+    """
+    服務一啟動，就走遍 samples/data/ 資料夾，把所有支援的檔案讀進來，
+    針對每個 grid 計算熱力分數，並把結果存到 samples/output/ 底下（檔名：原檔名+_heatmap.json）。
+    """
+    # 預設權重（和 analyze_folder 一樣）
+    default_weights = {
+        "focus": 0.2,
+        "skip": 0.15,
+        "diff": 0.15,
+        "mirror": 0.2,
+        "conn": 0.15,
+        "tail": 0.15
+    }
+    return_predictions = False  # 只要熱力圖，不要預測值
+
+    folder_path = "samples/data/"
+    output_folder = "samples/output/"
+    os.makedirs(output_folder, exist_ok=True)
+
+    logger.info(f"Startup: 開始掃描資料夾 {folder_path}")
+    if not os.path.exists(folder_path):
+        logger.error(f"Startup: 資料夾 {folder_path} 不存在，跳過啟動處理")
+        return
+
+    for filename in os.listdir(folder_path):
+        ext = os.path.splitext(filename)[1].lower()
+        if ext not in [".json", ".csv", ".xls", ".xlsx"]:
+            logger.info(f"Startup: 跳過不支援的檔案 {filename}")
+            continue
+
+        filepath = os.path.join(folder_path, filename)
+        try:
+            # 用跟 analyze_folder 一樣的 load_file_content 去把所有工作表都讀成 ndarray list
+            grids = load_file_content(filepath)
+        except Exception as e:
+            logger.error(f"Startup: 讀取 {filename} 失敗：{e}")
+            continue
+
+        for idx, grid in enumerate(grids):
+            # 處理每一張 grid，拿到熱力分數
+            try:
+                heatmap, _ = analyze_board(grid, default_weights, return_predictions)
+            except Exception as e:
+                logger.error(f"Startup: 處理 {filename} 第 {idx+1} 張 grid 失敗：{e}")
+                continue
+
+            # 把 heatmap 存成 JSON，檔名：原本檔名（不含副檔名）_sheet{idx+1}_heatmap.json
+            base = os.path.splitext(filename)[0]
+            if ext in [".xls", ".xlsx"]:
+                out_name = f"{base}_sheet{idx+1}_heatmap.json"
+            else:
+                out_name = f"{base}_heatmap.json"
+            out_path = os.path.join(output_folder, out_name)
+
+            try:
+                with open(out_path, "w", encoding="utf-8") as f:
+                    json.dump({"heatmap": heatmap.tolist()}, f, ensure_ascii=False, indent=2)
+                logger.info(f"Startup: 已存 {filename} (sheet {idx+1}) 的熱力圖到 {out_path}")
+            except Exception as e:
+                logger.error(f"Startup: 存檔 {out_path} 失敗：{e}")
+
+    logger.info("Startup: Samples 資料夾熱力圖前置處理完成")
+
 
 def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool) -> dict:
     if grid.size == 0 or grid.shape[0] > 20 or grid.shape[1] > 20:
