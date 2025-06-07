@@ -1,334 +1,282 @@
+# modules.py
 import numpy as np
 from scipy.signal import convolve2d
-from scipy.ndimage import distance_transform_edt
-from ortools.sat.python import cp_model
+from scipy.spatial import cKDTree
+import asyncio
 import logging
-from datetime import datetime
 
-# 設置日誌
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ScratchSolver:
+    MODULE_REGISTRY = {}
+
     def __init__(self):
-        self.adaptive_weights = None
-        self.failure_log = []  # 記錄模組失效
+        self.tree = None
+        self.known_yx = None
+        self.known_vals = None
+        self.MODULE_REGISTRY = {
+            'compute_dynamic_hot_cold_vectorized': self.compute_dynamic_hot_cold_vectorized,
+            'idw_vectorized': self.idw_vectorized,
+            'compute_block_heatmap_vectorized': self.compute_block_heatmap_vectorized,
+            'compute_global_diff_heatmap': self.compute_global_diff_heatmap,
+            'compute_focus_score': self.compute_focus_score,
+            'detect_skip_patterns': self.detect_skip_patterns,
+            'compute_difference_trend': self.compute_difference_trend,
+            'detect_mirror_sequences': self.detect_mirror_sequences,
+            'connectivity_heatmap': self.connectivity_heatmap,
+            'sequence_tail_analyzer': self.sequence_tail_analyzer
+        }
 
-    def compute_focus_score(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
-        pred = np.full((M, N), -1, dtype=int)
-        if np.all(grid == -1):
-            score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
-            return score, pred
+    def update_tree(self, grid):
+        self.known_yx = np.argwhere(grid != -1)
+        self.known_vals = grid[grid != -1]
+        if self.known_yx.size > 0:
+            self.tree = cKDTree(self.known_yx)
+        else:
+            self.tree = None
+
+    def idw_vectorized(self, grid):
+        empty_yx = np.argwhere(grid == -1)
+        if empty_yx.size == 0:
+            return np.array([])
+        if self.tree is None or self.known_yx is None:
+            return np.zeros(empty_yx.shape[0]) / empty_yx.shape[0]
+        dists, idxs = self.tree.query(empty_yx, k=min(5, self.known_yx.shape[0]))
+        weights = 1.0 / (dists ** 2 + 1e-8)
+        est = np.sum(weights * self.known_vals[idxs], axis=1) / np.sum(weights, axis=1)
+        return est
+
+    def compute_dynamic_hot_cold_vectorized(self, grid, hot_q=0.9, cold_q=0.1, method='quantile'):
+        known = grid[grid != -1]
+        if known.size == 0:
+            return np.zeros(np.count_nonzero(grid == -1))
+        if method == 'quantile':
+            hot_thr = np.quantile(known, hot_q)
+            cold_thr = np.quantile(known, cold_q)
+        elif method == 'std':
+            mean, std = known.mean(), known.std()
+            hot_thr = mean + 1.5 * std
+            cold_thr = mean - 1.5 * std
+        else:  # minmax
+            hot_thr = known.max() * 0.9
+            cold_thr = known.min() * 1.1
+        est = self.idw_vectorized(grid)
+        est_full = np.zeros_like(grid, dtype=float)
+        est_full[grid == -1] = est
+        diff_hot = est_full - hot_thr
+        diff_cold = cold_thr - est_full
+        scores = np.where(est_full >= hot_thr, np.clip(diff_hot / (hot_thr - cold_thr), 0, 2),
+                         np.where(est_full <= cold_thr, -np.clip(diff_cold / (hot_thr - cold_thr), 0, 2), 0))
+        return scores[grid == -1]
+
+    def compute_block_heatmap_vectorized(self, grid, block_size=2):
+        h, w = grid.shape
+        block_size = min(block_size, h, w)
+        if h < block_size or w < block_size:
+            padded = np.pad(grid, ((0, max(0, block_size - h)), (0, max(0, block_size - w))), mode='edge')
+        else:
+            padded = grid
+        blocks = sliding_window_view(padded, (block_size, block_size))
+        block_means = np.nanmean(np.where(blocks == -1, np.nan, blocks), axis=(2, 3))
+        global_mean = np.nanmean(grid[grid != -1])
+        empty_yx = np.argwhere(grid == -1)
+        by = (empty_yx[:, 0]).clip(0, h - block_size)
+        bx = (empty_yx[:, 1]).clip(0, w - block_size)
+        scores = block_means[by, bx] - global_mean
+        return np.nan_to_num(scores, nan=0.0)
+
+    def compute_global_diff_heatmap(self, grid):
+        masked = np.where(grid == -1, 0, grid)
+        h_diff = np.abs(np.diff(masked, axis=1))
+        h_diff = np.pad(h_diff, ((0, 0), (1, 1)), mode='edge')
+        v_diff = np.abs(np.diff(masked, axis=0))
+        v_diff = np.pad(v_diff, ((1, 1), (0, 0)), mode='edge')
+        diff_map = h_diff + v_diff
+        # 二階差分
+        h_diff2 = np.abs(np.diff(h_diff, axis=1))
+        h_diff2 = np.pad(h_diff2, ((0, 0), (1, 1)), mode='edge')
+        v_diff2 = np.abs(np.diff(v_diff, axis=0))
+        v_diff2 = np.pad(v_diff2, ((1, 1), (0, 0)), mode='edge')
+        diff2_map = h_diff2 + v_diff2
+        # Laplacian 濾波
+        kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
+        lap_map = np.abs(convolve2d(masked, kernel, mode='same'))
+        # 合併 (加權平均)
+        diff_map = (diff_map + diff2_map + lap_map) / 3
+        return diff_map[grid == -1]
+
+    def compute_focus_score(self, grid):
         mask = (grid != -1).astype(int)
-        kernel = np.ones((3, 3), dtype=int)
-        raw = convolve2d(mask, kernel, mode='same', boundary='fill', fillvalue=0)
-        score[grid == -1] = raw[grid == -1]
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score, pred
+        kernel = np.ones((3, 3)) / 9
+        summed = convolve2d(np.where(grid != -1, grid, 0), kernel, mode='same', boundary='symm')
+        count = convolve2d(mask, kernel, mode='same', boundary='symm')
+        focus_map = summed / (count + 1e-8)
+        scores = focus_map[grid == -1]
+        return scores, np.full(np.count_nonzero(grid == -1), -1, dtype=int)
 
-    def detect_skip_patterns(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def detect_skip_patterns(self, grid):
         M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
+        scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
-        for i in range(M):
-            known_cols = np.where(grid[i] != -1)[0]
-            if len(known_cols) < 1:
-                score[i, grid[i] == -1] = 0.1
-                continue
-            if len(known_cols) == 1:
-                v1 = grid[i, known_cols[0]]
-                score[i, grid[i] == -1] = 0.1
-                pred[i, grid[i] == -1] = v1 + 1 if v1 + 1 <= grid.max() else -1
-                continue
-            for idx in range(len(known_cols)-1):
-                c1, c2 = known_cols[idx], known_cols[idx+1]
-                v1, v2 = grid[i, c1], grid[i, c2]
-                diff = v2 - v1
-                step = diff / (c2 - c1) if (c2 - c1) != 0 else 0
-                if abs((c2 - c1) * step - diff) < 1e-10:
-                    for c in range(c1+1, c2):
-                        expected = v1 + step * (c - c1)
-                        if grid[i, c] == -1 and 1 <= expected <= grid.max():
-                            score[i, c] += 1.0
-                            pred[i, c] = int(round(expected))
-        for j in range(N):
-            known_rows = np.where(grid[:, j] != -1)[0]
-            if len(known_rows) < 1:
-                score[grid[:, j] == -1, j] = 0.1
-                continue
-            if len(known_rows) == 1:
-                v1 = grid[known_rows[0], j]
-                score[grid[:, j] == -1, j] = 0.1
-                pred[grid[:, j] == -1, j] = v1 + 1 if v1 + 1 <= grid.max() else -1
-                continue
-            for idx in range(len(known_rows)-1):
-                r1, r2 = known_rows[idx], known_rows[idx+1]
-                v1, v2 = grid[r1, j], grid[r2, j]
-                diff = v2 - v1
-                step = diff / (r2 - r1) if (r2 - r1) != 0 else 0
-                if abs((r2 - r1) * step - diff) < 1e-10:
-                    for r in range(r1+1, r2):
-                        expected = v1 + step * (r - r1)
-                        if grid[r, j] == -1 and 1 <= expected <= grid.max():
-                            score[r, j] += 1.0
-                            pred[r, j] = int(round(expected))
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score, pred
+        for k in range(1, min(4, M, N)):  # 支持 k=1~3
+            for i in range(M):
+                windows = sliding_window_view(grid[i], window_shape=k+1)
+                for j in range(N - k):
+                    if np.all(windows[j] != -1):
+                        diff = np.diff(windows[j])
+                        if np.all(np.abs(np.diff(diff)) < 1e-10):
+                            step = diff[0]
+                            for c in range(j+1, j+k):
+                                if grid[i, c] == -1 and 1 <= grid[i, j] + step * (c - j) <= grid.max():
+                                    scores[i, c] += 1.0 / k
+                                    pred[i, c] = int(grid[i, j] + step * (c - j))
+            for j in range(N):
+                windows = sliding_window_view(grid[:, j], window_shape=k+1)
+                for i in range(M - k):
+                    if np.all(windows[i] != -1):
+                        diff = np.diff(windows[i])
+                        if np.all(np.abs(np.diff(diff)) < 1e-10):
+                            step = diff[0]
+                            for r in range(i+1, i+k):
+                                if grid[r, j] == -1 and 1 <= grid[i, j] + step * (r - i) <= grid.max():
+                                    scores[r, j] += 1.0 / k
+                                    pred[r, j] = int(grid[i, j] + step * (r - i))
+        scores[grid != -1] = 0
+        mn, mx = scores.min(), scores.max()
+        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
+        return scores[grid == -1], pred[grid == -1]
 
-    def compute_difference_trend(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def compute_difference_trend(self, grid):
         M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
+        scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
+        d1 = np.diff(grid, axis=1)
+        d2 = np.diff(grid, axis=0)
+        diff_freq = np.bincount(d1.flatten(), minlength=grid.max()+1) + np.bincount(d2.flatten(), minlength=grid.max()+1)
         for i in range(M):
             for j in range(N):
-                if grid[i, j] != -1:
-                    continue
-                if j >= 1 and grid[i, j-1] != -1:
-                    expected = grid[i, j-1] + 1
-                    if 1 <= expected <= grid.max():
-                        score[i, j] = 0.5
-                        pred[i, j] = int(expected)
-                if i >= 1 and grid[i-1, j] != -1:
-                    expected = grid[i-1, j] + 1
-                    if 1 <= expected <= grid.max():
-                        score[i, j] = 0.5
-                        pred[i, j] = int(expected)
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score, pred
+                if grid[i, j] == -1:
+                    if j >= 1 and grid[i, j-1] != -1:
+                        expected = grid[i, j-1] + 1
+                        if 1 <= expected <= grid.max() and diff_freq[1] > 0:
+                            scores[i, j] = diff_freq[1] / diff_freq.sum()
+                            pred[i, j] = int(expected)
+                    if i >= 1 and grid[i-1, j] != -1:
+                        expected = grid[i-1, j] + 1
+                        if 1 <= expected <= grid.max() and diff_freq[1] > 0:
+                            scores[i, j] = diff_freq[1] / diff_freq.sum()
+                            pred[i, j] = int(expected)
+        scores[grid != -1] = 0
+        mn, mx = scores.min(), scores.max()
+        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
+        return scores[grid == -1], pred[grid == -1]
 
-    def detect_mirror_sequences(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def detect_mirror_sequences(self, grid):
         M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
+        scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
+        mid_x = N // 2
+        mid_y = M // 2
+        # 左右鏡像
+        left = grid[:, :mid_x]
+        right = np.fliplr(grid[:, N-mid_x:])[:, :mid_x]
+        mirror_lr = np.all(left == right, axis=1)
+        # 上下鏡像
+        top = grid[:mid_y, :]
+        bottom = np.flipud(grid[M-mid_y:, :])
+        mirror_ud = np.all(top == bottom, axis=1)
+        # 對角鏡像
+        diag1 = grid.diagonal()
+        diag2 = np.fliplr(grid).diagonal()
+        mirror_diag = np.all(diag1 == diag2)
         for i in range(M):
             for j in range(N):
-                if grid[i, j] != -1:
-                    continue
-                max_k = min(j, N - j - 1)
-                for k in range(1, max_k + 1):
-                    left = grid[i, j - k]
-                    right = grid[i, j + k]
-                    if left != -1 and right != -1 and abs(left - right) < 1e-10:
-                        score[i, j] = 1.0
-                        pred[i, j] = int(left)
-                        break
-                if score[i, j] == 1:
-                    continue
-                max_k2 = min(i, M - i - 1)
-                for k in range(1, max_k2 + 1):
-                    up = grid[i - k, j]
-                    down = grid[i + k, j]
-                    if up != -1 and down != -1 and abs(up - down) < 1e-10:
-                        score[i, j] = 1.0
-                        pred[i, j] = int(up)
-                        break
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score, pred
+                if grid[i, j] == -1:
+                    if j < mid_x and mirror_lr[i]:
+                        scores[i, j] = 1.0
+                        pred[i, j] = int(left[i, j % mid_x])
+                    if i < mid_y and mirror_ud[j]:
+                        scores[i, j] = 1.0
+                        pred[i, j] = int(top[i % mid_y, j])
+                    if mirror_diag and i == j:
+                        scores[i, j] = 1.0
+                        pred[i, j] = int(diag1[i])
+        scores[grid != -1] = 0
+        mn, mx = scores.min(), scores.max()
+        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
+        return scores[grid == -1], pred[grid == -1]
 
-    def connectivity_heatmap(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def connectivity_heatmap(self, grid):
         M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
-        pred = np.full((M, N), -1, dtype=int)
-        if np.all(grid == -1):
-            score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
-            return score, pred
         mask = (grid != -1).astype(np.uint8)
-        dist_map = distance_transform_edt(1 - mask)
-        score[grid == -1] = 1.0 / (dist_map[grid == -1] + 1e-6)
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score, pred
+        kernel_4 = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
+        kernel_8 = np.ones((3, 3)) - np.eye(3)
+        conn_4 = convolve2d(mask, kernel_4, mode='same', boundary='symm')
+        conn_8 = convolve2d(mask, kernel_8, mode='same', boundary='symm')
+        conn_map = (conn_4 + conn_8) / 2
+        scores = conn_map[grid == -1]
+        return scores, np.full(np.count_nonzero(grid == -1), -1, dtype=int)
 
-    def sequence_tail_analyzer(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def sequence_tail_analyzer(self, grid):
         M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
+        scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
-        if np.all(grid == -1):
-            score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
-            return score, pred
-        known_positions = np.argwhere(grid != -1)
-        if len(known_positions) == 0:
-            score[grid == -1] = 0.1
-            return score, pred
-        tail_positions = {t: [] for t in range(10)}
-        for x, y in known_positions:
-            t = int(grid[x, y] % 10)
-            tail_positions[t].append((x, y))
-        tail_counts = {t: len(pos) for t, pos in tail_positions.items()}
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] != -1:
-                    continue
-                best_score, best_tail = 0.0, -1
-                for t in range(10):
-                    positions_t = tail_positions[t]
-                    if not positions_t:
-                        continue
-                    coords = np.array(positions_t)
-                    dists = np.abs(coords - np.array([i, j])).sum(axis=1)
-                    min_dist = np.min(dists)
-                    s = tail_counts[t] / (min_dist + 1e-6)
-                    if s > best_score:
-                        best_score, best_tail = s, t
-                score[i, j] = best_score if best_score > 0 else 0.1  # 確保非零
-                if best_tail >= 0:
-                    candidates = [grid[x, y] for x, y in known_positions if int(grid[x, y] % 10) == best_tail]
-                    if candidates:
-                        pred[i, j] = min(candidates) + (best_tail * 10) if min(candidates) < 50 else -1
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score, pred
+        tails = grid % 10
+        freq = np.bincount(tails.flatten(), minlength=10) / (np.count_nonzero(grid != -1) + 1e-8)
+        windows = sliding_window_view(grid, (3, 3))
+        for i in range(M-2):
+            for j in range(N-2):
+                block = windows[i, j]
+                block_tails = block[block != -1] % 10
+                if block_tails.size > 0:
+                    local_freq = np.bincount(block_tails, minlength=10) / (block_tails.size + 1e-8)
+                    for y in range(i, i+3):
+                        for x in range(j, j+3):
+                            if grid[y, x] == -1:
+                                best_tail = np.argmax(local_freq)
+                                scores[y, x] = local_freq[best_tail]
+                                candidates = grid[grid != -1][(grid[grid != -1] % 10) == best_tail]
+                                if candidates.size > 0:
+                                    pred[y, x] = int(min(candidates) + (best_tail * 10) if min(candidates) < 50 else -1)
+        scores[grid != -1] = 0
+        mn, mx = scores.min(), scores.max()
+        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
+        return scores[grid == -1], pred[grid == -1]
 
-    def constraint_solver(self, grid: np.ndarray, target_num: int) -> np.ndarray:
-        if target_num is None or target_num not in range(1, grid.max() + 1):
-            return np.ones_like(grid, dtype=float) / np.sum(grid == -1)
-        M, N = grid.shape
-        model = cp_model.CpModel()
-        vars = {}
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] == -1:
-                    vars[i, j] = model.NewIntVar(1, grid.max(), f'cell_{i}_{j}')
-        solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 2.0
-        status = solver.Solve(model)
-        score = np.zeros((M, N), dtype=float)
-        if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
-            for (i, j), v in vars.items():
-                if solver.Value(v) == target_num:
-                    score[i, j] = 1.0
+    def classify_board_type(self, dynamic_scores, hot_thresh=0.5, cold_thresh=-0.5):
+        total = dynamic_scores.sum() / (np.count_nonzero(dynamic_scores != 0) + 1e-8)
+        if total >= hot_thresh:
+            return 'HOT'
+        elif total <= cold_thresh:
+            return 'COLD'
         else:
-            score[grid == -1] = 1.0 / np.sum(grid == -1)
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score
+            return 'UNIFORM'
 
-    def tensor_full_score(self, grid: np.ndarray) -> np.ndarray:
-        M, N = grid.shape
-        tensor = np.zeros((M, N, 2), dtype=float)
-        tensor[:, :, 0] = (grid != -1).astype(float)
-        kernel = np.ones((3, 3), dtype=float) / 9
-        tensor[:, :, 1] = convolve2d((grid != -1).astype(float), kernel, mode='same', boundary='symm')
-        conv_score = convolve2d(tensor[:, :, 1], kernel, mode='same', boundary='symm')
-        score = np.zeros((M, N), dtype=float)
-        score[grid == -1] = conv_score[grid == -1]
-        if np.all(score == 0):
-            score[grid == -1] = 0.1
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score
+    def fuse_scores_vectorized(self, mod_scores, board_type, default_weights):
+        w = self.weights_for(board_type, default_weights)
+        names = list(mod_scores.keys())
+        score_mat = np.stack([mod_scores[n] for n in names], axis=1)
+        weight_arr = np.array([w.get(n, 0.1) for n in names])
+        heat_factor = np.abs(mod_scores.get('compute_dynamic_hot_cold_vectorized', 0).sum()) / (np.count_nonzero(grid == -1) + 1e-8)
+        final = (score_mat.dot(weight_arr) / (weight_arr.sum() + 1e-8)) * (1 + heat_factor * 0.5)
+        return final
 
-    def pattern_mining(self, grid: np.ndarray) -> np.ndarray:
-        M, N = grid.shape
-        score = np.zeros((M, N), dtype=float)
-        known_nums = grid[grid != -1]
-        if len(known_nums) == 0:
-            score[grid == -1] = 0.1
-            return score
-        # 改進：基於未出現數字的均勻概率
-        max_num = max(np.max(known_nums), M * N)
-        missing_nums = set(range(1, max_num + 1)) - set(known_nums)
-        if missing_nums:
-            prob = 1.0 / len(missing_nums)
-            score[grid == -1] = prob
-        else:
-            score[grid == -1] = 0.1
-        mn, mx = score.min(), score.max()
-        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
-        return score
+    def weights_for(self, board_type, default_weights):
+        w = default_weights.copy()
+        if board_type == 'HOT':
+            w['compute_dynamic_hot_cold_vectorized'] *= 1.5
+            w['compute_block_heatmap_vectorized'] *= 1.2
+        elif board_type == 'COLD':
+            w['idw_vectorized'] *= 1.3
+        else:  # UNIFORM
+            w['detect_mirror_sequences'] *= 1.2
+            w['compute_difference_trend'] *= 1.1
+        return w
 
-    def dynamic_weights(self, grid, scores, initial_weights, json_scores=None):
-        weights = initial_weights.copy()
-        total_weight = sum(weights.values()) + 1e-6
-        weights = {k: v / total_weight for k, v in weights.items()}
-        contributions = {k: np.mean(s[grid == -1]) if np.any(s[grid == -1]) else 0.1 
-                        for k, s in scores.items() if k != '_weights'}
-        if json_scores is not None and np.any(json_scores):
-            contributions['json'] = np.mean(json_scores[grid == -1])
-        total_contrib = sum(contributions.values()) + 1e-6
-        if total_contrib > 0:
-            for k in weights:
-                weights[k] *= contributions.get(k, 0.1) / total_contrib
-            total = sum(weights.values()) + 1e-6
-            weights = {k: v / total for k, v in weights.items()}
-        return weights
-
-    def fuse_scores(self, gridscores: dict, grid: np.ndarray, gridpreds: dict, target_num: int) -> tuple[np.ndarray, np.ndarray]:
-        M, N = grid.shape
-        final_score = np.zeros((M, N), dtype=float)
-        final_pred = np.full((M, N), -1, dtype=int)
-        weights = gridscores.get('_weights', {})
-        for name, score_arr in gridscores.items():
-            if name == '_weights':
-                continue
-            w = weights.get(name, 0.1)
-            final_score += w * score_arr
-        final_score[grid != -1] = 0
-        mn, mx = final_score.min(), final_score.max()
-        final_score = (final_score - mn) / (mx - mn + 1e-10) if mx > mn else final_score
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] != -1:
-                    final_pred[i, j] = grid[i, j]
-                    continue
-                numerator = 0.0
-                denominator = 0.0
-                for name, pred_arr in gridpreds.items():
-                    score_arr = gridscores.get(name, np.zeros_like(grid))
-                    w = weights.get(name, 0.1)
-                    s = score_arr[i, j]
-                    if s > 0 and pred_arr[i, j] >= 0:
-                        numerator += pred_arr[i, j] * w * s
-                        denominator += w * s
-                if denominator > 0:
-                    final_pred[i, j] = int(round(numerator / (denominator + 1e-6)))
-                else:
-                    final_pred[i, j] = -1
-        return final_score, final_pred
-
-    def predict_specific_number(self, grid, final_score, target_num, weights):
-        M, N = grid.shape
-        if target_num in grid[grid != -1]:
-            return []
-        candidates = []
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] == -1:
-                    score = final_score[i, j]
-                    candidates.append((i, j, score, self._reasoning(i, j, target_num, weights)))
-        if not candidates:
-            return []
-        # 返回Top3候選
-        candidates.sort(key=lambda x: x[2], reverse=True)
-        return candidates[:3]  # 返回最多三個
-
-    def default_candidate(self, grid, target_num, weights):
-        M, N = grid.shape
-        candidates = [(i, j, 1.0 / np.sum(grid == -1), "均勻分配") 
-                      for i in range(M) for j in range(N) if grid[i, j] == -1]
-        candidates.sort(key=lambda x: (x[0], x[1]))  # 按座標排序，確保一致性
-        return candidates[:3]  # 返回Top3
-
-    def _reasoning(self, i, j, target_num, weights):
-        reasoning = []
-        for module, score in [('focus', weights['focus']), ('skip', weights['skip']), ('diff', weights['diff']),
-                             ('mirror', weights['mirror']), ('conn', weights['conn']), ('tail', weights['tail']),
-                             ('constraint', weights['constraint']), ('tensor', weights['tensor']),
-                             ('pattern', weights['pattern'])]:
-            if score > 0.05:
-                reasoning.append(f"{module}: {score:.2f}")
-        return "; ".join(reasoning) if reasoning else "均勻分配"
-
-    def log_module_failure(self, grid, target_num):
-        self.failure_log.append({
-            "grid": grid.tolist(),
-            "target_num": target_num,
-            "timestamp": datetime.now().isoformat()
-        })
-        logger.warning(f"模組失效記錄，目標數字: {target_num}")
+    def predict_top3_vectorized(self, final_scores, empty_positions):
+        idxs = np.argsort(-final_scores)[:3]
+        unique_idx = np.unique(idxs, return_index=True)[1]
+        top3_idx = idxs[np.sort(unique_idx)[:3]]
+        contributions = {name: score for name, score in zip(self.MODULE_REGISTRY.keys(), final_scores)}
+        return [(int(empty_positions[i][0]), int(empty_positions[i][1]), float(final_scores[i]), contributions) for i in top3_idx]
