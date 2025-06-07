@@ -6,3 +6,4 @@ fastapi
 uvicorn
 ortools
 scikit-learn
+python-multipart
