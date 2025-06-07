@@ -226,7 +226,11 @@ async def analyze(
         results.append(result)
 
     return JSONResponse(content={"results": results})
-
+@app.post("/analyze/")
+async def analyze(
+    file: UploadFile = File(...),
+    mode: str = Form("heatmap"),
+    target_num: int = Form(None),
 @app.post("/analyze-batch/")
 async def analyze_batch(
     file: UploadFile = File(...),
