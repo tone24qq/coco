@@ -97,8 +97,8 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
 
     if return_predictions:
         best_pos = solver.predict_specific_number(grid, final_score, target_num, dynamic_weights)
-        if best_pos is None:
-            logger.warning(f"無法為目標數字 {target_num} 找到候選格，返回均勻候選")
+        if best_pos is None or len(best_pos) == 0:
+            logger.warning(f"無法為目標數字 {target_num} 找到候選格，返回Top3均勻候選")
             solver.log_module_failure(grid, target_num)
             best_pos = solver.default_candidate(grid, target_num, dynamic_weights)
         return final_score, final_pred, best_pos
