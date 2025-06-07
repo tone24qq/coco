@@ -12,13 +12,17 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
     solver = ScratchSolver()
 
     # 驗證網格大小
-    if grid.shape[0] > 20 or grid.shape[1] > 20:
-        raise ValueError("網格超過 20x20 限制")
-    N = grid.size
-    opened_nums = set(grid[grid != -1])
-    if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
-        raise ValueError("數字不滿足 1~N 不重複規則")
+    # 驗證：網格大小不可超過 20×20
+if grid.shape[0] > 20 or grid.shape[1] > 20:
+    raise ValueError("網格超過 20x20 限制")
 
+# 檢查已揭露的數字是否都在 1~N 範圍內（忽略 -1、0）
+N = grid.size
+opened = grid[grid > 0]  # 只留大於 0 的格子
+if opened.size > 0:
+    mn, mx = opened.min(), opened.max()
+    if mn < 1 or mx > N:
+        raise ValueError(f"數字不在 1~{N} 範圍內（min={mn}, max={mx}）")
     # 讀取JSON熱力圖（若提供）
     initial_scores = None
     if json_heatmap_path and os.path.exists(json_heatmap_path):
