@@ -2,17 +2,22 @@ import argparse
 import json
 import os
 from brain import process_single_board, process_batch
+import logging
+
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="刮刮樂分析工具")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--input-file', type=str, help='單一盤面檔案 (JSON/CSV/Excel)')
     group.add_argument('--input-folder', type=str, help='盤面檔案資料夾 (samples/data/)')
-    parser.add_argument('--output', type=str, required=True, help='輸出檔案或資料夾。如果是單一檔案，請包含前綴名(不含副檔名)。如果是 folder，則指定輸出資料夾路徑。')
-    parser.add_argument('--weights', type=str, default=None, help='各模組權重的 JSON 字串，例如 \'{"focus":0.2,"skip":0.15,"diff":0.15,"mirror":0.2,"conn":0.15,"tail":0.15,"constraint":0.1,"tensor":0.1,"json":0.1}\'。若不指定，使用預設權重。')
-    parser.add_argument('--mode', type=str, choices=['heatmap', 'predict'], default='heatmap', help='heatmap: 只輸出熱力圖；predict: 同時輸出預測值')
-    parser.add_argument('--target-num', type=int, default=None, help='指定數字，預測其位置')
-    parser.add_argument('--json-heatmap', type=str, default=None, help='JSON熱力圖檔案路徑')
+    parser.add_argument('--output', type=str, required=True, help='輸出檔案或資料夾')
+    parser.add_argument('--weights', type=str, default=None, help='模組權重 JSON 字串')
+    parser.add_argument('--mode', type=str, choices=['heatmap', 'predict'], default='predict', help='模式: heatmap 或 predict')
+    parser.add_argument('--target-num', type=int, default=None, help='指定數字')
+    parser.add_argument('--json-heatmap', type=str, default=None, help='JSON 熱力圖路徑')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -22,15 +27,16 @@ if __name__ == '__main__':
         weights = json.loads(args.weights)
     else:
         weights = {
-            "focus": 0.2,
-            "skip": 0.15,
-            "diff": 0.15,
-            "mirror": 0.2,
-            "conn": 0.15,
-            "tail": 0.15,
-            "constraint": 0.1,
-            "tensor": 0.1,
-            "json": 0.1
+            "compute_dynamic_hot_cold_vectorized": 0.2,
+            "compute_block_heatmap_vectorized": 0.15,
+            "idw_vectorized": 0.15,
+            "compute_global_diff_heatmap": 0.1,
+            "compute_focus_score": 0.15,
+            "detect_skip_patterns": 0.1,
+            "compute_difference_trend": 0.05,
+            "detect_mirror_sequences": 0.05,
+            "connectivity_heatmap": 0.05,
+            "sequence_tail_analyzer": 0.05
         }
 
     return_predictions = (args.mode == 'predict')
@@ -38,10 +44,25 @@ if __name__ == '__main__':
     if args.input_file:
         input_path = args.input_file
         output_prefix = args.output
-        print(f"分析單一檔案: {input_path}")
-        process_single_board(input_path, weights, return_predictions, output_prefix, args.target_num, args.json_heatmap)
+        logger.info(f"分析單一檔案: {input_path}")
+        try:
+            process_single_board(input_path, weights, return_predictions, output_prefix, args.target_num, args.json_heatmap)
+        except Exception as e:
+            logger.error(f"處理失敗: {e}")
     else:
         input_folder = args.input_folder
         output_folder = args.output
-        print(f"批次分析資料夾: {input_folder}，輸出到: {output_folder}")
-        process_batch(input_folder, weights, return_predictions, output_folder, args.target_num, args.json_heatmap)
+        logger.info(f"批次分析資料夾: {input_folder}，輸出到: {output_folder}")
+        try:
+            process_batch(input_folder, weights, return_predictions, output_folder, args.target_num, args.json_heatmap)
+        except Exception as e:
+            logger.error(f"批次處理失敗: {e}")
+
+# 測試運行
+if __name__ == "__main__":
+    # 模擬命令行測試
+    import sys
+    sys.argv = ['main.py', '--input-file', 'samples/data/test.json', '--output', 'output/test_result', '--mode', 'predict', '--target-num', 21]
+    args = parse_args()
+    if args.input_file:
+        process_single_board(args.input_file, weights, return_predictions, args.output, args.target_num, args.json_heatmap)
