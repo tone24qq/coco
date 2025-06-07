@@ -88,7 +88,7 @@ def parse_weights(weights: str) -> dict:
         try:
             return json.loads(weights)
         except json.JSONDecodeError:
-            raise ValueError("無効的 JSON 格式")
+            raise ValueError("無効的權重 JSON 格式")
     return {
         "compute_dynamic_hot_cold_vectorized": 0.2,
         "compute_block_heatmap_vectorized": 0.15,
@@ -132,7 +132,7 @@ def load_file_content(filepath: str) -> list:
 async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
     filename = file.filename.lower()
     if not filename.endswith((".xls", ".xlsx", ".json", ".csv")):
-        return JSONResponse(status_code=380, content={"error": "不支援的檔案格式"})
+        return JSONResponse(status_code=400, content={"error": "不支援的檔案格式"})
     content = await file.read()
     grids = []
     if filename.endswith(".json"):
@@ -140,7 +140,7 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
             data = json.loads(content.decode("utf-8"))
             grids = [np.array(data)]
         except json.JSONDecodeError:
-            return JSONResponse(status_code=380, content={"error": "無効的 JSON 格式"})
+            return JSONResponse(status_code=400, content={"error": "無効的 JSON 格式"})
     elif filename.endswith(".csv"):
         df = pd.read_csv(BytesIO(content), header=None, dtype=str, keep_default_na=False)
         cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
@@ -161,11 +161,11 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
                     rows.append(cleaned_row)
                 grids.append(np.array(rows))
         except Exception as e:
-            return JSONResponse(status_code=380, content={"error": f"Excel 讀取失敗: {str(e)}"})
+            return JSONResponse(status_code=400, content={"error": f"Excel 讀取失敗: {str(e)}"})
     try:
         w_dict = parse_weights(weights)
     except ValueError as e:
-        return JSONResponse(status_code=380, content={"error": str(e)})
+        return JSONResponse(status_code=400, content={"error": str(e)})
     return_predictions = (mode == "predict")
     results = []
     for idx, grid in enumerate(grids):
@@ -178,13 +178,13 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
 async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
     filename = file.filename.lower()
     if not filename.endswith(".zip"):
-        return JSONResponse(status_code=380, content={"error": "請上傳 ZIP 檔案"})
+        return JSONResponse(status_code=400, content={"error": "請上傳 ZIP 檔案"})
     content = await file.read()
     results = []
     try:
         w_dict = parse_weights(weights)
     except ValueError as e:
-        return JSONResponse(status_code=380, content={"error": str(e)})
+        return JSONResponse(status_code=400, content={"error": str(e)})
     return_predictions = (mode == "predict")
     try:
         with zipfile.ZipFile(BytesIO(content)) as z:
@@ -233,7 +233,7 @@ async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None),
                         file_results["sheets"].append(result)
                         results.append(file_results)
     except zipfile.BadZipFile:
-        return JSONResponse(status_code=380, content={"error": "無効的 ZIP 檔案"})
+        return JSONResponse(status_code=400, content={"error": "無効的 ZIP 檔案"})
     return JSONResponse(content={"results": results})
 
 @app.post("/analyze-folder/")
@@ -244,7 +244,7 @@ async def analyze_folder(weights: str = Form(None), mode: str = Form("predict"),
     try:
         w_dict = parse_weights(weights)
     except Exception as e:
-        return JSONResponse(status_code=380, content={"error": str(e)})
+        return JSONResponse(status_code=400, content={"error": str(e)})
     return_predictions = (mode == "predict")
     results = []
     for idx, filename in enumerate(os.listdir(folder_path)):
