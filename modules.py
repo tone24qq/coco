@@ -6,7 +6,7 @@ from sklearn.linear_model import LinearRegression
 
 class ScratchSolver:
     def __init__(self):
-        self.adaptive_weights = None  # 儲存自適應權重
+        self.adaptive_weights = None
 
     def compute_focus_score(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if np.all(grid == -1):
@@ -62,7 +62,7 @@ class ScratchSolver:
     def compute_difference_trend(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         M, N = grid.shape
         score = np.zeros((M, N), dtype=float)
-        pred = np.full((M, N), -1, dtype=int)
+        pred = np.full_like(grid, -1, dtype=int)
         for i in range(M):
             for j in range(N):
                 if grid[i, j] != -1:
@@ -86,7 +86,7 @@ class ScratchSolver:
     def detect_mirror_sequences(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         M, N = grid.shape
         score = np.zeros((M, N), dtype=float)
-        pred = np.full((M, N), -1, dtype=int)
+        pred = np.full_like(grid, -1, dtype=int)
         for i in range(M):
             for j in range(N):
                 if grid[i, j] != -1:
@@ -116,7 +116,7 @@ class ScratchSolver:
     def connectivity_heatmap(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         M, N = grid.shape
         score = np.zeros((M, N), dtype=float)
-        pred = np.full((M, N), -1, dtype=int)
+        pred = np.full_like(grid, -1, dtype=int)
         if np.all(grid == -1):
             return score, pred
         mask = (grid != -1).astype(np.uint8)
@@ -129,7 +129,7 @@ class ScratchSolver:
     def sequence_tail_analyzer(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         M, N = grid.shape
         score = np.zeros((M, N), dtype=float)
-        pred = np.full((M, N), -1, dtype=int)
+        pred = np.full_like(grid, -1, dtype=int)
         if np.all(grid == -1):
             return score, pred
         known_positions = np.argwhere(grid != -1)
@@ -163,6 +163,8 @@ class ScratchSolver:
         return score, pred
 
     def constraint_solver(self, grid: np.ndarray, target_num: int) -> np.ndarray:
+        if target_num is None or target_num not in range(1, grid.max() + 1):
+            return np.zeros_like(grid, dtype=float)
         M, N = grid.shape
         model = cp_model.CpModel()
         vars = {}
@@ -170,15 +172,13 @@ class ScratchSolver:
             for j in range(N):
                 if grid[i, j] == -1:
                     vars[i, j] = model.NewIntVar(1, grid.max(), f'cell_{i}_{j}')
-        # 行不重複
         for i in range(M):
             model.AddAllDifferent([vars[i, j] for j in range(N) if (i, j) in vars])
-        # 列不重複
         for j in range(N):
             model.AddAllDifferent([vars[i, j] for i in range(M) if (i, j) in vars])
-        # 目標數字約束
         model.Add(sum(1 for v in vars.values() if v == target_num) == 1)
         solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = 1.0  # 限制求解時間
         status = solver.Solve(model)
         score = np.zeros((M, N), dtype=float)
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
@@ -191,12 +191,10 @@ class ScratchSolver:
 
     def tensor_full_score(self, grid: np.ndarray) -> np.ndarray:
         M, N = grid.shape
-        # 創建3D張量，增加特徵維度（例如鄰域密度）
         tensor = np.zeros((M, N, 2), dtype=float)
-        tensor[:, :, 0] = (grid != -1).astype(float)  # 已開格標記
+        tensor[:, :, 0] = (grid != -1).astype(float)
         kernel = np.ones((3, 3), dtype=float) / 9
         tensor[:, :, 1] = convolve2d((grid != -1).astype(float), kernel, mode='same', boundary='symm')
-        # 簡單卷積操作
         conv_score = convolve2d(tensor[:, :, 1], kernel, mode='same', boundary='symm')
         score = np.zeros((M, N), dtype=float)
         score[grid == -1] = conv_score[grid == -1]
@@ -204,26 +202,34 @@ class ScratchSolver:
         score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
         return score
 
+    def pattern_mining(self, grid: np.ndarray) -> np.ndarray:
+        M, N = grid.shape
+        score = np.zeros((M, N), dtype=float)
+        known_nums = grid[grid != -1]
+        if len(known_nums) == 0:
+            return score
+        freq = np.histogram(known_nums % 10, bins=range(11))[0] / len(known_nums)
+        for i in range(M):
+            for j in range(N):
+                if grid[i, j] == -1:
+                    score[i, j] = np.mean(freq)
+        mn, mx = score.min(), score.max()
+        score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
+        return score
+
     def dynamic_weights(self, grid, scores, initial_weights, json_scores=None):
-        # 初始權重
         weights = initial_weights.copy()
         total_weight = sum(weights.values())
         weights = {k: v / total_weight for k, v in weights.items()}
-
-        # 計算每個模組的貢獻（簡單平均分數）
         contributions = {k: np.mean(s[grid == -1]) for k, s in scores.items() if k != '_weights'}
         if json_scores is not None and np.any(json_scores):
             contributions['json'] = np.mean(json_scores[grid == -1])
-
-        # 動態調整：根據貢獻比例加權
         total_contrib = sum(contributions.values())
         if total_contrib > 0:
             for k in weights:
                 weights[k] *= contributions.get(k, 0) / total_contrib
-            # 確保總和為1
             total = sum(weights.values())
             weights = {k: v / total for k, v in weights.items()}
-
         return weights
 
     def predict_specific_number(self, grid, final_score, target_num, weights):
@@ -233,12 +239,10 @@ class ScratchSolver:
             for j in range(N):
                 if grid[i, j] == -1:
                     score = final_score[i, j]
-                    # 檢查是否符合約束（簡化邏輯）
                     if score > 0:
                         candidates.append((i, j, score, self._reasoning(i, j, target_num, weights)))
         if not candidates:
             return None
-        # 按分數排序，選擇最高信心
         best = max(candidates, key=lambda x: x[2])
         return (best[0], best[1], best[2], best[3])
 
@@ -246,7 +250,8 @@ class ScratchSolver:
         reasoning = []
         for module, score in [('focus', weights['focus']), ('skip', weights['skip']), ('diff', weights['diff']),
                              ('mirror', weights['mirror']), ('conn', weights['conn']), ('tail', weights['tail']),
-                             ('constraint', weights['constraint']), ('tensor', weights['tensor'])]:
-            if score > 0.1:  # 僅記錄顯著貢獻
+                             ('constraint', weights['constraint']), ('tensor', weights['tensor']),
+                             ('pattern', weights['pattern'])]:
+            if score > 0.1:
                 reasoning.append(f"{module}: {score:.2f}")
         return "; ".join(reasoning)
