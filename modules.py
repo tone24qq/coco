@@ -4,6 +4,7 @@ from scipy.signal import convolve2d
 from scipy.spatial import cKDTree
 import asyncio
 import logging
+from numpy.lib.stride_tricks import sliding_window_view
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,41 +71,39 @@ class ScratchSolver:
                          np.where(est_full <= cold_thr, -np.clip(diff_cold / (hot_thr - cold_thr), 0, 2), 0))
         return scores[grid == -1]
 
-    def compute_block_heatmap_vectorized(self, grid, block_size=2):
-        h, w = grid.shape
-        block_size = min(block_size, h, w)
-        if h < block_size or w < block_size:
-            padded = np.pad(grid, ((0, max(0, block_size - h)), (0, max(0, block_size - w))), mode='edge')
-        else:
-            padded = grid
-        blocks = sliding_window_view(padded, (block_size, block_size))
-        block_means = np.nanmean(np.where(blocks == -1, np.nan, blocks), axis=(2, 3))
-        global_mean = np.nanmean(grid[grid != -1])
-        empty_yx = np.argwhere(grid == -1)
-        by = (empty_yx[:, 0]).clip(0, h - block_size)
-        bx = (empty_yx[:, 1]).clip(0, w - block_size)
-        scores = block_means[by, bx] - global_mean
-        return np.nan_to_num(scores, nan=0.0)
+    def compute_block_heatmap_vectorized(self, grid, block_size=3):
+        """
+        Vectorized block heatmap: each block mean - global mean.
+        Output same shape as input.
+        """
+        arr = np.array(grid, dtype=float)
+        windows = sliding_window_view(arr, (block_size, block_size))
+        local_means = windows.mean(axis=(2,3))
+        global_mean = arr.mean()
+        heat = local_means - global_mean
+        pad_h, pad_w = block_size - 1, block_size - 1
+        heat_padded = np.pad(
+            heat,
+            ((pad_h//2, pad_h - pad_h//2), (pad_w//2, pad_w - pad_w//2)),
+            mode='constant', constant_values=0
+        )
+        mn, mx = heat_padded.min(), heat_padded.max()
+        return (heat_padded - mn) / (mx - mn + 1e-8)
 
     def compute_global_diff_heatmap(self, grid):
-        masked = np.where(grid == -1, 0, grid)
-        h_diff = np.abs(np.diff(masked, axis=1))
-        h_diff = np.pad(h_diff, ((0, 0), (1, 1)), mode='edge')
-        v_diff = np.abs(np.diff(masked, axis=0))
-        v_diff = np.pad(v_diff, ((1, 1), (0, 0)), mode='edge')
-        diff_map = h_diff + v_diff
-        # 二階差分
-        h_diff2 = np.abs(np.diff(h_diff, axis=1))
-        h_diff2 = np.pad(h_diff2, ((0, 0), (1, 1)), mode='edge')
-        v_diff2 = np.abs(np.diff(v_diff, axis=0))
-        v_diff2 = np.pad(v_diff2, ((1, 1), (0, 0)), mode='edge')
-        diff2_map = h_diff2 + v_diff2
-        # Laplacian 濾波
-        kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
-        lap_map = np.abs(convolve2d(masked, kernel, mode='same'))
-        # 合併 (加權平均)
-        diff_map = (diff_map + diff2_map + lap_map) / 3
-        return diff_map[grid == -1]
+        """
+        Second-order difference using Laplacian convolution.
+        Output same shape as input.
+        """
+        arr = np.array(grid, dtype=float)
+        kernel = np.array([
+            [0,  1, 0],
+            [1, -4, 1],
+            [0,  1, 0]
+        ], dtype=float)
+        diff2 = convolve2d(arr, kernel, mode='same', boundary='symm')
+        mn, mx = diff2.min(), diff2.max()
+        return (diff2 - mn) / (mx - mn + 1e-8)
 
     def compute_focus_score(self, grid):
         mask = (grid != -1).astype(int)
