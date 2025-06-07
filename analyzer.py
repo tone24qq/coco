@@ -15,14 +15,15 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
     if grid.shape[0] > 20 or grid.shape[1] > 20:
         logger.error("網格超過 20x20 限制")
         raise ValueError("網格超過 20x20 限制")
-    N = grid.size
-    opened_nums = set(grid[grid != -1])
-    if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
-        logger.error("數字不滿足 1~N 不重複規則")
-        raise ValueError("數字不滿足 1~N 不重複規則")
+
+    # 放寬驗證：僅檢查數字合法性
+    valid = (grid[grid != -1] >= 1).all()
+    if not valid:
+        logger.error("存在不合法格位數字")
+        raise ValueError("存在不合法格位數字")
 
     # 檢查目標數字是否已開
-    if target_num is not None and target_num in opened_nums:
+    if target_num is not None and target_num in grid[grid != -1]:
         logger.error(f"目標數字 {target_num} 已出現在盤面")
         return None, None, {"error": f"目標數字 {target_num} 已出現在盤面"}
 
