@@ -51,7 +51,7 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
     constraint_score = solver.constraint_solver(grid, target_num) if target_num else np.zeros_like(grid, dtype=float)
     tensor_score = solver.tensor_full_score(grid)
 
-    # 檢查是否全零分數
+    # 檢查模組分數
     scores = {
         'focus': score_focus,
         'skip': score_skip,
@@ -64,9 +64,10 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
         'pattern': score_pattern,
         '_weights': weights
     }
-    if all(np.all(s[grid == -1] == 0) for s in scores.values() if s is not None):
+    if all(np.all(s[grid == -1] == 0) for s in scores.values() if s is not None and s is not weights):
         logger.warning("所有模組分數為零，返回均勻分數")
-        scores = {k: np.ones_like(grid, dtype=float) / grid.size if k != '_weights' else weights for k in scores}
+        solver.log_module_failure(grid, target_num)
+        scores = {k: np.ones_like(grid, dtype=float) / np.sum(grid == -1) if k != '_weights' else weights for k in scores}
 
     # 動態權重
     dynamic_weights = solver.dynamic_weights(grid, scores, weights, initial_scores)
@@ -94,6 +95,7 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
         best_pos = solver.predict_specific_number(grid, final_score, target_num, dynamic_weights)
         if best_pos is None:
             logger.warning(f"無法為目標數字 {target_num} 找到候選格，返回均勻候選")
+            solver.log_module_failure(grid, target_num)
             best_pos = solver.default_candidate(grid, target_num, dynamic_weights)
         return final_score, final_pred, best_pos
     else:
