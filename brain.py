@@ -3,6 +3,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
+from openpyxl import load_workbook
 from analyzer import analyze_board
 import logging
 
@@ -13,22 +14,19 @@ logger = logging.getLogger(__name__)
 def load_grid_from_file(path: str) -> list[np.ndarray]:
     ext = os.path.splitext(path)[1].lower()
     if ext in ['.xls', '.xlsx']:
-        xls = pd.ExcelFile(path)
+        wb = load_workbook(path, data_only=True)
         grids = []
-        for sheet_name in xls.sheet_names:
-            df = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=str)
-            df = df.fillna("")
-            cleaned_data = []
-            for row in df.values:
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = []
+            for row in ws.iter_rows():
                 cleaned_row = []
                 for cell in row:
-                    cell = cell.replace('O', '0').replace('I', '1')
-                    if cell.isdigit():
-                        cleaned_row.append(int(cell))
-                    else:
-                        cleaned_row.append(-1)
-                cleaned_data.append(cleaned_row)
-            grid = np.array(cleaned_data)
+                    val = str(cell.value) if cell.value is not None else ""
+                    val = val.replace('O', '0').replace('I', '1')
+                    cleaned_row.append(int(val) if val.isdigit() else -1)
+                rows.append(cleaned_row)
+            grid = np.array(rows)
             grids.append(grid)
         return grids
     elif ext == '.json':
@@ -36,17 +34,13 @@ def load_grid_from_file(path: str) -> list[np.ndarray]:
             data = json.load(f)
         return [np.array(data)]
     elif ext == '.csv':
-        df = pd.read_csv(path, header=None, dtype=str)
-        df = df.fillna("")
+        df = pd.read_csv(path, header=None, dtype=str, keep_default_na=False)
         cleaned_data = []
         for row in df.values:
             cleaned_row = []
             for cell in row:
                 cell = cell.replace('O', '0').replace('I', '1')
-                if cell.isdigit():
-                    cleaned_row.append(int(cell))
-                else:
-                    cleaned_row.append(-1)
+                cleaned_row.append(int(cell) if cell.isdigit() else -1)
             cleaned_data.append(cleaned_row)
         return [np.array(cleaned_data)]
     else:
