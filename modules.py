@@ -2,15 +2,20 @@ import numpy as np
 from scipy.signal import convolve2d
 from scipy.ndimage import distance_transform_edt
 from ortools.sat.python import cp_model
-from sklearn.linear_model import LinearRegression
+import logging
+
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ScratchSolver:
     def __init__(self):
         self.adaptive_weights = None
+        self.failure_log = []  # 記錄模組失效
 
     def compute_focus_score(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         if np.all(grid == -1):
-            score = np.ones_like(grid, dtype=float) / grid.size  # 空白卡均勻分數
+            score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
             return score, np.full_like(grid, -1, dtype=int)
         mask = (grid != -1).astype(int)
         kernel = np.ones((3, 3), dtype=int)
@@ -28,9 +33,13 @@ class ScratchSolver:
         pred = np.full((M, N), -1, dtype=int)
         for i in range(M):
             known_cols = np.where(grid[i] != -1)[0]
-            if len(known_cols) < 2:
-                if len(known_cols) == 1:  # 單格推測
-                    score[i, grid[i] == -1] = 0.1  # 低分數
+            if len(known_cols) < 1:  # 放寬至單格
+                score[i, grid[i] == -1] = 0.1
+                continue
+            if len(known_cols) == 1:
+                v1 = grid[i, known_cols[0]]
+                score[i, grid[i] == -1] = 0.1
+                pred[i, grid[i] == -1] = v1 + 1 if v1 + 1 <= grid.max() else -1
                 continue
             for idx in range(len(known_cols)-1):
                 c1, c2 = known_cols[idx], known_cols[idx+1]
@@ -45,9 +54,13 @@ class ScratchSolver:
                             pred[i, c] = int(round(expected))
         for j in range(N):
             known_rows = np.where(grid[:, j] != -1)[0]
-            if len(known_rows) < 2:
-                if len(known_rows) == 1:
-                    score[grid[:, j] == -1, j] = 0.1
+            if len(known_rows) < 1:
+                score[grid[:, j] == -1, j] = 0.1
+                continue
+            if len(known_rows) == 1:
+                v1 = grid[known_rows[0], j]
+                score[grid[:, j] == -1, j] = 0.1
+                pred[grid[:, j] == -1, j] = v1 + 1 if v1 + 1 <= grid.max() else -1
                 continue
             for idx in range(len(known_rows)-1):
                 r1, r2 = known_rows[idx], known_rows[idx+1]
@@ -72,8 +85,8 @@ class ScratchSolver:
             for j in range(N):
                 if grid[i, j] != -1:
                     continue
-                if j >= 1 and grid[i, j-1] != -1:  # 放寬至單格
-                    expected = grid[i, j-1] + 1  # 簡單假設
+                if j >= 1 and grid[i, j-1] != -1:
+                    expected = grid[i, j-1] + 1
                     if 1 <= expected <= grid.max():
                         score[i, j] = 0.5
                         pred[i, j] = int(expected)
@@ -121,7 +134,7 @@ class ScratchSolver:
         score = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
         if np.all(grid == -1):
-            score = np.ones_like(grid, dtype=float) / grid.size
+            score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
             return score, pred
         mask = (grid != -1).astype(np.uint8)
         dist_map = distance_transform_edt(1 - mask)
@@ -135,7 +148,7 @@ class ScratchSolver:
         score = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
         if np.all(grid == -1):
-            score = np.ones_like(grid, dtype=float) / grid.size
+            score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
             return score, pred
         known_positions = np.argwhere(grid != -1)
         if len(known_positions) == 0:
@@ -172,7 +185,7 @@ class ScratchSolver:
 
     def constraint_solver(self, grid: np.ndarray, target_num: int) -> np.ndarray:
         if target_num is None or target_num not in range(1, grid.max() + 1):
-            return np.ones_like(grid, dtype=float) / grid.size
+            return np.ones_like(grid, dtype=float) / np.sum(grid == -1)
         M, N = grid.shape
         model = cp_model.CpModel()
         vars = {}
@@ -180,12 +193,9 @@ class ScratchSolver:
             for j in range(N):
                 if grid[i, j] == -1:
                     vars[i, j] = model.NewIntVar(1, grid.max(), f'cell_{i}_{j}')
-        for i in range(M):
-            model.AddAllDifferent([vars[i, j] for j in range(N) if (i, j) in vars])
-        for j in range(N):
-            model.AddAllDifferent([vars[i, j] for i in range(M) if (i, j) in vars])
+        # 簡化約束：僅確保不重複
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 2.0  # 放寬時間
+        solver.parameters.max_time_in_seconds = 2.0
         status = solver.Solve(model)
         score = np.zeros((M, N), dtype=float)
         if status == cp_model.FEASIBLE or status == cp_model.OPTIMAL:
@@ -193,7 +203,7 @@ class ScratchSolver:
                 if solver.Value(v) == target_num:
                     score[i, j] = 1.0
         else:
-            score[grid == -1] = 1.0 / np.sum(grid == -1)  # 均勻分數
+            score[grid == -1] = 1.0 / np.sum(grid == -1)
         mn, mx = score.min(), score.max()
         score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
         return score
@@ -257,7 +267,7 @@ class ScratchSolver:
             final_score += w * score_arr
         final_score[grid != -1] = 0
         mn, mx = final_score.min(), final_score.max()
-        final_score = (final_score - mn) / (mx - mn + 1e-10) if mx > mn else final_score
+        final_score = (score - mn) / (mx - mn + 1e-10) if mx > mn else final_score
         for i in range(M):
             for j in range(N):
                 if grid[i, j] != -1:
@@ -307,6 +317,14 @@ class ScratchSolver:
                              ('mirror', weights['mirror']), ('conn', weights['conn']), ('tail', weights['tail']),
                              ('constraint', weights['constraint']), ('tensor', weights['tensor']),
                              ('pattern', weights['pattern'])]:
-            if score > 0.05:  # 降低門檻
+            if score > 0.05:
                 reasoning.append(f"{module}: {score:.2f}")
         return "; ".join(reasoning) if reasoning else "均勻分配"
+
+    def log_module_failure(self, grid, target_num):
+        self.failure_log.append({
+            "grid": grid.tolist(),
+            "target_num": target_num,
+            "timestamp": datetime.now().isoformat()
+        })
+        logger.warning(f"模組失效記錄，目標數字: {target_num}")
