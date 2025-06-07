@@ -3,6 +3,7 @@ import json
 import zipfile
 import logging
 from io import BytesIO
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -12,19 +13,18 @@ from fastapi.responses import JSONResponse
 from modules import ScratchSolver
 from analyzer import analyze_board
 
-# ===== 日誌設定 =====
+# 日誌設定
 logging.basicConfig(
     format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ===== FastAPI App & Solver =====
+# FastAPI App & Solver
 app = FastAPI()
 solver = ScratchSolver()
 
-
-# ===== Startup: 批次前置處理 =====
+# Startup: 批次前置處理
 @app.on_event("startup")
 async def startup_process_samples():
     default_weights = {
@@ -36,6 +36,7 @@ async def startup_process_samples():
         "tail": 0.15,
         "constraint": 0.1,
         "tensor": 0.1,
+        "pattern": 0.1,
         "json": 0.1
     }
     return_predictions = False
@@ -70,10 +71,7 @@ async def startup_process_samples():
                 continue
 
             base = os.path.splitext(filename)[0]
-            if ext in [".xls", ".xlsx"]:
-                out_name = f"{base}_sheet{idx+1}_heatmap.json"
-            else:
-                out_name = f"{base}_heatmap.json"
+            out_name = f"{base}_sheet{idx+1}_heatmap.json" if ext in [".xls", ".xlsx"] else f"{base}_heatmap.json"
             out_path = os.path.join(output_folder, out_name)
 
             try:
@@ -85,8 +83,7 @@ async def startup_process_samples():
 
     logger.info("Startup: Samples 資料夾熱力圖前置處理完成")
 
-
-# ===== 核心處理函式 =====
+# 核心處理函式
 def process_grid(
     grid: np.ndarray,
     weights: dict,
@@ -97,29 +94,35 @@ def process_grid(
     if grid.size == 0 or grid.shape[0] > 20 or grid.shape[1] > 20:
         return {"error": "網格為空或超過 20x20 限制"}
 
-    final_score, final_pred, best_pos = analyze_board(
-        grid, weights, return_predictions, target_num, json_heatmap
-    )
+    try:
+        final_score, final_pred, best_pos = analyze_board(
+            grid, weights, return_predictions, target_num, json_heatmap
+        )
+    except ValueError as e:
+        logger.error(f"盤面分析失敗：{str(e)}")
+        return {"error": str(e)}
 
     result = {"heatmap": final_score.tolist()}
     if return_predictions and final_pred is not None:
         result["prediction"] = final_pred.tolist()
-    if best_pos:
-        result["best_position"] = {
-            "coords": [best_pos[0], best_pos[1]],
-            "confidence": best_pos[2],
-            "reasoning": best_pos[3]
-        }
+        if best_pos:
+            if isinstance(best_pos, dict) and "error" in best_pos:
+                result["error"] = best_pos["error"]
+            else:
+                result["best_position"] = {
+                    "coords": [best_pos[0], best_pos[1]],
+                    "confidence": float(best_pos[2]),  # 確保可序列化
+                    "reasoning": best_pos[3]
+                }
     return result
-
 
 def parse_weights(weights: str) -> dict:
     if weights:
         try:
             return json.loads(weights)
         except json.JSONDecodeError:
+            logger.error("無效的權重 JSON 格式")
             raise ValueError("無效的權重 JSON 格式")
-    # 預設權重
     return {
         "focus": 0.2,
         "skip": 0.15,
@@ -129,9 +132,9 @@ def parse_weights(weights: str) -> dict:
         "tail": 0.15,
         "constraint": 0.1,
         "tensor": 0.1,
+        "pattern": 0.1,
         "json": 0.1
     }
-
 
 def load_file_content(filepath: str) -> list:
     logger.info(f"Processing file: {filepath}")
@@ -164,14 +167,12 @@ def load_file_content(filepath: str) -> list:
 
     return grids
 
-
-# ===== HTTP 路由：原有 & 新增 =====
-
+# HTTP 路由
 @app.post("/analyze/")
 async def analyze(
     file: UploadFile = File(...),
     weights: str = Form(None),
-    mode: str = Form("heatmap"),
+    mode: str = Form("predict"),  # 改為預設 predict
     target_num: int = Form(None),
     json_heatmap: str = Form(None)
 ):
@@ -201,7 +202,6 @@ async def analyze(
     else:  # .xls, .xlsx
         try:
             xls = pd.ExcelFile(BytesIO(content))
-            grids = []
             for sheet_name in xls.sheet_names:
                 logger.info(f"Processing sheet: {sheet_name}")
                 df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None, dtype=str).fillna("")
@@ -227,12 +227,11 @@ async def analyze(
 
     return JSONResponse(content={"results": results})
 
-
 @app.post("/analyze-batch/")
 async def analyze_batch(
     file: UploadFile = File(...),
     weights: str = Form(None),
-    mode: str = Form("heatmap"),
+    mode: str = Form("predict"),  # 改為預設 predict
     target_num: int = Form(None),
     json_heatmap: str = Form(None)
 ):
@@ -300,11 +299,10 @@ async def analyze_batch(
 
     return JSONResponse(content={"results": results})
 
-
 @app.post("/analyze-folder/")
 async def analyze_folder(
     weights: str = Form(None),
-    mode: str = Form("heatmap"),
+    mode: str = Form("predict"),  # 改為預設 predict
     target_num: int = Form(None),
     json_heatmap: str = Form(None)
 ):
@@ -349,18 +347,16 @@ async def analyze_folder(
 
     return JSONResponse(content={"results": results})
 
-
-# ===== 根路由：永遠回 200 =====
+# 根路由
 @app.get("/")
 async def root():
     return JSONResponse(status_code=200, content={"status": "running"})
 
-
-# ===== Catch‐all 路由：攔截一切，回 200 =====
+# Catch-all 路由
 @app.api_route(
     "/{full_path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
 )
 async def catch_all(request: Request, full_path: str):
-    logger.debug(f"Catch‐all for path: {request.method} {full_path}")
+    logger.debug(f"Catch-all for path: {request.method} {full_path}")
     return JSONResponse(status_code=200, content={"status": "running"})
