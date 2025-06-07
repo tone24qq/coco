@@ -4,6 +4,5 @@ pandas
 openpyxl
 fastapi
 uvicorn
-ortools
-scikit-learn
+aiofiles
 python-multipart
