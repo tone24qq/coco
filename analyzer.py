@@ -5,6 +5,7 @@ from modules import ScratchSolver
 import asyncio
 import json
 import os
+from numpy.lib.stride_tricks import sliding_window_view
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
