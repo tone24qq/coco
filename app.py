@@ -24,16 +24,18 @@ async def startup_process_samples():
     服務一啟動，就走遍 samples/data/ 資料夾，把所有支援的檔案讀進來，
     針對每個 grid 計算熱力分數，並把結果存到 samples/output/ 底下（檔名：原檔名+_heatmap.json）。
     """
-    # 預設權重（和 analyze_folder 一樣）
     default_weights = {
         "focus": 0.2,
         "skip": 0.15,
         "diff": 0.15,
         "mirror": 0.2,
         "conn": 0.15,
-        "tail": 0.15
+        "tail": 0.15,
+        "constraint": 0.1,
+        "tensor": 0.1,
+        "json": 0.1
     }
-    return_predictions = False  # 只要熱力圖，不要預測值
+    return_predictions = False
 
     folder_path = "samples/data/"
     output_folder = "samples/output/"
@@ -52,21 +54,18 @@ async def startup_process_samples():
 
         filepath = os.path.join(folder_path, filename)
         try:
-            # 用跟 analyze_folder 一樣的 load_file_content 去把所有工作表都讀成 ndarray list
             grids = load_file_content(filepath)
         except Exception as e:
             logger.error(f"Startup: 讀取 {filename} 失敗：{e}")
             continue
 
         for idx, grid in enumerate(grids):
-            # 處理每一張 grid，拿到熱力分數
             try:
-                heatmap, _ = analyze_board(grid, default_weights, return_predictions)
+                heatmap, _, _ = analyze_board(grid, default_weights, return_predictions)
             except Exception as e:
                 logger.error(f"Startup: 處理 {filename} 第 {idx+1} 張 grid 失敗：{e}")
                 continue
 
-            # 把 heatmap 存成 JSON，檔名：原本檔名（不含副檔名）_sheet{idx+1}_heatmap.json
             base = os.path.splitext(filename)[0]
             if ext in [".xls", ".xlsx"]:
                 out_name = f"{base}_sheet{idx+1}_heatmap.json"
@@ -83,14 +82,15 @@ async def startup_process_samples():
 
     logger.info("Startup: Samples 資料夾熱力圖前置處理完成")
 
-
-def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool) -> dict:
+def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool, target_num: int = None, json_heatmap: str = None) -> dict:
     if grid.size == 0 or grid.shape[0] > 20 or grid.shape[1] > 20:
         return {"error": "網格為空或超過 20x20 限制"}
-    final_score, final_pred = analyze_board(grid, weights, return_predictions)
+    final_score, final_pred, best_pos = analyze_board(grid, weights, return_predictions, target_num, json_heatmap)
     result = {"heatmap": final_score.tolist()}
     if return_predictions and final_pred is not None:
         result["prediction"] = final_pred.tolist()
+    if best_pos:
+        result["best_position"] = {"coords": [best_pos[0], best_pos[1]], "confidence": best_pos[2], "reasoning": best_pos[3]}
     return result
 
 def parse_weights(weights: str) -> dict:
@@ -105,7 +105,10 @@ def parse_weights(weights: str) -> dict:
         "diff": 0.15,
         "mirror": 0.2,
         "conn": 0.15,
-        "tail": 0.15
+        "tail": 0.15,
+        "constraint": 0.1,
+        "tensor": 0.1,
+        "json": 0.1
     }
 
 def load_file_content(filepath: str) -> list:
@@ -140,7 +143,9 @@ def load_file_content(filepath: str) -> list:
 @app.post("/analyze/")
 async def analyze(file: UploadFile = File(...),
                  weights: str = Form(None),
-                 mode: str = Form("heatmap")):
+                 mode: str = Form("heatmap"),
+                 target_num: int = Form(None),
+                 json_heatmap: str = Form(None)):
     filename = file.filename.lower()
     logger.info(f"Analyzing uploaded file: {filename}")
     if not filename.endswith((".xls", ".xlsx", ".json", ".csv")):
@@ -185,7 +190,7 @@ async def analyze(file: UploadFile = File(...),
     return_predictions = (mode == "predict")
     results = []
     for idx, grid in enumerate(grids):
-        result = process_grid(grid, w_dict, return_predictions)
+        result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
         result["sheet"] = idx + 1
         results.append(result)
 
@@ -194,7 +199,9 @@ async def analyze(file: UploadFile = File(...),
 @app.post("/analyze-batch/")
 async def analyze_batch(file: UploadFile = File(...),
                        weights: str = Form(None),
-                       mode: str = Form("heatmap")):
+                       mode: str = Form("heatmap"),
+                       target_num: int = Form(None),
+                       json_heatmap: str = Form(None)):
     filename = file.filename.lower()
     logger.info(f"Analyzing batch file: {filename}")
     if not filename.endswith(".zip"):
@@ -224,7 +231,7 @@ async def analyze_batch(file: UploadFile = File(...),
                                 cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
                                 cleaned_data.append(cleaned_row)
                             grid = np.array(cleaned_data)
-                            result = process_grid(grid, w_dict, return_predictions)
+                            result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
                             result["sheet"] = sheet_name
                             file_results["sheets"].append(result)
                         results.append(file_results)
@@ -246,7 +253,7 @@ async def analyze_batch(file: UploadFile = File(...),
                                 cleaned_data.append(cleaned_row)
                             grid = np.array(cleaned_data)
                         file_results = {"filename": zip_info.filename, "sheets": []}
-                        result = process_grid(grid, w_dict, return_predictions)
+                        result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
                         result["sheet"] = "data"
                         file_results["sheets"].append(result)
                         results.append(file_results)
@@ -256,7 +263,10 @@ async def analyze_batch(file: UploadFile = File(...),
     return JSONResponse(content={"results": results})
 
 @app.post("/analyze-folder/")
-async def analyze_folder(weights: str = Form(None), mode: str = Form("heatmap")):
+async def analyze_folder(weights: str = Form(None),
+                        mode: str = Form("heatmap"),
+                        target_num: int = Form(None),
+                        json_heatmap: str = Form(None)):
     folder_path = "samples/data/"
     logger.info(f"Scanning folder: {folder_path}")
     if not os.path.exists(folder_path):
@@ -288,7 +298,7 @@ async def analyze_folder(weights: str = Form(None), mode: str = Form("heatmap"))
             file_results = {"filename": filename, "sheets": []}
             for idx, grid in enumerate(grids):
                 logger.info(f"Processing grid {idx+1} in {filename}")
-                result = process_grid(grid, w_dict, return_predictions)
+                result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
                 result["sheet"] = f"Sheet{idx+1}" if ext in [".xls", ".xlsx"] else "data"
                 file_results["sheets"].append(result)
             results.append(file_results)
