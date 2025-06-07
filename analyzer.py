@@ -16,16 +16,19 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
         logger.error("網格超過 20x20 限制")
         raise ValueError("網格超過 20x20 限制")
 
-    # 放寬驗證：僅檢查數字合法性
+    # 驗證數字合法性
     valid = (grid[grid != -1] >= 1).all()
     if not valid:
         logger.error("存在不合法格位數字")
         raise ValueError("存在不合法格位數字")
 
     # 檢查目標數字是否已開
-    if target_num is not None and target_num in grid[grid != -1]:
-        logger.error(f"目標數字 {target_num} 已出現在盤面")
-        return None, None, {"error": f"目標數字 {target_num} 已出現在盤面"}
+    if target_num is not None:
+        opened_nums = grid[grid != -1]
+        if target_num in opened_nums:
+            count = np.sum(opened_nums == target_num)
+            logger.error(f"目標數字 {target_num} 已出現在盤面 {count} 次")
+            return None, None, {"error": f"目標數字 {target_num} 已出現在盤面 {count} 次"}
 
     # 讀取JSON熱力圖
     initial_scores = None
