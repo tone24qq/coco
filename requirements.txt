@@ -6,4 +6,4 @@ fastapi
 uvicorn
 aiofiles
 python-multipart
-openpyxl
+openpyxl>=3.0.0
