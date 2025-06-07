@@ -56,7 +56,7 @@ async def startup_process_samples():
             continue
         for idx, grid in enumerate(grids):
             try:
-                heatmap, _, _ = analyze_board(grid, default_weights, return_predictions)
+                heatmap, _, _ = await asyncio.to_thread(analyze_board, grid, default_weights, return_predictions)
                 base = os.path.splitext(filename)[0]
                 if ext in [".xls", ".xlsx"]:
                     out_name = f"{base}_sheet{idx+1}_heatmap.json"
