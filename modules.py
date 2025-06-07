@@ -3,6 +3,7 @@ from scipy.signal import convolve2d
 from scipy.ndimage import distance_transform_edt
 from ortools.sat.python import cp_model
 import logging
+from datetime import datetime
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -14,14 +15,15 @@ class ScratchSolver:
         self.failure_log = []  # 記錄模組失效
 
     def compute_focus_score(self, grid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        M, N = grid.shape
+        score = np.zeros((M, N), dtype=float)
+        pred = np.full((M, N), -1, dtype=int)
         if np.all(grid == -1):
             score = np.ones_like(grid, dtype=float) / np.sum(grid == -1)
-            return score, np.full_like(grid, -1, dtype=int)
+            return score, pred
         mask = (grid != -1).astype(int)
         kernel = np.ones((3, 3), dtype=int)
         raw = convolve2d(mask, kernel, mode='same', boundary='fill', fillvalue=0)
-        score = np.zeros_like(raw, dtype=float)
-        pred = np.full_like(grid, -1, dtype=int)
         score[grid == -1] = raw[grid == -1]
         mn, mx = score.min(), score.max()
         score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
@@ -33,7 +35,7 @@ class ScratchSolver:
         pred = np.full((M, N), -1, dtype=int)
         for i in range(M):
             known_cols = np.where(grid[i] != -1)[0]
-            if len(known_cols) < 1:  # 放寬至單格
+            if len(known_cols) < 1:
                 score[i, grid[i] == -1] = 0.1
                 continue
             if len(known_cols) == 1:
@@ -174,7 +176,7 @@ class ScratchSolver:
                     s = tail_counts[t] / (min_dist + 1e-6)
                     if s > best_score:
                         best_score, best_tail = s, t
-                score[i, j] = best_score
+                score[i, j] = best_score if best_score > 0 else 0.1  # 確保非零
                 if best_tail >= 0:
                     candidates = [grid[x, y] for x, y in known_positions if int(grid[x, y] % 10) == best_tail]
                     if candidates:
@@ -193,7 +195,6 @@ class ScratchSolver:
             for j in range(N):
                 if grid[i, j] == -1:
                     vars[i, j] = model.NewIntVar(1, grid.max(), f'cell_{i}_{j}')
-        # 簡化約束：僅確保不重複
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 2.0
         status = solver.Solve(model)
@@ -230,11 +231,14 @@ class ScratchSolver:
         if len(known_nums) == 0:
             score[grid == -1] = 0.1
             return score
-        freq = np.histogram(known_nums % 10, bins=range(11))[0] / (len(known_nums) + 1e-6)
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] == -1:
-                    score[i, j] = np.mean(freq)
+        # 改進：基於未出現數字的均勻概率
+        max_num = max(np.max(known_nums), M * N)
+        missing_nums = set(range(1, max_num + 1)) - set(known_nums)
+        if missing_nums:
+            prob = 1.0 / len(missing_nums)
+            score[grid == -1] = prob
+        else:
+            score[grid == -1] = 0.1
         mn, mx = score.min(), score.max()
         score = (score - mn) / (mx - mn + 1e-10) if mx > mn else score
         return score
@@ -267,7 +271,7 @@ class ScratchSolver:
             final_score += w * score_arr
         final_score[grid != -1] = 0
         mn, mx = final_score.min(), final_score.max()
-        final_score = (score - mn) / (mx - mn + 1e-10) if mx > mn else final_score
+        final_score = (final_score - mn) / (mx - mn + 1e-10) if mx > mn else final_score
         for i in range(M):
             for j in range(N):
                 if grid[i, j] != -1:
@@ -291,7 +295,7 @@ class ScratchSolver:
     def predict_specific_number(self, grid, final_score, target_num, weights):
         M, N = grid.shape
         if target_num in grid[grid != -1]:
-            return None
+            return []
         candidates = []
         for i in range(M):
             for j in range(N):
@@ -299,17 +303,17 @@ class ScratchSolver:
                     score = final_score[i, j]
                     candidates.append((i, j, score, self._reasoning(i, j, target_num, weights)))
         if not candidates:
-            return None
-        best = max(candidates, key=lambda x: x[2])
-        return (best[0], best[1], best[2], best[3])
+            return []
+        # 返回Top3候選
+        candidates.sort(key=lambda x: x[2], reverse=True)
+        return candidates[:3]  # 返回最多三個
 
     def default_candidate(self, grid, target_num, weights):
         M, N = grid.shape
         candidates = [(i, j, 1.0 / np.sum(grid == -1), "均勻分配") 
                       for i in range(M) for j in range(N) if grid[i, j] == -1]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda x: x[2])
+        candidates.sort(key=lambda x: (x[0], x[1]))  # 按座標排序，確保一致性
+        return candidates[:3]  # 返回Top3
 
     def _reasoning(self, i, j, target_num, weights):
         reasoning = []
