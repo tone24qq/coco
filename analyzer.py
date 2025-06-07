@@ -1,129 +1,100 @@
 import numpy as np
+from modules import ScratchSolver
 import json
 import os
 import logging
-from modules import ScratchSolver  # 請確認 modules.py 裡有這個類別
 
-# 設定日誌
-logging.basicConfig(
-    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
-    level=logging.INFO
-)
+# 設置日誌
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-
-def analyze_board(
-    grid: np.ndarray,
-    weights: dict,
-    return_predictions: bool = False,
-    target_num: int = None,
-    json_heatmap_path: str = None
-):
-    """
-    grid: 二維 np.ndarray，-1 表示未揭露，0/正數表示已揭露
-    weights: 外部傳入的模組權重 dict
-    return_predictions: 是否要額外回傳 best_pos
-    target_num: 要預測的指定數字（如不傳回 None）
-    json_heatmap_path: 若有提供，用來載入初始熱力圖
-    回傳 (final_score, final_pred, best_pos 或 None)
-    """
+def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = False, target_num: int = None, json_heatmap_path: str = None):
     solver = ScratchSolver()
 
-    # ===== 1. 驗證網格合法性 =====
-    # 大小限制
+    # 驗證網格大小
     if grid.shape[0] > 20 or grid.shape[1] > 20:
+        logger.error("網格超過 20x20 限制")
         raise ValueError("網格超過 20x20 限制")
-
-    # 已揭露數字範圍檢查（忽略 -1、0）
     N = grid.size
-    opened = grid[grid > 0]
-    if opened.size > 0:
-        mn, mx = int(opened.min()), int(opened.max())
-        if mn < 1 or mx > N:
-            raise ValueError(f"數字不在 1~{N} 範圍內（min={mn}, max={mx}）")
+    opened_nums = set(grid[grid != -1])
+    if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
+        logger.error("數字不滿足 1~N 不重複規則")
+        raise ValueError("數字不滿足 1~N 不重複規則")
 
-    # ===== 2. 載入 JSON 熱力圖（可選） =====
+    # 檢查目標數字是否已開
+    if target_num is not None and target_num in opened_nums:
+        logger.error(f"目標數字 {target_num} 已出現在盤面")
+        return None, None, {"error": f"目標數字 {target_num} 已出現在盤面"}
+
+    # 讀取JSON熱力圖
     initial_scores = None
-    if json_heatmap_path:
-        if os.path.exists(json_heatmap_path):
-            try:
-                with open(json_heatmap_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                heat = data.get('heatmap')
-                initial_scores = np.array(heat) if heat is not None else None
-                if initial_scores is not None and initial_scores.shape != grid.shape:
-                    logger.warning(
-                        f"JSON 熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配，忽略初始熱力圖"
-                    )
-                    initial_scores = None
-            except Exception as e:
-                logger.warning(f"讀取 JSON 熱力圖失敗：{e}")
-        else:
-            logger.warning(f"找不到 JSON 熱力圖檔案：{json_heatmap_path}")
+    if json_heatmap_path and os.path.exists(json_heatmap_path):
+        try:
+            with open(json_heatmap_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            initial_scores = np.array(data.get('heatmap', np.zeros_like(grid, dtype=float)))
+            if initial_scores.shape != grid.shape:
+                logger.warning(f"JSON熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配")
+                initial_scores = None
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError) as e:
+            logger.error(f"無法讀取JSON熱力圖: {e}")
+            initial_scores = None
 
-    # ===== 3. 各模組計分與預測 =====
-    score_focus, pred_focus   = solver.compute_focus_score(grid)
-    score_skip, pred_skip     = solver.detect_skip_patterns(grid)
-    score_diff, pred_diff     = solver.compute_difference_trend(grid)
+    # 計算模組分數與預測
+    score_focus, pred_focus = solver.compute_focus_score(grid)
+    score_skip, pred_skip = solver.detect_skip_patterns(grid)
+    score_diff, pred_diff = solver.compute_difference_trend(grid)
     score_mirror, pred_mirror = solver.detect_mirror_sequences(grid)
-    score_conn, pred_conn     = solver.connectivity_heatmap(grid)
-    score_tail, pred_tail     = solver.sequence_tail_analyzer(grid)
-
-    # 約束解算分數 + 張量全盤分數
-    constraint_score = (
-        solver.constraint_solver(grid, target_num)
-        if target_num is not None else
-        np.zeros_like(grid, dtype=float)
-    )
+    score_conn, pred_conn = solver.connectivity_heatmap(grid)
+    score_tail, pred_tail = solver.sequence_tail_analyzer(grid)
+    score_pattern = solver.pattern_mining(grid)
+    constraint_score = solver.constraint_solver(grid, target_num) if target_num else np.zeros_like(grid, dtype=float)
     tensor_score = solver.tensor_full_score(grid)
 
-    # ===== 4. 動態權重融合 =====
-    dynamic_weights = solver.dynamic_weights(
-        grid,
-        {
-            'focus':      score_focus,
-            'skip':       score_skip,
-            'diff':       score_diff,
-            'mirror':     score_mirror,
-            'conn':       score_conn,
-            'tail':       score_tail,
-            'constraint': constraint_score,
-            'tensor':     tensor_score
-        },
-        weights,
-        initial_scores
-    )
-
-    # 收集分數與預測
-    gridscores = {
-        'focus':      score_focus,
-        'skip':       score_skip,
-        'diff':       score_diff,
-        'mirror':     score_mirror,
-        'conn':       constraint_score,
-        'tail':       score_tail,
+    # 檢查是否全零分數
+    scores = {
+        'focus': score_focus,
+        'skip': score_skip,
+        'diff': score_diff,
+        'mirror': score_mirror,
+        'conn': score_conn,
+        'tail': score_tail,
         'constraint': constraint_score,
-        'tensor':     tensor_score,
-        '_weights':   dynamic_weights
+        'tensor': tensor_score,
+        'pattern': score_pattern,
+        '_weights': weights
     }
+    if all(np.all(s[grid == -1] == 0) for s in scores.values() if s is not None):
+        logger.warning("所有模組分數為零，返回均勻分數")
+        scores = {k: np.ones_like(grid, dtype=float) / grid.size if k != '_weights' else weights for k in scores}
+
+    # 動態權重
+    dynamic_weights = solver.dynamic_weights(grid, scores, weights, initial_scores)
+
+    # 更新分數字典
+    gridscores = scores.copy()
+    gridscores['_weights'] = dynamic_weights
+    if initial_scores is not None:
+        gridscores['json'] = initial_scores
+        dynamic_weights['json'] = dynamic_weights.get('json', 0.1)
+
     gridpreds = {
-        'focus':  pred_focus,
-        'skip':   pred_skip,
-        'diff':   pred_diff,
+        'focus': pred_focus,
+        'skip': pred_skip,
+        'diff': pred_diff,
         'mirror': pred_mirror,
-        'conn':   pred_conn,
-        'tail':   pred_tail
+        'conn': pred_conn,
+        'tail': pred_tail
     }
 
-    # ===== 5. 融合最終分數 & 回傳 =====
-    final_score, final_pred = solver.fuse_scores(
-        gridscores, grid, gridpreds, target_num
-    )
+    # 融合分數
+    final_score, final_pred = solver.fuse_scores(gridscores, grid, gridpreds, target_num)
 
     if return_predictions:
-        best_pos = solver.predict_specific_number(
-            grid, final_score, target_num, dynamic_weights
-        )
+        best_pos = solver.predict_specific_number(grid, final_score, target_num, dynamic_weights)
+        if best_pos is None:
+            logger.warning(f"無法為目標數字 {target_num} 找到候選格，返回均勻候選")
+            best_pos = solver.default_candidate(grid, target_num, dynamic_weights)
         return final_score, final_pred, best_pos
     else:
         return final_score, None, None
