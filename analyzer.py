@@ -1,8 +1,10 @@
+# analyzer.py
 import numpy as np
+import logging
 from modules import ScratchSolver
+import asyncio
 import json
 import os
-import logging
 
 # 設置日誌
 logging.basicConfig(level=logging.INFO)
@@ -10,27 +12,23 @@ logger = logging.getLogger(__name__)
 
 def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = False, target_num: int = None, json_heatmap_path: str = None):
     solver = ScratchSolver()
+    solver.update_tree(grid)
 
     # 驗證網格大小
-    if grid.shape[0] > 20 or grid.shape[1] > 20:
-        logger.error("網格超過 20x20 限制")
-        raise ValueError("網格超過 20x20 限制")
+    if grid.shape[0] < 4 or grid.shape[1] < 5 or grid.shape[0] > 20 or grid.shape[1] > 20:
+        logger.error("網格尺寸超出 4x5 至 20x20 限制")
+        raise ValueError("網格尺寸超出 4x5 至 20x20 限制")
+    N = grid.size
+    opened_nums = set(grid[grid != -1])
+    if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
+        logger.error("數字不滿足 1~N 不重複規則")
+        raise ValueError("數字不滿足 1~N 不重複規則")
 
-    # 驗證數字合法性
-    valid = (grid[grid != -1] >= 1).all()
-    if not valid:
-        logger.error("存在不合法格位數字")
-        raise ValueError("存在不合法格位數字")
+    if target_num is not None and target_num in opened_nums:
+        logger.error(f"目標數字 {target_num} 已出現在盤面")
+        return None, None, {"error": f"目標數字 {target_num} 已出現在盤面"}
 
-    # 檢查目標數字是否已開
-    if target_num is not None:
-        opened_nums = grid[grid != -1]
-        if target_num in opened_nums:
-            count = np.sum(opened_nums == target_num)
-            logger.error(f"目標數字 {target_num} 已出現在盤面 {count} 次")
-            return None, None, {"error": f"目標數字 {target_num} 已出現在盤面 {count} 次"}
-
-    # 讀取JSON熱力圖
+    # 讀取 JSON 熱力圖
     initial_scores = None
     if json_heatmap_path and os.path.exists(json_heatmap_path):
         try:
@@ -38,69 +36,86 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
                 data = json.load(f)
             initial_scores = np.array(data.get('heatmap', np.zeros_like(grid, dtype=float)))
             if initial_scores.shape != grid.shape:
-                logger.warning(f"JSON熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配")
+                logger.warning(f"JSON 熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配")
                 initial_scores = None
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError) as e:
-            logger.error(f"無法讀取JSON熱力圖: {e}")
+        except Exception as e:
+            logger.error(f"無法讀取 JSON 熱力圖: {e}")
             initial_scores = None
 
-    # 計算模組分數與預測
-    score_focus, pred_focus = solver.compute_focus_score(grid)
-    score_skip, pred_skip = solver.detect_skip_patterns(grid)
-    score_diff, pred_diff = solver.compute_difference_trend(grid)
-    score_mirror, pred_mirror = solver.detect_mirror_sequences(grid)
-    score_conn, pred_conn = solver.connectivity_heatmap(grid)
-    score_tail, pred_tail = solver.sequence_tail_analyzer(grid)
-    score_pattern = solver.pattern_mining(grid)
-    constraint_score = solver.constraint_solver(grid, target_num) if target_num else np.zeros_like(grid, dtype=float)
-    tensor_score = solver.tensor_full_score(grid)
+    # 模組計算
+    mod_scores = {}
+    try:
+        mod_scores['compute_dynamic_hot_cold_vectorized'] = solver.compute_dynamic_hot_cold_vectorized(grid)
+    except Exception as e:
+        logger.error(f"compute_dynamic_hot_cold_vectorized 失敗: {e}")
+        mod_scores['compute_dynamic_hot_cold_vectorized'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
 
-    # 檢查模組分數
-    scores = {
-        'focus': score_focus,
-        'skip': score_skip,
-        'diff': score_diff,
-        'mirror': score_mirror,
-        'conn': score_conn,
-        'tail': score_tail,
-        'constraint': constraint_score,
-        'tensor': tensor_score,
-        'pattern': score_pattern,
-        '_weights': weights
-    }
-    if all(np.all(s[grid == -1] == 0) for s in scores.values() if s is not None and s is not weights):
-        logger.warning("所有模組分數為零，返回均勻分數")
-        solver.log_module_failure(grid, target_num)
-        scores = {k: np.ones_like(grid, dtype=float) / np.sum(grid == -1) if k != '_weights' else weights for k in scores}
+    try:
+        mod_scores['compute_block_heatmap_vectorized'] = solver.compute_block_heatmap_vectorized(grid)
+    except Exception as e:
+        logger.error(f"compute_block_heatmap_vectorized 失敗: {e}")
+        mod_scores['compute_block_heatmap_vectorized'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
 
-    # 動態權重
-    dynamic_weights = solver.dynamic_weights(grid, scores, weights, initial_scores)
+    try:
+        mod_scores['idw_vectorized'] = solver.idw_vectorized(grid)
+    except Exception as e:
+        logger.error(f"idw_vectorized 失敗: {e}")
+        mod_scores['idw_vectorized'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
 
-    # 更新分數字典
-    gridscores = scores.copy()
-    gridscores['_weights'] = dynamic_weights
-    if initial_scores is not None:
-        gridscores['json'] = initial_scores
-        dynamic_weights['json'] = dynamic_weights.get('json', 0.1)
+    try:
+        mod_scores['compute_global_diff_heatmap'] = solver.compute_global_diff_heatmap(grid)
+    except Exception as e:
+        logger.error(f"compute_global_diff_heatmap 失敗: {e}")
+        mod_scores['compute_global_diff_heatmap'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
 
-    gridpreds = {
-        'focus': pred_focus,
-        'skip': pred_skip,
-        'diff': pred_diff,
-        'mirror': pred_mirror,
-        'conn': pred_conn,
-        'tail': pred_tail
-    }
+    try:
+        mod_scores['compute_focus_score'] = solver.compute_focus_score(grid)[0]  # 只取分數
+    except Exception as e:
+        logger.error(f"compute_focus_score 失敗: {e}")
+        mod_scores['compute_focus_score'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
+
+    try:
+        mod_scores['detect_skip_patterns'] = solver.detect_skip_patterns(grid)[0]
+    except Exception as e:
+        logger.error(f"detect_skip_patterns 失敗: {e}")
+        mod_scores['detect_skip_patterns'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
+
+    try:
+        mod_scores['compute_difference_trend'] = solver.compute_difference_trend(grid)[0]
+    except Exception as e:
+        logger.error(f"compute_difference_trend 失敗: {e}")
+        mod_scores['compute_difference_trend'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
+
+    try:
+        mod_scores['detect_mirror_sequences'] = solver.detect_mirror_sequences(grid)[0]
+    except Exception as e:
+        logger.error(f"detect_mirror_sequences 失敗: {e}")
+        mod_scores['detect_mirror_sequences'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
+
+    try:
+        mod_scores['connectivity_heatmap'] = solver.connectivity_heatmap(grid)[0]
+    except Exception as e:
+        logger.error(f"connectivity_heatmap 失敗: {e}")
+        mod_scores['connectivity_heatmap'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
+
+    try:
+        mod_scores['sequence_tail_analyzer'] = solver.sequence_tail_analyzer(grid)[0]
+    except Exception as e:
+        logger.error(f"sequence_tail_analyzer 失敗: {e}")
+        mod_scores['sequence_tail_analyzer'] = np.zeros(np.count_nonzero(grid == -1)) / np.count_nonzero(grid == -1)
+
+    # 盤面分類
+    board_type = solver.classify_board_type(mod_scores['compute_dynamic_hot_cold_vectorized'])
 
     # 融合分數
-    final_score, final_pred = solver.fuse_scores(gridscores, grid, gridpreds, target_num)
+    final_score = solver.fuse_scores_vectorized(mod_scores, board_type, weights)
+
+    # 準備空缺位置
+    empty_yx = np.argwhere(grid == -1)
 
     if return_predictions:
-        best_pos = solver.predict_specific_number(grid, final_score, target_num, dynamic_weights)
-        if best_pos is None or len(best_pos) == 0:
-            logger.warning(f"無法為目標數字 {target_num} 找到候選格，返回Top3均勻候選")
-            solver.log_module_failure(grid, target_num)
-            best_pos = solver.default_candidate(grid, target_num, dynamic_weights)
-        return final_score, final_pred, best_pos
+        # Top-3 推論
+        top3 = solver.predict_top3_vectorized(final_score, empty_yx)
+        return final_score, None, top3
     else:
         return final_score, None, None
