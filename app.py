@@ -1,29 +1,32 @@
-from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import JSONResponse
-import numpy as np
-import json
-import pandas as pd
-from io import BytesIO
 import os
+import json
 import zipfile
 import logging
+from io import BytesIO
+
+import numpy as np
+import pandas as pd
+from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi.responses import JSONResponse
 
 from modules import ScratchSolver
 from analyzer import analyze_board
 
-# 設置日誌
-logging.basicConfig(level=logging.INFO)
+# ===== 日誌設定 =====
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
+# ===== FastAPI App & Solver =====
 app = FastAPI()
 solver = ScratchSolver()
 
+
+# ===== Startup: 批次前置處理 =====
 @app.on_event("startup")
 async def startup_process_samples():
-    """
-    服務一啟動，就走遍 samples/data/ 資料夾，把所有支援的檔案讀進來，
-    針對每個 grid 計算熱力分數，並把結果存到 samples/output/ 底下（檔名：原檔名+_heatmap.json）。
-    """
     default_weights = {
         "focus": 0.2,
         "skip": 0.15,
@@ -82,16 +85,33 @@ async def startup_process_samples():
 
     logger.info("Startup: Samples 資料夾熱力圖前置處理完成")
 
-def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool, target_num: int = None, json_heatmap: str = None) -> dict:
+
+# ===== 核心處理函式 =====
+def process_grid(
+    grid: np.ndarray,
+    weights: dict,
+    return_predictions: bool,
+    target_num: int = None,
+    json_heatmap: str = None
+) -> dict:
     if grid.size == 0 or grid.shape[0] > 20 or grid.shape[1] > 20:
         return {"error": "網格為空或超過 20x20 限制"}
-    final_score, final_pred, best_pos = analyze_board(grid, weights, return_predictions, target_num, json_heatmap)
+
+    final_score, final_pred, best_pos = analyze_board(
+        grid, weights, return_predictions, target_num, json_heatmap
+    )
+
     result = {"heatmap": final_score.tolist()}
     if return_predictions and final_pred is not None:
         result["prediction"] = final_pred.tolist()
     if best_pos:
-        result["best_position"] = {"coords": [best_pos[0], best_pos[1]], "confidence": best_pos[2], "reasoning": best_pos[3]}
+        result["best_position"] = {
+            "coords": [best_pos[0], best_pos[1]],
+            "confidence": best_pos[2],
+            "reasoning": best_pos[3]
+        }
     return result
+
 
 def parse_weights(weights: str) -> dict:
     if weights:
@@ -99,6 +119,7 @@ def parse_weights(weights: str) -> dict:
             return json.loads(weights)
         except json.JSONDecodeError:
             raise ValueError("無效的權重 JSON 格式")
+    # 預設權重
     return {
         "focus": 0.2,
         "skip": 0.15,
@@ -111,41 +132,49 @@ def parse_weights(weights: str) -> dict:
         "json": 0.1
     }
 
+
 def load_file_content(filepath: str) -> list:
     logger.info(f"Processing file: {filepath}")
     ext = os.path.splitext(filepath)[1].lower()
     grids = []
+
     if ext == ".json":
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         grids = [np.array(data)]
+
     elif ext == ".csv":
-        df = pd.read_csv(filepath, header=None, dtype=str)
-        df = df.fillna("")
-        cleaned_data = []
-        for row in df.values:
-            cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
-            cleaned_data.append(cleaned_row)
-        grids = [np.array(cleaned_data)]
-    elif ext in [".xls", ".xlsx"]:
+        df = pd.read_csv(filepath, header=None, dtype=str).fillna("")
+        cleaned = [
+            [int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row]
+            for row in df.values
+        ]
+        grids = [np.array(cleaned)]
+
+    else:  # .xls, .xlsx
         xls = pd.ExcelFile(filepath)
-        for sheet_name in xls.sheet_names:
-            logger.info(f"Processing sheet: {sheet_name}")
-            df = pd.read_excel(filepath, sheet_name=sheet_name, header=None, dtype=str)
-            df = df.fillna("")
-            cleaned_data = []
-            for row in df.values:
-                cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
-                cleaned_data.append(cleaned_row)
-            grids.append(np.array(cleaned_data))
+        for sheet in xls.sheet_names:
+            logger.info(f"Processing sheet: {sheet}")
+            df = pd.read_excel(filepath, sheet_name=sheet, header=None, dtype=str).fillna("")
+            cleaned = [
+                [int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row]
+                for row in df.values
+            ]
+            grids.append(np.array(cleaned))
+
     return grids
 
+
+# ===== HTTP 路由：原有 & 新增 =====
+
 @app.post("/analyze/")
-async def analyze(file: UploadFile = File(...),
-                 weights: str = Form(None),
-                 mode: str = Form("heatmap"),
-                 target_num: int = Form(None),
-                 json_heatmap: str = Form(None)):
+async def analyze(
+    file: UploadFile = File(...),
+    weights: str = Form(None),
+    mode: str = Form("heatmap"),
+    target_num: int = Form(None),
+    json_heatmap: str = Form(None)
+):
     filename = file.filename.lower()
     logger.info(f"Analyzing uploaded file: {filename}")
     if not filename.endswith((".xls", ".xlsx", ".json", ".csv")):
@@ -153,32 +182,34 @@ async def analyze(file: UploadFile = File(...),
 
     content = await file.read()
     grids = []
+
     if filename.endswith(".json"):
         try:
             data = json.loads(content.decode("utf-8"))
             grids = [np.array(data)]
         except json.JSONDecodeError:
             return JSONResponse(status_code=400, content={"error": "無效的 JSON 格式"})
+
     elif filename.endswith(".csv"):
-        df = pd.read_csv(BytesIO(content), header=None, dtype=str)
-        df = df.fillna("")
-        cleaned_data = []
-        for row in df.values:
-            cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
-            cleaned_data.append(cleaned_row)
-        grids = [np.array(cleaned_data)]
-    elif filename.endswith((".xls", ".xlsx")):
+        df = pd.read_csv(BytesIO(content), header=None, dtype=str).fillna("")
+        cleaned = [
+            [int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row]
+            for row in df.values
+        ]
+        grids = [np.array(cleaned)]
+
+    else:  # .xls, .xlsx
         try:
             xls = pd.ExcelFile(BytesIO(content))
+            grids = []
             for sheet_name in xls.sheet_names:
                 logger.info(f"Processing sheet: {sheet_name}")
-                df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None, dtype=str)
-                df = df.fillna("")
-                cleaned_data = []
-                for row in df.values:
-                    cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
-                    cleaned_data.append(cleaned_row)
-                grids.append(np.array(cleaned_data))
+                df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None, dtype=str).fillna("")
+                cleaned = [
+                    [int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row]
+                    for row in df.values
+                ]
+                grids.append(np.array(cleaned))
         except Exception as e:
             return JSONResponse(status_code=400, content={"error": f"Excel 讀取失敗: {str(e)}"})
 
@@ -196,12 +227,15 @@ async def analyze(file: UploadFile = File(...),
 
     return JSONResponse(content={"results": results})
 
+
 @app.post("/analyze-batch/")
-async def analyze_batch(file: UploadFile = File(...),
-                       weights: str = Form(None),
-                       mode: str = Form("heatmap"),
-                       target_num: int = Form(None),
-                       json_heatmap: str = Form(None)):
+async def analyze_batch(
+    file: UploadFile = File(...),
+    weights: str = Form(None),
+    mode: str = Form("heatmap"),
+    target_num: int = Form(None),
+    json_heatmap: str = Form(None)
+):
     filename = file.filename.lower()
     logger.info(f"Analyzing batch file: {filename}")
     if not filename.endswith(".zip"):
@@ -218,41 +252,45 @@ async def analyze_batch(file: UploadFile = File(...),
     try:
         with zipfile.ZipFile(BytesIO(content)) as z:
             for zip_info in z.infolist():
-                if zip_info.filename.endswith((".xls", ".xlsx")):
+                name = zip_info.filename
+                if name.endswith((".xls", ".xlsx")):
                     with z.open(zip_info) as f:
                         xls = pd.ExcelFile(BytesIO(f.read()))
-                        file_results = {"filename": zip_info.filename, "sheets": []}
-                        for sheet_name in xls.sheet_names:
-                            logger.info(f"Processing sheet: {sheet_name}")
-                            df = pd.read_excel(BytesIO(f.read()), sheet_name=sheet_name, header=None, dtype=str)
-                            df = df.fillna("")
-                            cleaned_data = []
-                            for row in df.values:
-                                cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
-                                cleaned_data.append(cleaned_row)
-                            grid = np.array(cleaned_data)
+                        file_results = {"filename": name, "sheets": []}
+                        for sheet in xls.sheet_names:
+                            logger.info(f"Processing sheet: {sheet}")
+                            df = pd.read_excel(BytesIO(f.read()), sheet_name=sheet, header=None, dtype=str).fillna("")
+                            cleaned = [
+                                [int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row]
+                                for row in df.values
+                            ]
+                            grid = np.array(cleaned)
                             result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
-                            result["sheet"] = sheet_name
+                            result["sheet"] = sheet
                             file_results["sheets"].append(result)
                         results.append(file_results)
-                elif zip_info.filename.endswith((".json", ".csv")):
+                elif name.endswith(".json"):
                     with z.open(zip_info) as f:
-                        if zip_info.filename.endswith(".json"):
-                            try:
-                                data = json.load(f)
-                                grid = np.array(data)
-                            except json.JSONDecodeError:
-                                results.append({"filename": zip_info.filename, "error": "無效的 JSON 格式"})
-                                continue
-                        else:
-                            df = pd.read_csv(BytesIO(f.read()), header=None, dtype=str)
-                            df = df.fillna("")
-                            cleaned_data = []
-                            for row in df.values:
-                                cleaned_row = [int(cell.replace('O', '0').replace('I', '1')) if cell.isdigit() else -1 for cell in row]
-                                cleaned_data.append(cleaned_row)
-                            grid = np.array(cleaned_data)
-                        file_results = {"filename": zip_info.filename, "sheets": []}
+                        try:
+                            data = json.load(f)
+                            grid = np.array(data)
+                        except json.JSONDecodeError:
+                            results.append({"filename": name, "error": "無效的 JSON 格式"})
+                            continue
+                        file_results = {"filename": name, "sheets": []}
+                        result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
+                        result["sheet"] = "data"
+                        file_results["sheets"].append(result)
+                        results.append(file_results)
+                elif name.endswith(".csv"):
+                    with z.open(zip_info) as f:
+                        df = pd.read_csv(BytesIO(f.read()), header=None, dtype=str).fillna("")
+                        cleaned = [
+                            [int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row]
+                            for row in df.values
+                        ]
+                        grid = np.array(cleaned)
+                        file_results = {"filename": name, "sheets": []}
                         result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
                         result["sheet"] = "data"
                         file_results["sheets"].append(result)
@@ -262,11 +300,14 @@ async def analyze_batch(file: UploadFile = File(...),
 
     return JSONResponse(content={"results": results})
 
+
 @app.post("/analyze-folder/")
-async def analyze_folder(weights: str = Form(None),
-                        mode: str = Form("heatmap"),
-                        target_num: int = Form(None),
-                        json_heatmap: str = Form(None)):
+async def analyze_folder(
+    weights: str = Form(None),
+    mode: str = Form("heatmap"),
+    target_num: int = Form(None),
+    json_heatmap: str = Form(None)
+):
     folder_path = "samples/data/"
     logger.info(f"Scanning folder: {folder_path}")
     if not os.path.exists(folder_path):
@@ -296,10 +337,10 @@ async def analyze_folder(weights: str = Form(None),
         try:
             grids = load_file_content(filepath)
             file_results = {"filename": filename, "sheets": []}
-            for idx, grid in enumerate(grids):
-                logger.info(f"Processing grid {idx+1} in {filename}")
+            for sidx, grid in enumerate(grids):
+                logger.info(f"Processing grid {sidx+1} in {filename}")
                 result = process_grid(grid, w_dict, return_predictions, target_num, json_heatmap)
-                result["sheet"] = f"Sheet{idx+1}" if ext in [".xls", ".xlsx"] else "data"
+                result["sheet"] = f"Sheet{sidx+1}" if ext in [".xls", ".xlsx"] else "data"
                 file_results["sheets"].append(result)
             results.append(file_results)
         except Exception as e:
@@ -307,3 +348,19 @@ async def analyze_folder(weights: str = Form(None),
             results.append({"filename": filename, "error": f"檔案處理失敗: {str(e)}"})
 
     return JSONResponse(content={"results": results})
+
+
+# ===== 根路由：永遠回 200 =====
+@app.get("/")
+async def root():
+    return JSONResponse(status_code=200, content={"status": "running"})
+
+
+# ===== Catch‐all 路由：攔截一切，回 200 =====
+@app.api_route(
+    "/{full_path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"]
+)
+async def catch_all(request: Request, full_path: str):
+    logger.debug(f"Catch‐all for path: {request.method} {full_path}")
+    return JSONResponse(status_code=200, content={"status": "running"})
