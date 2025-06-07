@@ -1,15 +1,11 @@
 # app.py
-import os
-import json
-import zipfile
-import logging
-import asyncio
+import os, json, logging, zipfile, numpy as np
 from io import BytesIO
-import numpy as np
-import pandas as pd
-from openpyxl import load_workbook
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
+from openpyxl import load_workbook
+import pandas as pd
+import asyncio
 from analyzer import analyze_board
 
 # 設置日誌
@@ -25,6 +21,10 @@ app = FastAPI()
 # 啟動時預處理
 @app.on_event("startup")
 async def startup_process_samples():
+    data_dir = "samples/data"
+    output_dir = "samples/output"
+    os.makedirs(output_dir, exist_ok=True)
+
     default_weights = {
         "compute_dynamic_hot_cold_vectorized": 0.2,
         "compute_block_heatmap_vectorized": 0.15,
@@ -38,38 +38,38 @@ async def startup_process_samples():
         "sequence_tail_analyzer": 0.05
     }
     return_predictions = False
-    folder_path = "samples/data/"
-    output_folder = "samples/output/"
-    os.makedirs(output_folder, exist_ok=True)
-    logger.info(f"Startup: 開始掃描資料夾 {folder_path}")
-    if not os.path.exists(folder_path):
-        logger.error(f"Startup: 資料夾 {folder_path} 不存在，跳過啟動處理")
-        return
-    for filename in os.listdir(folder_path):
-        ext = os.path.splitext(filename)[1].lower()
-        if ext not in [".json", ".csv", ".xls", ".xlsx"]:
-            logger.info(f"Startup: 跳過不支援的檔案 {filename}")
-            continue
-        filepath = os.path.join(folder_path, filename)
+
+    for fname in os.listdir(data_dir):
+        path = os.path.join(data_dir, fname)
         try:
-            grids = load_file_content(filepath)
+            # Excel 檔案
+            if fname.lower().endswith((".xlsx", ".xlsm", ".xltx", ".xltm")):
+                wb = load_workbook(path, data_only=True)
+                ws = wb.active
+                grid = [[int(cell) if cell is not None and str(cell).isdigit() else -1 for cell in row] for row in ws.iter_rows(values_only=True)]
+                grid = np.array(grid)
+            # 壓縮包內的 Excel
+            elif fname.lower().endswith(".zip"):
+                with zipfile.ZipFile(path) as zf:
+                    for zi in zf.namelist():
+                        if zi.lower().endswith((".xlsx", ".xlsm")):
+                            data = zf.read(zi)
+                            wb = load_workbook(BytesIO(data), data_only=True)
+                            ws = wb.active
+                            grid = [[int(cell) if cell is not None and str(cell).isdigit() else -1 for cell in row] for row in ws.iter_rows(values_only=True)]
+                            grid = np.array(grid)
+            else:
+                continue
+
+            # 計算熱力圖
+            heatmap_scores, _, _ = await asyncio.to_thread(analyze_board, grid, default_weights, return_predictions)
+            out_name = os.path.splitext(fname)[0] + "_heatmap.json"
+            with open(os.path.join(output_dir, out_name), "w", encoding="utf-8") as f:
+                json.dump({"heatmap": heatmap_scores.tolist()}, f, ensure_ascii=False)
+            logger.info(f"Processed {fname}")
+
         except Exception as e:
-            logger.error(f"Startup: 讀取 {filename} 失敗：{e}")
-            continue
-        for idx, grid in enumerate(grids):
-            try:
-                heatmap, _, _ = await asyncio.to_thread(analyze_board, grid, default_weights, return_predictions)
-                base = os.path.splitext(filename)[0]
-                if ext in [".xls", ".xlsx"]:
-                    out_name = f"{base}_sheet{idx+1}_heatmap.json"
-                else:
-                    out_name = f"{base}_heatmap.json"
-                out_path = os.path.join(output_folder, out_name)
-                with open(out_path, "w", encoding="utf-8") as f:
-                    json.dump({"heatmap": heatmap.tolist()}, f, ensure_ascii=False, indent=2)
-                logger.info(f"Startup: 已存 {filename} (sheet {idx+1}) 的熱力圖到 {out_path}")
-            except Exception as e:
-                logger.error(f"Startup: 處理 {filename} 第 {idx+1} 張 grid 失敗：{e}")
+            logger.error(f"讀取 {fname} 失敗：{e}")
 
 def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool, target_num: int = None, json_heatmap: str = None) -> dict:
     if grid.size == 0 or grid.shape[0] < 4 or grid.shape[1] < 5 or grid.shape[0] > 20 or grid.shape[1] > 20:
@@ -88,7 +88,7 @@ def parse_weights(weights: str) -> dict:
         try:
             return json.loads(weights)
         except json.JSONDecodeError:
-            raise ValueError("無效的權重 JSON 格式")
+            raise ValueError("無効的 JSON 格式")
     return {
         "compute_dynamic_hot_cold_vectorized": 0.2,
         "compute_block_heatmap_vectorized": 0.15,
@@ -112,7 +112,7 @@ def load_file_content(filepath: str) -> list:
     elif ext == ".csv":
         df = pd.read_csv(filepath, header=None, dtype=str, keep_default_na=False)
         cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-        grids = [np.array(cleaned)]
+        grids.append(np.array(cleaned))
     else:  # .xls, .xlsx
         wb = load_workbook(filepath, data_only=True)
         for sheet_name in wb.sheetnames:
@@ -132,7 +132,7 @@ def load_file_content(filepath: str) -> list:
 async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
     filename = file.filename.lower()
     if not filename.endswith((".xls", ".xlsx", ".json", ".csv")):
-        return JSONResponse(status_code=400, content={"error": "不支援的檔案格式"})
+        return JSONResponse(status_code=380, content={"error": "不支援的檔案格式"})
     content = await file.read()
     grids = []
     if filename.endswith(".json"):
@@ -140,11 +140,11 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
             data = json.loads(content.decode("utf-8"))
             grids = [np.array(data)]
         except json.JSONDecodeError:
-            return JSONResponse(status_code=400, content={"error": "無效的 JSON 格式"})
+            return JSONResponse(status_code=380, content={"error": "無効的 JSON 格式"})
     elif filename.endswith(".csv"):
         df = pd.read_csv(BytesIO(content), header=None, dtype=str, keep_default_na=False)
         cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-        grids = [np.array(cleaned)]
+        grids.append(np.array(cleaned))
     else:  # .xls, .xlsx
         try:
             wb = load_workbook(BytesIO(content), data_only=True)
@@ -161,11 +161,11 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
                     rows.append(cleaned_row)
                 grids.append(np.array(rows))
         except Exception as e:
-            return JSONResponse(status_code=400, content={"error": f"Excel 讀取失敗: {str(e)}"})
+            return JSONResponse(status_code=380, content={"error": f"Excel 讀取失敗: {str(e)}"})
     try:
         w_dict = parse_weights(weights)
     except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
+        return JSONResponse(status_code=380, content={"error": str(e)})
     return_predictions = (mode == "predict")
     results = []
     for idx, grid in enumerate(grids):
@@ -178,13 +178,13 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
 async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
     filename = file.filename.lower()
     if not filename.endswith(".zip"):
-        return JSONResponse(status_code=400, content={"error": "請上傳 ZIP 檔案"})
+        return JSONResponse(status_code=380, content={"error": "請上傳 ZIP 檔案"})
     content = await file.read()
     results = []
     try:
         w_dict = parse_weights(weights)
     except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
+        return JSONResponse(status_code=380, content={"error": str(e)})
     return_predictions = (mode == "predict")
     try:
         with zipfile.ZipFile(BytesIO(content)) as z:
@@ -215,7 +215,7 @@ async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None),
                             data = json.load(f)
                             grid = np.array(data)
                         except json.JSONDecodeError:
-                            results.append({"filename": name, "error": "無效的 JSON 格式"})
+                            results.append({"filename": name, "error": "無効的 JSON 格式"})
                             continue
                         file_results = {"filename": name, "sheets": []}
                         result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
@@ -233,7 +233,7 @@ async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None),
                         file_results["sheets"].append(result)
                         results.append(file_results)
     except zipfile.BadZipFile:
-        return JSONResponse(status_code=400, content={"error": "無效的 ZIP 檔案"})
+        return JSONResponse(status_code=380, content={"error": "無効的 ZIP 檔案"})
     return JSONResponse(content={"results": results})
 
 @app.post("/analyze-folder/")
@@ -244,7 +244,7 @@ async def analyze_folder(weights: str = Form(None), mode: str = Form("predict"),
     try:
         w_dict = parse_weights(weights)
     except Exception as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
+        return JSONResponse(status_code=380, content={"error": str(e)})
     return_predictions = (mode == "predict")
     results = []
     for idx, filename in enumerate(os.listdir(folder_path)):
