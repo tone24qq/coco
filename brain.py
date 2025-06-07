@@ -11,22 +11,17 @@ def load_grid_from_file(path: str) -> list[np.ndarray]:
         xls = pd.ExcelFile(path)
         grids = []
         for sheet_name in xls.sheet_names:
-            # 讀取所有欄位為純文字，禁用自動標題
             df = pd.read_excel(path, sheet_name=sheet_name, header=None, dtype=str)
-            # 將空白格轉為 ""，避免 NaN
             df = df.fillna("")
-            # 資料清洗
             cleaned_data = []
             for row in df.values:
                 cleaned_row = []
                 for cell in row:
-                    # 字元轉換：O→0，I→1
                     cell = cell.replace('O', '0').replace('I', '1')
-                    # 檢查是否為純數字字串
                     if cell.isdigit():
                         cleaned_row.append(int(cell))
                     else:
-                        cleaned_row.append(-1)  # 非數值或非法字元清空，統一用 -1 表示未開格
+                        cleaned_row.append(-1)
                 cleaned_data.append(cleaned_row)
             grid = np.array(cleaned_data)
             grids.append(grid)
@@ -52,12 +47,15 @@ def load_grid_from_file(path: str) -> list[np.ndarray]:
     else:
         raise ValueError(f"不支援的檔案格式: {ext}")
 
-def save_results_to_file(score: np.ndarray, pred: np.ndarray, out_prefix: str, out_format: str = 'json'):
+def save_results_to_file(score: np.ndarray, pred: np.ndarray, best_pos: tuple, out_prefix: str, out_format: str = 'json'):
     M, N = score.shape
+    result = {
+        'heatmap': score.tolist(),
+        'best_position': best_pos if best_pos else None
+    }
+    if pred is not None:
+        result['prediction'] = pred.tolist()
     if out_format == 'json':
-        result = {'heatmap': score.tolist()}
-        if pred is not None:
-            result['prediction'] = pred.tolist()
         with open(out_prefix + '.json', 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
     elif out_format in ['xls', 'xlsx']:
@@ -77,26 +75,23 @@ def print_aligned_grid(grid: np.ndarray):
         print("空盤面")
         return
     M, N = grid.shape
-    # 找到最大數字寬度
     max_width = max(len(str(abs(x))) for x in grid.flatten()) + 2
-    # 列標記 (1-based)
     col_labels = " " * max_width + " ".join(f"{j+1:>{max_width}}" for j in range(N))
     print(col_labels)
-    # 數據與行標記
     for i in range(M):
         row_str = f"{i+1:>{max_width}}" + " ".join(f"{x:>{max_width}}" for x in grid[i])
         print(row_str)
 
-def process_single_board(filepath: str, weights: dict, return_predictions: bool, output_prefix: str):
+def process_single_board(filepath: str, weights: dict, return_predictions: bool, output_prefix: str, target_num: int = None, json_heatmap: str = None):
     grids = load_grid_from_file(filepath)
     for idx, grid in enumerate(grids):
         sheet_output_prefix = f"{output_prefix}_sheet{idx+1}"
-        score, pred = analyze_board(grid, weights, return_predictions)
+        score, pred, best_pos = analyze_board(grid, weights, return_predictions, target_num, json_heatmap)
         out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
         if out_format not in ['json', 'csv', 'xls', 'xlsx']:
             sheet_output_prefix += '.json'
             out_format = 'json'
-        save_results_to_file(score, pred, sheet_output_prefix, out_format)
+        save_results_to_file(score, pred, best_pos, sheet_output_prefix, out_format)
         print(f"處理工作表 {idx+1} 完成，輸出到: {sheet_output_prefix}")
         print(f"原始盤面 (Sheet {idx+1}):")
         print_aligned_grid(grid)
@@ -105,8 +100,10 @@ def process_single_board(filepath: str, weights: dict, return_predictions: bool,
         if pred is not None:
             print(f"預測值 (Sheet {idx+1}):")
             print_aligned_grid(pred)
+        if best_pos:
+            print(f"指定數字 {target_num} 最可能位置: {best_pos}")
 
-def process_batch(folder: str, weights: dict, return_predictions: bool, output_dir: str):
+def process_batch(folder: str, weights: dict, return_predictions: bool, output_dir: str, target_num: int = None, json_heatmap: str = None):
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, exist_ok=True)
     for fname in os.listdir(folder):
@@ -116,4 +113,4 @@ def process_batch(folder: str, weights: dict, return_predictions: bool, output_d
             base = os.path.splitext(fname)[0]
             output_prefix = os.path.join(output_dir, base + '_result')
             print(f"處理檔案: {fullpath} → 輸出: {output_prefix}")
-            process_single_board(fullpath, weights, return_predictions, output_prefix)
+            process_single_board(fullpath, weights, return_predictions, output_prefix, target_num, json_heatmap)
