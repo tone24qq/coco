@@ -1,9 +1,7 @@
-numpy
-scipy
-pandas
-openpyxl
-fastapi
-uvicorn
-aiofiles
-python-multipart
+numpy>=1.20.0
+scipy>=1.7.0
+pandas>=1.3.0
 openpyxl>=3.0.0
+fastapi>=0.68.0
+uvicorn>=0.15.0
+aiofiles>=0.7.0
