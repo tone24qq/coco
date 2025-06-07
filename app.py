@@ -3,6 +3,7 @@ import os
 import json
 import zipfile
 import logging
+import asyncio
 from io import BytesIO
 import numpy as np
 import pandas as pd
@@ -108,15 +109,22 @@ def load_file_content(filepath: str) -> list:
             data = json.load(f)
         grids = [np.array(data)]
     elif ext == ".csv":
-        df = pd.read_csv(filepath, header=None, dtype=str).fillna("")
+        df = pd.read_csv(filepath, header=None, dtype=str, keep_default_na=False)
         cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
         grids = [np.array(cleaned)]
     else:  # .xls, .xlsx
-        xls = pd.ExcelFile(filepath)
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(filepath, sheet_name=sheet, header=None, dtype=str).fillna("")
-            cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-            grids.append(np.array(cleaned))
+        wb = load_workbook(filepath, data_only=True)
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows = []
+            for row in ws.iter_rows():
+                cleaned_row = []
+                for cell in row:
+                    val = str(cell.value) if cell.value is not None else ""
+                    val = val.replace('O', '0').replace('I', '1')
+                    cleaned_row.append(int(val) if val.isdigit() else -1)
+                rows.append(cleaned_row)
+            grids.append(np.array(rows))
     return grids
 
 @app.post("/analyze/")
@@ -133,17 +141,24 @@ async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode:
         except json.JSONDecodeError:
             return JSONResponse(status_code=400, content={"error": "無效的 JSON 格式"})
     elif filename.endswith(".csv"):
-        df = pd.read_csv(BytesIO(content), header=None, dtype=str).fillna("")
+        df = pd.read_csv(BytesIO(content), header=None, dtype=str, keep_default_na=False)
         cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
         grids = [np.array(cleaned)]
     else:  # .xls, .xlsx
         try:
-            xls = pd.ExcelFile(BytesIO(content))
+            wb = load_workbook(BytesIO(content), data_only=True)
             grids = []
-            for sheet_name in xls.sheet_names:
-                df = pd.read_excel(BytesIO(content), sheet_name=sheet_name, header=None, dtype=str).fillna("")
-                cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-                grids.append(np.array(cleaned))
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                rows = []
+                for row in ws.iter_rows():
+                    cleaned_row = []
+                    for cell in row:
+                        val = str(cell.value) if cell.value is not None else ""
+                        val = val.replace('O', '0').replace('I', '1')
+                        cleaned_row.append(int(val) if val.isdigit() else -1)
+                    rows.append(cleaned_row)
+                grids.append(np.array(rows))
         except Exception as e:
             return JSONResponse(status_code=400, content={"error": f"Excel 讀取失敗: {str(e)}"})
     try:
@@ -176,12 +191,19 @@ async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None),
                 name = zip_info.filename
                 if name.endswith((".xls", ".xlsx")):
                     with z.open(zip_info) as f:
-                        xls = pd.ExcelFile(BytesIO(f.read()))
+                        wb = load_workbook(BytesIO(f.read()), data_only=True)
                         file_results = {"filename": name, "sheets": []}
-                        for sheet in xls.sheet_names:
-                            df = pd.read_excel(BytesIO(f.read()), sheet_name=sheet, header=None, dtype=str).fillna("")
-                            cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-                            grid = np.array(cleaned)
+                        for sheet in wb.sheetnames:
+                            ws = wb[sheet]
+                            rows = []
+                            for row in ws.iter_rows():
+                                cleaned_row = []
+                                for cell in row:
+                                    val = str(cell.value) if cell.value is not None else ""
+                                    val = val.replace('O', '0').replace('I', '1')
+                                    cleaned_row.append(int(val) if val.isdigit() else -1)
+                                rows.append(cleaned_row)
+                            grid = np.array(rows)
                             result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
                             result["sheet"] = sheet
                             file_results["sheets"].append(result)
@@ -201,7 +223,7 @@ async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None),
                         results.append(file_results)
                 elif name.endswith(".csv"):
                     with z.open(zip_info) as f:
-                        df = pd.read_csv(BytesIO(f.read()), header=None, dtype=str).fillna("")
+                        df = pd.read_csv(BytesIO(f.read()), header=None, dtype=str, keep_default_na=False)
                         cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
                         grid = np.array(cleaned)
                         file_results = {"filename": name, "sheets": []}
