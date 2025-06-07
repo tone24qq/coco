@@ -1,10 +1,10 @@
 # modules.py
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import convolve2d
 from scipy.spatial import cKDTree
 import asyncio
 import logging
-from numpy.lib.stride_tricks import sliding_window_view
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,39 +71,50 @@ class ScratchSolver:
                          np.where(est_full <= cold_thr, -np.clip(diff_cold / (hot_thr - cold_thr), 0, 2), 0))
         return scores[grid == -1]
 
-    def compute_block_heatmap_vectorized(self, grid, block_size=3):
+    def compute_block_heatmap_vectorized(self, grid, block_size=2):
         """
-        Vectorized block heatmap: each block mean - global mean.
-        Output same shape as input.
+        向量化區塊熱力圖：每個 block 平均 - 全域平均，輸出對應每個空格的分數。
         """
-        arr = np.array(grid, dtype=float)
-        windows = sliding_window_view(arr, (block_size, block_size))
-        local_means = windows.mean(axis=(2,3))
-        global_mean = arr.mean()
-        heat = local_means - global_mean
-        pad_h, pad_w = block_size - 1, block_size - 1
-        heat_padded = np.pad(
-            heat,
-            ((pad_h//2, pad_h - pad_h//2), (pad_w//2, pad_w - pad_w//2)),
-            mode='constant', constant_values=0
-        )
-        mn, mx = heat_padded.min(), heat_padded.max()
-        return (heat_padded - mn) / (mx - mn + 1e-8)
+        h, w = grid.shape
+        bs = min(block_size, h, w)
+        # pad 至最小可做 sliding_window 的尺寸
+        padded = np.pad(grid,
+                        ((0, max(0, bs - h)), (0, max(0, bs - w))),
+                        mode='edge')
+        # sliding_window_view 現在已 import
+        blocks = sliding_window_view(padded, (bs, bs))
+        # 把 -1 視為 nan，不參與平均
+        block_means = np.nanmean(np.where(blocks == -1, np.nan, blocks), axis=(2, 3))
+        global_mean = np.nanmean(grid[grid != -1])
+        empty = np.argwhere(grid == -1)
+        # 把每個空格對應到 block_means 裡的位置
+        by = empty[:, 0].clip(0, h - bs)
+        bx = empty[:, 1].clip(0, w - bs)
+        scores = block_means[by, bx] - global_mean
+        # 空格若因全 nan 生成 nan，轉為 0
+        return np.nan_to_num(scores, nan=0.0)
 
     def compute_global_diff_heatmap(self, grid):
         """
-        Second-order difference using Laplacian convolution.
-        Output same shape as input.
+        使用 Laplacian 卷積計算二階差分，直接輸出與輸入同尺寸，
+        並將結果標準化後回傳每個空格對應的分數。
         """
-        arr = np.array(grid, dtype=float)
-        kernel = np.array([
-            [0,  1, 0],
-            [1, -4, 1],
-            [0,  1, 0]
-        ], dtype=float)
-        diff2 = convolve2d(arr, kernel, mode='same', boundary='symm')
-        mn, mx = diff2.min(), diff2.max()
-        return (diff2 - mn) / (mx - mn + 1e-8)
+        # 把 -1 當 0 處理
+        arr = np.where(grid == -1, 0, grid).astype(float)
+        # Laplacian kernel
+        kernel = np.array([[0, 1, 0],
+                           [1, -4, 1],
+                           [0, 1, 0]], dtype=float)
+        # mode='same' 保持原 shape，boundary='symm' 用鏡像填充
+        lap = convolve2d(arr, kernel, mode='same', boundary='symm')
+        # 標準化到 [0,1]
+        mn, mx = lap.min(), lap.max()
+        norm = (lap - mn) / (mx - mn + 1e-8) if mx > mn else lap
+        # 空格位置分數
+        scores = norm[grid == -1]
+        # 不需要預測值，統一回 -1
+        pred = np.full(scores.shape, -1, dtype=int)
+        return scores, pred
 
     def compute_focus_score(self, grid):
         mask = (grid != -1).astype(int)
@@ -257,7 +268,8 @@ class ScratchSolver:
         names = list(mod_scores.keys())
         score_mat = np.stack([mod_scores[n] for n in names], axis=1)
         weight_arr = np.array([w.get(n, 0.1) for n in names])
-        heat_factor = np.abs(mod_scores.get('compute_dynamic_hot_cold_vectorized', 0).sum()) / (np.count_nonzero(grid == -1) + 1e-8)
+        # 修正：移除 grid 依賴
+        heat_factor = np.abs(mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros(score_mat.shape[0])).sum()) / (score_mat.shape[0] + 1e-8)
         final = (score_mat.dot(weight_arr) / (weight_arr.sum() + 1e-8)) * (1 + heat_factor * 0.5)
         return final
 
@@ -277,5 +289,5 @@ class ScratchSolver:
         idxs = np.argsort(-final_scores)[:3]
         unique_idx = np.unique(idxs, return_index=True)[1]
         top3_idx = idxs[np.sort(unique_idx)[:3]]
-        contributions = {name: score for name, score in zip(self.MODULE_REGISTRY.keys(), final_scores)}
+        contributions = {name: float(final_scores[i]) for i, name in enumerate(self.MODULE_REGISTRY.keys()) if i in top3_idx}
         return [(int(empty_positions[i][0]), int(empty_positions[i][1]), float(final_scores[i]), contributions) for i in top3_idx]
