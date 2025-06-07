@@ -7,6 +7,7 @@ import asyncio
 from io import BytesIO
 import numpy as np
 import pandas as pd
+from openpyxl import load_workbook
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse
 from analyzer import analyze_board
