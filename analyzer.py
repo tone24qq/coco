@@ -76,6 +76,14 @@ if opened.size > 0:
     # 融合分數
     final_score, final_pred = solver.fuse_scores(gridscores, grid, gridpreds, target_num)
 
+    # analyzer.py
+
+def analyze_board(grid, weights, return_predictions=False, target_num=None, dynamic_weights=None):
+    # ……一堆分析邏輯……
+
+    # 融合分數
+    final_score, final_pred = solver.fuse_scores(gridscores, grid, gridpreds, target_num)
+
     if return_predictions:
         # 推測指定數字位置
         best_pos = solver.predict_specific_number(grid, final_score, target_num, dynamic_weights)
