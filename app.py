@@ -39,8 +39,29 @@ DEFAULT_WEIGHTS = {
     "detect_mirror_sequences": 0.05,
     "connectivity_heatmap": 0.05,
     "sequence_tail_analyzer": 0.05,
-    "analyze_number_patterns": 0.05
+    "analyze_number_patterns": 0.05,
+    "detect_diagonal_pattern": 0.05,
+    "compute_spatial_correlation": 0.05,
+    "interference_penalty": 0.05
 }
+
+# 全域熱力圖快取
+HEATMAP_CACHE: Dict[str, np.ndarray] = {}
+
+@app.on_event("startup")
+def load_heatmap_cache():
+    json_dir = "samples/data/json"
+    if os.path.isdir(json_dir):
+        for fname in os.listdir(json_dir):
+            if fname.lower().endswith(".json"):
+                path = os.path.join(json_dir, fname)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    HEATMAP_CACHE[fname] = np.array(data.get('heatmap', np.zeros((20, 20), dtype=float)))
+                    logger.info(f"Loaded heatmap: {fname}")
+                except Exception as e:
+                    logger.error(f"Failed loading {fname}: {e}")
 
 @app.get("/health", response_model=HealthCheck)
 async def health_check():
@@ -70,10 +91,7 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
         result = {
             "scores": scores.tolist(),
             "predictions": predictions.tolist(),
-            "top3_positions": [{
-                "row": pos[0], "col": pos[1], "confidence": max(float(pos[2]), 0.1),
-                "contributions": pos[3]
-            } for pos in top3],
+            "top3_positions": top3,
             "metrics": metrics
         }
         
@@ -86,13 +104,13 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
         logger.error(f"HTTP 錯誤: {e.detail}")
         return JSONResponse(
             status_code=e.status_code,
-            content={"error": e.detail, "top3_positions": [{"row": 0, "col": 0, "confidence": 0.1, "contributions": {}}]}
+            content={"error": e.detail, "top3_positions": [{"row": 0, "col": 0, "confidence": 0.1, "weights": {}}]}
         )
     except Exception as e:
         logger.error(f"分析盤面失敗: {e}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"伺服器錯誤: {str(e)}", "top3_positions": [{"row": 0, "col": 0, "confidence": 0.1, "contributions": {}}]}
+            content={"error": f"伺服器錯誤: {str(e)}", "top3_positions": [{"row": 0, "col": 0, "confidence": 0.1, "weights": {}}]}
         )
 
 @app.post("/upload/", status_code=status.HTTP_200_OK)
@@ -162,6 +180,3 @@ def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: 
 async def catch_all(request: Request, full_path: str):
     logger.debug(f"Catch-all for path: {request.method} {full_path}")
     return JSONResponse(status_code=200, content={"status": "running"})
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
