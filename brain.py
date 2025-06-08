@@ -1,146 +1,190 @@
-import os
-import json
+# brain.py
 import numpy as np
 import pandas as pd
+import json
+import os
 import logging
+import asyncio
+import requests
+from typing import List, Tuple, Dict, Any
+from analyzer import analyze_board
+from fastapi import HTTPException, status
 
-# 設置日誌
+# 日誌設置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_grid_from_file(path: str) -> list[np.ndarray]:
-    """讀取 Excel、JSON 或 CSV 檔案，返回所有工作表的 np.ndarray 列表，符合預處理條例。
+def load_grid_from_file(filepath: str) -> List[np.ndarray]:
+    """從檔案載入盤面，支援 JSON、CSV、Excel"""
+    grids = []
+    ext = os.path.splitext(filepath)[1].lower()
     
-    Args:
-        path (str): 輸入檔案路徑，支持 .xls, .xlsx, .json, .csv 格式。
-    
-    Returns:
-        list[np.ndarray]: 包含所有工作表的數值陣列列表。
-    
-    Raises:
-        ValueError: 如果檔案格式不支援或內容無效。
-        FileNotFoundError: 如果檔案不存在。
-    """
-    if not os.path.exists(path):
-        logger.error(f"檔案不存在: {path}")
-        raise FileNotFoundError(f"檔案不存在: {path}")
-
-    ext = os.path.splitext(path)[1].lower()
-    if ext in ['.xls', '.xlsx']:
-        try:
-            xls = pd.ExcelFile(path, engine='openpyxl')
-            grids = []
-            for sheet_name in xls.sheet_names:
-                try:
-                    df = pd.read_excel(path, sheet_name=sheet_name, header=None, engine='openpyxl', dtype=str)
-                    # 填補空值並清理資料
-                    df = df.fillna("")
-                    cleaned_data = []
-                    for row in df.values:
-                        cleaned_row = []
-                        for cell in row:
-                            if pd.isna(cell) or cell.strip() == "":
-                                cleaned_row.append(-1)
-                            else:
-                                cell = cell.replace('O', '0').replace('I', '1')
-                                if cell.isdigit():
-                                    cleaned_row.append(int(cell))
-                                else:
-                                    cleaned_row.append(-1)  # 非數字轉為 -1
-                        cleaned_data.append(cleaned_row)
-                    grid = np.array(cleaned_data)
-                    # 檢查形狀是否合理
-                    if grid.size == 0 or grid.shape[0] > 20 or grid.shape[1] > 20:
-                        logger.warning(f"Sheet {sheet_name} 形狀異常: {grid.shape}, 跳過")
+    try:
+        if ext == '.json':
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                for grid_data in data:
+                    grid = np.array(grid_data, dtype=float)
+                    if grid.ndim != 2:
+                        logger.warning(f"JSON 檔案 {filepath} 包含無效盤面，略過")
                         continue
                     grids.append(grid)
-                except ValueError as e:
-                    logger.error(f"Sheet {sheet_name} 解析失敗: {e}")
-                    continue
-            if not grids:
-                logger.warning(f"檔案 {path} 無有效工作表")
-                return [np.zeros((1, 1), dtype=int) - 1]  # 回傳預設空陣列
-            return grids
-        except Exception as e:
-            logger.error(f"讀取 Excel 檔案 {path} 失敗: {e}")
-            raise
-    elif ext == '.json':
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            return [np.array(data)]
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON 解析失敗: {path}, 錯誤: {e}")
-            raise
-    elif ext == '.csv':
-        try:
-            df = pd.read_csv(path, header=None, dtype=str)
-            df = df.fillna("")
-            cleaned_data = []
-            for row in df.values:
-                cleaned_row = []
-                for cell in row:
-                    cell = cell.replace('O', '0').replace('I', '1')
-                    if cell.isdigit():
-                        cleaned_row.append(int(cell))
-                    else:
-                        cleaned_row.append(-1)
-                cleaned_data.append(cleaned_row)
-            return [np.array(cleaned_data)]
-        except Exception as e:
-            logger.error(f"讀取 CSV 檔案 {path} 失敗: {e}")
-            raise
-    else:
-        raise ValueError(f"不支援的檔案格式: {ext}")
+            else:
+                grid = np.array(data, dtype=float)
+                if grid.ndim == 2:
+                    grids.append(grid)
+        
+        elif ext in ['.csv', '.xls', '.xlsx']:
+            if ext == '.csv':
+                df = pd.read_csv(filepath, header=None)
+                grid = df.to_numpy(dtype=float)
+                grids.append(grid)
+            else:
+                xl = pd.ExcelFile(filepath)
+                for sheet_name in xl.sheet_names:
+                    df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
+                    grid = df.to_numpy(dtype=float)
+                    grids.append(grid)
+        
+        # 清洗數據，確保 -1.0 表示未開格
+        cleaned_grids = []
+        for grid in grids:
+            grid = np.where(np.isnan(grid) | (grid < 0), -1.0, grid)
+            if grid.shape[0] <= 20 and grid.shape[1] <= 20:  # 限制 20x20
+                cleaned_grids.append(grid)
+            else:
+                logger.warning(f"盤面尺寸 {grid.shape} 超出 20x20，略過")
+        
+        if not cleaned_grids:
+            logger.error(f"檔案 {filepath} 未包含有效盤面")
+            raise ValueError("無有效盤面數據")
+        
+        return cleaned_grids
+    
+    except Exception as e:
+        logger.error(f"載入檔案 {filepath} 失敗: {e}")
+        raise HTTPException(status_code=400, detail=f"無法載入盤面: {str(e)}")
 
-def save_results_to_file(score: np.ndarray, pred: np.ndarray, best_pos: tuple, out_prefix: str, out_format: str = 'json'):
-    """將結果保存到檔案。"""
-    M, N = score.shape
+def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Tuple], output_filepath: str, output_format: str):
+    """保存分析結果，支援 JSON、CSV、Excel"""
+    empty_yx = np.argwhere(predictions == -1)
     result = {
-        'heatmap': score.tolist(),
-        'best_position': best_pos if best_pos else None
+        'scores': scores.tolist(),
+        'predictions': predictions.tolist(),
+        'top3_positions': [{
+            'row': int(pos[0]),
+            'col': int(pos[1]),
+            'confidence': max(float(pos[2]), 0.1),  # 最低信心分數
+            'contributions': pos[3]
+        } for pos in best_pos],
+        'empty_positions': empty_yx.tolist()
     }
-    if pred is not None:
-        result['prediction'] = pred.tolist()
-    if out_format == 'json':
-        with open(out_prefix + '.json', 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-    elif out_format in ['xls', 'xlsx']:
-        writer = pd.ExcelWriter(f"{out_prefix}.xlsx", engine='openpyxl')
-        df_score = pd.DataFrame(score)
-        df_score.to_excel(writer, sheet_name='heatmap', index=False, header=False)
-        if pred is not None:
-            df_pred = pd.DataFrame(pred)
-            df_pred.to_excel(writer, sheet_name='prediction', index=False, header=False)
-        writer.close()
-    else:
-        raise ValueError(f"不支援的輸出格式: {out_format}")
+    
+    try:
+        if output_format == 'json':
+            with open(output_filepath, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        
+        elif output_format == 'csv':
+            df = pd.DataFrame({
+                'row': empty_yx[:, 0],
+                'col': empty_yx[:, 1],
+                'score': scores,
+                'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
+            })
+            df.to_csv(output_filepath, index=False)
+        
+        elif output_format in ['xls', 'xlsx']:
+            df = pd.DataFrame({
+                'row': empty_yx[:, 0],
+                'col': empty_yx[:, 1],
+                'score': scores,
+                'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
+            })
+            df.to_excel(output_filepath, index=False)
+        
+        logger.info(f"結果已保存至 {output_filepath}")
+    
+    except Exception as e:
+        logger.error(f"保存結果至 {output_filepath} 失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"無法保存結果: {str(e)}")
 
-def print_aligned_grid(grid: np.ndarray):
-    """以固定寬度對齊補齊輸出，行列索引從 1 開始。"""
-    if grid.size == 0:
-        print("空盤面")
-        return
-    M, N = grid.shape
-    max_width = max(len(str(abs(x))) for x in grid.flatten()) + 2
-    col_labels = " " * max_width + " ".join(f"{j+1:>{max_width}}" for j in range(N))
-    print(col_labels)
-    for i in range(M):
-        row_str = f"{i+1:>{max_width}}" + " ".join(f"{x:>{max_width}}" for x in grid[i])
-        print(row_str)
+async def process_single_board(filepath: str, weights: dict, return_predictions: bool, output_prefix: str, target_num: int = None, json_heatmap: str = None):
+    """處理單一盤面，支援手機操作與 GitHub 部署"""
+    try:
+        grids = load_grid_from_file(filepath)
+        for idx, grid in enumerate(grids):
+            sheet_output_prefix = f"{output_prefix}_sheet{idx+1}"
+            # 動態生成熱力圖路徑
+            base_name = os.path.splitext(os.path.basename(filepath))[0]
+            sheet_heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json")
+            
+            # 分析盤面
+            scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, target_num, sheet_heatmap_path)
+            
+            # 保存結果
+            out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
+            if out_format not in ['json', 'csv', 'xls', 'xlsx']:
+                sheet_output_prefix += '.json'
+                out_format = 'json'
+            save_results_to_file(scores, predictions, top3, sheet_output_prefix, out_format)
+            
+            # 保存評估指標
+            metrics_filepath = f"{sheet_output_prefix}_metrics.json"
+            with open(metrics_filepath, 'w', encoding='utf-8') as f:
+                json.dump(metrics, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"Sheet {idx+1} 處理完成，結果保存至 {sheet_output_prefix}")
+            
+            # 背景回應 200
+            try:
+                response = requests.get("http://localhost:8000/health", timeout=5)
+                if response.status_code != 200:
+                    logger.warning(f"健康檢查回應非 200: {response.status_code}")
+            except requests.RequestException as e:
+                logger.error(f"健康檢查失敗: {e}")
+            
+            # 模擬手機操作的非同步回應
+            await asyncio.sleep(0.1)  # 模擬非同步處理
+            
+    except HTTPException as e:
+        logger.error(f"HTTP 錯誤: {e.detail}")
+        raise e
+    except Exception as e:
+        logger.error(f"處理檔案 {filepath} 失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
 
-def process_single_board(grid, weights, return_predictions, output_prefix, target_num=None, json_heatmap=None):
-    """處理單一盤面並輸出結果。"""
-    from analyzer import analyze_board
-    score, pred, best_pos = analyze_board(grid, weights, return_predictions, target_num, json_heatmap)
-    out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
-    save_results_to_file(score, pred, best_pos, output_prefix, out_format)
-    print(f"原始盤面:")
-    print_aligned_grid(grid)
-    print(f"熱力圖:")
-    print_aligned_grid(score)
-    if pred is not None:
-        print(f"預測值:")
-        print_aligned_grid(pred)
-    if best_pos:
-        print(f"指定數字 {target_num} 最可能位置: {best_pos}")
+async def process_batch(input_folder: str, weights: dict, return_predictions: bool, output_folder: str, target_num: int = None, json_heatmap: str = None):
+    """批次處理盤面檔案，防止 404/405 錯誤"""
+    if not os.path.exists(input_folder):
+        logger.error(f"輸入資料夾 {input_folder} 不存在")
+        raise HTTPException(status_code=404, detail=f"資料夾 {input_folder} 不存在")
+    
+    os.makedirs(output_folder, exist_ok=True)
+    
+    tasks = []
+    for filename in os.listdir(input_folder):
+        if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
+            input_filepath = os.path.join(input_folder, filename)
+            output_prefix = os.path.join(output_folder, os.path.splitext(filename)[0])
+            try:
+                tasks.append(process_single_board(input_filepath, weights, return_predictions, output_prefix, target_num, json_heatmap))
+            except Exception as e:
+                logger.error(f"安排任務 {input_filepath} 失敗: {e}")
+                continue
+    
+    if not tasks:
+        logger.error(f"資料夾 {input_folder} 未找到有效檔案")
+        raise HTTPException(status_code=404, detail="未找到有效盤面檔案")
+    
+    # 非同步執行，確保背景回應 200
+    try:
+        await asyncio.gather(*tasks, return_exceptions=True)
+        response = requests.get("http://localhost:8000/health", timeout=5)
+        if response.status_code != 200:
+            logger.warning(f"健康檢查回應非 200: {response.status_code}")
+    except requests.RequestException as e:
+        logger.error(f"健康檢查失敗: {e}")
+    
+    logger.info(f"批次處理完成，結果保存至 {output_folder}")
