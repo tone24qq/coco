@@ -1,4 +1,4 @@
-# app.py
+# app.py（修復後）
 from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -13,7 +13,6 @@ from brain import process_single_board, process_batch
 from analyzer import analyze_board
 from pydantic import BaseModel
 
-# 日誌設置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,6 @@ class AnalysisRequest(BaseModel):
 class HealthCheck(BaseModel):
     status: str = "ok"
 
-# 預設權重，包含新模組
 DEFAULT_WEIGHTS = {
     "compute_dynamic_hot_cold_vectorized": 0.15,
     "compute_dynamic_hot_cold_advanced": 0.2,
@@ -47,12 +45,10 @@ DEFAULT_WEIGHTS = {
 
 @app.get("/health", response_model=HealthCheck)
 async def health_check():
-    """健康檢查，確保背景回應 200"""
     return {"status": "ok"}
 
 @app.post("/analyze/", status_code=status.HTTP_200_OK)
 async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTasks):
-    """分析單一盤面，支援手機上傳"""
     try:
         if request.grid is None:
             raise HTTPException(status_code=400, detail="未提供盤面數據")
@@ -64,7 +60,6 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
         weights = request.weights if request.weights else DEFAULT_WEIGHTS
         return_predictions = (request.mode == "predict")
         
-        # 動態熱力圖路徑
         json_heatmap_path = os.path.join(request.json_heatmap, "temp_grid.json")
         os.makedirs(request.json_heatmap, exist_ok=True)
         
@@ -84,7 +79,6 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
             "metrics": metrics
         }
         
-        # 背景保存結果
         output_path = "samples/output/api_result.json"
         background_tasks.add_task(
             save_results_to_file, scores, predictions, top3, output_path, "json"
@@ -99,8 +93,7 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
         raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
 
 @app.post("/upload/", status_code=status.HTTP_200_OK)
-async def upload_file(file: UploadFile = File(...), background_tasks: BackgroundTasks):
-    """上傳盤面檔案，支援手機操作"""
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     try:
         if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
             raise HTTPException(status_code=400, detail="不支援的檔案格式")
@@ -117,7 +110,6 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
         return_predictions = True
         json_heatmap = "samples/data/heatmaps"
         
-        # 背景處理
         background_tasks.add_task(
             process_single_board, input_path, weights, return_predictions, output_prefix, None, json_heatmap
         )
@@ -135,7 +127,6 @@ async def upload_file(file: UploadFile = File(...), background_tasks: Background
 
 @app.post("/batch/", status_code=status.HTTP_200_OK)
 async def batch_process(input_folder: str, background_tasks: BackgroundTasks):
-    """批次處理盤面檔案，防止 404/405"""
     try:
         if not os.path.exists(input_folder):
             raise HTTPException(status_code=404, detail=f"資料夾 {input_folder} 不存在")
@@ -145,7 +136,6 @@ async def batch_process(input_folder: str, background_tasks: BackgroundTasks):
         return_predictions = True
         json_heatmap = "samples/data/heatmaps"
         
-        # 背景處理
         background_tasks.add_task(
             process_batch, input_folder, weights, return_predictions, output_folder, None, json_heatmap
         )
@@ -162,10 +152,13 @@ async def batch_process(input_folder: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
 
 def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Tuple], output_filepath: str, output_format: str):
-    """保存 API 結果，複用 brain.py 的功能"""
     from brain import save_results_to_file as brain_save
     brain_save(scores, predictions, best_pos, output_filepath, output_format)
 
+@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def catch_all(request: Request, full_path: str):
+    logger.debug(f"Catch-all for path: {request.method} {full_path}")
+    return JSONResponse(status_code=200, content={"status": "running"})
+
 if __name__ == "__main__":
-    # 啟動服務器，支援手機訪問
     uvicorn.run(app, host="0.0.0.0", port=8000)
