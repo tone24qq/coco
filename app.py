@@ -1,5 +1,4 @@
-# app.py（修復後）
-from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 import numpy as np
@@ -23,7 +22,7 @@ class AnalysisRequest(BaseModel):
     weights: Dict[str, float] = None
     mode: str = "predict"
     target_num: int = None
-    json_heatmap: str = "samples/data/heatmaps"
+    json_heatmap: str = "samples/data/json"
 
 class HealthCheck(BaseModel):
     status: str = "ok"
@@ -54,14 +53,15 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
             raise HTTPException(status_code=400, detail="未提供盤面數據")
         
         grid = np.array(request.grid, dtype=float)
-        if grid.ndim != 2 or grid.shape[0] > 20 or grid.shape[1] > 20:
-            raise HTTPException(status_code=400, detail="盤面尺寸無效，必須為 4x5 至 20x20")
+        if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
+            raise HTTPException(status_code=400, detail="盤面尺寸無效，必須為 4x4 至 20x20")
         
         weights = request.weights if request.weights else DEFAULT_WEIGHTS
         return_predictions = (request.mode == "predict")
         
         json_heatmap_path = os.path.join(request.json_heatmap, "temp_grid.json")
         os.makedirs(request.json_heatmap, exist_ok=True)
+        logger.info(f"嘗試讀取熱力圖: {json_heatmap_path}")
         
         scores, predictions, top3, metrics = analyze_board(
             grid, weights, return_predictions, request.target_num, json_heatmap_path
@@ -71,26 +71,29 @@ async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTas
             "scores": scores.tolist(),
             "predictions": predictions.tolist(),
             "top3_positions": [{
-                "row": pos[0],
-                "col": pos[1],
-                "confidence": max(float(pos[2]), 0.1),
+                "row": pos[0], "col": pos[1], "confidence": max(float(pos[2]), 0.1),
                 "contributions": pos[3]
             } for pos in top3],
             "metrics": metrics
         }
         
         output_path = "samples/output/api_result.json"
-        background_tasks.add_task(
-            save_results_to_file, scores, predictions, top3, output_path, "json"
-        )
+        background_tasks.add_task(save_results_to_file, scores, predictions, top3, output_path, "json")
         
         return JSONResponse(content=result, status_code=200)
     
     except HTTPException as e:
-        raise e
+        logger.error(f"HTTP 錯誤: {e.detail}")
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"error": e.detail, "top3_positions": [{"row": 0, "col": 0, "confidence": 0.1, "contributions": {}}]}
+        )
     except Exception as e:
         logger.error(f"分析盤面失敗: {e}")
-        raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"伺服器錯誤: {str(e)}", "top3_positions": [{"row": 0, "col": 0, "confidence": 0.1, "contributions": {}}]}
+        )
 
 @app.post("/upload/", status_code=status.HTTP_200_OK)
 async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
@@ -108,7 +111,7 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
         output_prefix = f"samples/output/{os.path.splitext(file.filename)[0]}"
         weights = DEFAULT_WEIGHTS
         return_predictions = True
-        json_heatmap = "samples/data/heatmaps"
+        json_heatmap = "samples/data/json"
         
         background_tasks.add_task(
             process_single_board, input_path, weights, return_predictions, output_prefix, None, json_heatmap
@@ -134,7 +137,7 @@ async def batch_process(input_folder: str, background_tasks: BackgroundTasks):
         output_folder = f"samples/output/batch_{os.path.basename(input_folder)}"
         weights = DEFAULT_WEIGHTS
         return_predictions = True
-        json_heatmap = "samples/data/heatmaps"
+        json_heatmap = "samples/data/json"
         
         background_tasks.add_task(
             process_batch, input_folder, weights, return_predictions, output_folder, None, json_heatmap
