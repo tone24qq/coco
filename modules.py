@@ -404,15 +404,13 @@ class ScratchSolver:
 
     def fuse_scores_vectorized(self, mod_scores, board_type, default_weights):
         w = self.weights_for(board_type, default_weights)
-        # 確保所有註冊模組都被考慮
         all_modules = list(self.MODULE_REGISTRY.keys())
-        present_modules = list(mod_scores.keys())
         for mod in all_modules:
             if mod not in mod_scores:
-                mod_scores[mod] = np.full(np.count_nonzero(grid == -1), 0.1)  # 預設分數
+                mod_scores[mod] = np.full(np.count_nonzero(grid == -1), 0.1)
         names = list(mod_scores.keys())
         score_mat = np.stack([mod_scores[n] for n in names], axis=1)
-        weight_arr = np.array([w.get(n, 0.1 / len(all_modules)) for n in names])  # 均分未定義權重
+        weight_arr = np.array([w.get(n, 0.1 / len(all_modules)) for n in names])
         heat_factor = np.abs(mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros(score_mat.shape[0])).sum()) / (score_mat.shape[0] + 1e-8)
         final = (score_mat.dot(weight_arr) / (weight_arr.sum() + 1e-8)) * (1 + heat_factor * 0.5)
         return np.where(final < 0.1, 0.1, final)
@@ -440,14 +438,6 @@ class ScratchSolver:
     def interference_penalty(self, grid, target, penalty=-1000):
         """
         對所有已含 target 的行/列空格，施以重罰分，降低被選機率。
-
-        Args:
-            grid: 當前盤面，-1 表示未開格。
-            target: 指定數字。
-            penalty: 懲罰分數，預設為 -1000。
-
-        Returns:
-            懲罰分數陣列，與 grid 形狀相同。
         """
         h, w = grid.shape
         scores = np.zeros((h, w))
