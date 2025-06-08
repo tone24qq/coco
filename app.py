@@ -1,275 +1,171 @@
 # app.py
-import os, json, logging, zipfile, numpy as np
-from io import BytesIO
-from fastapi import FastAPI, UploadFile, File, Form, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks
 from fastapi.responses import JSONResponse
-from openpyxl import load_workbook
+import uvicorn
+import numpy as np
 import pandas as pd
+import json
+import os
+import logging
 import asyncio
+from typing import Dict, List, Tuple
+from brain import process_single_board, process_batch
 from analyzer import analyze_board
+from pydantic import BaseModel
 
-# 設置日誌
-logging.basicConfig(
-    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
-    level=logging.INFO
-)
+# 日誌設置
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# FastAPI App
-app = FastAPI()
+app = FastAPI(title="橘子刮樂分析 API")
 
-# 啟動時預處理
-@app.on_event("startup")
-async def startup_process_samples():
-    data_dir = "samples/data"
-    output_dir = "samples/output"
-    os.makedirs(output_dir, exist_ok=True)
+class AnalysisRequest(BaseModel):
+    grid: List[List[float]] = None
+    weights: Dict[str, float] = None
+    mode: str = "predict"
+    target_num: int = None
+    json_heatmap: str = "samples/data/heatmaps"
 
-    default_weights = {
-        "compute_dynamic_hot_cold_vectorized": 0.2,
-        "compute_block_heatmap_vectorized": 0.15,
-        "idw_vectorized": 0.15,
-        "compute_global_diff_heatmap": 0.1,
-        "compute_focus_score": 0.15,
-        "detect_skip_patterns": 0.1,
-        "compute_difference_trend": 0.05,
-        "detect_mirror_sequences": 0.05,
-        "connectivity_heatmap": 0.05,
-        "sequence_tail_analyzer": 0.05
-    }
-    return_predictions = False
+class HealthCheck(BaseModel):
+    status: str = "ok"
 
-    for fname in os.listdir(data_dir):
-        path = os.path.join(data_dir, fname)
-        try:
-            # Excel 檔案
-            if fname.lower().endswith((".xlsx", ".xlsm", ".xltx", ".xltm")):
-                wb = load_workbook(path, data_only=True)
-                ws = wb.active
-                grid = [[int(cell) if cell is not None and str(cell).isdigit() else -1 for cell in row] for row in ws.iter_rows(values_only=True)]
-                grid = np.array(grid)
-            # 壓縮包內的 Excel
-            elif fname.lower().endswith(".zip"):
-                with zipfile.ZipFile(path) as zf:
-                    for zi in zf.namelist():
-                        if zi.lower().endswith((".xlsx", ".xlsm")):
-                            data = zf.read(zi)
-                            wb = load_workbook(BytesIO(data), data_only=True)
-                            ws = wb.active
-                            grid = [[int(cell) if cell is not None and str(cell).isdigit() else -1 for cell in row] for row in ws.iter_rows(values_only=True)]
-                            grid = np.array(grid)
-            else:
-                continue
+# 預設權重，包含新模組
+DEFAULT_WEIGHTS = {
+    "compute_dynamic_hot_cold_vectorized": 0.15,
+    "compute_dynamic_hot_cold_advanced": 0.2,
+    "compute_block_heatmap_vectorized": 0.1,
+    "idw_vectorized": 0.1,
+    "compute_global_diff_heatmap": 0.05,
+    "compute_focus_score": 0.1,
+    "detect_skip_patterns": 0.05,
+    "compute_difference_trend": 0.05,
+    "detect_mirror_sequences": 0.05,
+    "connectivity_heatmap": 0.05,
+    "sequence_tail_analyzer": 0.05,
+    "analyze_number_patterns": 0.05
+}
 
-            # 計算熱力圖
-            heatmap_scores, _, _ = await asyncio.to_thread(analyze_board, grid, default_weights, return_predictions)
-            out_name = os.path.splitext(fname)[0] + "_heatmap.json"
-            with open(os.path.join(output_dir, out_name), "w", encoding="utf-8") as f:
-                json.dump({"heatmap": heatmap_scores.tolist()}, f, ensure_ascii=False)
-            logger.info(f"Processed {fname}")
+@app.get("/health", response_model=HealthCheck)
+async def health_check():
+    """健康檢查，確保背景回應 200"""
+    return {"status": "ok"}
 
-        except Exception as e:
-            logger.error(f"讀取 {fname} 失敗：{e}")
-
-def process_grid(grid: np.ndarray, weights: dict, return_predictions: bool, target_num: int = None, json_heatmap: str = None) -> dict:
-    if grid.size == 0 or grid.shape[0] < 4 or grid.shape[1] < 5 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        return {"error": "網格為空或超出 4x5 至 20x20 限制"}
-    final_score, final_pred, best_pos = analyze_board(grid, weights, return_predictions, target_num, json_heatmap)
-    result = {"heatmap": final_score.tolist()}
-    if return_predictions and final_pred is not None:
-        result["prediction"] = final_pred.tolist()
-    if best_pos:
-        result["best_position"] = best_pos[0] if best_pos else None
-        result["top_3"] = best_pos[1:] if len(best_pos) > 1 else []
-    return result
-
-def parse_weights(weights: str) -> dict:
-    if weights:
-        try:
-            return json.loads(weights)
-        except json.JSONDecodeError:
-            raise ValueError("無効的權重 JSON 格式")
-    return {
-        "compute_dynamic_hot_cold_vectorized": 0.2,
-        "compute_block_heatmap_vectorized": 0.15,
-        "idw_vectorized": 0.15,
-        "compute_global_diff_heatmap": 0.1,
-        "compute_focus_score": 0.15,
-        "detect_skip_patterns": 0.1,
-        "compute_difference_trend": 0.05,
-        "detect_mirror_sequences": 0.05,
-        "connectivity_heatmap": 0.05,
-        "sequence_tail_analyzer": 0.05
-    }
-
-def load_file_content(filepath: str) -> list:
-    ext = os.path.splitext(filepath)[1].lower()
-    grids = []
-    if ext == ".json":
-        with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        grids = [np.array(data)]
-    elif ext == ".csv":
-        df = pd.read_csv(filepath, header=None, dtype=str, keep_default_na=False)
-        cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-        grids.append(np.array(cleaned))
-    else:  # .xls, .xlsx
-        wb = load_workbook(filepath, data_only=True)
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            rows = []
-            for row in ws.iter_rows():
-                cleaned_row = []
-                for cell in row:
-                    val = str(cell.value) if cell.value is not None else ""
-                    val = val.replace('O', '0').replace('I', '1')
-                    cleaned_row.append(int(val) if val.isdigit() else -1)
-                rows.append(cleaned_row)
-            grids.append(np.array(rows))
-    return grids
-
-@app.post("/analyze/")
-async def analyze(file: UploadFile = File(...), weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
-    filename = file.filename.lower()
-    if not filename.endswith((".xls", ".xlsx", ".json", ".csv")):
-        return JSONResponse(status_code=400, content={"error": "不支援的檔案格式"})
-    content = await file.read()
-    grids = []
-    if filename.endswith(".json"):
-        try:
-            data = json.loads(content.decode("utf-8"))
-            grids = [np.array(data)]
-        except json.JSONDecodeError:
-            return JSONResponse(status_code=400, content={"error": "無効的 JSON 格式"})
-    elif filename.endswith(".csv"):
-        df = pd.read_csv(BytesIO(content), header=None, dtype=str, keep_default_na=False)
-        cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-        grids.append(np.array(cleaned))
-    else:  # .xls, .xlsx
-        try:
-            wb = load_workbook(BytesIO(content), data_only=True)
-            grids = []
-            for sheet_name in wb.sheetnames:
-                ws = wb[sheet_name]
-                rows = []
-                for row in ws.iter_rows():
-                    cleaned_row = []
-                    for cell in row:
-                        val = str(cell.value) if cell.value is not None else ""
-                        val = val.replace('O', '0').replace('I', '1')
-                        cleaned_row.append(int(val) if val.isdigit() else -1)
-                    rows.append(cleaned_row)
-                grids.append(np.array(rows))
-        except Exception as e:
-            return JSONResponse(status_code=400, content={"error": f"Excel 讀取失敗: {str(e)}"})
+@app.post("/analyze/", status_code=status.HTTP_200_OK)
+async def analyze_grid(request: AnalysisRequest, background_tasks: BackgroundTasks):
+    """分析單一盤面，支援手機上傳"""
     try:
-        w_dict = parse_weights(weights)
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return_predictions = (mode == "predict")
-    results = []
-    for idx, grid in enumerate(grids):
-        result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
-        result["sheet"] = idx + 1
-        results.append(result)
-    return JSONResponse(content={"results": results})
-
-@app.post("/analyze-batch/")
-async def analyze_batch(file: UploadFile = File(...), weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
-    filename = file.filename.lower()
-    if not filename.endswith(".zip"):
-        return JSONResponse(status_code=400, content={"error": "請上傳 ZIP 檔案"})
-    content = await file.read()
-    results = []
-    try:
-        w_dict = parse_weights(weights)
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return_predictions = (mode == "predict")
-    try:
-        with zipfile.ZipFile(BytesIO(content)) as z:
-            for zip_info in z.infolist():
-                name = zip_info.filename
-                if name.endswith((".xls", ".xlsx")):
-                    with z.open(zip_info) as f:
-                        wb = load_workbook(BytesIO(f.read()), data_only=True)
-                        file_results = {"filename": name, "sheets": []}
-                        for sheet in wb.sheetnames:
-                            ws = wb[sheet]
-                            rows = []
-                            for row in ws.iter_rows():
-                                cleaned_row = []
-                                for cell in row:
-                                    val = str(cell.value) if cell.value is not None else ""
-                                    val = val.replace('O', '0').replace('I', '1')
-                                    cleaned_row.append(int(val) if val.isdigit() else -1)
-                                rows.append(cleaned_row)
-                            grid = np.array(rows)
-                            result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
-                            result["sheet"] = sheet
-                            file_results["sheets"].append(result)
-                        results.append(file_results)
-                elif name.endswith(".json"):
-                    with z.open(zip_info) as f:
-                        try:
-                            data = json.load(f)
-                            grid = np.array(data)
-                        except json.JSONDecodeError:
-                            results.append({"filename": name, "error": "無効的 JSON 格式"})
-                            continue
-                        file_results = {"filename": name, "sheets": []}
-                        result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
-                        result["sheet"] = "data"
-                        file_results["sheets"].append(result)
-                        results.append(file_results)
-                elif name.endswith(".csv"):
-                    with z.open(zip_info) as f:
-                        df = pd.read_csv(BytesIO(f.read()), header=None, dtype=str, keep_default_na=False)
-                        cleaned = [[int(c.replace('O','0').replace('I','1')) if c.isdigit() else -1 for c in row] for row in df.values]
-                        grid = np.array(cleaned)
-                        file_results = {"filename": name, "sheets": []}
-                        result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
-                        result["sheet"] = "data"
-                        file_results["sheets"].append(result)
-                        results.append(file_results)
-    except zipfile.BadZipFile:
-        return JSONResponse(status_code=400, content={"error": "無効的 ZIP 檔案"})
-    return JSONResponse(content={"results": results})
-
-@app.post("/analyze-folder/")
-async def analyze_folder(weights: str = Form(None), mode: str = Form("predict"), target_num: int = Form(None), json_heatmap: str = Form(None)):
-    folder_path = "samples/data/"
-    if not os.path.exists(folder_path):
-        return JSONResponse(content={"error": f"資料夾 {folder_path} 不存在"})
-    try:
-        w_dict = parse_weights(weights)
+        if request.grid is None:
+            raise HTTPException(status_code=400, detail="未提供盤面數據")
+        
+        grid = np.array(request.grid, dtype=float)
+        if grid.ndim != 2 or grid.shape[0] > 20 or grid.shape[1] > 20:
+            raise HTTPException(status_code=400, detail="盤面尺寸無效，必須為 4x5 至 20x20")
+        
+        weights = request.weights if request.weights else DEFAULT_WEIGHTS
+        return_predictions = (request.mode == "predict")
+        
+        # 動態熱力圖路徑
+        json_heatmap_path = os.path.join(request.json_heatmap, "temp_grid.json")
+        os.makedirs(request.json_heatmap, exist_ok=True)
+        
+        scores, predictions, top3, metrics = analyze_board(
+            grid, weights, return_predictions, request.target_num, json_heatmap_path
+        )
+        
+        result = {
+            "scores": scores.tolist(),
+            "predictions": predictions.tolist(),
+            "top3_positions": [{
+                "row": pos[0],
+                "col": pos[1],
+                "confidence": max(float(pos[2]), 0.1),
+                "contributions": pos[3]
+            } for pos in top3],
+            "metrics": metrics
+        }
+        
+        # 背景保存結果
+        output_path = "samples/output/api_result.json"
+        background_tasks.add_task(
+            save_results_to_file, scores, predictions, top3, output_path, "json"
+        )
+        
+        return JSONResponse(content=result, status_code=200)
+    
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    return_predictions = (mode == "predict")
-    results = []
-    for idx, filename in enumerate(os.listdir(folder_path)):
-        filepath = os.path.join(folder_path, filename)
-        ext = os.path.splitext(filename)[1].lower()
-        if ext not in [".json", ".csv", ".xls", ".xlsx"]:
-            continue
-        try:
-            grids = load_file_content(filepath)
-            file_results = {"filename": filename, "sheets": []}
-            for sidx, grid in enumerate(grids):
-                result = await asyncio.to_thread(process_grid, grid, w_dict, return_predictions, target_num, json_heatmap)
-                result["sheet"] = f"Sheet{sidx+1}" if ext in [".xls", ".xlsx"] else "data"
-                file_results["sheets"].append(result)
-            results.append(file_results)
-        except Exception as e:
-            logger.error(f"Error processing {filename}: {str(e)}")
-            results.append({"filename": filename, "error": f"檔案處理失敗: {str(e)}"})
-    return JSONResponse(content={"results": results})
+        logger.error(f"分析盤面失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
 
-@app.get("/")
-async def root():
-    return JSONResponse(status_code=200, content={"status": "running"})
+@app.post("/upload/", status_code=status.HTTP_200_OK)
+async def upload_file(file: UploadFile = File(...), background_tasks: BackgroundTasks):
+    """上傳盤面檔案，支援手機操作"""
+    try:
+        if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
+            raise HTTPException(status_code=400, detail="不支援的檔案格式")
+        
+        input_path = f"samples/data/{file.filename}"
+        os.makedirs("samples/data", exist_ok=True)
+        
+        with open(input_path, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        output_prefix = f"samples/output/{os.path.splitext(file.filename)[0]}"
+        weights = DEFAULT_WEIGHTS
+        return_predictions = True
+        json_heatmap = "samples/data/heatmaps"
+        
+        # 背景處理
+        background_tasks.add_task(
+            process_single_board, input_path, weights, return_predictions, output_prefix, None, json_heatmap
+        )
+        
+        return JSONResponse(
+            content={"message": f"檔案 {file.filename} 已上傳，處理中", "output_path": output_prefix},
+            status_code=200
+        )
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"上傳檔案失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
 
-@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-async def catch_all(request: Request, full_path: str):
-    logger.debug(f"Catch-all for path: {request.method} {full_path}")
-    return JSONResponse(status_code=200, content={"status": "running"})
+@app.post("/batch/", status_code=status.HTTP_200_OK)
+async def batch_process(input_folder: str, background_tasks: BackgroundTasks):
+    """批次處理盤面檔案，防止 404/405"""
+    try:
+        if not os.path.exists(input_folder):
+            raise HTTPException(status_code=404, detail=f"資料夾 {input_folder} 不存在")
+        
+        output_folder = f"samples/output/batch_{os.path.basename(input_folder)}"
+        weights = DEFAULT_WEIGHTS
+        return_predictions = True
+        json_heatmap = "samples/data/heatmaps"
+        
+        # 背景處理
+        background_tasks.add_task(
+            process_batch, input_folder, weights, return_predictions, output_folder, None, json_heatmap
+        )
+        
+        return JSONResponse(
+            content={"message": f"批次處理已開始，結果將保存至 {output_folder}"},
+            status_code=200
+        )
+    
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"批次處理失敗: {e}")
+        raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
+
+def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Tuple], output_filepath: str, output_format: str):
+    """保存 API 結果，複用 brain.py 的功能"""
+    from brain import save_results_to_file as brain_save
+    brain_save(scores, predictions, best_pos, output_filepath, output_format)
+
+if __name__ == "__main__":
+    # 啟動服務器，支援手機訪問
+    uvicorn.run(app, host="0.0.0.0", port=8000)
