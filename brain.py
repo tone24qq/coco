@@ -1,4 +1,3 @@
-# brain.py
 import numpy as np
 import pandas as pd
 import json
@@ -10,12 +9,10 @@ from typing import List, Tuple, Dict, Any
 from analyzer import analyze_board
 from fastapi import HTTPException, status
 
-# 日誌設置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_grid_from_file(filepath: str) -> List[np.ndarray]:
-    """從檔案載入盤面，支援 JSON、CSV、Excel"""
     grids = []
     ext = os.path.splitext(filepath)[1].lower()
     
@@ -47,14 +44,13 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                     grid = df.to_numpy(dtype=float)
                     grids.append(grid)
         
-        # 清洗數據，確保 -1.0 表示未開格
         cleaned_grids = []
         for grid in grids:
             grid = np.where(np.isnan(grid) | (grid < 0), -1.0, grid)
-            if grid.shape[0] <= 20 and grid.shape[1] <= 20:  # 限制 20x20
+            if grid.shape[0] >= 4 and grid.shape[1] >= 4 and grid.shape[0] <= 20 and grid.shape[1] <= 20:
                 cleaned_grids.append(grid)
             else:
-                logger.warning(f"盤面尺寸 {grid.shape} 超出 20x20，略過")
+                logger.warning(f"盤面尺寸 {grid.shape} 超出 4x4 至 20x20，略過")
         
         if not cleaned_grids:
             logger.error(f"檔案 {filepath} 未包含有效盤面")
@@ -67,7 +63,6 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
         raise HTTPException(status_code=400, detail=f"無法載入盤面: {str(e)}")
 
 def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Tuple], output_filepath: str, output_format: str):
-    """保存分析結果，支援 JSON、CSV、Excel"""
     empty_yx = np.argwhere(predictions == -1)
     result = {
         'scores': scores.tolist(),
@@ -75,7 +70,7 @@ def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: 
         'top3_positions': [{
             'row': int(pos[0]),
             'col': int(pos[1]),
-            'confidence': max(float(pos[2]), 0.1),  # 最低信心分數
+            'confidence': max(float(pos[2]), 0.1),
             'contributions': pos[3]
         } for pos in best_pos],
         'empty_positions': empty_yx.tolist()
@@ -111,33 +106,27 @@ def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: 
         raise HTTPException(status_code=500, detail=f"無法保存結果: {str(e)}")
 
 async def process_single_board(filepath: str, weights: dict, return_predictions: bool, output_prefix: str, target_num: int = None, json_heatmap: str = None):
-    """處理單一盤面，支援手機操作與 GitHub 部署"""
     try:
         grids = load_grid_from_file(filepath)
         for idx, grid in enumerate(grids):
             sheet_output_prefix = f"{output_prefix}_sheet{idx+1}"
-            # 動態生成熱力圖路徑
             base_name = os.path.splitext(os.path.basename(filepath))[0]
             sheet_heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json")
             
-            # 分析盤面
             scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, target_num, sheet_heatmap_path)
             
-            # 保存結果
             out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
             if out_format not in ['json', 'csv', 'xls', 'xlsx']:
                 sheet_output_prefix += '.json'
                 out_format = 'json'
             save_results_to_file(scores, predictions, top3, sheet_output_prefix, out_format)
             
-            # 保存評估指標
             metrics_filepath = f"{sheet_output_prefix}_metrics.json"
             with open(metrics_filepath, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f, ensure_ascii=False, indent=2)
             
             logger.info(f"Sheet {idx+1} 處理完成，結果保存至 {sheet_output_prefix}")
             
-            # 背景回應 200
             try:
                 response = requests.get("http://localhost:8000/health", timeout=5)
                 if response.status_code != 200:
@@ -145,8 +134,7 @@ async def process_single_board(filepath: str, weights: dict, return_predictions:
             except requests.RequestException as e:
                 logger.error(f"健康檢查失敗: {e}")
             
-            # 模擬手機操作的非同步回應
-            await asyncio.sleep(0.1)  # 模擬非同步處理
+            await asyncio.sleep(0.1)
             
     except HTTPException as e:
         logger.error(f"HTTP 錯誤: {e.detail}")
@@ -156,7 +144,6 @@ async def process_single_board(filepath: str, weights: dict, return_predictions:
         raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
 
 async def process_batch(input_folder: str, weights: dict, return_predictions: bool, output_folder: str, target_num: int = None, json_heatmap: str = None):
-    """批次處理盤面檔案，防止 404/405 錯誤"""
     if not os.path.exists(input_folder):
         logger.error(f"輸入資料夾 {input_folder} 不存在")
         raise HTTPException(status_code=404, detail=f"資料夾 {input_folder} 不存在")
@@ -178,7 +165,6 @@ async def process_batch(input_folder: str, weights: dict, return_predictions: bo
         logger.error(f"資料夾 {input_folder} 未找到有效檔案")
         raise HTTPException(status_code=404, detail="未找到有效盤面檔案")
     
-    # 非同步執行，確保背景回應 200
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
         response = requests.get("http://localhost:8000/health", timeout=5)
