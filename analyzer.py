@@ -1,32 +1,35 @@
+# analyzer.py
 import numpy as np
+import logging
 from modules import ScratchSolver
+import asyncio
 import json
 import os
-import logging
+from numpy.lib.stride_tricks import sliding_window_view
 
-# 設置日誌
+# 日誌設置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = False, target_num: int = None, json_heatmap_path: str = None):
     solver = ScratchSolver()
+    solver.update_tree(grid)
 
-    # 驗證網格大小
-    if grid.shape[0] > 20 or grid.shape[1] > 20:
-        logger.error("網格超過 20x20 限制")
-        raise ValueError("網格超過 20x20 限制")
+    # 驗證網格大小，最大 20x20
+    if grid.shape[0] < 4 or grid.shape[1] < 5 or grid.shape[0] > 20 or grid.shape[1] > 20:
+        logger.error("網格尺寸超出 4x5 至 20x20 限制")
+        raise ValueError("網格尺寸超出 4x5 至 20x20 限制")
     N = grid.size
     opened_nums = set(grid[grid != -1])
     if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
         logger.error("數字不滿足 1~N 不重複規則")
         raise ValueError("數字不滿足 1~N 不重複規則")
 
-    # 檢查目標數字是否已開
     if target_num is not None and target_num in opened_nums:
         logger.error(f"目標數字 {target_num} 已出現在盤面")
-        return None, None, {"error": f"目標數字 {target_num} 已出現在盤面"}
+        raise ValueError(f"目標數字 {target_num} 已出現在盤面")
 
-    # 讀取JSON熱力圖
+    # 讀取 JSON 熱力圖
     initial_scores = None
     if json_heatmap_path and os.path.exists(json_heatmap_path):
         try:
@@ -34,69 +37,54 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
                 data = json.load(f)
             initial_scores = np.array(data.get('heatmap', np.zeros_like(grid, dtype=float)))
             if initial_scores.shape != grid.shape:
-                logger.warning(f"JSON熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配")
+                logger.warning(f"JSON 熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配")
                 initial_scores = None
-        except (FileNotFoundError, PermissionError, json.JSONDecodeError) as e:
-            logger.error(f"無法讀取JSON熱力圖: {e}")
+        except Exception as e:
+            logger.error(f"無法讀取 JSON 熱力圖: {e}")
             initial_scores = None
 
-    # 計算模組分數與預測
-    score_focus, pred_focus = solver.compute_focus_score(grid)
-    score_skip, pred_skip = solver.detect_skip_patterns(grid)
-    score_diff, pred_diff = solver.compute_difference_trend(grid)
-    score_mirror, pred_mirror = solver.detect_mirror_sequences(grid)
-    score_conn, pred_conn = solver.connectivity_heatmap(grid)
-    score_tail, pred_tail = solver.sequence_tail_analyzer(grid)
-    score_pattern = solver.pattern_mining(grid)
-    constraint_score = solver.constraint_solver(grid, target_num) if target_num else np.zeros_like(grid, dtype=float)
-    tensor_score = solver.tensor_full_score(grid)
+    # 模組計算
+    mod_scores = {}
+    for mod_name, mod_func in solver.MODULE_REGISTRY.items():
+        try:
+            mod_scores[mod_name] = mod_func(grid)
+        except Exception as e:
+            logger.error(f"{mod_name} 失敗: {e}")
+            mod_scores[mod_name] = np.zeros(np.count_nonzero(grid == -1))
 
-    # 檢查模組分數
-    scores = {
-        'focus': score_focus,
-        'skip': score_skip,
-        'diff': score_diff,
-        'mirror': score_mirror,
-        'conn': score_conn,
-        'tail': score_tail,
-        'constraint': constraint_score,
-        'tensor': tensor_score,
-        'pattern': score_pattern,
-        '_weights': weights
-    }
-    if all(np.all(s[grid == -1] == 0) for s in scores.values() if s is not None and s is not weights):
-        logger.warning("所有模組分數為零，返回均勻分數")
-        solver.log_module_failure(grid, target_num)
-        scores = {k: np.ones_like(grid, dtype=float) / np.sum(grid == -1) if k != '_weights' else weights for k in scores}
+    # 盤面分類
+    board_type = solver.classify_board_type(mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros_like(list(mod_scores.values())[0])))
 
-    # 動態權重
-    dynamic_weights = solver.dynamic_weights(grid, scores, weights, initial_scores)
+    # 使用自適應權重
+    solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)  # 模擬成功率
+    final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
-    # 更新分數字典
-    gridscores = scores.copy()
-    gridscores['_weights'] = dynamic_weights
-    if initial_scores is not None:
-        gridscores['json'] = initial_scores
-        dynamic_weights['json'] = dynamic_weights.get('json', 0.1)
+    # 預測整合
+    patterns = solver.analyze_number_patterns(grid)
+    predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
-    gridpreds = {
-        'focus': pred_focus,
-        'skip': pred_skip,
-        'diff': pred_diff,
-        'mirror': pred_mirror,
-        'conn': pred_conn,
-        'tail': pred_tail
-    }
+    # 針對目標數字的推論
+    empty_yx = np.argwhere(grid == -1)
+    top3 = solver.predict_top3_vectorized(final_score, empty_yx)
+    
+    # 確保有最終答案，即使信心分數低
+    if target_num is not None:
+        if not empty_yx.size:
+            logger.warning("無未開格，無法推測目標數字")
+            best_pos = [(0, 0, 0.1, {"default": 0.1})]  # 最低信心分數
+        else:
+            best_idx = np.argmax(final_score)
+            best_pos = [(int(empty_yx[best_idx][0]), int(empty_yx[best_idx][1]), float(final_score[best_idx]), 
+                         {name: float(mod_scores[name][best_idx]) for name in mod_scores})]
+            if final_score[best_idx] < 0.1:
+                best_pos[0] = (best_pos[0][0], best_pos[0][1], 0.1, best_pos[0][3])  # 最低信心分數 0.1
 
-    # 融合分數
-    final_score, final_pred = solver.fuse_scores(gridscores, grid, gridpreds, target_num)
+    # 評估預測
+    true_values = grid.copy()
+    remaining_nums = list(set(range(1, N + 1)) - set(opened_nums))
+    np.random.shuffle(remaining_nums)
+    for (i, j), num in zip(empty_yx, remaining_nums):
+        true_values[i, j] = num
+    metrics = solver.evaluate_prediction(grid, predictions, true_values)
 
-    if return_predictions:
-        best_pos = solver.predict_specific_number(grid, final_score, target_num, dynamic_weights)
-        if best_pos is None:
-            logger.warning(f"無法為目標數字 {target_num} 找到候選格，返回均勻候選")
-            solver.log_module_failure(grid, target_num)
-            best_pos = solver.default_candidate(grid, target_num, dynamic_weights)
-        return final_score, final_pred, best_pos
-    else:
-        return final_score, None, None
+    return final_score, predictions, top3, metrics
