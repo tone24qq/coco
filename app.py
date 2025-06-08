@@ -12,7 +12,7 @@ from typing import Dict, List, Tuple
 from brain import process_single_board, process_batch
 from analyzer import analyze_board
 from pydantic import BaseModel
-
+from fastapi import Request
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
