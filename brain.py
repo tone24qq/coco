@@ -13,7 +13,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_grid_from_file(filepath: str) -> List[np.ndarray]:
-    grids = []
+    """
+    Loads scratch card grids from a file (JSON, CSV, Excel).
+
+    Args:
+        filepath (str): Path to the input file.
+
+    Returns:
+        List[np.ndarray]: List of valid grid arrays.
+
+    Raises:
+        HTTPException: If file loading fails or no valid grids are found.
+    """
+    grids: List[np.ndarray] = []
     ext = os.path.splitext(filepath)[1].lower()
     
     try:
@@ -24,7 +36,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                 for grid_data in data:
                     grid = np.array(grid_data, dtype=float)
                     if grid.ndim != 2:
-                        logger.warning(f"JSON 檔案 {filepath} 包含無效盤面，略過")
+                        logger.warning(f"JSON file {filepath} contains invalid grid, skipping")
                         continue
                     grids.append(grid)
             else:
@@ -44,30 +56,54 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                     grid = df.to_numpy(dtype=float)
                     grids.append(grid)
         
-        cleaned_grids = []
+        cleaned_grids: List[np.ndarray] = []
         for grid in grids:
             grid = np.where(np.isnan(grid) | (grid < 0), -1.0, grid)
             if grid.shape[0] >= 4 and grid.shape[1] >= 4 and grid.shape[0] <= 20 and grid.shape[1] <= 20:
                 cleaned_grids.append(grid)
             else:
-                logger.warning(f"盤面尺寸 {grid.shape} 超出 4x4 至 20x20，略過")
+                logger.warning(f"Grid size {grid.shape} out of 4x4 to 20x20 bounds, skipping")
         
         if not cleaned_grids:
-            logger.error(f"檔案 {filepath} 未包含有效盤面")
-            raise ValueError("無有效盤面數據")
+            logger.error(f"File {filepath} contains no valid grids")
+            raise ValueError("No valid grid data")
         
         return cleaned_grids
     
-    except Exception as e:
-        logger.error(f"載入檔案 {filepath} 失敗: {e}")
-        raise HTTPException(status_code=400, detail=f"無法載入盤面: {str(e)}")
+    except (OSError, json.JSONDecodeError, pd.errors.ParserError) as e:
+        logger.error(f"Failed to load file {filepath}: {e}")
+        raise HTTPException(status_code=400, detail=f"Unable to load grid: {str(e)}")
 
-def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Dict], output_filepath: str, output_format: str):
+def save_results_to_file(
+    scores: np.ndarray,
+    predictions: np.ndarray,
+    best_pos: List[Tuple[int, int, float, Dict[str, float]]],
+    output_filepath: str,
+    output_format: str
+) -> None:
+    """
+    Saves analysis results to a file in specified format.
+
+    Args:
+        scores (np.ndarray): Scores for hidden cells.
+        predictions (np.ndarray): Predicted values for the grid.
+        best_pos (List[Tuple]): Top 3 predicted positions.
+        output_filepath (str): Path to save the output file.
+        output_format (str): Format of output ('json', 'csv', 'xls', 'xlsx').
+
+    Raises:
+        HTTPException: If saving fails.
+    """
     empty_yx = np.argwhere(predictions == -1)
     result = {
         'scores': scores.tolist(),
         'predictions': predictions.tolist(),
-        'top3_positions': best_pos,
+        'top3_positions': [{
+            'row': int(pos[0]),
+            'col': int(pos[1]),
+            'confidence': max(float(pos[2]), 0.1),
+            'contributions': pos[3]
+        } for pos in best_pos],
         'empty_positions': empty_yx.tolist()
     }
     
@@ -94,13 +130,34 @@ def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: 
             })
             df.to_excel(output_filepath, index=False)
         
-        logger.info(f"結果已保存至 {output_filepath}")
+        logger.info(f"Results saved to {output_filepath}")
     
-    except Exception as e:
-        logger.error(f"保存結果至 {output_filepath} 失敗: {e}")
-        raise HTTPException(status_code=500, detail=f"無法保存結果: {str(e)}")
+    except (OSError, pd.errors.EmptyDataError) as e:
+        logger.error(f"Failed to save results to {output_filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Unable to save results: {str(e)}")
 
-async def process_single_board(filepath: str, weights: dict, return_predictions: bool, output_prefix: str, target_num: int = None, json_heatmap: str = None):
+async def process_single_board(
+    filepath: str,
+    weights: Dict[str, float],
+    return_predictions: bool,
+    output_prefix: str,
+    target_num: int = None,
+    json_heatmap: str = None
+) -> None:
+    """
+    Processes a single board file and saves results.
+
+    Args:
+        filepath (str): Path to input file.
+        weights (Dict[str, float]): Module weights.
+        return_predictions (bool): Whether to return predictions.
+        output_prefix (str): Prefix for output files.
+        target_num (int, optional): Target number to locate.
+        json_heatmap (str, optional): Path to JSON heatmap directory.
+
+    Raises:
+        HTTPException: If processing fails.
+    """
     try:
         grids = load_grid_from_file(filepath)
         for idx, grid in enumerate(grids):
@@ -108,11 +165,9 @@ async def process_single_board(filepath: str, weights: dict, return_predictions:
             base_name = os.path.splitext(os.path.basename(filepath))[0]
             sheet_heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json")
             
-            # 模擬 knowledge_base 和 heatmap_data 為 None，待 app.py 提供
-            result = analyze_board(grid, target_num)
-            scores = np.array(result.get("confidence", []))
-            predictions = np.array([])  # 簡化處理
-            top3 = result.get("recommendations", [])
+            scores, predictions, top3, metrics = analyze_board(
+                grid, weights, return_predictions, target_num, sheet_heatmap_path
+            )
             
             out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
             if out_format not in ['json', 'csv', 'xls', 'xlsx']:
@@ -122,54 +177,81 @@ async def process_single_board(filepath: str, weights: dict, return_predictions:
             
             metrics_filepath = f"{sheet_output_prefix}_metrics.json"
             with open(metrics_filepath, 'w', encoding='utf-8') as f:
-                json.dump({"metrics": "placeholder"}, f, ensure_ascii=False, indent=2)
+                json.dump(metrics, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"Sheet {idx+1} 處理完成，結果保存至 {sheet_output_prefix}")
+            logger.info(f"Sheet {idx+1} processed, results saved to {sheet_output_prefix}")
             
             try:
-                response = requests.get("http://localhost:8000/health", timeout=5)
+                response = await requests.get("http://localhost:8000/health", timeout=5)
                 if response.status_code != 200:
-                    logger.warning(f"健康檢查回應非 200: {response.status_code}")
+                    logger.warning(f"Health check returned non-200: {response.status_code}")
             except requests.RequestException as e:
-                logger.error(f"健康檢查失敗: {e}")
+                logger.error(f"Health check failed: {e}")
             
             await asyncio.sleep(0.1)
             
     except HTTPException as e:
-        logger.error(f"HTTP 錯誤: {e.detail}")
-        raise e
+        logger.error(f"HTTP error: {e.detail}")
+        raise
     except Exception as e:
-        logger.error(f"處理檔案 {filepath} 失敗: {e}")
-        raise HTTPException(status_code=500, detail=f"伺服器錯誤: {str(e)}")
+        logger.error(f"Failed to process file {filepath}: {e}")
+        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-async def process_batch(input_folder: str, weights: dict, return_predictions: bool, output_folder: str, target_num: int = None, json_heatmap: str = None):
+async def process_batch(
+    input_folder: str,
+    weights: Dict[str, float],
+    return_predictions: bool,
+    output_folder: str,
+    target_num: int = None,
+    json_heatmap: str = None
+) -> None:
+    """
+    Processes multiple board files in a folder.
+
+    Args:
+        input_folder (str): Directory containing input files.
+        weights (Dict[str, float]): Module weights.
+        return_predictions (bool): Whether to return predictions.
+        output_folder (str): Directory to save output files.
+        target_num (int, optional): Target number to locate.
+        json_heatmap (str, optional): Path to JSON heatmap directory.
+
+    Raises:
+        HTTPException: If processing fails or no valid files are found.
+    """
     if not os.path.exists(input_folder):
-        logger.error(f"輸入資料夾 {input_folder} 不存在")
-        raise HTTPException(status_code=404, detail=f"資料夾 {input_folder} 不存在")
+        logger.error(f"Input folder {input_folder} does not exist")
+        raise HTTPException(status_code=404, detail=f"Folder {input_folder} does not exist")
     
     os.makedirs(output_folder, exist_ok=True)
     
-    tasks = []
+    tasks: List[asyncio.Task] = []
     for filename in os.listdir(input_folder):
         if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
             input_filepath = os.path.join(input_folder, filename)
             output_prefix = os.path.join(output_folder, os.path.splitext(filename)[0])
             try:
-                tasks.append(process_single_board(input_filepath, weights, return_predictions, output_prefix, target_num, json_heatmap))
+                tasks.append(
+                    asyncio.create_task(
+                        process_single_board(
+                            input_filepath, weights, return_predictions, output_prefix, target_num, json_heatmap
+                        )
+                    )
+                )
             except Exception as e:
-                logger.error(f"安排任務 {input_filepath} 失敗: {e}")
+                logger.error(f"Failed to schedule task for {input_filepath}: {e}")
                 continue
     
     if not tasks:
-        logger.error(f"資料夾 {input_folder} 未找到有效檔案")
-        raise HTTPException(status_code=404, detail="未找到有效盤面檔案")
+        logger.error(f"No valid files found in folder {input_folder}")
+        raise HTTPException(status_code=404, detail="No valid board files found")
     
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
-        response = requests.get("http://localhost:8000/health", timeout=5)
+        response = await requests.get("http://localhost:8000/health", timeout=5)
         if response.status_code != 200:
-            logger.warning(f"健康檢查回應非 200: {response.status_code}")
+            logger.warning(f"Health check returned non-200: {response.status_code}")
     except requests.RequestException as e:
-        logger.error(f"健康檢查失敗: {e}")
+        logger.error(f"Health check failed: {e}")
     
-    logger.info(f"批次處理完成，結果保存至 {output_folder}")
+    logger.info(f"Batch processing completed, results saved to {output_folder}")
