@@ -1,68 +1,82 @@
 import argparse
 import json
 import os
-from brain import load_grid_from_file, process_single_board
+from brain import process_single_board, process_batch
 import logging
 
-# 設置日誌
+# 日誌設置
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    """解析命令行參數，接收輸入檔案和輸出設置。"""
-    parser = argparse.ArgumentParser(description="刮刮樂分析工具")
+    """解析命令行參數，新增對新模組和熱力圖路徑的支援"""
+    parser = argparse.ArgumentParser(description="橘子刮樂分析工具")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--input-file', type=str, help='單一盤面檔案 (JSON/CSV/Excel)')
     group.add_argument('--input-folder', type=str, help='盤面檔案資料夾 (samples/data/)')
-    parser.add_argument('--output', type=str, required=True, help='輸出檔案或資料夾。如果是單一檔案，請包含前綴名(不含副檔名)。如果是 folder，則指定輸出資料夾路徑。')
-    parser.add_argument('--weights', type=str, default=None, help='各模組權重的 JSON 字串，例如 \'{"focus":0.2,"skip":0.15,"diff":0.15,"mirror":0.2,"conn":0.15,"tail":0.15,"constraint":0.1,"tensor":0.1,"json":0.1}\'。若不指定，使用預設權重。')
-    parser.add_argument('--mode', type=str, choices=['heatmap', 'predict'], default='heatmap', help='heatmap: 只輸出熱力圖；predict: 同時輸出預測值')
-    parser.add_argument('--target-num', type=int, default=None, help='指定數字，預測其位置')
-    parser.add_argument('--json-heatmap', type=str, default=None, help='JSON熱力圖檔案路徑')
+    parser.add_argument('--output', type=str, required=True, help='輸出檔案或資料夾')
+    parser.add_argument('--weights', type=str, default=None, help='模組權重 JSON 字串')
+    parser.add_argument('--mode', type=str, choices=['heatmap', 'predict'], default='predict', help='模式: heatmap 或 predict')
+    parser.add_argument('--target-num', type=int, default=None, help='指定數字')
+    parser.add_argument('--json-heatmap', type=str, default='samples/data/heatmaps', help='熱力圖資料夾路徑')
     return parser.parse_args()
 
 if __name__ == '__main__':
     args = parse_args()
 
+    # 默認權重，包含新模組
     if args.weights:
         weights = json.loads(args.weights)
     else:
         weights = {
-            "focus": 0.2,
-            "skip": 0.15,
-            "diff": 0.15,
-            "mirror": 0.2,
-            "conn": 0.15,
-            "tail": 0.15,
-            "constraint": 0.1,
-            "tensor": 0.1,
-            "json": 0.1
+            "compute_dynamic_hot_cold_vectorized": 0.15,
+            "compute_dynamic_hot_cold_advanced": 0.2,  # 新模組
+            "compute_block_heatmap_vectorized": 0.1,
+            "idw_vectorized": 0.1,
+            "compute_global_diff_heatmap": 0.05,
+            "compute_focus_score": 0.1,
+            "detect_skip_patterns": 0.05,
+            "compute_difference_trend": 0.05,
+            "detect_mirror_sequences": 0.05,
+            "connectivity_heatmap": 0.05,
+            "sequence_tail_analyzer": 0.05,
+            "analyze_number_patterns": 0.05  # 新模組
         }
 
     return_predictions = (args.mode == 'predict')
+
+    # 確保熱力圖資料夾存在
+    if not os.path.exists(args.json_heatmap):
+        os.makedirs(args.json_heatmap, exist_ok=True)
 
     if args.input_file:
         input_path = args.input_file
         output_prefix = args.output
         logger.info(f"分析單一檔案: {input_path}")
         try:
-            grids = load_grid_from_file(input_path)
-            for idx, grid in enumerate(grids):
-                sheet_output_prefix = f"{output_prefix}_sheet{idx+1}"
-                out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
-                if out_format not in ['json', 'csv', 'xls', 'xlsx']:
-                    sheet_output_prefix += '.json'
-                    out_format = 'json'
-                process_single_board(grid, weights, return_predictions, sheet_output_prefix, args.target_num, args.json_heatmap)
-                logger.info(f"處理工作表 {idx+1} 完成，輸出到: {sheet_output_prefix}")
+            # 動態生成熱力圖路徑
+            base_name = os.path.splitext(os.path.basename(input_path))[0]
+            sheet_heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
+            process_single_board(input_path, weights, return_predictions, output_prefix, args.target_num, sheet_heatmap_path)
         except Exception as e:
-            logger.error(f"處理檔案 {input_path} 失敗: {e}")
-            raise
+            logger.error(f"處理失敗: {e}")
     else:
         input_folder = args.input_folder
         output_folder = args.output
-        if not os.path.isdir(output_folder):
-            os.makedirs(output_folder, exist_ok=True)
+        os.makedirs(output_folder, exist_ok=True)
         logger.info(f"批次分析資料夾: {input_folder}，輸出到: {output_folder}")
-        # 這裡假設 process_batch 函數已定義（參考原始 main.py）
-        # 如果需要完整實現，請告訴我，我可以補充
+        try:
+            process_batch(input_folder, weights, return_predictions, output_folder, args.target_num, args.json_heatmap)
+        except Exception as e:
+            logger.error(f"批次處理失敗: {e}")
+
+# 測試運行
+if __name__ == "__main__":
+    # 模擬命令行測試，使用 Sheet1 進行示例
+    import sys
+    sys.argv = ['main.py', '--input-file', 'samples/data/8x10-10x12.xlsx', '--output', 'samples/output/test_result', '--mode', 'predict', '--target-num', 42, '--json-heatmap', 'samples/data/heatmaps']
+    args = parse_args()
+    if args.input_file:
+        base_name = os.path.splitext(os.path.basename(args.input_file))[0]
+        sheet_heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
+        process_single_board(args.input_file, weights, return_predictions, args.output, args.target_num, sheet_heatmap_path)
