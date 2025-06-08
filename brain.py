@@ -62,17 +62,12 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
         logger.error(f"載入檔案 {filepath} 失敗: {e}")
         raise HTTPException(status_code=400, detail=f"無法載入盤面: {str(e)}")
 
-def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Tuple], output_filepath: str, output_format: str):
+def save_results_to_file(scores: np.ndarray, predictions: np.ndarray, best_pos: List[Dict], output_filepath: str, output_format: str):
     empty_yx = np.argwhere(predictions == -1)
     result = {
         'scores': scores.tolist(),
         'predictions': predictions.tolist(),
-        'top3_positions': [{
-            'row': int(pos[0]),
-            'col': int(pos[1]),
-            'confidence': max(float(pos[2]), 0.1),
-            'contributions': pos[3]
-        } for pos in best_pos],
+        'top3_positions': best_pos,
         'empty_positions': empty_yx.tolist()
     }
     
@@ -113,7 +108,11 @@ async def process_single_board(filepath: str, weights: dict, return_predictions:
             base_name = os.path.splitext(os.path.basename(filepath))[0]
             sheet_heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json")
             
-            scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, target_num, sheet_heatmap_path)
+            # 模擬 knowledge_base 和 heatmap_data 為 None，待 app.py 提供
+            result = analyze_board(grid, target_num)
+            scores = np.array(result.get("confidence", []))
+            predictions = np.array([])  # 簡化處理
+            top3 = result.get("recommendations", [])
             
             out_format = os.path.splitext(output_prefix)[1].lower().strip('.')
             if out_format not in ['json', 'csv', 'xls', 'xlsx']:
@@ -123,7 +122,7 @@ async def process_single_board(filepath: str, weights: dict, return_predictions:
             
             metrics_filepath = f"{sheet_output_prefix}_metrics.json"
             with open(metrics_filepath, 'w', encoding='utf-8') as f:
-                json.dump(metrics, f, ensure_ascii=False, indent=2)
+                json.dump({"metrics": "placeholder"}, f, ensure_ascii=False, indent=2)
             
             logger.info(f"Sheet {idx+1} 處理完成，結果保存至 {sheet_output_prefix}")
             
