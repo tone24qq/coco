@@ -5,46 +5,56 @@ import asyncio
 import json
 import os
 from numpy.lib.stride_tricks import sliding_window_view
+from typing import List, Dict, Any
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = False, target_num: int = None, json_heatmap_path: str = None):
+def analyze_board(
+    grid: np.ndarray,
+    target_num: int,
+    knowledge_base: List[Dict] = None,
+    heatmap_data: Dict[str, Any] = None
+) -> Dict:
     solver = ScratchSolver()
     solver.update_tree(grid)
 
-    # 驗證網格大小（明確支援 4x5 至 20x20）
+    # 驗證網格大小（4x4 至 20x20）
     if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
         logger.error("網格尺寸超出 4x4 至 20x20 限制")
-        return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0, "pattern_match": 0, "value_diff": 0}
+        return {"recommendations": [], "confidence": []}
     
     N = grid.size
     opened_nums = set(grid[grid != -1])
     if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
         logger.error("數字不滿足 1~N 不重複規則")
-        return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0, "pattern_match": 0, "value_diff": 0}
+        return {"recommendations": [], "confidence": []}
     
     if target_num is not None and target_num in opened_nums:
         logger.warning(f"目標數字 {target_num} 已出現在盤面")
-        return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0, "pattern_match": 0, "value_diff": 0}
+        return {"recommendations": [], "confidence": []}
 
-    # 讀取 JSON 熱力圖
+    # 記錄知識庫和熱力圖載入
+    if knowledge_base:
+        logger.info(f"Loaded {len(knowledge_base)} KB concepts")
+    if heatmap_data:
+        logger.info(f"Loaded {len(heatmap_data)} heatmap files")
+
+    # 讀取外部熱力圖數據
     initial_scores = None
-    if json_heatmap_path and os.path.exists(json_heatmap_path):
-        try:
-            with open(json_heatmap_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            initial_scores = np.array(data.get('heatmap', np.zeros_like(grid, dtype=float)))
-            if initial_scores.shape != grid.shape:
-                logger.warning(f"JSON 熱力圖形狀 {initial_scores.shape} 與網格 {grid.shape} 不匹配")
-                initial_scores = None
-            else:
-                logger.info(f"成功讀取熱力圖: {json_heatmap_path}")
-        except Exception as e:
-            logger.error(f"無法讀取 JSON 熱力圖: {e}")
-            initial_scores = None
-    else:
-        logger.info(f"熱力圖路徑無效或不存在: {json_heatmap_path}，將重新計算")
+    if heatmap_data:
+        # 選擇與當前盤面尺寸匹配的熱力圖
+        for name, data in heatmap_data.items():
+            for sheet, heatmap in data.items():
+                if np.array(heatmap).shape == grid.shape:
+                    initial_scores = np.array(heatmap, dtype=float)
+                    logger.info(f"Using heatmap: {name}, {sheet}")
+                    break
+            if initial_scores is not None:
+                break
+        if initial_scores is None:
+            logger.warning("未找到匹配的熱力圖數據，將使用預設零分數")
+            initial_scores = np.zeros_like(grid, dtype=float)
 
     # 模組計算
     mod_scores = {}
@@ -62,12 +72,29 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
             logger.error(f"{mod_name} 失敗: {e}")
             mod_scores[mod_name] = np.zeros(np.count_nonzero(grid == -1))
 
+    # 應用知識庫（例如增強等差數列檢測）
+    if knowledge_base:
+        for concept in knowledge_base:
+            if concept.get("term") == "Arithmetic Progression":
+                patterns = solver.analyze_number_patterns(grid)
+                for (idx, direction), pattern in patterns.items():
+                    if pattern['type'] == 'arithmetic':
+                        mod_scores['analyze_number_patterns'] *= 1.5  # 增強等差數列分數
+                        logger.info(f"Applied Arithmetic Progression enhancement for {direction} pattern")
+
     # 盤面分類
     board_type = solver.classify_board_type(mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros_like(list(mod_scores.values())[0])))
 
     # 使用自適應權重
     solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
     final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
+
+    # 整合外部熱力圖分數
+    if initial_scores is not None:
+        heatmap_scores = initial_scores[grid == -1]
+        if heatmap_scores.size == final_score.size:
+            final_score = 0.7 * final_score + 0.3 * heatmap_scores  # 加權融合
+            logger.info("Integrated external heatmap scores into final score")
 
     # 預測整合
     patterns = solver.analyze_number_patterns(grid)
@@ -85,14 +112,6 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
             top3 = valid_empty_yx[:3]
             top3.extend([(0, 0, 0.1, {"default": 0.1})] * (3 - len(top3)))
 
-    # 評估預測
-    true_values = grid.copy()
-    remaining_nums = list(set(range(1, N + 1)) - set(opened_nums))
-    np.random.shuffle(remaining_nums)
-    for (i, j), num in zip(empty_yx, remaining_nums):
-        true_values[i, j] = num
-    metrics = solver.evaluate_prediction(grid, predictions, true_values)
-
     # 回傳包含細部加權說明
     weights = solver.adaptive_weights.weights
     top3_with_weights = [
@@ -104,7 +123,7 @@ def analyze_board(grid: np.ndarray, weights: dict, return_predictions: bool = Fa
             "weights": {k: weights.get(k, 0.0) for k in solver.MODULE_REGISTRY.keys()}
         } for pos in top3
     ]
-    return final_score, predictions, top3_with_weights, metrics
+    return {"recommendations": top3_with_weights, "confidence": confidence.tolist()}
 
 def filter_global_rules(suggestions, grid):
     """
