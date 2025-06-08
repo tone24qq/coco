@@ -1,65 +1,100 @@
-import argparse
-import json
-import os
-from brain import process_single_board, process_batch
-import logging
+#!/usr/bin/env python3
+"""
+Main script for scratch card analysis based on SOP and enhanced algorithms.
 
-logging.basicConfig(level=logging.INFO)
+This script processes scratch card grids, analyzes potential hidden numbers,
+and provides predictions with confidence scores. It supports mobile, GitHub,
+and service integration with a maximum grid size of 20x20.
+
+Usage:
+    python3 script.py <input_file> [--target-num <number>]
+
+Returns:
+    Analysis results including best position and confidence scores.
+"""
+import argparse
+import logging
+import numpy as np
+from analyzer import analyze_board
+
+# 設置日誌
+logging.basicConfig(
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="橘子刮樂分析工具")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--input-file', type=str, help='單一盤面檔案 (JSON/CSV/Excel)')
-    group.add_argument('--input-folder', type=str, help='盤面檔案資料夾 (samples/data/)')
-    parser.add_argument('--output', type=str, required=True, help='輸出檔案或資料夾')
-    parser.add_argument('--weights', type=str, default=None, help='模組權重 JSON 字串')
-    parser.add_argument('--mode', type=str, choices=['heatmap', 'predict'], default='predict', help='模式: heatmap 或 predict')
-    parser.add_argument('--target-num', type=int, default=None, help='指定數字')
-    parser.add_argument('--json-heatmap', type=str, default='samples/data/json', help='JSON 熱力圖資料夾路徑')
+    """
+    Parse command line arguments.
+
+    Args:
+        None
+
+    Returns:
+        argparse.Namespace: Parsed arguments including input file and target number.
+    """
+    parser = argparse.ArgumentParser(description="Scratch Card Analysis Tool")
+    parser.add_argument('input_file', type=str, help='Input file path (JSON/CSV/Excel)')
+    parser.add_argument('--target-num', type=int, default=None, help='Target number to predict')
     return parser.parse_args()
 
-if __name__ == '__main__':
+def load_grid_from_file(path: str) -> np.ndarray:
+    """
+    Load grid data from a file.
+
+    Args:
+        path (str): Path to the input file.
+
+    Returns:
+        np.ndarray: Loaded grid with -1 for unopened cells.
+
+    Raises:
+        ValueError: If file format is unsupported or grid exceeds 20x20.
+    """
+    ext = path.lower().split('.')[-1]
+    if ext in ['json']:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        grid = np.array(data)
+    elif ext in ['csv']:
+        grid = np.genfromtxt(path, delimiter=',', dtype=int, filling_values=-1)
+    elif ext in ['xls', 'xlsx']:
+        df = pd.read_excel(path, header=None, dtype=str)
+        grid = np.array([[int(x) if x.isdigit() else -1 for x in row] for row in df.values])
+    else:
+        raise ValueError(f"Unsupported file format: {ext}")
+
+    # Validate grid size (max 20x20)
+    if grid.shape[0] > 20 or grid.shape[1] > 20:
+        raise ValueError("Grid size exceeds maximum limit of 20x20")
+    return grid
+
+def main():
+    """
+    Main function to execute the scratch card analysis.
+
+    Args:
+        None
+
+    Returns:
+        None
+    """
     args = parse_args()
+    logger.info(f"Processing input file: {args.input_file}")
 
-    if args.weights:
-        weights = json.loads(args.weights)
-    else:
-        weights = {
-            "compute_dynamic_hot_cold_vectorized": 0.15,
-            "compute_dynamic_hot_cold_advanced": 0.2,
-            "compute_block_heatmap_vectorized": 0.1,
-            "idw_vectorized": 0.1,
-            "compute_global_diff_heatmap": 0.05,
-            "compute_focus_score": 0.1,
-            "detect_skip_patterns": 0.05,
-            "compute_difference_trend": 0.05,
-            "detect_mirror_sequences": 0.05,
-            "connectivity_heatmap": 0.05,
-            "sequence_tail_analyzer": 0.05,
-            "analyze_number_patterns": 0.05
-        }
+    try:
+        grid = load_grid_from_file(args.input_file)
+        score, pred, best_pos = analyze_board(grid, weights={}, return_predictions=True, target_num=args.target_num)
+        
+        logger.info("Grid Analysis Completed:")
+        logger.info(f"Best Position: {best_pos[0][:2] if best_pos else 'None'}")
+        if best_pos:
+            for pos in best_pos[:3]:
+                logger.info(f"Position {pos[:2]}: Score {pos[2]:.2f}, Contributions {pos[3]}")
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+        raise
 
-    return_predictions = (args.mode == 'predict')
-
-    os.makedirs(args.json_heatmap, exist_ok=True)
-
-    if args.input_file:
-        input_path = args.input_file
-        output_prefix = args.output
-        logger.info(f"分析單一檔案: {input_path}")
-        try:
-            base_name = os.path.splitext(os.path.basename(input_path))[0]
-            sheet_heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
-            process_single_board(input_path, weights, return_predictions, output_prefix, args.target_num, sheet_heatmap_path)
-        except Exception as e:
-            logger.error(f"處理失敗: {e}")
-    else:
-        input_folder = args.input_folder
-        output_folder = args.output
-        os.makedirs(output_folder, exist_ok=True)
-        logger.info(f"批次分析資料夾: {input_folder}，輸出到: {output_folder}")
-        try:
-            process_batch(input_folder, weights, return_predictions, output_folder, args.target_num, args.json_heatmap)
-        except Exception as e:
-            logger.error(f"批次處理失敗: {e}")
+if __name__ == "__main__":
+    main()
