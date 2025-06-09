@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request, Form, JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request, Form
 from fastapi.responses import JSONResponse
 import uvicorn
 import numpy as np
