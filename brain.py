@@ -5,10 +5,10 @@ import os
 import logging
 import asyncio
 import requests
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from analyzer import analyze_board, predict_topk
 from fastapi import HTTPException, status
-from typing import Optional, List, Dict, Any
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
