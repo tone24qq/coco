@@ -8,19 +8,6 @@ from typing import Dict, Tuple, List, Optional
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
 
-# ✅ 自動建立 logs 資料夾
-log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-# ✅ 設定 logger，寫入 logs/main.log
-logging.basicConfig(
-    filename=os.path.join(log_dir, "main.log"),
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
