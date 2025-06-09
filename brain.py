@@ -234,7 +234,7 @@ async def process_single_board(
             with open(metrics_path, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"Sheet {idx+1 processed: {sheet_output}")
+            logger.info(f"Sheet {idx+1} processed: {sheet_output}")
             
             try:
                 response = await requests.get("http://localhost:8000/health", timeout=5)
