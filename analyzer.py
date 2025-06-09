@@ -1,168 +1,298 @@
-import argparse
+import numpy as np
+import logging
 import json
 import os
-import logging
-import numpy as np
-from typing import Dict, Optional, List, Tuple
-from brain import process_single_board, process_batch
-from analyzer import generate_masked_samples, train_interactive_model
+from modules import ScratchSolver
+from numpy.lib.stride_tricks import sliding_window_view
+from typing import List, Dict, Any, Tuple
+from sklearn.linear_model import LogisticRegression
+import joblib
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def parse_args() -> argparse.Namespace:
+def compute_all_module_scores(
+    grid: np.ndarray, target_pos: Tuple[int, int], grid_shape: Tuple[int, int]
+) -> np.ndarray:
     """
-    Parses command-line arguments for the scratch card analysis tool.
+    Computes scores for a specific position using all registered modules.
+
+    Args:
+        grid (np.ndarray): 2D array representing the board.
+        target_pos (Tuple[int, int]): Target position to compute scores for.
+        grid_shape (Tuple[int, int]): Shape of the grid.
 
     Returns:
-        argparse.Namespace: Parsed arguments.
+        np.ndarray: Concatenated score vector from all modules.
     """
-    parser = argparse.ArgumentParser(description="橘子刮樂分析工具")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument('--input-file', type=str, help='單一盤面檔案 (JSON/CSV/Excel)')
-    group.add_argument('--input-folder', type=str, help='盤面檔案資料夾 (samples/data/)')
-    parser.add_argument('--output', type=str, required=True, help='輸出檔案或資料夾')
-    parser.add_argument('--weights', type=str, default=None, help='模組權重 JSON 字串')
-    parser.add_argument(
-        '--mode',
-        type=str,
-        choices=['heatmap', 'predict'],
-        default='predict',
-        help='模式: heatmap 或 predict'
-    )
-    parser.add_argument('--target-num', type=int, default=None, help='指定數字')
-    parser.add_argument(
-        '--json-heatmap',
-        type=str,
-        default='samples/data/json',
-        help='JSON 熱力圖資料夾路徑'
-    )
-    parser.add_argument(
-        '--train',
-        action='store_true',
-        help='啟動模型訓練模式，生成樣本並訓練模型'
-    )
-    parser.add_argument(
-        '--model-output',
-        type=str,
-        default='models/model.pkl',
-        help='訓練模型儲存路徑'
-    )
-    return parser.parse_args()
-
-def main() -> None:
-    """
-    Main function to execute scratch card analysis or model training.
-
-    Processes either a single file, a batch of files, or trains a model based on arguments.
-    """
-    args = parse_args()
-
-    weights: Dict[str, float]
-    if args.weights:
+    solver = ScratchSolver()
+    solver.update_tree(grid)
+    features = []
+    for mod_name, mod_func in solver.MODULE_REGISTRY.items():
         try:
-            weights = json.loads(args.weights)
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid weights JSON: {e}")
-            raise
-    else:
-        weights = {
-            "compute_dynamic_hot_cold_vectorized": 0.15,
-            "compute_dynamic_hot_cold_advanced": 0.2,
-            "compute_block_heatmap_vectorized": 0.1,
-            "idw_vectorized": 0.1,
-            "compute_global_diff_heatmap": 0.05,
-            "compute_focus_score": 0.1,
-            "detect_skip_patterns": 0.05,
-            "compute_difference_trend": 0.05,
-            "detect_mirror_sequences": 0.05,
-            "connectivity_heatmap": 0.05,
-            "sequence_tail_analyzer": 0.05,
-            "analyze_number_patterns": 0.05
-        }
+            result = mod_func(grid)
+            if isinstance(result, tuple):
+                scores = result[0]
+            else:
+                scores = result
+            # Extract score for target position if available
+            if scores.size == np.count_nonzero(grid == -1):
+                empty_yx = np.argwhere(grid == -1)
+                idx = np.where((empty_yx == target_pos).all(axis=1))[0]
+                if idx.size > 0:
+                    features.append(scores[idx[0]])
+                else:
+                    features.append(0.1)
+            else:
+                features.append(0.1)
+        except Exception as e:
+            logger.warning(f"Module {mod_name} failed for position {target_pos}: {e}")
+            features.append(0.1)
+    return np.array(features)
 
-    return_predictions = (args.mode == 'predict')
+def generate_masked_samples(grid: np.ndarray) -> List[Tuple[np.ndarray, int]]:
+    """
+    Generates masked samples for training by hiding one cell at a time.
 
+    Args:
+        grid (np.ndarray): 2D array representing the board.
+
+    Returns:
+        List[Tuple[np.ndarray, int]]: List of (features, true_value) pairs.
+    """
+    samples = []
+    M, N = grid.shape
+    for i in range(M):
+        for j in range(N):
+            true_val = grid[i, j]
+            if true_val == -1:
+                continue  # Skip already hidden cells
+            masked = grid.copy()
+            masked[i, j] = -1
+            features = compute_all_module_scores(masked, (i, j), (M, N))
+            samples.append((features, int(true_val)))
+    logger.info(f"Generated {len(samples)} masked samples for grid shape {M}x{N}")
+    return samples
+
+def train_interactive_model(samples: List[Tuple[np.ndarray, int]], model_path: str) -> None:
+    """
+    Trains a logistic regression model on masked samples and saves it.
+
+    Args:
+        samples (List[Tuple[np.ndarray, int]]): List of (features, true_value) pairs.
+        model_path (str): Path to save the trained model.
+    """
     try:
-        os.makedirs(args.json_heatmap, exist_ok=True)
-    except OSError as e:
-        logger.error(f"Failed to create heatmap directory {args.json_heatmap}: {e}")
+        X = [s[0] for s in samples]
+        y = [s[1] for s in samples]
+        clf = LogisticRegression(penalty="l1", solver="saga", max_iter=1000)
+        clf.fit(X, y)
+        joblib.dump(clf, model_path)
+        logger.info(f"Model trained and saved to {model_path}")
+    except Exception as e:
+        logger.error(f"Failed to train model: {e}")
         raise
 
-    if args.train:
-        logger.info("Starting model training mode")
-        try:
-            input_folder = args.input_folder
-            if not os.path.exists(input_folder):
-                raise FileNotFoundError(f"Input folder {input_folder} does not exist")
-            
-            samples: List[Tuple[np.ndarray, int]] = []
-            for filename in os.listdir(input_folder):
-                if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
-                    filepath = os.path.join(input_folder, filename)
-                    grids = process_single_board(filepath, weights, False, "", None, args.json_heatmap)
-                    for grid in grids:
-                        samples.extend(generate_masked_samples(grid))
-            
-            if not samples:
-                logger.error("No valid samples generated for training")
-                raise ValueError("No valid training data")
-            
-            os.makedirs(os.path.dirname(args.model_output), exist_ok=True)
-            train_interactive_model(samples, args.model_output)
-            logger.info(f"Model trained and saved to {args.model_output}")
-        except Exception as e:
-            logger.error(f"Training failed: {e}")
-            raise
-    elif args.input_file:
-        input_path = args.input_file
-        output_prefix = args.output
-        logger.info(f"Analyzing single file: {input_path}")
-        try:
-            if not os.path.exists(input_path):
-                raise FileNotFoundError(f"Input file {input_path} does not exist")
-            base_name = os.path.splitext(os.path.basename(input_path))[0]
-            sheet_heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
-            process_single_board(
-                input_path,
-                weights,
-                return_predictions,
-                output_prefix,
-                args.target_num,
-                sheet_heatmap_path
-            )
-        except Exception as e:
-            logger.error(f"Processing failed: {e}")
-            raise
-    else:
-        input_folder = args.input_folder
-        output_folder = args.output
-        try:
-            os.makedirs(output_folder, exist_ok=True)
-        except OSError as e:
-            logger.error(f"Failed to create output directory {output_folder}: {e}")
-            raise
-        logger.info(f"Batch analyzing folder: {input_folder}, outputting to: {output_folder}")
-        try:
-            if not os.path.exists(input_folder):
-                raise FileNotFoundError(f"Input folder {input_folder} does not exist")
-            process_batch(
-                input_folder,
-                weights,
-                return_predictions,
-                output_folder,
-                args.target_num,
-                args.json_heatmap
-            )
-        except Exception as e:
-            logger.error(f"Batch processing failed: {e}")
-            raise
+def predict_topk(
+    masked_grid: np.ndarray, model_path: str, k: int = 3
+) -> List[Tuple[int, int, int, float]]:
+    """
+    Predicts top-k positions for hidden cells using a trained model.
 
-if __name__ == "__main__":
-    main()
+    Args:
+        masked_grid (np.ndarray): 2D array with hidden cells marked as -1.
+        model_path (str): Path to the trained model.
+        k (int): Number of top predictions to return.
+
+    Returns:
+        List[Tuple[int, int, int, float]]: List of (row, col, predicted_digit, confidence).
+    """
+    try:
+        clf = joblib.load(model_path)
+    except FileNotFoundError:
+        logger.error(f"Model not found at {model_path}")
+        raise
+    M, N = masked_grid.shape
+    cand = []
+    for i in range(M):
+        for j in range(N):
+            if masked_grid[i, j] == -1:
+                features = compute_all_module_scores(masked_grid, (i, j), (M, N))
+                probs = clf.predict_proba([features])[0]
+                best_digit = clf.classes_[probs.argmax()]
+                cand.append((i, j, best_digit, probs.max()))
+    return sorted(cand, key=lambda x: x[3], reverse=True)[:k]
+
+def analyze_board(
+    grid: np.ndarray,
+    weights: Dict[str, float],
+    return_predictions: bool = False,
+    target_num: int = None,
+    json_heatmap_path: str = None,
+    knowledge_base: List[Dict[str, Any]] = None,
+    heatmap_data: Dict[str, Any] = None,
+    model_path: str = "models/model.pkl"
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float]]:
+    """
+    Analyzes a scratch card board to predict hidden numbers, recording features from multiple angles.
+
+    Args:
+        grid (np.ndarray): 2D array representing the board (-1 for hidden cells).
+        weights (Dict[str, float]): Weights for each analysis module.
+        return_predictions (bool): Whether to return predicted values.
+        target_num (int, optional): Specific number to locate.
+        json_heatmap_path (str, optional): Path to JSON heatmap file.
+        knowledge_base (List[Dict[str, Any]], optional): Math algorithm knowledge base.
+        heatmap_data (Dict[str, Any], optional): Preloaded heatmap data.
+        model_path (str): Path to the trained model for predictions.
+
+    Returns:
+        Tuple containing final scores, predictions, top 3 positions, and metrics.
+    """
+    if knowledge_base:
+        logger.info(f"Loaded {len(knowledge_base)} KB concepts")
+    if heatmap_data:
+        logger.info(f"Loaded {len(heatmap_data)} heatmap files")
+
+    solver = ScratchSolver()
+    solver.update_tree(grid)
+
+    # Validate grid size
+    if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
+        logger.error("Grid size out of 4x4 to 20x20 bounds")
+        return (
+            np.array([]),
+            np.array(grid),
+            [(0, 0, 0.1, {"default": 0.1})],
+            {"accuracy": 0, "pattern_match": 0, "value_diff": 0}
+        )
+    
+    N = grid.size
+    opened_nums = set(grid[grid != -1])
+    if len(opened_nums) != len(set(opened_nums)) or max(opened_nums, default=0) > N:
+        logger.error("Numbers violate 1~N uniqueness rule")
+        return (
+            np.array([]),
+            np.array(grid),
+            [(0, 0, 0.1, {"default": 0.1})],
+            {"accuracy": 0, "pattern_match": 0, "value_diff": 0}
+        )
+    
+    if target_num is not None and target_num in opened_nums:
+        logger.warning(f"Target number {target_num} already present on board")
+        return (
+            np.array([]),
+            np.array(grid),
+            [(0, 0, 0.1, {"default": 0.1})],
+            {"accuracy": 0, "pattern_match": 0, "value_diff": 0}
+        )
+
+    # Record features from multiple angles
+    features_dict: Dict[str, Any] = {
+        "row_features": {},
+        "col_features": {},
+        "diagonal_features": {},
+        "neighborhood_features": {}
+    }
+    for i in range(grid.shape[0]):
+        for j in range(grid.shape[1]):
+            if grid[i, j] != -1:
+                num = grid[i, j]
+                # Row features
+                features_dict["row_features"].setdefault(i, []).append(num)
+                # Column features
+                features_dict["col_features"].setdefault(j, []).append(num)
+                # Diagonal features (main and anti-diagonal)
+                if i == j:
+                    features_dict["diagonal_features"].setdefault("main", []).append(num)
+                if i + j == grid.shape[0] - 1:
+                    features_dict["diagonal_features"].setdefault("anti", []).append(num)
+                # Neighborhood features (3x3 window)
+                window = sliding_window_view(grid, (3, 3))[max(0, i-1), max(0, j-1)]
+                neighbors = window[window != -1].flatten()
+                features_dict["neighborhood_features"].setdefault((i, j), []).extend(neighbors.tolist())
+
+    # Save features to JSON
+    features_path = json_heatmap_path.replace(".json", "_features.json") if json_heatmap_path else "samples/data/features.json"
+    try:
+        os.makedirs(os.path.dirname(features_path), exist_ok=True)
+        with open(features_path, "w", encoding="utf-8") as f:
+            json.dump(features_dict, f, ensure_ascii=False, indent=2)
+        logger.info(f"Features saved to {features_path}")
+    except OSError as e:
+        logger.error(f"Failed to save features to {features_path}: {e}")
+
+    # Read JSON heatmap
+    initial_scores = None
+    if json_heatmap_path and os.path.exists(json_heatmap_path):
+        try:
+            with open(json_heatmap_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            initial_scores = np.array(data.get('heatmap', np.zeros_like(grid, dtype=float)))
+            if initial_scores.shape != grid.shape:
+                logger.warning(f"JSON heatmap shape {initial_scores.shape} does not match grid {grid.shape}")
+                initial_scores = None
+            else:
+                logger.info(f"Successfully loaded heatmap: {json_heatmap_path}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to read JSON heatmap: {e}")
+            initial_scores = None
+    else:
+        logger.info(f"Invalid or nonexistent heatmap path: {json_heatmap_path}, recalculating")
+
+    # Module calculations
+    mod_scores: Dict[str, np.ndarray] = {}
+    for mod_name, mod_func in solver.MODULE_REGISTRY.items():
+        try:
+            result = mod_func(grid)
+            if isinstance(result, tuple):
+                mod_scores[mod_name] = result[0]
+            else:
+                mod_scores[mod_name] = result
+            if mod_scores[mod_name].size != np.count_nonzero(grid == -1):
+                logger.warning(f"{mod_name} returned score size {mod_scores[mod_name].size} mismatches unopened cells {np.count_nonzero(grid == -1)}")
+                mod_scores[mod_name] = np.zeros(np.count_nonzero(grid == -1))
+        except Exception as e:
+            logger.error(f"{mod_name} failed: {e}")
+            mod_scores[mod_name] = np.zeros(np.count_nonzero(grid == -1))
+
+    # Board classification
+    board_type = solver.classify_board_type(
+        mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros_like(list(mod_scores.values())[0]))
+    )
+
+    # Apply adaptive weights
+    solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
+    final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
+
+    # Prediction integration
+    patterns = solver.analyze_number_patterns(grid)
+    predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
+
+    # Use trained model if available
+    top3 = []
+    if os.path.exists(model_path):
+        top3_predictions = predict_topk(grid, model_path, k=3)
+        top3 = [(p[0], p[1], p[3], {"model": p[3]}) for p in top3_predictions]
+    else:
+        empty_yx = np.argwhere(grid == -1)
+        if not empty_yx.size:
+            top3 = [(0, 0, 0.1, {"default": 0.1})]
+        else:
+            top3 = solver.predict_top3_vectorized(final_score, empty_yx)
+            if not top3 or len(top3) < 3:
+                top3 = [(int(empty_yx[i][0]), int(empty_yx[i][1]), 0.1, {"default": 0.1}) for i in range(min(3, len(empty_yx)))]
+                top3.extend([(0, 0, 0.1, {"default": 0.1})] * (3 - len(top3)))
+
+    # Evaluate predictions
+    true_values = grid.copy()
+    remaining_nums = list(set(range(1, N + 1)) - set(opened_nums))
+    np.random.shuffle(remaining_nums)
+    for (i, j), num in zip(empty_yx, remaining_nums):
+        true_values[i, j] = num
+    metrics = solver.evaluate_prediction(grid, predictions, true_values)
+
+    return final_score, predictions, top3, metrics
 
 # 自檢報告：
 # - 語法檢查：通過
