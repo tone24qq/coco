@@ -281,7 +281,8 @@ async def upload_file(
         logger.error(f"File upload failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/batch/", status_code=status.HTTPStatus.OK)
+from http import HTTPStatus
+@app.post("/batch/", status_code=HTTPStatus.OK.value)
 async def batch_process(
     input_folder: str = Form(...),
     background_tasks: BackgroundTasks = BackgroundTasks()
