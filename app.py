@@ -9,10 +9,10 @@ import os
 import logging
 import asyncio
 import glob
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Tuple, Any, Optional, Union
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board, predict_topk
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, model_config
 from functools import lru_cache
 
 # 配置日誌，包含檔案和控制台輸出
@@ -81,22 +81,37 @@ class AnalysisRequest(BaseModel):
     """
     Schema for JSON payload to analyze a scratch card grid.
     """
-    grid: List[List[float]] = Field(..., description="2D array, -1 for hidden cells")
+    grid: Union[str, List[List[float]]] = Field(..., description="2D array as JSON string or list, -1 for hidden cells")
     weights: Optional[Dict[str, float]] = None
     mode: str = Field("predict", description="Analysis mode: 'predict' or 'heatmap'")
     target_num: Optional[int] = Field(None, description="Target number to predict")
     json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
 
+    class Config:
+        protected_namespaces = ()
+
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.array(grid, dtype=float)
-        if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
+        # JSON 解析
+        try:
+            if isinstance(grid, str):
+                grid_list = json.loads(grid)
+            else:
+                grid_list = grid
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid grid JSON format")
+        
+        # 轉成 numpy 並檢查維度
+        grid_array = np.array(grid_list, dtype=float)
+        if grid_array.ndim != 2:
+            raise HTTPException(status_code=400, detail=f"grid must be 2D list, current shape={grid_array.shape}")
+        if grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
         if not np.all(np.isin(grid_array, np.append(np.arange(1, grid_array.size + 1), -1))):
             raise ValueError(f"Grid values must be in range 1 to {grid_array.size} or -1")
-        return grid
+        return grid_array.tolist()  # Return as list for Pydantic compatibility
 
 class Prediction(BaseModel):
     """
@@ -108,6 +123,9 @@ class Prediction(BaseModel):
     confidence: float
     true_digit: Optional[int] = None
 
+    class Config:
+        protected_namespaces = ()
+
 class AnalysisResponse(BaseModel):
     """
     Schema for API response.
@@ -116,6 +134,9 @@ class AnalysisResponse(BaseModel):
     error: Optional[str]
     source: str = "🔥 from real API"
     reasoning: List[str]
+
+    class Config:
+        protected_namespaces = ()
 
 DEFAULT_WEIGHTS = {
     "compute_dynamic_hot_cold_vectorized": 0.15,
@@ -241,7 +262,20 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     logger.info("Received request at /predict")
     try:
-        grid_array = np.array(payload.grid, dtype=float)
+        # JSON 解析與維度檢查
+        grid = payload.grid
+        try:
+            if isinstance(grid, str):
+                grid_list = json.loads(grid)
+            else:
+                grid_list = grid
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid grid JSON format")
+        
+        grid_array = np.array(grid_list, dtype=float)
+        if grid_array.ndim != 2:
+            raise HTTPException(status_code=400, detail=f"grid must be 2D list, current shape={grid_array.shape}")
+        
         M, N = grid_array.shape
         N_total = M * N
         nums = grid_array[grid_array != -1].flatten()
