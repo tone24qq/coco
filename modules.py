@@ -117,7 +117,7 @@ class ScratchSolver:
                 json.dump(features_dict, f, ensure_ascii=False, indent=2)
             logger.info(f"Features saved to {output_path}")
         except OSError as e:
-            logger.error("f"Failed to save features to {output_path}: {e}")
+            logger.error(f"Failed to save features to {output_path}: {e}")
             raise
 
         return features_dict
