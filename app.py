@@ -133,26 +133,33 @@ DEFAULT_WEIGHTS = {
 }
 
 @lru_cache(maxsize=1000)
-def cache_board_analysis(grid_tuple: tuple, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
+def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
     Cache board analysis results.
 
     Parameters:
         grid_tuple (tuple): Flattened grid as tuple for caching.
+        shape (Tuple[int, int]): Original grid shape.
         target_num (int): Target number.
         model_path (str): Model path.
 
     Returns:
         Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
-    grid = np.array(grid_tuple).reshape(-1, len(grid_tuple) // len(grid_tuple) // grid.shape[0])
-    logger.debug(f"Cache hit for grid shape {grid.shape} with target {target_num}")
-    predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
-    return predictions, reasoning
+    try:
+        grid = np.array(grid_tuple).reshape(shape)
+        logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
+        if grid.size != len(grid_tuple):
+            raise ValueError(f"Cache mismatch: expected {len(grid_tuple)} elements, got {grid.size}")
+        predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
+        return predictions, reasoning
+    except Exception as e:
+        logger.error(f"Cache analysis failed: {str(e)}")
+        return [], []
 
 def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
-    Perform board analysis with detailed logging.
+    Perform board analysis with detailed logging and validation.
 
     Parameters:
         grid (np.ndarray): 2D board array.
@@ -167,6 +174,9 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     logger.info(f"Analyzing grid of size {M}x{N} for target number {target_num}")
     
     try:
+        if not isinstance(grid, np.ndarray) or grid.ndim != 2:
+            raise ValueError(f"Invalid grid type or shape: {type(grid)}, {grid.shape if hasattr(grid, 'shape') else 'None'}")
+        
         for i in range(M):
             for j in range(N):
                 if grid[i, j] != -1:
@@ -257,7 +267,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         model_path = payload.model_path
         
         grid_tuple = tuple(grid_array.flatten().tolist())
-        predictions, reasoning = cache_board_analysis(grid_tuple, target_num, model_path)
+        predictions, reasoning = cache_board_analysis(grid_tuple, (M, N), target_num, model_path)
         
         if not predictions:
             logger.warning("Cache miss, performing new analysis")
