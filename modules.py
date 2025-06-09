@@ -23,7 +23,7 @@ class ScratchSolver:
         self.MODULE_REGISTRY = {
             'compute_dynamic_hot_cold_vectorized': self.compute_dynamic_hot_cold_vectorized,
             'compute_dynamic_hot_cold_advanced': self.compute_dynamic_hot_cold_advanced,
-            'idw_vectorized': self.idw_vectorized,
+            'idw_vectorized': self.idw,
             'compute_block_heatmap_vectorized': self.compute_block_heatmap_vectorized,
             'compute_global_diff_heatmap': self.compute_global_diff_heatmap,
             'compute_focus_score': self.compute_focus_score,
@@ -58,7 +58,7 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         self.known_yx = np.argwhere(grid != -1)
-        self.known_vals = grid[grid != -1]
+        self.known_vals = grid[grid != -1].flatten()
         if self.known_yx.size > 0:
             self.tree = cKDTree(self.known_yx)
         else:
@@ -99,13 +99,13 @@ class ScratchSolver:
                     features_dict["diagonal_features"].setdefault("anti", []).append(num)
                 # Neighborhood features (3x3 window)
                 window = sliding_window_view(
-                    np.pad(grid, ((1, 1), (1, 1)), mode='edge'), (3, 3)
+                    np.pad(grid, ((1, 1), ((1, 1)), mode='edge'), (3, 3)
                 )[i, j]
                 neighbors = window[window != -1].flatten()
                 features_dict["neighborhood_features"].setdefault(f"{i},{j}", []).extend(neighbors.tolist())
                 # Difference features (with adjacent cells)
                 diffs = []
-                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                for di, dj in [(-1, 0), (1, 0), (0, -1)], (0, 1)
                     ni, nj = i + di, j + dj
                     if 0 <= ni < M and 0 <= nj < N:
                         diffs.append(abs(num - grid[ni, nj]))
@@ -113,15 +113,16 @@ class ScratchSolver:
 
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, "w", encoding="utf-8") as f:
+            with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(features_dict, f, ensure_ascii=False, indent=2)
             logger.info(f"Features saved to {output_path}")
         except OSError as e:
-            logger.error(f"Failed to save features to {output_path}: {e}")
+            logger.error("f"Failed to save features to {output_path}: {e}")
+            raise
 
         return features_dict
 
-    def idw_vectorized(self, grid: np.ndarray) -> np.ndarray:
+    def idw_vectorized(self, grid: np.ndarray) -> np.ndarray
         """
         Computes inverse distance weighting scores for hidden cells.
 
@@ -326,7 +327,7 @@ class ScratchSolver:
                         diff = np.diff(windows[j])
                         if np.all(np.abs(np.diff(diff)) < 1e-10):
                             step = diff[0]
-                            for c in range(j+1, j+k):
+                            for c in range(j+1, min(j+k, N)):  # Ensure c is within bounds
                                 if grid[i, c] == -1 and 1 <= grid[i, j] + step * (c - j) <= grid.size:
                                     scores[i, c] += 1.0 / k
                                     pred[i, c] = int(grid[i, j] + step * (c - j))
@@ -337,7 +338,7 @@ class ScratchSolver:
                         diff = np.diff(windows[i])
                         if np.all(np.abs(np.diff(diff)) < 1e-10):
                             step = diff[0]
-                            for r in range(i+1, i+k):
+                            for r in range(i+1, min(i+k, M)):  # Ensure r is within bounds
                                 if grid[r, j] == -1 and 1 <= grid[i, j] + step * (r - i) <= grid.size:
                                     scores[r, j] += 1.0 / k
                                     pred[r, j] = int(grid[i, j] + step * (r - i))
@@ -370,12 +371,12 @@ class ScratchSolver:
                     if j >= 1 and grid[i, j-1] != -1:
                         expected = grid[i, j-1] + 1
                         if 1 <= expected <= grid.size and diff_freq[1] > 0:
-                            scores[i, j] = diff_freq[1] / diff_freq.sum()
+                            scores[i, j] = diff_freq[1] / (diff_freq.sum() + 1e-8)
                             pred[i, j] = int(expected)
                     if i >= 1 and grid[i-1, j] != -1:
                         expected = grid[i-1, j] + 1
                         if 1 <= expected <= grid.size and diff_freq[1] > 0:
-                            scores[i, j] = diff_freq[1] / diff_freq.sum()
+                            scores[i, j] = max(scores[i, j], diff_freq[1] / (diff_freq.sum() + 1e-8))
                             pred[i, j] = int(expected)
         scores[grid != -1] = 0
         mn, mx = scores.min(), scores.max()
@@ -471,8 +472,8 @@ class ScratchSolver:
                 block_tails = block[block != -1] % 10
                 if block_tails.size > 0:
                     local_freq = np.bincount(block_tails, minlength=10) / (block_tails.size + 1e-8)
-                    for y in range(i, i+3):
-                        for x in range(j, j+3):
+                    for y in range(i, min(i+3, M)):  # Ensure y is within bounds
+                        for x in range(j, min(j+3, N)):  # Ensure x is within bounds
                             if grid[y, x] == -1:
                                 best_tail = np.argmax(local_freq)
                                 scores[y, x] = local_freq[best_tail]
@@ -775,9 +776,9 @@ class ScratchSolver:
         }
         top3 = [
             (int(empty_positions[i][0]), int(empty_positions[i][1]), max(float(final_scores[i]), 0.1), contributions)
-            for i in top3_idx
+            for i in top3_idx if empty_positions[i][0] < grid.shape[0] and empty_positions[i][1] < grid.shape[1]
         ]
-        return top3
+        return top3[:3]  # Ensure at most 3 predictions
 
 class AdaptiveWeights:
     """
