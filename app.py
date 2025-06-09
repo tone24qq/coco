@@ -15,8 +15,7 @@ from analyzer import analyze_board, predict_topk
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
 
-# ✅ 建立 logs 資料夾 & 設定 logger
-os.makedirs("logs", exist_ok=True)
+# 配置日誌，包含檔案和控制台輸出
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
@@ -24,7 +23,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ✅ 建立 FastAPI 實例
 app = FastAPI(
     title="Scratch Card Analysis API",
     version="1.0.0",
@@ -32,51 +30,52 @@ app = FastAPI(
     openapi_version="3.1.0"
 )
 
-# ✅ 開機時自動讀取 samples/data 資料
-@app.on_event("startup")
-async def startup_process_samples():
-    print("🟡 啟動成功進入 startup_process_samples()")
+# 資料目錄設定
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-    BASE_DIR = os.path.dirname(__file__)
-    DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
-    
-    if not os.path.exists(DATA_DIR):
-        logger.warning(f"⚠️ 找不到資料夾：{DATA_DIR}")
-        return
-    
-    json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
+# 載入知識庫和熱圖
+def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
+    """
+    Load knowledge base and heatmaps from data directory with detailed logging.
+
+    Returns:
+        Tuple[List[Dict], Dict[str, Any]]: Knowledge base and heatmaps.
+    """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    heatmap_paths = [p for p in json_paths if os.path.basename(p).startswith("heatmap_")]
+    heatmap_paths = glob.glob(os.path.join(DATA_DIR, "heatmap_*.json"))
+    
+    math_algo_kb = []
+    heatmaps = {}
+    
+    # 載入知識庫
+    if os.path.exists(kb_path):
+        try:
+            with open(kb_path, 'r', encoding="utf-8") as f:
+                math_algo_kb = json.load(f)["concepts"]
+            logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
+    else:
+        logger.warning(f"Knowledge base file not found at {kb_path}, using empty KB")
+    
+    # 載入熱圖
+    for hp in heatmap_paths:
+        name = os.path.splitext(os.path.basename(hp))[0]
+        try:
+            with open(hp, 'r', encoding="utf-8") as f:
+                heatmaps[name] = json.load(f)
+            logger.info(f"Successfully loaded heatmap {name} from {hp}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load heatmap {name} from {hp}: {str(e)}")
+    
+    if not heatmaps:
+        logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
+    
+    return math_algo_kb, heatmaps
 
-    logger.info(f"📥 共載入 {len(json_paths)} 個 JSON 檔案")
-    logger.info(f"📊 熱力圖檔案數量：{len(heatmap_paths)}")
-    logger.info(f"📘 知識庫路徑：{kb_path}")
-
-    # ✅ 讀取 KB 檔案內容
-    try:
-        with open(kb_path, 'r', encoding="utf-8") as f:
-            kb_data = json.load(f)
-        math_algo_kb = kb_data.get("concepts", [])
-        logger.info(f"📖 已載入 {len(math_algo_kb)} 筆知識庫資料")
-    except FileNotFoundError:
-        math_algo_kb = []
-        logger.warning(f"❌ 找不到知識庫檔案：{kb_path}")
-
-    # ✅ 放進 app.state 給其他 API 用
-    app.state.kb_path = kb_path
-    app.state.heatmap_paths = heatmap_paths
-    app.state.math_algo_kb = math_algo_kb
-heatmaps: Dict[str, Any] = {}
-for hp in heatmap_paths:
-    name = os.path.splitext(os.path.basename(hp))[0]
-    try:
-        with open(hp, 'r', encoding="utf-8") as f:
-            heatmaps[name] = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        logger.error(f"Failed to load heatmap {hp}: {e}")
-
-from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+math_algo_kb, heatmaps = load_data_resources()
 
 class AnalysisRequest(BaseModel):
     """
@@ -89,15 +88,14 @@ class AnalysisRequest(BaseModel):
     json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
 
-    model_config = {
-        "protected_namespaces": ()
-    }
     @validator("grid")
     def validate_grid(cls, grid):
         grid_array = np.array(grid, dtype=float)
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
+        if not np.all(np.isin(grid_array, np.append(np.arange(1, grid_array.size + 1), -1))):
+            raise ValueError(f"Grid values must be in range 1 to {grid_array.size} or -1")
         return grid
 
 class Prediction(BaseModel):
@@ -153,7 +151,7 @@ def cache_board_analysis(grid_tuple: tuple, target_num: int, model_path: str) ->
 
 def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
-    Perform board analysis with caching logic.
+    Perform board analysis with detailed logging.
 
     Parameters:
         grid (np.ndarray): 2D board array.
@@ -165,36 +163,47 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     """
     M, N = grid.shape
     predictions = []
-    for i in range(M):
-        for j in range(N):
-            if grid[i, j] != -1:
-                masked_grid = grid.copy()
-                true_val = int(masked_grid[i, j])
-                masked_grid[i, j] = -1
-                if os.path.exists(model_path):
-                    topk = predict_topk(masked_grid, model_path, target_num, k=3)
-                    predictions.extend([{
-                        "row": p[0],
-                        "col": p[1],
-                        "predicted_digit": p[2],
-                        "confidence": p[3],
-                        "true_digit": true_val if p[2] == target_num else None
-                    } for p in topk if p[2] == target_num])
-                else:
-                    scores, pred_array, top3, _ = analyze_board(
-                        masked_grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps
-                    )
-                    predictions.extend([{
-                        "row": t[0],
-                        "col": t[1],
-                        "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
-                        "confidence": t[2],
-                        "true_digit": true_val if pred_array[t[0], t[1]] == target_num else None
-                    } for t in top3 if pred_array[t[0], t[1]] == target_num])
+    logger.info(f"Analyzing grid of size {M}x{N} for target number {target_num}")
+    
+    try:
+        for i in range(M):
+            for j in range(N):
+                if grid[i, j] != -1:
+                    masked_grid = grid.copy()
+                    true_val = int(masked_grid[i, j])
+                    masked_grid[i, j] = -1
+                    logger.debug(f"Simulating mask at position ({i}, {j}) with true value {true_val}")
+                    if os.path.exists(model_path):
+                        topk = predict_topk(masked_grid, model_path, target_num, k=3)
+                        predictions.extend([{
+                            "row": p[0],
+                            "col": p[1],
+                            "predicted_digit": p[2],
+                            "confidence": p[3],
+                            "true_digit": true_val if p[2] == target_num else None
+                        } for p in topk if p[2] == target_num])
+                        logger.info(f"Successfully predicted {len(topk)} candidates for position ({i}, {j})")
+                    else:
+                        scores, pred_array, top3, _, reasoning = analyze_board(
+                            masked_grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps
+                        )
+                        predictions.extend([{
+                            "row": t[0],
+                            "col": t[1],
+                            "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
+                            "confidence": float(t[2]),
+                            "true_digit": true_val if pred_array[t[0], t[1]] == target_num else None
+                        } for t in top3 if pred_array[t[0], t[1]] == target_num])
+                        logger.info(f"Generated {len(top3)} heuristic predictions for position ({i}, {j})")
+    except Exception as e:
+        logger.error(f"Analysis failed for grid: {str(e)}")
+        raise
+    
     reasoning = [
         f"Remaining numbers: {list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))}",
         f"Target number {target_num} analyzed across {len(predictions)} candidates"
     ]
+    logger.info(f"Analysis completed with {len(predictions)} predictions")
     return predictions, reasoning
 
 @app.get("/health")
@@ -205,6 +214,7 @@ async def health_check() -> Dict[str, str]:
     Returns:
         Dict[str, str]: Health status.
     """
+    logger.info("Health check requested")
     return {"status": "ok"}
 
 @app.post("/predict", response_model=AnalysisResponse, operation_id="predictFromJson")
@@ -225,14 +235,19 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         N_total = M * N
         nums = grid_array[grid_array != -1].flatten()
         
+        logger.info(f"Loaded grid of size {M}x{N} with {len(nums)} open numbers")
         if len(set(nums)) != len(nums) or max(nums, default=0) > N_total or min(nums, default=1) < 1:
-            raise HTTPException(status_code=400, detail=f"Numbers must be unique and in range 1 to {N_total}")
+            error_msg = f"Numbers must be unique and in range 1 to {N_total}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
         
         target_num = payload.target_num
         if target_num is None:
             remaining = list(set(range(1, N_total + 1)) - set(nums))
             if not remaining:
-                raise HTTPException(status_code=400, detail="No remaining numbers to predict")
+                error_msg = "No remaining numbers to predict"
+                logger.error(error_msg)
+                raise HTTPException(status_code=400, detail=error_msg)
             target_num = remaining[0]
             logger.warning(f"No target number specified, defaulting to {target_num}")
         
@@ -244,8 +259,10 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         predictions, reasoning = cache_board_analysis(grid_tuple, target_num, model_path)
         
         if not predictions:
+            logger.warning("Cache miss, performing new analysis")
             predictions, reasoning = perform_board_analysis(grid_array, target_num, model_path)
         
+        logger.info(f"Returning {len(predictions)} predictions for target number {target_num}")
         result = {
             "predictions": predictions,
             "error": None,
@@ -261,7 +278,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
             content={"predictions": [], "error": e.detail, "source": "🔥 from real API", "reasoning": []}
         )
     except Exception as e:
-        logger.error(f"Prediction failed: {e}")
+        logger.error(f"Prediction failed: {str(e)}")
         return JSONResponse(
             status_code=500,
             content={"predictions": [], "error": str(e), "source": "🔥 from real API", "reasoning": []}
@@ -273,7 +290,7 @@ async def upload_file(
     background_tasks: BackgroundTasks = BackgroundTasks()
 ) -> JSONResponse:
     """
-    Upload and process a scratch card file.
+    Upload and process a scratch card file with detailed logging.
 
     Parameters:
         file (UploadFile): File containing grid data.
@@ -282,15 +299,20 @@ async def upload_file(
     Returns:
         JSONResponse: Upload status and output path.
     """
+    logger.info(f"Received upload request for file: {file.filename}")
     try:
         if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
-            raise HTTPException(status_code=400, detail="Unsupported file format")
+            error_msg = f"Unsupported file format: {file.filename}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=400, detail=error_msg)
         
         input_path = f"samples/data/{file.filename}"
         os.makedirs("samples/data", exist_ok=True)
+        
         with open(input_path, "wb") as f:
             content = await file.read()
             f.write(content)
+        logger.info(f"Successfully saved uploaded file to {input_path}")
         
         output_prefix = f"samples/output/{os.path.splitext(file.filename)[0]}"
         weights = DEFAULT_WEIGHTS
@@ -299,24 +321,27 @@ async def upload_file(
         background_tasks.add_task(
             process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
         )
+        logger.info(f"Scheduled background processing for {input_path}")
         
         return JSONResponse(
             content={"message": f"File {file.filename} uploaded, processing started", "output_path": output_prefix},
             status_code=200
         )
     
+    except HTTPException as e:
+        logger.error(f"File upload failed: {e.detail}")
+        raise
     except Exception as e:
-        logger.error(f"File upload failed: {e}")
+        logger.error(f"File upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-from http import HTTPStatus
-@app.post("/batch/", status_code=HTTPStatus.OK.value)
+@app.post("/batch/", status_code=status.HTTP_200_OK)
 async def batch_process(
     input_folder: str = Form(...),
     background_tasks: BackgroundTasks = BackgroundTasks()
 ) -> JSONResponse:
     """
-    Initiate batch processing of scratch card files.
+    Initiate batch processing of scratch card files with detailed logging.
 
     Parameters:
         input_folder (str): Directory containing input files.
@@ -325,9 +350,15 @@ async def batch_process(
     Returns:
         JSONResponse: Batch processing status.
     """
+    logger.info(f"Received batch processing request for folder: {input_folder}")
     try:
         if not os.path.exists(input_folder):
-            raise HTTPException(status_code=404, detail=f"Folder {input_folder} does not exist")
+            error_msg = f"Folder {input_folder} does not exist"
+            logger.error(error_msg)
+            raise HTTPException(status_code=404, detail=error_msg)
+        
+        files = [f for f in os.listdir(input_folder) if f.endswith(('.json', '.csv', '.xls', '.xlsx'))]
+        logger.info(f"Found {len(files)} valid files in {input_folder}: {files}")
         
         output_folder = f"samples/output/batch_{os.path.basename(input_folder)}"
         weights = DEFAULT_WEIGHTS
@@ -336,14 +367,18 @@ async def batch_process(
         background_tasks.add_task(
             process_batch, input_folder, weights, True, output_folder, None, json_heatmap
         )
+        logger.info(f"Scheduled batch processing, results will be saved to {output_folder}")
         
         return JSONResponse(
-            content={"message": f"Batch processing started, results will be saved to {output_folder}"},
+            content={"message": f"Batch processing started with {len(files)} files, results will be saved to {output_folder}"},
             status_code=200
         )
     
+    except HTTPException as e:
+        logger.error(f"Batch processing failed: {e.detail}")
+        raise
     except Exception as e:
-        logger.error(f"Batch processing failed: {e}")
+        logger.error(f"Batch processing failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def save_results_to_file(
@@ -364,7 +399,13 @@ def save_results_to_file(
         output_format (str): File format.
     """
     from brain import save_results_to_file as brain_save
-    brain_save(scores, predictions, best_pos, output_filepath, output_format)
+    logger.info(f"Saving results to {output_filepath} in {output_format} format")
+    try:
+        brain_save(scores, predictions, best_pos, output_filepath, output_format)
+        logger.info(f"Successfully saved results to {output_filepath}")
+    except Exception as e:
+        logger.error(f"Failed to save results to {output_filepath}: {str(e)}")
+        raise
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def catch_all(request: Request, full_path: str) -> JSONResponse:
