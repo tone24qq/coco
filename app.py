@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request, Form, JSONResponse
 from fastapi.responses import JSONResponse
 import uvicorn
 import numpy as np
@@ -105,7 +105,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         grid_array = np.array(payload.grid, dtype=float)
         assert grid_array.ndim == 2, f"Expected 2D grid, got {grid_array.ndim}D array with shape {grid_array.shape}"
         M, N = grid_array.shape
-        if grid_array.ndim != 2 or M < 4 or N < 4 or M > 20 or N > 20:
+        if M < 4 or N < 4 or M > 20 or N > 20:
             raise HTTPException(status_code=400, detail="Grid size must be 4x4 to 20x20")
         
         # Validate no hidden cells and unique numbers
@@ -137,7 +137,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
                         "predicted_digit": int(p[2]),
                         "confidence": float(p[3]),
                         "true_digit": int(true_val)
-                    } for p in topk])
+                    } for p in topk if p[0] < M and p[1] < N])
                 else:
                     scores, pred_array, top3, metrics = analyze_board(
                         masked_grid,
@@ -152,10 +152,10 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
                     predictions.extend([{
                         "row": t[0],
                         "col": t[1],
-                        "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
+                        "predicted_digit": int(pred_array[t[0], t[1]]) if t[0] < pred_array.shape[0] and t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] != -1 else 0,
                         "confidence": float(t[2]),
                         "true_digit": int(true_val)
-                    } for t in top3])
+                    } for t in top3 if t[0] < M and t[1] < N])
 
         result = {
             "predictions": predictions,
@@ -226,8 +226,8 @@ async def analyze_grid(
                 raise HTTPException(status_code=400, detail=f"Invalid grid JSON: {e}")
 
         assert grid_array.ndim == 2, f"Expected 2D grid, got {grid_array.ndim}D array with shape {grid_array.shape}"
-        if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
-           grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
+        M, N = grid_array.shape
+        if M < 4 or N < 4 or M > 20 or N > 20:
             raise HTTPException(status_code=400, detail="Grid size must be 4x4 to 20x20")
         
         weights = DEFAULT_WEIGHTS
@@ -254,7 +254,7 @@ async def analyze_grid(
                 "col": pos[1],
                 "confidence": max(float(pos[2]), 0.1),
                 "contributions": pos[3]
-            } for pos in top3],
+            } for pos in top3 if pos[0] < M and pos[1] < N],
             "metrics": metrics
         }
         
