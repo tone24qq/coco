@@ -12,7 +12,7 @@ import glob
 from typing import Dict, List, Tuple, Any, Optional, Union
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board, predict_topk
-from pydantic import BaseModel, Field, validator, model_config
+from pydantic import BaseModel, Field, validator, ConfigDict
 from functools import lru_cache
 
 # 配置日誌，包含檔案和控制台輸出
@@ -88,8 +88,9 @@ class AnalysisRequest(BaseModel):
     json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
 
-    class Config:
-        protected_namespaces = ()
+    model_config = ConfigDict(
+        protected_namespaces=(),
+    )
 
     @validator("grid")
     def validate_grid(cls, grid):
@@ -123,8 +124,9 @@ class Prediction(BaseModel):
     confidence: float
     true_digit: Optional[int] = None
 
-    class Config:
-        protected_namespaces = ()
+    model_config = ConfigDict(
+        protected_namespaces=(),
+    )
 
 class AnalysisResponse(BaseModel):
     """
@@ -135,8 +137,9 @@ class AnalysisResponse(BaseModel):
     source: str = "🔥 from real API"
     reasoning: List[str]
 
-    class Config:
-        protected_namespaces = ()
+    model_config = ConfigDict(
+        protected_namespaces=(),
+    )
 
 DEFAULT_WEIGHTS = {
     "compute_dynamic_hot_cold_vectorized": 0.15,
