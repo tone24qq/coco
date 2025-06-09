@@ -145,7 +145,8 @@ def cache_board_analysis(grid_tuple: tuple, target_num: int, model_path: str) ->
     Returns:
         Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
-    grid = np.array(grid_tuple).reshape(-1, len(grid_tuple) // grid.shape[0])
+    grid = np.array(grid_tuple).reshape(-1, len(grid_tuple) // len(grid_tuple) // grid.shape[0])
+    logger.debug(f"Cache hit for grid shape {grid.shape} with target {target_num}")
     predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
     return predictions, reasoning
 
