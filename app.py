@@ -77,6 +77,31 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
 
 math_algo_kb, heatmaps = load_data_resources()
 
+def prepare_grid(grid_raw):
+    """
+    Prepare and validate grid as a 2D NumPy array.
+
+    Parameters:
+        grid_raw: Raw grid data (string or list).
+
+    Returns:
+        np.ndarray: Validated 2D grid array.
+
+    Raises:
+        HTTPException: If grid format is invalid.
+    """
+    try:
+        if isinstance(grid_raw, str):
+            grid_list = json.loads(grid_raw)
+        else:
+            grid_list = grid_raw
+        grid = np.array(grid_list, dtype=np.float32)  # 使用 float32 支援分析模型
+        if grid.ndim != 2:
+            raise ValueError("Grid must be a 2D array")
+        return grid
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"無效 grid 格式: {str(e)}")
+
 class AnalysisRequest(BaseModel):
     """
     Schema for JSON payload to analyze a scratch card grid.
@@ -94,25 +119,10 @@ class AnalysisRequest(BaseModel):
 
     @validator("grid")
     def validate_grid(cls, grid):
-        # JSON 解析
-        try:
-            if isinstance(grid, str):
-                grid_list = json.loads(grid)
-            else:
-                grid_list = grid
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid grid JSON format")
-        
-        # 轉成 numpy 並檢查維度
-        grid_array = np.array(grid_list, dtype=float)
-        if grid_array.ndim != 2:
-            raise HTTPException(status_code=400, detail=f"grid must be 2D list, current shape={grid_array.shape}")
-        if grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
-           grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
-            raise ValueError("Grid size must be 4x4 to 20x20")
-        if not np.all(np.isin(grid_array, np.append(np.arange(1, grid_array.size + 1), -1))):
-            raise ValueError(f"Grid values must be in range 1 to {grid_array.size} or -1")
-        return grid_array.tolist()  # Return as list for Pydantic compatibility
+        """
+        Validate grid format (handled by prepare_grid in predict).
+        """
+        return grid  # Validation deferred to prepare_grid
 
 class Prediction(BaseModel):
     """
@@ -195,7 +205,7 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     """
     M, N = grid.shape
     predictions = []
-    logger.info(f"Analyzing grid of size {M}x{N} for target number {target_num}")
+    logger.info(f"Analyzing grid of size {M}x{N} with shape {grid.shape} for target number {target_num}")
     
     try:
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
@@ -265,25 +275,13 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     logger.info("Received request at /predict")
     try:
-        # JSON 解析與維度檢查
-        grid = payload.grid
-        try:
-            if isinstance(grid, str):
-                grid_list = json.loads(grid)
-            else:
-                grid_list = grid
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid grid JSON format")
-        
-        grid_array = np.array(grid_list, dtype=float)
-        if grid_array.ndim != 2:
-            raise HTTPException(status_code=400, detail=f"grid must be 2D list, current shape={grid_array.shape}")
-        
-        M, N = grid_array.shape
+        # 使用 prepare_grid 處理 grid
+        grid = prepare_grid(payload.grid)
+        M, N = grid.shape
         N_total = M * N
-        nums = grid_array[grid_array != -1].flatten()
+        nums = grid[grid != -1].flatten()
         
-        logger.info(f"Loaded grid of size {M}x{N} with {len(nums)} open numbers")
+        logger.info(f"Loaded grid of size {M}x{N} with shape {grid.shape} and {len(nums)} open numbers")
         if len(set(nums)) != len(nums) or max(nums, default=0) > N_total or min(nums, default=1) < 1:
             error_msg = f"Numbers must be unique and in range 1 to {N_total}"
             logger.error(error_msg)
@@ -303,12 +301,12 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         json_heatmap_path = payload.json_heatmap
         model_path = payload.model_path
         
-        grid_tuple = tuple(grid_array.flatten().tolist())
+        grid_tuple = tuple(grid.flatten().tolist())
         predictions, reasoning = cache_board_analysis(grid_tuple, (M, N), target_num, model_path)
         
         if not predictions:
             logger.warning("Cache miss, performing new analysis")
-            predictions, reasoning = perform_board_analysis(grid_array, target_num, model_path)
+            predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
         
         logger.info(f"Returning {len(predictions)} predictions for target number {target_num}")
         result = {
