@@ -27,6 +27,7 @@ def compute_all_module_scores(
     Returns:
         np.ndarray: Concatenated score vector.
     """
+    assert grid.ndim == 2, f"Grid for compute_all_module_scores is not 2D, shape: {grid.shape}"
     solver = ScratchSolver()
     solver.update_tree(grid)
     features = []
@@ -52,6 +53,7 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     Returns:
         Dict[str, float]: Statistical features.
     """
+    assert grid.ndim == 2, f"Grid for extract_extended_features is not 2D, shape: {grid.shape}"
     features = {}
     M, N = grid.shape
     open_nums = grid[grid != -1]
@@ -91,6 +93,7 @@ def generate_masked_samples(
     Returns:
         List[Tuple[np.ndarray, int, Dict]]: Samples with grid, true value, and features.
     """
+    assert grid.ndim == 2, f"Grid for generate_masked_samples is not 2D, shape: {grid.shape}"
     samples = []
     M, N = grid.shape
     remaining_nums = list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))
@@ -171,6 +174,7 @@ def predict_topk(
     Returns:
         List[Tuple]: Top-k predictions with row, col, digit, confidence, and reasoning.
     """
+    assert masked_grid.ndim == 2, f"Masked grid for predict_topk is not 2D, shape: {masked_grid.shape}"
     try:
         clf = joblib.load(model_path)
     except FileNotFoundError:
@@ -228,81 +232,4 @@ def analyze_board(
         model_path (str): Path to model.
 
     Returns:
-        Tuple: Scores, predictions, top-3 positions, metrics, and reasoning steps.
-    """
-    if target_num is None:
-        remaining_nums = list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))
-        if not remaining_nums:
-            raise ValueError("No remaining numbers to predict")
-        target_num = remaining_nums[0]
-        logger.warning(f"No target number specified, using {target_num}")
-    
-    solver = ScratchSolver()
-    solver.update_tree(grid)
-    
-    if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        logger.error("Grid size out of bounds")
-        return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0}, ["Invalid grid size"]
-    
-    open_nums = set(grid[grid != -1])
-    if len(open_nums) != len(set(open_nums)) or max(open_nums, default=0) > grid.size:
-        logger.error("Invalid numbers detected")
-        return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0}, ["Invalid numbers"]
-    
-    if target_num in open_nums:
-        logger.warning(f"Target number {target_num} already present")
-        return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0}, [f"Target {target_num} already open"]
-    
-    extended_features = extract_extended_features(grid)
-    features_path = json_heatmap_path.replace(".json", "_features.json") if json_heatmap_path else "samples/data/features.json"
-    try:
-        os.makedirs(os.path.dirname(features_path), exist_ok=True)
-        with open(features_path, "w", encoding="utf-8") as f:
-            json.dump(extended_features, f, ensure_ascii=False, indent=2)
-    except OSError as e:
-        logger.error(f"Failed to save features: {e}")
-    
-    mod_scores = {}
-    for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-        try:
-            result = mod_func(grid)
-            mod_scores[mod_name] = result[0] if isinstance(result, tuple) else result
-            if mod_scores[mod_name].size != np.count_nonzero(grid == -1):
-                logger.warning(f"{mod_name} score size mismatch")
-                mod_scores[mod_name] = np.zeros(np.count_nonzero(grid == -1))
-        except Exception as e:
-            logger.error(f"{mod_name} failed: {e}")
-            mod_scores[mod_name] = np.zeros(np.count_nonzero(grid == -1))
-    
-    board_type = solver.classify_board_type(mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros_like(list(mod_scores.values())[0])))
-    solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
-    final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
-    
-    patterns = solver.analyze_number_patterns(grid)
-    predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
-    
-    top3 = []
-    reasoning_steps = [f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}", f"Target number: {target_num}"]
-    if os.path.exists(model_path):
-        top3_predictions = predict_topk(grid, model_path, target_num, k=3)
-        top3 = [(p[0], p[1], p[3], p[4]["confidence_contributors"]) for p in top3_predictions]
-        reasoning_steps.extend([f"Candidate at {p[4]['position']} with confidence {p[3]}" for p in top3_predictions])
-    else:
-        empty_yx = np.argwhere(grid == -1)
-        top3 = solver.predict_top3_vectorized(final_score, empty_yx, target_num=target_num)
-        reasoning_steps.append(f"Top-3 predicted using heuristic scores: {top3}")
-    
-    true_values = grid.copy()
-    remaining_nums = list(set(range(1, grid.size + 1)) - set(open_nums))
-    np.random.shuffle(remaining_nums)
-    for (i, j), num in zip(np.argwhere(grid == -1), remaining_nums):
-        true_values[i, j] = num
-    metrics = solver.evaluate_prediction(grid, predictions, true_values)
-    
-    return final_score, predictions, top3, metrics, reasoning_steps
-
-# Self-Inspection Report:
-# - Syntax Check: Passed
-# - Parentheses Matching: No issues
-# - Identifier Definitions: All variables, functions, and modules defined before use
-# - Testing Environment: Python 3.11
+        Tuple: Scores,
