@@ -52,17 +52,20 @@ async def startup_process_samples():
     logger.info(f"📊 熱力圖檔案數量：{len(heatmap_paths)}")
     logger.info(f"📘 知識庫路徑：{kb_path}")
 
-    # ✅ 放進 app.state 給其他 API 使用
+    # ✅ 讀取 KB 檔案內容
+    try:
+        with open(kb_path, 'r', encoding="utf-8") as f:
+            kb_data = json.load(f)
+        math_algo_kb = kb_data.get("concepts", [])
+        logger.info(f"📖 已載入 {len(math_algo_kb)} 筆知識庫資料")
+    except FileNotFoundError:
+        math_algo_kb = []
+        logger.warning(f"❌ 找不到知識庫檔案：{kb_path}")
+
+    # ✅ 放進 app.state 給其他 API 用
     app.state.kb_path = kb_path
     app.state.heatmap_paths = heatmap_paths
-try:
-    with open(kb_path, 'r', encoding="utf-8") as f:
-        math_algo_kb = json.load(f)["concepts"]
-    logger.info(f"Loaded {len(math_algo_kb)} KB concepts")
-except FileNotFoundError:
-    math_algo_kb = []
-    logger.warning(f"Knowledge base not found at {kb_path}")
-
+    app.state.math_algo_kb = math_algo_kb
 heatmaps: Dict[str, Any] = {}
 for hp in heatmap_paths:
     name = os.path.splitext(os.path.basename(hp))[0]
