@@ -10,21 +10,6 @@ from typing import List, Tuple, Dict, Any, Optional
 from analyzer import analyze_board, predict_topk
 from fastapi import HTTPException, status
 from functools import lru_cache
-# ✅ 自動建立 logs 資料夾，避免 FileNotFoundError
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
-
-# ✅ 設定 log handler
-log_path = os.path.join(log_dir, "brain.log")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler(log_path),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,22 +43,26 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                 for grid_data in data:
                     if isinstance(grid_data, list) and all(isinstance(row, list) for row in grid_data):
                         grid = np.array(grid_data, dtype=float)
-                        if grid.ndim == 2:
-                            grids.append(grid)
+                        assert grid.ndim == 2, f"Grid from {filepath} is not 2D, shape: {grid.shape}"
+                        grids.append(grid)
             else:
                 grid = np.array(data, dtype=float)
-                if grid.ndim == 2:
-                    grids.append(grid)
+                assert grid.ndim == 2, f"Grid from {filepath} is not 2D, shape: {grid.shape}"
+                grids.append(grid)
         
         elif ext in ['.csv', '.xls', '.xlsx']:
             if ext == '.csv':
                 df = pd.read_csv(filepath, header=None)
-                grids.append(df.to_numpy(dtype=float))
+                grid = df.to_numpy(dtype=float)
+                assert grid.ndim == 2, f"CSV grid from {filepath} is not 2D, shape: {grid.shape}"
+                grids.append(grid)
             else:
                 xl = pd.ExcelFile(filepath)
                 for sheet_name in xl.sheet_names:
                     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
-                    grids.append(df.to_numpy(dtype=float))
+                    grid = df.to_numpy(dtype=float)
+                    assert grid.ndim == 2, f"Excel grid from {filepath} sheet {sheet_name} is not 2D, shape: {grid.shape}"
+                    grids.append(grid)
         
         cleaned_grids: List[np.ndarray] = []
         for grid in grids:
@@ -106,6 +95,7 @@ def validate_grid_distribution(grid: np.ndarray) -> None:
     Parameters:
         grid (np.ndarray): Grid to validate.
     """
+    assert grid.ndim == 2, f"Grid distribution check failed, shape: {grid.shape}"
     open_nums = grid[grid != -1]
     if len(open_nums) < 2 or np.std(open_nums) == 0:
         logger.warning("Grid distribution may be invalid; distribution may be too uniform")
@@ -135,6 +125,8 @@ def save_results_to_file(
     Raises:
         HTTPException: If saving fails.
     """
+    assert scores.ndim == 1 or scores.ndim == 2, f"Scores shape invalid: {scores.shape}"
+    assert predictions.ndim == 2, f"Predictions shape invalid: {predictions.shape}"
     empty_yx = np.argwhere(predictions == -1)
     result = {
         'scores': scores.tolist(),
@@ -159,7 +151,7 @@ def save_results_to_file(
             df = pd.DataFrame({
                 'row': empty_yx[:, 0],
                 'col': empty_yx[:, 1],
-                'score': np.round(scores, 3),
+                'score': np.round(scores[empty_yx[:, 0], empty_yx[:, 1]] if scores.ndim == 2 else scores, 3),
                 'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
             })
             if all_predictions:
@@ -202,6 +194,7 @@ async def process_single_board(
     try:
         grids = load_grid_from_file(filepath)
         for idx, grid in enumerate(grids):
+            assert grid.ndim == 2, f"Grid from {filepath} sheet {idx+1} is not 2D, shape: {grid.shape}"
             sheet_output = f"{output_prefix}_sheet{idx+1}"
             base_name = os.path.splitext(os.path.basename(filepath))[0]
             heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json")
@@ -214,7 +207,6 @@ async def process_single_board(
                 target_num = min(remaining) if remaining else 1
                 logger.warning(f"Defaulting to target number {target_num}")
             
-            grid_tuple = tuple(grid.flatten().tolist())
             if os.path.exists(model_path):
                 topk, reasoning = predict_topk(grid, model_path, target_num, k=3)
                 all_predictions.extend([{
