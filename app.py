@@ -53,6 +53,9 @@ for hp in heatmap_paths:
     except (OSError, json.JSONDecodeError) as e:
         logger.error(f"Failed to load heatmap {hp}: {e}")
 
+from pydantic import BaseModel, Field
+from typing import List, Dict, Optional
+
 class AnalysisRequest(BaseModel):
     """
     Schema for JSON payload to analyze a scratch card grid.
@@ -64,6 +67,9 @@ class AnalysisRequest(BaseModel):
     json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
 
+    model_config = {
+        "protected_namespaces": ()
+    }
     @validator("grid")
     def validate_grid(cls, grid):
         grid_array = np.array(grid, dtype=float)
