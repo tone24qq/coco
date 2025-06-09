@@ -1,4 +1,3 @@
-<DOCUMENT filename="analyzer.py">
 import numpy as np
 import logging
 import json
