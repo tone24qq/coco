@@ -1,4 +1,3 @@
-<DOCUMENT filename="modules.py">
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import convolve2d
