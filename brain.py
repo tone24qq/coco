@@ -5,7 +5,7 @@ import os
 import logging
 import asyncio
 import requests
-from typing import Optional, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 from analyzer import analyze_board, predict_topk
 from fastapi import HTTPException, status
 
