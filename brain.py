@@ -10,6 +10,21 @@ from typing import List, Tuple, Dict, Any, Optional
 from analyzer import analyze_board, predict_topk
 from fastapi import HTTPException, status
 from functools import lru_cache
+# ✅ 自動建立 logs 資料夾，避免 FileNotFoundError
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+
+# ✅ 設定 log handler
+log_path = os.path.join(log_dir, "brain.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler(log_path),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 logging.basicConfig(
     level=logging.INFO,
