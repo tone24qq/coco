@@ -26,6 +26,7 @@ def compute_all_module_scores(
         np.ndarray: Concatenated score vector from all modules.
     """
     assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+    assert 0 <= target_pos[0] < grid.shape[0] and 0 <= target_pos[1] < grid.shape[1], f"Target position {target_pos} out of bounds for grid shape {grid.shape}"
     solver = ScratchSolver()
     solver.update_tree(grid)
     features = []
@@ -213,7 +214,8 @@ def analyze_board(
                 if i + j == grid.shape[0] - 1:
                     features_dict["diagonal_features"].setdefault("anti", []).append(num)
                 # Neighborhood features (3x3 window)
-                window = sliding_window_view(grid, (3, 3))[max(0, i-1), max(0, j-1)]
+                i_start, j_start = max(0, i-1), max(0, j-1)
+                window = sliding_window_view(grid, (3, 3))[i_start, j_start]
                 neighbors = window[window != -1].flatten()
                 features_dict["neighborhood_features"].setdefault((i, j), []).extend(neighbors.tolist())
 
@@ -278,15 +280,16 @@ def analyze_board(
     top3 = []
     if os.path.exists(model_path):
         top3_predictions = predict_topk(grid, model_path, k=3)
-        top3 = [(p[0], p[1], p[3], {"model": p[3]}) for p in top3_predictions]
+        top3 = [(p[0], p[1], p[3], {"model": p[3]}) for p in top3_predictions if p[0] < grid.shape[0] and p[1] < grid.shape[1]]
     else:
         empty_yx = np.argwhere(grid == -1)
         if not empty_yx.size:
             top3 = [(0, 0, 0.1, {"default": 0.1})]
         else:
             top3 = solver.predict_top3_vectorized(final_score, empty_yx)
+            top3 = [(t[0], t[1], t[2], t[3]) for t in top3 if t[0] < grid.shape[0] and t[1] < grid.shape[1]]
             if not top3 or len(top3) < 3:
-                top3 = [(int(empty_yx[i][0]), int(empty_yx[i][1]), 0.1, {"default": 0.1}) for i in range(min(3, len(empty_yx)))]
+                top3 = [(int(empty_yx[i][0]), int(empty_yx[i][1]), 0.1, {"default": 0.1}) for i in range(min(3, len(empty_yx))) if empty_yx[i][0] < grid.shape[0] and empty_yx[i][1] < grid.shape[1]]
                 top3.extend([(0, 0, 0.1, {"default": 0.1})] * (3 - len(top3)))
 
     # Evaluate predictions
@@ -294,7 +297,8 @@ def analyze_board(
     remaining_nums = list(set(range(1, N + 1)) - set(opened_nums))
     np.random.shuffle(remaining_nums)
     for (i, j), num in zip(empty_yx, remaining_nums):
-        true_values[i, j] = num
+        if i < grid.shape[0] and j < grid.shape[1]:
+            true_values[i, j] = num
     metrics = solver.evaluate_prediction(grid, predictions, true_values)
 
     return final_score, predictions, top3, metrics
