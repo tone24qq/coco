@@ -15,6 +15,8 @@ from analyzer import analyze_board, predict_topk
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
 
+# ✅ 建立 logs 資料夾 & 設定 logger
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
@@ -22,6 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ✅ 建立 FastAPI 實例
 app = FastAPI(
     title="Scratch Card Analysis API",
     version="1.0.0",
@@ -29,13 +32,29 @@ app = FastAPI(
     openapi_version="3.1.0"
 )
 
-BASE_DIR = os.path.dirname(__file__)
-DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
-json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
+# ✅ 開機時自動讀取 samples/data 資料
+@app.on_event("startup")
+async def startup_process_samples():
+    print("🟡 啟動成功進入 startup_process_samples()")
 
-kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-heatmap_paths = [p for p in json_paths if os.path.basename(p).startswith("heatmap_")]
+    BASE_DIR = os.path.dirname(__file__)
+    DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
+    
+    if not os.path.exists(DATA_DIR):
+        logger.warning(f"⚠️ 找不到資料夾：{DATA_DIR}")
+        return
+    
+    json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
+    kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
+    heatmap_paths = [p for p in json_paths if os.path.basename(p).startswith("heatmap_")]
 
+    logger.info(f"📥 共載入 {len(json_paths)} 個 JSON 檔案")
+    logger.info(f"📊 熱力圖檔案數量：{len(heatmap_paths)}")
+    logger.info(f"📘 知識庫路徑：{kb_path}")
+
+    # ✅ 放進 app.state 給其他 API 使用
+    app.state.kb_path = kb_path
+    app.state.heatmap_paths = heatmap_paths
 try:
     with open(kb_path, 'r', encoding="utf-8") as f:
         math_algo_kb = json.load(f)["concepts"]
