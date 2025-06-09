@@ -23,7 +23,7 @@ class ScratchSolver:
         self.MODULE_REGISTRY = {
             'compute_dynamic_hot_cold_vectorized': self.compute_dynamic_hot_cold_vectorized,
             'compute_dynamic_hot_cold_advanced': self.compute_dynamic_hot_cold_advanced,
-            'idw_vectorized': self.idw,
+            'idw_vectorized': self.idw_vectorized,
             'compute_block_heatmap_vectorized': self.compute_block_heatmap_vectorized,
             'compute_global_diff_heatmap': self.compute_global_diff_heatmap,
             'compute_focus_score': self.compute_focus_score,
@@ -58,7 +58,7 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         self.known_yx = np.argwhere(grid != -1)
-        self.known_vals = grid[grid != -1].flatten()
+        self.known_vals = grid[grid != -1]
         if self.known_yx.size > 0:
             self.tree = cKDTree(self.known_yx)
         else:
@@ -99,13 +99,13 @@ class ScratchSolver:
                     features_dict["diagonal_features"].setdefault("anti", []).append(num)
                 # Neighborhood features (3x3 window)
                 window = sliding_window_view(
-                    np.pad(grid, ((1, 1), ((1, 1)), mode='edge'), (3, 3)
+                    np.pad(grid, ((1, 1), (1, 1)), mode='edge'), (3, 3)
                 )[i, j]
                 neighbors = window[window != -1].flatten()
                 features_dict["neighborhood_features"].setdefault(f"{i},{j}", []).extend(neighbors.tolist())
                 # Difference features (with adjacent cells)
                 diffs = []
-                for di, dj in [(-1, 0), (1, 0), (0, -1)], (0, 1)
+                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
                     ni, nj = i + di, j + dj
                     if 0 <= ni < M and 0 <= nj < N:
                         diffs.append(abs(num - grid[ni, nj]))
@@ -113,16 +113,15 @@ class ScratchSolver:
 
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, 'w', encoding='utf-8') as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(features_dict, f, ensure_ascii=False, indent=2)
             logger.info(f"Features saved to {output_path}")
         except OSError as e:
             logger.error(f"Failed to save features to {output_path}: {e}")
-            raise
 
         return features_dict
 
-    def idw_vectorized(self, grid: np.ndarray) -> np.ndarray
+    def idw_vectorized(self, grid: np.ndarray) -> np.ndarray:
         """
         Computes inverse distance weighting scores for hidden cells.
 
