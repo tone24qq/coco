@@ -1,4 +1,3 @@
-<DOCUMENT filename="app.py">
 from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request, Form, JSONResponse
 from fastapi.responses import JSONResponse
 import uvicorn
