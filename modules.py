@@ -102,6 +102,7 @@ class ScratchSolver:
         Parameters:
             grid (np.ndarray): 2D board array.
         """
+        assert grid.ndim == 2, f"Grid for update_tree is not 2D, shape: {grid.shape}"
         self.known_yx = np.argwhere(grid != -1)
         self.known_vals = grid[grid != -1]
         self.tree = cKDTree(self.known_yx) if self.known_yx.size > 0 else None
@@ -148,6 +149,7 @@ class ScratchSolver:
         Returns:
             np.ndarray: Scores for hidden cells.
         """
+        assert grid.ndim == 2, f"Grid for idw_vectorized is not 2D, shape: {grid.shape}"
         empty_yx = np.argwhere(grid == -1)
         if empty_yx.size == 0 or self.tree is None or self.known_yx is None:
             return np.full(np.count_nonzero(grid == -1), 0.1)
@@ -202,6 +204,7 @@ class ScratchSolver:
         Returns:
             np.ndarray: Scores for hidden cells.
         """
+        assert grid.ndim == 2, f"Grid for compute_dynamic_hot_cold_vectorized is not 2D, shape: {grid.shape}"
         known = grid[grid != -1]
         empty_yx = np.argwhere(grid == -1)
         if known.size == 0 or empty_yx.size == 0:
@@ -223,6 +226,7 @@ class ScratchSolver:
         Returns:
             np.ndarray: Scores for hidden cells.
         """
+        assert grid.ndim == 2, f"Grid for compute_dynamic_hot_cold_advanced is not 2D, shape: {grid.shape}"
         known = grid[grid != -1]
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
@@ -262,6 +266,7 @@ class ScratchSolver:
         Returns:
             np.ndarray: Scores for hidden cells.
         """
+        assert grid.ndim == 2, f"Grid for compute_block_heatmap_vectorized is not 2D, shape: {grid.shape}"
         h, w = grid.shape
         bs = min(block_size, h, w)
         padded = np.pad(grid, ((0, max(0, bs - h)), (0, max(0, bs - w))), mode='edge')
@@ -284,6 +289,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for compute_global_diff_heatmap is not 2D, shape: {grid.shape}"
         arr = np.where(grid == -1, 0, grid).astype(float)
         kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=float)
         lap = convolve2d(arr, kernel, mode='same', boundary='symm')
@@ -302,6 +308,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for compute_focus_score is not 2D, shape: {grid.shape}"
         mask = (grid != -1).astype(int)
         kernel = np.ones((3, 3)) / 9
         summed = convolve2d(np.where(grid != -1, grid, 0), kernel, mode='same', boundary='symm')
@@ -320,6 +327,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for detect_skip_patterns is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
@@ -361,6 +369,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for compute_difference_trend is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
@@ -373,12 +382,12 @@ class ScratchSolver:
                 if grid[i, j] == -1:
                     if j >= 1 and grid[i, j-1] != -1:
                         expected = grid[i, j-1] + 1
-                        if 1 <= expected <= grid.size and diff_freq[1] > 0:
+                        if 1 <= expected <= grid.size:
                             scores[i, j] = diff_freq[1] / (diff_freq.sum() + 1e-8)
                             pred[i, j] = int(expected)
                     if i >= 1 and grid[i-1, j] != -1:
                         expected = grid[i-1, j] + 1
-                        if 1 <= expected <= grid.size and diff_freq[1] > 0:
+                        if 1 <= expected <= grid.size:
                             scores[i, j] = max(scores[i, j], diff_freq[1] / (diff_freq.sum() + 1e-8))
                             pred[i, j] = int(expected)
         scores[grid != -1] = 0
@@ -415,7 +424,7 @@ class ScratchSolver:
                     if grid[i, j] == -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-i-1, j])
-        return scores[grid == -1], pred[grid == -1]
+        return scores, pred
 
     def detect_mirror_sequences(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -427,6 +436,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for detect_mirror_sequences is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         mid_x, mid_y = N // 2, M // 2
         return self._detect_mirror(grid, M, N, mid_x, mid_y)
@@ -441,6 +451,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for connectivity_heatmap is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         mask = (grid != -1).astype(np.uint8)
         kernel_4 = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
@@ -458,6 +469,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions.
         """
+        assert grid.ndim == 2, f"Grid for sequence_tail_analyzer is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
@@ -493,6 +505,7 @@ class ScratchSolver:
         Returns:
             Dict[Tuple[int, str], Dict[str, Any]]: Detected patterns.
         """
+        assert grid.ndim == 2, f"Grid for analyze_number_patterns is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         patterns: Dict[Tuple[int, str], Dict[str, Any]] = {}
         
@@ -533,6 +546,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Predictions and scores.
         """
+        assert grid.ndim == 2, f"Grid for pattern_based_prediction is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         pred = np.full_like(grid, -1, dtype=float)
         scores = np.zeros_like(grid, dtype=float)
@@ -561,7 +575,7 @@ class ScratchSolver:
                             if 1 <= predicted <= grid.size:
                                 pred[i, idx] = predicted
                                 scores[i, idx] = 1.0
-        return pred, np.where(scores < 0.1, 0.1, scores)
+        return pred, scores
 
     def local_relationship_prediction(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -573,6 +587,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Predictions and scores.
         """
+        assert grid.ndim == 2, f"Grid for local_relationship_prediction is not 2D, shape: {grid.shape}"
         M, N = grid.shape
         pred = np.full_like(grid, -1, dtype=float)
         scores = np.zeros_like(grid, dtype=float)
@@ -582,7 +597,7 @@ class ScratchSolver:
         pred[grid == -1] = neighbor_sum[grid == -1] / (neighbor_count[grid == -1] + 1e-8)
         scores[grid == -1] = neighbor_count[grid == -1] / 8
         pred[grid == -1] = np.clip(pred[grid == -1], 1, grid.size)
-        return pred, np.where(scores < 0.1, 0.1, scores)
+        return pred, scores
 
     def heatmap_based_prediction(self, grid: np.ndarray, scores: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -595,13 +610,14 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Predictions and confidence.
         """
+        assert grid.ndim == 2, f"Grid for heatmap_based_prediction is not 2D, shape: {grid.shape}"
         pred = np.zeros_like(grid, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
         empty_yx = np.argwhere(grid == -1)
         pred[empty_yx[:, 0], empty_yx[:, 1]] = scores
         confidence[empty_yx[:, 0], empty_yx[:, 1]] = scores
         pred = np.clip(pred, 1, grid.size)
-        return pred, np.where(confidence < 0.1, 0.1, confidence)
+        return pred, confidence
 
     def integrate_predictions(
         self, grid: np.ndarray, scores: np.ndarray, patterns: Dict[Tuple[int, str], Dict[str, Any]]
@@ -617,6 +633,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Final predictions and confidence.
         """
+        assert grid.ndim == 2, f"Grid for integrate_predictions is not 2D, shape: {grid.shape}"
         predictions = np.full_like(grid, -1, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
         
@@ -656,6 +673,9 @@ class ScratchSolver:
         Returns:
             Dict[str, float]: Evaluation metrics.
         """
+        assert grid.ndim == 2, f"Grid for evaluate_prediction is not 2D, shape: {grid.shape}"
+        assert prediction.ndim == 2, f"Prediction for evaluate_prediction is not 2D, shape: {prediction.shape}"
+        assert true_values.ndim == 2, f"True values for evaluate_prediction is not 2D, shape: {true_values.shape}"
         metrics = {
             'accuracy': 0.0,
             'pattern_match': 0.0,
@@ -755,6 +775,8 @@ class ScratchSolver:
         Returns:
             List[Tuple[int, int, float, Dict]]: Top-3 predictions.
         """
+        assert final_scores.ndim == 1, f"Final scores must be 1D, shape: {final_scores.shape}"
+        assert empty_positions.ndim == 2, f"Empty positions must be 2D, shape: {empty_positions.shape}"
         idxs = np.argsort(-final_scores)[:3]
         unique_idx = np.unique(idxs, return_index=True)[1]
         top3_idx = idxs[np.sort(unique_idx)[:3]]
@@ -781,6 +803,7 @@ class ScratchSolver:
         Returns:
             bool: Whether prediction is possible.
         """
+        assert empty_positions.ndim == 2, f"Empty positions must be 2D, shape: {empty_positions.shape}"
         return True  # Simplified; implement actual logic based on constraints
 
 # Self-Inspection Report:
