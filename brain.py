@@ -5,7 +5,7 @@ import os
 import logging
 import asyncio
 import requests
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Tuple, Dict, Any
 from analyzer import analyze_board, predict_topk
 from fastapi import HTTPException, status
 
@@ -116,6 +116,7 @@ def save_results_to_file(
         HTTPException: If saving fails.
     """
     assert scores.ndim == 1 or scores.shape == predictions.shape, f"Scores shape {scores.shape} must match predictions shape {predictions.shape}"
+    assert predictions.ndim == 2, f"Expected 2D predictions, got {predictions.ndim}D array with shape {predictions.shape}"
     empty_yx = np.argwhere(predictions == -1)
     result = {
         'scores': scores.tolist(),
@@ -141,7 +142,7 @@ def save_results_to_file(
             df = pd.DataFrame({
                 'row': empty_yx[:, 0],
                 'col': empty_yx[:, 1],
-                'score': scores[empty_yx[:, 0], empty_yx[:, 1]] if scores.ndim == 2 else scores,
+                'score': scores if scores.ndim == 1 else scores[empty_yx[:, 0], empty_yx[:, 1]],
                 'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
             })
             if all_predictions:
@@ -153,7 +154,7 @@ def save_results_to_file(
             df = pd.DataFrame({
                 'row': empty_yx[:, 0],
                 'col': empty_yx[:, 1],
-                'score': scores[empty_yx[:, 0], empty_yx[:, 1]] if scores.ndim == 2 else scores,
+                'score': scores if scores.ndim == 1 else scores[empty_yx[:, 0], empty_yx[:, 1]],
                 'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
             })
             if all_predictions:
@@ -211,7 +212,7 @@ async def process_single_board(
                 # Auto-mask each cell and predict
                 all_predictions = []
                 for i in range(M):
-                    for j in range(N):
+                    for j in range(min(N, grid.shape[1])):  # Ensure j is within bounds
                         masked_grid = grid.copy()
                         true_val = masked_grid[i, j]
                         masked_grid[i, j] = -1
@@ -225,7 +226,7 @@ async def process_single_board(
                                     "predicted_digit": int(p[2]),
                                     "confidence": float(p[3]),
                                     "true_digit": int(true_val)
-                                } for p in topk
+                                } for p in topk if p[1] < grid.shape[1]  # Validate column index
                             ])
                         else:
                             scores, pred_array, top3, _ = analyze_board(
@@ -236,10 +237,10 @@ async def process_single_board(
                                 {
                                     "row": t[0],
                                     "col": t[1],
-                                    "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
+                                    "predicted_digit": int(pred_array[t[0], t[1]]) if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] != -1 else 0,
                                     "confidence": float(t[2]),
                                     "true_digit": int(true_val)
-                                } for t in top3
+                                } for t in top3 if t[1] < grid.shape[1]  # Validate column index
                             ])
                 scores, predictions, top3, metrics = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
