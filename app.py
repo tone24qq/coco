@@ -163,7 +163,7 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
         Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
     try:
-    grid = np.array(grid_tuple)
+    grid = np.array(grid_tuple)  # ← 縮排四格
 
     # 🧱 檢查實際資料是否可以 reshape 成預期形狀
     if grid.ndim != 1:
