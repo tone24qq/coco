@@ -1,6 +1,6 @@
-fastapi==0.115.2
+FastAPI==0.115.2
 uvicorn[standard]==0.32.0
-numpy>=1.23.5,<2.1
+numpy==2.0.0
 pandas==2.2.3
 scipy==1.14.1
 lightgbm==4.5.0
@@ -9,5 +9,5 @@ numba==0.60.0
 python-dotenv==1.0.1
 pydantic==2.9.2
 requests==2.32.3
-scikit-learn>=1.1,<1.5
+scikit-learn==1.4.2
 python-multipart==0.0.9
