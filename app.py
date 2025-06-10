@@ -156,8 +156,6 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
     """
     try:
         grid = np.array(grid_tuple)
-
-        # 🧱 檢查實際資料是否可以 reshape 成預期形狀
         if grid.ndim != 1:
             raise ValueError(f"Expected 1D grid data for reshape, but got ndim={grid.ndim}")
         if grid.size != shape[0] * shape[1]:
@@ -167,7 +165,6 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
         logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
         predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
         return predictions, reasoning
-
     except Exception as e:
         logger.error(f"Cache analysis failed: {str(e)}")
         return [], []
@@ -218,14 +215,19 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
                         final_score, pred_array, top3, metrics, reasoning = analyze_board(
                             masked_grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps
                         )
+                        # 強制確保 pred_array 是二維陣列
+                        if pred_array.ndim == 1:
+                            logger.warning(f"pred_array is 1D with shape {pred_array.shape}, reshaping to 2D")
+                            pred_array = pred_array.reshape(M, N)
+                        logger.debug(f"pred_array shape after reshape: {pred_array.shape}")
                         predictions.extend([{
                             "row": t[0],
                             "col": t[1],
-                            "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
+                            "predicted_digit": int(pred_array[t[0], t[1]]) if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] != -1 else 0,
                             "confidence": float(t[2]),
-                            "true_digit": true_val if pred_array[t[0], t[1]] == target_num else None,
+                            "true_digit": true_val if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] == target_num else None,
                             "reasoning": {"default": "heuristic"}
-                        } for t in top3])
+                        } for t in top3 if t[1] < pred_array.shape[1]])
                         logger.info(f"Generated {len(top3)} heuristic predictions for position ({i}, {j})")
     except Exception as e:
         logger.error(f"Analysis failed for grid: {str(e)}")
