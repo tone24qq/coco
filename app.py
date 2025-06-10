@@ -261,10 +261,11 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
 
     Parameters:
         payload (AnalysisRequest): JSON payload with grid and parameters.
-    """
+
     Returns:
         JSONResponse: Predictions, error, source, and reasoning.
     """
+    ...
     logger.info("Received request at /predict")
     try:
         grid_array = np.array(payload.grid, dtype=float)
