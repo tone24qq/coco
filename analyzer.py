@@ -205,6 +205,7 @@ def predict_topk(
     return sorted(candidates, key=lambda x: x[3], reverse=True)[:k] if candidates else []
 
 def analyze_board(
+    
     grid: np.ndarray,
     weights: Dict[str, float],
     return_predictions: bool = False,
@@ -216,7 +217,11 @@ def analyze_board(
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float], List[str]]:
     """
     Analyze a scratch card board with extended features and reasoning.
-
+    # 🔒 強制轉成 numpy 陣列並檢查維度
+    if isinstance(grid, list):
+        grid = np.array(grid, dtype=float)
+    if grid.ndim != 2:
+        raise ValueError(f"❌ 錯誤：grid 是 {grid.ndim} 維，不是 2D！內容為：{grid}")
     Parameters:
         grid (np.ndarray): 2D board array.
         weights (Dict[str, float]): Module weights.
