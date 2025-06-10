@@ -216,7 +216,7 @@ def analyze_board(
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float], List[str]]:
     """
     Analyze a scratch card board with extended features and reasoning.
-
+    """
     Parameters:
         grid (np.ndarray): 2D board array.
         weights (Dict[str, float]): Module weights.
