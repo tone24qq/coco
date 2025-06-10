@@ -9,10 +9,8 @@ import os
 import logging
 import asyncio
 import glob
-from analyzer import from_cache
-from typing import Dict, List, Tuple, Any, Optional
-from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board, predict_topk
+from typing import Dict, List, Tuple, Any, Optional
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
 
@@ -27,13 +25,6 @@ logging.basicConfig(
         logging.FileHandler("logs/api.log"),  # 寫入 logs/api.log
         logging.StreamHandler()              # 同時印出到 console
     ]
-)
-logger = logging.getLogger(__name__)
-# 配置日誌，包含檔案和控制台輸出
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[logging.FileHandler("logs/api.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -224,7 +215,7 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
                         } for p in topk if p[2] == target_num])
                         logger.info(f"Successfully predicted {len(topk)} candidates for position ({i}, {j})")
                     else:
-                        scores, pred_array, top3, _, reasoning = analyze_board(
+                        final_score, pred_array, top3, metrics, reasoning = analyze_board(
                             masked_grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps
                         )
                         predictions.extend([{
@@ -273,7 +264,6 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     Returns:
         JSONResponse: Predictions, error, source, and reasoning.
     """
-    ...
     logger.info("Received request at /predict")
     try:
         grid_array = np.array(payload.grid, dtype=float)
