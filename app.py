@@ -9,7 +9,6 @@ import os
 import logging
 import asyncio
 import glob
-from analyzer import from_cache
 from typing import Dict, List, Tuple, Any, Optional
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board, predict_topk
