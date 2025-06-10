@@ -250,14 +250,18 @@ async def health_check() -> Dict[str, str]:
     logger.info("Health check requested")
     return {"status": "ok"}
 
-@app.post("/predict", response_model=AnalysisResponse, operationId="predictFromJson")
+@app.post(
+    "/predict",
+    response_model=AnalysisResponse,
+    openapi_extra={"operationId": "predictFromJson"}
+)
 async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     Predict hidden cells for a target number via JSON payload.
 
     Parameters:
         payload (AnalysisRequest): JSON payload with grid and parameters.
-
+    """
     Returns:
         JSONResponse: Predictions, error, source, and reasoning.
     """
