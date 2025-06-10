@@ -163,23 +163,22 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
         Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
     try:
-    grid = np.array(grid_tuple)  # ← 縮排四格
+        grid = np.array(grid_tuple)
 
-    # 🧱 檢查實際資料是否可以 reshape 成預期形狀
-    if grid.ndim != 1:
-        raise ValueError(f"Expected 1D grid data for reshape, but got ndim={grid.ndim}")
-    if grid.size != shape[0] * shape[1]:
-        raise ValueError(f"Grid data size {grid.size} does not match target shape {shape}")
+        # 🧱 檢查實際資料是否可以 reshape 成預期形狀
+        if grid.ndim != 1:
+            raise ValueError(f"Expected 1D grid data for reshape, but got ndim={grid.ndim}")
+        if grid.size != shape[0] * shape[1]:
+            raise ValueError(f"Grid data size {grid.size} does not match target shape {shape}")
 
-    grid = grid.reshape(shape)
+        grid = grid.reshape(shape)
+        logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
+        predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
+        return predictions, reasoning
 
-    logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
-    predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
-    return predictions, reasoning
-
-except Exception as e:
-    logger.error(f"Cache analysis failed: {str(e)}")
-    return [], []
+    except Exception as e:
+        logger.error(f"Cache analysis failed: {str(e)}")
+        return [], []
 
 def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
