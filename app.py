@@ -15,6 +15,19 @@ from analyzer import analyze_board, predict_topk
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
 
+# ✅ 確保 logs 資料夾存在，避免 FileNotFoundError
+os.makedirs("logs", exist_ok=True)
+
+# ✅ 設定 logging，包括輸出到 logs/api.log 檔案
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[
+        logging.FileHandler("logs/api.log"),  # 寫入 logs/api.log
+        logging.StreamHandler()              # 同時印出到 console
+    ]
+)
+logger = logging.getLogger(__name__)
 # 配置日誌，包含檔案和控制台輸出
 logging.basicConfig(
     level=logging.INFO,
