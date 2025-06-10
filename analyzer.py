@@ -216,7 +216,7 @@ def analyze_board(
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float], List[str]]:
     """
     Analyze a scratch card board with extended features and reasoning.
-    """
+
     Parameters:
         grid (np.ndarray): 2D board array.
         weights (Dict[str, float]): Module weights.
@@ -292,7 +292,7 @@ def analyze_board(
         if len(empty_yx) == 0:
             logger.warning("No hidden cells (-1) found, returning empty predictions")
             return np.array([]), np.array(grid), [], {"accuracy": 0}, ["No hidden cells to predict"]
-        top3 = solver.predict_top3_vectorized(final_score, empty_yx, target_num=target_num)
+        top3 = solver.predict_top3_vectorized(final_score, empty_yx, grid.shape)
         reasoning_steps.append(f"Top-3 predicted using heuristic scores: {top3}")
     
     true_values = grid.copy()
