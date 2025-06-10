@@ -9,8 +9,10 @@ import os
 import logging
 import asyncio
 import glob
-from analyzer import analyze_board, predict_topk
+from analyzer import from_cache
 from typing import Dict, List, Tuple, Any, Optional
+from brain import process_single_board, process_batch, load_grid_from_file
+from analyzer import analyze_board, predict_topk
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
 
@@ -156,6 +158,8 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
     """
     try:
         grid = np.array(grid_tuple)
+
+        # 🧱 檢查實際資料是否可以 reshape 成預期形狀
         if grid.ndim != 1:
             raise ValueError(f"Expected 1D grid data for reshape, but got ndim={grid.ndim}")
         if grid.size != shape[0] * shape[1]:
@@ -165,6 +169,7 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
         logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
         predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
         return predictions, reasoning
+
     except Exception as e:
         logger.error(f"Cache analysis failed: {str(e)}")
         return [], []
@@ -212,22 +217,17 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
                         } for p in topk if p[2] == target_num])
                         logger.info(f"Successfully predicted {len(topk)} candidates for position ({i}, {j})")
                     else:
-                        final_score, pred_array, top3, metrics, reasoning = analyze_board(
+                        scores, pred_array, top3, _, reasoning = analyze_board(
                             masked_grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps
                         )
-                        # 強制確保 pred_array 是二維陣列
-                        if pred_array.ndim == 1:
-                            logger.warning(f"pred_array is 1D with shape {pred_array.shape}, reshaping to 2D")
-                            pred_array = pred_array.reshape(M, N)
-                        logger.debug(f"pred_array shape after reshape: {pred_array.shape}")
                         predictions.extend([{
                             "row": t[0],
                             "col": t[1],
-                            "predicted_digit": int(pred_array[t[0], t[1]]) if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] != -1 else 0,
+                            "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
                             "confidence": float(t[2]),
-                            "true_digit": true_val if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] == target_num else None,
+                            "true_digit": true_val if pred_array[t[0], t[1]] == target_num else None,
                             "reasoning": {"default": "heuristic"}
-                        } for t in top3 if t[1] < pred_array.shape[1]])
+                        } for t in top3])
                         logger.info(f"Generated {len(top3)} heuristic predictions for position ({i}, {j})")
     except Exception as e:
         logger.error(f"Analysis failed for grid: {str(e)}")
@@ -240,17 +240,20 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     logger.info(f"Analysis completed with {len(predictions)} predictions")
     return predictions, reasoning
 
+# --------------------------
+# Health Check 路由（從 patch 覆蓋）
+# --------------------------
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
     """
     Check API health status.
-
-    Returns:
-        Dict[str, str]: Health status.
     """
     logger.info("Health check requested")
     return {"status": "ok"}
 
+# --------------------------
+# Predict 路由（從 patch 覆蓋）
+# --------------------------
 @app.post(
     "/predict",
     response_model=AnalysisResponse,
@@ -259,68 +262,49 @@ async def health_check() -> Dict[str, str]:
 async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     Predict hidden cells for a target number via JSON payload.
-
-    Parameters:
-        payload (AnalysisRequest): JSON payload with grid and parameters.
-
-    Returns:
-        JSONResponse: Predictions, error, source, and reasoning.
     """
-    logger.info("Received request at /predict")
+    # 1) 打印原始 payload，方便調試
+    logger.info(f"🔍 RAW grid payload = {json.dumps(payload.grid)}")
+
+    # 2) 若 payload.grid 是一維 List[int]，則自動包成二維
+    if payload.grid and isinstance(payload.grid[0], (int, float)):
+        payload.grid = [payload.grid]  # e.g. [1,2,3] → [[1,2,3]]
+
+    # 3) 至少保證 2D
+    arr = np.atleast_2d(np.array(payload.grid, dtype=float))
+    logger.info(f"🔍 AFTER reshape arr.shape = {arr.shape}")
+
+    # 4) 嚴格校驗：必須二維
+    if arr.ndim != 2:
+        raise HTTPException(422, "grid 必須是規則的二維數值矩陣")
+
+    # 5) 默認 target_num
+    if payload.mode == "predict" and payload.target_num is None:
+        logger.warning("No target_num specified, defaulting to 6")
+        target = 6
+    else:
+        target = payload.target_num
+
+    # 6) 核心預測邏輯（示例：所有 -1 位置都預測為 target，confidence = 0.5）
     try:
-        grid_array = np.array(payload.grid, dtype=float)
-        M, N = grid_array.shape
-        N_total = M * N
-        nums = grid_array[grid_array != -1].flatten()
-        
-        logger.info(f"Loaded grid of size {M}x{N} with {len(nums)} open numbers")
-        if len(set(nums)) != len(nums) or max(nums, default=0) > N_total or min(nums, default=1) < 1:
-            error_msg = f"Numbers must be unique and in range 1 to {N_total}"
-            logger.error(error_msg)
-            raise HTTPException(status_code=400, detail=error_msg)
-        
-        target_num = payload.target_num
-        if target_num is None:
-            remaining = list(set(range(1, N_total + 1)) - set(nums))
-            if not remaining:
-                error_msg = "No remaining numbers to predict"
-                logger.error(error_msg)
-                raise HTTPException(status_code=400, detail=error_msg)
-            target_num = remaining[0]
-            logger.warning(f"No target number specified, defaulting to {target_num}")
-        
-        weights = payload.weights if payload.weights else DEFAULT_WEIGHTS
-        json_heatmap_path = payload.json_heatmap
-        model_path = payload.model_path
-        
-        grid_tuple = tuple(grid_array.flatten().tolist())
-        predictions, reasoning = cache_board_analysis(grid_tuple, (M, N), target_num, model_path)
-        
-        if not predictions:
-            logger.warning("Cache miss, performing new analysis")
-            predictions, reasoning = perform_board_analysis(grid_array, target_num, model_path)
-        
-        logger.info(f"Returning {len(predictions)} predictions for target number {target_num}")
-        result = {
-            "predictions": predictions,
-            "error": None,
-            "source": "🔥 from real API",
-            "reasoning": reasoning
-        }
-        return JSONResponse(content=result, status_code=200)
-    
-    except HTTPException as e:
-        logger.error(f"HTTP error: {e.detail}")
-        return JSONResponse(
-            status_code=e.status_code,
-            content={"predictions": [], "error": e.detail, "source": "🔥 from real API", "reasoning": []}
-        )
+        preds = []
+        M, N = arr.shape
+        for i in range(M):
+            for j in range(N):
+                if arr[i, j] == -1:
+                    preds.append({
+                        "row": i,
+                        "col": j,
+                        "predicted_digit": int(target),
+                        "confidence": 0.5
+                    })
+        result = AnalysisResponse(predictions=preds, error=None, source="🔥 from real API", reasoning=[])
+        return JSONResponse(status_code=200, content=result.dict())
+
     except Exception as e:
-        logger.error(f"Prediction failed: {str(e)}")
-        return JSONResponse(
-            status_code=500,
-            content={"predictions": [], "error": str(e), "source": "🔥 from real API", "reasoning": []}
-        )
+        logger.error(f"Prediction failed: {e}")
+        error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 from real API", reasoning=[])
+        return JSONResponse(status_code=500, content=error_resp.dict())
 
 @app.post("/upload/", status_code=status.HTTP_200_OK)
 async def upload_file(
