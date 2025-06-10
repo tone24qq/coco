@@ -20,12 +20,12 @@ def compute_all_module_scores(
     Compute scores for a specific position using all registered modules.
 
     Parameters:
-        grid (np.ndarray): 2D board array.
-        target_pos (Tuple[int, int]): Position to compute scores for.
-        grid_shape (Tuple[int, int]): Grid shape.
+        grid: 2D board array.
+        target_pos: Position to compute scores for.
+        grid_shape: Grid shape.
 
     Returns:
-        np.ndarray: Concatenated score vector.
+        Concatenated score vector.
     """
     solver = ScratchSolver()
     solver.update_tree(grid)
@@ -47,10 +47,10 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     Extract extended statistical features from the grid.
 
     Parameters:
-        grid (np.ndarray): 2D board array.
+        grid: 2D board array.
 
     Returns:
-        Dict[str, float]: Statistical features.
+        Statistical features.
     """
     features = {}
     M, N = grid.shape
@@ -85,11 +85,11 @@ def generate_masked_samples(
     Generate masked samples with extended features for training.
 
     Parameters:
-        grid (np.ndarray): 2D board array.
-        target_nums (Optional[List[int]]): Specific numbers to predict.
+        grid: 2D board array.
+        target_nums: Specific numbers to predict.
 
     Returns:
-        List[Tuple[np.ndarray, int, Dict]]: Samples with grid, true value, and features.
+        Samples with grid, true value, and features.
     """
     samples = []
     M, N = grid.shape
@@ -124,9 +124,9 @@ def train_extended_model(
     Train a LightGBM model with extended features and log them.
 
     Parameters:
-        samples (List[Tuple]): Training samples with grid, true value, and features.
-        model_path (str): Path to save model.
-        feature_log_path (str): Path to save feature log.
+        samples: Training samples with grid, true value, and features.
+        model_path: Path to save model.
+        feature_log_path: Path to save feature log.
     """
     try:
         X = []
@@ -163,13 +163,13 @@ def predict_topk(
     Predict top-k positions for a target number using the trained model.
 
     Parameters:
-        masked_grid (np.ndarray): Grid with hidden cells.
-        model_path (str): Path to trained model.
-        target_num (int): Target number to predict.
-        k (int): Number of top predictions.
+        masked_grid: Grid with hidden cells.
+        model_path: Path to trained model.
+        target_num: Target number to predict.
+        k: Number of top predictions.
 
     Returns:
-        List[Tuple]: Top-k predictions with row, col, digit, confidence, and reasoning.
+        Top-k predictions with row, col, digit, confidence, and reasoning.
     """
     try:
         clf = joblib.load(model_path)
@@ -205,7 +205,6 @@ def predict_topk(
     return sorted(candidates, key=lambda x: x[3], reverse=True)[:k] if candidates else []
 
 def analyze_board(
-    
     grid: np.ndarray,
     weights: Dict[str, float],
     return_predictions: bool = False,
@@ -217,20 +216,16 @@ def analyze_board(
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float], List[str]]:
     """
     Analyze a scratch card board with extended features and reasoning.
-    # 🔒 強制轉成 numpy 陣列並檢查維度
-    if isinstance(grid, list):
-        grid = np.array(grid, dtype=float)
-    if grid.ndim != 2:
-        raise ValueError(f"❌ 錯誤：grid 是 {grid.ndim} 維，不是 2D！內容為：{grid}")
+
     Parameters:
-        grid (np.ndarray): 2D board array.
-        weights (Dict[str, float]): Module weights.
-        return_predictions (bool): Return predicted values.
-        target_num (Optional[int]): Target number.
-        json_heatmap_path (Optional[str]): Path to JSON heatmap.
-        knowledge_base (Optional[List]): Knowledge base.
-        heatmap_data (Optional[Dict]): Preloaded heatmap.
-        model_path (str): Path to model.
+        grid: 2D board array.
+        weights: Module weights.
+        return_predictions: Return predicted values.
+        target_num: Target number.
+        json_heatmap_path: Path to JSON heatmap.
+        knowledge_base: Knowledge base.
+        heatmap_data: Preloaded heatmap.
+        model_path: Path to model.
 
     Returns:
         Tuple: Scores, predictions, top-3 positions, metrics, and reasoning steps.
@@ -285,6 +280,12 @@ def analyze_board(
     
     patterns = solver.analyze_number_patterns(grid)
     predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
+    
+    # 強制確保 predictions 是二維陣列
+    if predictions.ndim == 1:
+        logger.warning(f"predictions is 1D with shape {predictions.shape}, reshaping to 2D")
+        predictions = predictions.reshape(grid.shape)
+    logger.debug(f"predictions shape after reshape: {predictions.shape}")
     
     top3 = []
     reasoning_steps = [f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}", f"Target number: {target_num}"]
