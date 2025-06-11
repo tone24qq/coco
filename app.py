@@ -94,7 +94,7 @@ class AnalysisRequest(BaseModel):
 
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.atleast_2d(np.asarray(grid, dtype=np.int64))
+        grid_array = np.atleast_2d(np.array(grid, dtype=float))
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
@@ -157,7 +157,7 @@ def cache_board_analysis(
         Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
     try:
-        grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)
+        grid = np.array(grid_tuple).reshape(shape)
         if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
             raise ValueError(f"Invalid grid data for shape {shape}")
         logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
@@ -224,25 +224,29 @@ async def health_check() -> Dict[str, str]:
     """
     Check API health status.
     """
-    logger.info("Checking API health status")
+    logger.info("Health check requested")
     return {"status": "ok"}
 
-@app.post("/predict", response_model=AnalysisResponse)
+@app.post(
+    "/predict",
+    response_model=AnalysisResponse,
+    openapi_extra={"operationId": "predictFromJson"}
+)
 async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     Predict hidden cells for a target number via JSON payload.
     """
-    logger.info(f"🔍 RAW grid payload: {json.dumps(payload.grid)}")
+    logger.info(f"🔍 RAW grid payload = {json.dumps(payload.grid)}")
     
-    grid = np.atleast_2d(np.asarray(payload.grid, dtype=np.int64))
-    logger.info(f"🔍 Grid shape after reshape: {grid.shape}")
+    grid = np.array(payload.grid, dtype=float)
+    logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
     
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        raise HTTPException(400, "Grid must be a 4x4 to 20x20 2D numeric matrix")
+        raise HTTPException(422, "Grid must be a 4x4 to 20x20 2D numeric matrix")
     
     flat = grid[grid != -1].flatten()
     if len(flat) != len(set(flat)):
-        raise HTTPException(status_code=400, detail="Grid values except -1 must be unique and non-repeating")
+        raise HTTPException(422, "Grid values except -1 must be unique and non-repeating")
     
     target = 6 if payload.mode == "predict" and payload.target_num is None else payload.target_num
     if target is None:
@@ -253,7 +257,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
             grid, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap,
             math_algo_kb, heatmaps, payload.model_path
         )
-        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=np.int64)
+        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
         
         result = AnalysisResponse(
             predictions=[
