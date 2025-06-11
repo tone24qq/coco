@@ -5,34 +5,12 @@ import json
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from modules import ScratchSolver
+from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-failed_modules: List[str] = []
-
-def safe_call(func, name: str, *args, **kwargs) -> Any:
-    """
-    Safely call a module function, logging errors and tracking failures.
-
-    Args:
-        func: Function to call.
-        name (str): Name of the module function.
-        *args: Positional arguments for the function.
-        **kwargs: Keyword arguments for the function.
-
-    Returns:
-        Any: Function result or default value (np.zeros_like(grid) or 0.0) on failure.
-    """
-    try:
-        result = func(*args, **kwargs)
-        return result
-    except Exception as e:
-        logger.error(f"{name} failed: {e}")
-        failed_modules.append(name)
-        return np.zeros_like(args[0]) if args and isinstance(args[0], np.ndarray) else 0.0
 
 def compute_all_module_scores(
     grid: np.ndarray, target_pos: Tuple[int, int], grid_shape: Tuple[int, int]
@@ -40,7 +18,7 @@ def compute_all_module_scores(
     """
     Compute scores for a specific position using all registered modules.
 
-    Args:
+    Parameters:
         grid (np.ndarray): 2D board array.
         target_pos (Tuple[int, int]): Position to compute scores for.
         grid_shape (Tuple[int, int]): Grid shape.
@@ -48,30 +26,18 @@ def compute_all_module_scores(
     Returns:
         np.ndarray: Concatenated score vector.
     """
-    assert grid.ndim == 2, "Grid must be 2-D after initialization"
     solver = ScratchSolver()
     solver.update_tree(grid)
     features = []
-    empty_yx = np.argwhere(grid == -1)
-    for mod_name, mod_func in sorted(solver.MODULE_REGISTRY.items()):
+    for mod_name, mod_func in solver.MODULE_REGISTRY.items():
         try:
-            result = safe_call(mod_func, mod_name, grid)
-            if mod_name == 'compute_difference_trend':
-                # Handle array of differences
-                score = np.mean(result) if result.size > 0 else 0.1
-                features.append(score)
-            elif mod_name == 'detect_mirror_sequences':
-                # Handle boolean mask
-                row_idx = target_pos[0]
-                score = 1.0 if result[row_idx] else 0.1
-                features.append(score)
-            else:
-                scores = result[0] if isinstance(result, tuple) else result
-                idx = np.where((empty_yx == target_pos).all(axis=1))[0]
-                features.append(scores[idx[0]] if idx.size > 0 else 0.1)
+            result = mod_func(grid)
+            scores = result[0] if isinstance(result, tuple) else result
+            empty_yx = np.argwhere(grid == -1)
+            idx = np.where((empty_yx == target_pos).all(axis=1))[0]
+            features.append(scores[idx[0]] if idx.size > 0 else 0.1)
         except Exception as e:
             logger.warning(f"Module {mod_name} failed at {target_pos}: {e}")
-            failed_modules.append(mod_name)
             features.append(0.1)
     return np.array(features)
 
@@ -79,13 +45,12 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     """
     Extract extended statistical features from the grid.
 
-    Args:
+    Parameters:
         grid (np.ndarray): 2D board array.
 
     Returns:
         Dict[str, float]: Statistical features.
     """
-    assert grid.ndim == 2, "Grid must be 2-D after initialization"
     features = {}
     M, N = grid.shape
     open_nums = grid[grid != -1]
@@ -106,7 +71,7 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     features["anti_diag_std"] = np.std(anti_diag[anti_diag != -1]) if np.any(anti_diag != -1) else 0
     
     solver = ScratchSolver()
-    heatmap = safe_call(solver.compute_dynamic_hot_cold_vectorized, "compute_dynamic_hot_cold_vectorized", grid)
+    heatmap = solver.compute_dynamic_hot_cold_vectorized(grid)
     features["heatmap_top5_mean"] = np.mean(np.sort(heatmap)[-min(5, len(heatmap)):]) if heatmap.size else 0
     features["global_variance"] = np.var(open_nums) if open_nums.size else 0
     
@@ -118,14 +83,13 @@ def generate_masked_samples(
     """
     Generate masked samples with extended features for training.
 
-    Args:
+    Parameters:
         grid (np.ndarray): 2D board array.
         target_nums (Optional[List[int]]): Specific numbers to predict.
 
     Returns:
         List[Tuple[np.ndarray, int, Dict]]: Samples with grid, true value, and features.
     """
-    assert grid.ndim == 2, "Grid must be 2-D after initialization"
     samples = []
     M, N = grid.shape
     remaining_nums = list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))
@@ -158,7 +122,7 @@ def train_extended_model(
     """
     Train a LightGBM model with extended features and log them.
 
-    Args:
+    Parameters:
         samples (List[Tuple]): Training samples with grid, true value, and features.
         model_path (str): Path to save model.
         feature_log_path (str): Path to save feature log.
@@ -197,7 +161,7 @@ def predict_topk(
     """
     Predict top-k positions for a target number using the trained model.
 
-    Args:
+    Parameters:
         masked_grid (np.ndarray): 2D grid with hidden cells.
         model_path (str): Path to trained model.
         target_num (int): Target number to predict.
@@ -206,7 +170,6 @@ def predict_topk(
     Returns:
         List[Tuple]: Top-k predictions with row, col, digit, confidence, and reasoning.
     """
-    assert masked_grid.ndim == 2, "Grid must be 2-D after initialization"
     try:
         clf = joblib.load(model_path)
     except FileNotFoundError:
@@ -271,23 +234,19 @@ def analyze_board(
             - Dict[str, float]: Evaluation metrics.
             - List[str]: Reasoning steps.
     """
-    assert grid.ndim == 2, "Grid must be 2-D after initialization"
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
+    if grid.ndim != 2:
+        raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
     try:
-        global failed_modules
-        failed_modules = []
         solver = ScratchSolver()
         solver.update_tree(grid)
         M, N = grid.shape
 
-        heatmap_scores = safe_call(
-            solver.compute_dynamic_hot_cold_vectorized,
-            "compute_dynamic_hot_cold_vectorized",
-            grid,
-            weights.get("compute_dynamic_hot_cold_vectorized", 0.9)
+        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(
+            grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9)
         )
-        heatmap = np.zeros_like(grid, dtype=np.int64)
+        heatmap = np.zeros_like(grid, dtype=float)
         empty_yx = np.argwhere(grid == -1)
         if len(heatmap_scores) == len(empty_yx):
             heatmap[empty_yx[:, 0], empty_yx[:, 1]] = heatmap_scores
@@ -301,37 +260,22 @@ def analyze_board(
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
-                result = safe_call(mod_func, mod_name, grid)
-                if mod_name == 'compute_difference_trend':
-                    # Handle array of differences
-                    score = np.zeros((M, N), dtype=np.int64)
-                    if result.size > 0:
-                        score[grid == -1] = np.mean(result)
-                    module_scores[mod_name] = score
-                elif mod_name == 'detect_mirror_sequences':
-                    # Handle boolean mask
-                    score = np.zeros((M, N), dtype=np.int64)
-                    for i in range(M):
-                        if result[i]:
-                            score[i, :] = 1.0
-                    module_scores[mod_name] = score
-                else:
-                    if isinstance(result, tuple):
-                        result = result[0]
-                    if result.ndim != 2:
-                        if result.size == M * N:
-                            result = result.reshape(M, N)
-                        elif len(result) == len(empty_yx):
-                            temp_result = np.zeros((M, N), dtype=np.int64)
-                            temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                            result = temp_result
-                        else:
-                            result = np.zeros((M, N), dtype=np.int64)
-                    module_scores[mod_name] = result
+                result = mod_func(grid)
+                if isinstance(result, tuple):
+                    result = result[0]
+                if result.ndim != 2:
+                    if result.size == M * N:
+                        result = result.reshape(M, N)
+                    elif len(result) == len(empty_yx):
+                        temp_result = np.zeros((M, N))
+                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
+                        result = temp_result
+                    else:
+                        result = np.zeros((M, N))
+                module_scores[mod_name] = result
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
-                failed_modules.append(mod_name)
-                module_scores[mod_name] = np.zeros((M, N), dtype=np.int64)
+                module_scores[mod_name] = np.zeros((M, N))
 
         preds = [
             {
@@ -378,45 +322,30 @@ def analyze_board(
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
-                result = safe_call(mod_func, mod_name, grid)
-                if mod_name == 'compute_difference_trend':
-                    # Handle array of differences
-                    score = np.zeros((M, N), dtype=np.int64)
-                    if result.size > 0:
-                        score[grid == -1] = np.mean(result)
-                    mod_scores[mod_name] = score
-                elif mod_name == 'detect_mirror_sequences':
-                    # Handle boolean mask
-                    score = np.zeros((M, N), dtype=np.int64)
-                    for i in range(M):
-                        if result[i]:
-                            score[i, :] = 1.0
-                    mod_scores[mod_name] = score
-                else:
-                    if isinstance(result, tuple):
-                        result = result[0]
-                    if result.ndim != 2:
-                        if result.size == M * N:
-                            result = result.reshape(M, N)
-                        elif len(result) == len(empty_yx):
-                            temp_result = np.zeros((M, N), dtype=np.int64)
-                            temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                            result = temp_result
-                        else:
-                            result = np.zeros((M, N), dtype=np.int64)
-                    mod_scores[mod_name] = result
+                result = mod_func(grid)
+                if isinstance(result, tuple):
+                    result = result[0]
+                if result.ndim != 2:
+                    if result.size == M * N:
+                        result = result.reshape(M, N)
+                    elif len(result) == len(empty_yx):
+                        temp_result = np.zeros((M, N))
+                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
+                        result = temp_result
+                    else:
+                        result = np.zeros((M, N))
+                mod_scores[mod_name] = result
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
-                failed_modules.append(mod_name)
-                mod_scores[mod_name] = np.zeros((M, N), dtype=np.int64)
+                mod_scores[mod_name] = np.zeros((M, N))
 
         board_type = solver.classify_board_type(
-            mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N), dtype=np.int64))
+            mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N)))
         )
         solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
-        patterns = safe_call(solver.analyze_number_patterns, "analyze_number_patterns", grid)
+        patterns = solver.analyze_number_patterns(grid)
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
@@ -464,8 +393,6 @@ def analyze_board(
             true_values[i, j] = num
         metrics = solver.evaluate_prediction(grid, predictions, true_values)
 
-        if failed_modules:
-            logger.warning(f"Failed modules during analysis: {failed_modules}")
         return final_score, predictions, top3, metrics, reasoning_steps
 
     except Exception as e:
