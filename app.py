@@ -1,5 +1,5 @@
 # app.py
-from fastapi import FastAPI, File, UploadFile, HTTPException, status, BackgroundTasks, Request, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Form
 from fastapi.responses import JSONResponse
 import uvicorn
 import numpy as np
@@ -9,22 +9,22 @@ import os
 import logging
 import asyncio
 import glob
-from typing import Dict, List, Tuple, Any, Optional
+from typing import Dict, List, Optional, Tuple, Any
 from brain import process_single_board, process_batch, load_grid_from_file
-from analyzer import analyze_board, predict_topk
+from analyzer import analyze_board
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
 
-# ✅ 確保 logs 資料夾存在，避免 FileNotFoundError
+# Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
 
-# ✅ 設定 logging，包括輸出到 logs/api.log 檔案
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
-        logging.FileHandler("logs/api.log"),  # 寫入 logs/api.log
-        logging.StreamHandler()              # 同時印出到 console
+        logging.FileHandler("logs/api.log"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
@@ -32,16 +32,16 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Scratch Card Analysis API",
     version="1.0.0",
-    description="Scratch card grid analysis service callable by GPT, providing top-3 predictions.",
+    description="Scratch card grid analysis service providing top-3 predictions.",
     openapi_version="3.1.0"
 )
 
-# 資料目錄設定
+# Data directory setup
 BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 載入知識庫和熱圖
+# Load knowledge base and heatmaps
 def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Load knowledge base and heatmaps from data directory with detailed logging.
@@ -52,10 +52,9 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     heatmap_paths = glob.glob(os.path.join(DATA_DIR, "heatmap_*.json"))
     
-    math_algo_kb = []
-    heatmaps = {}
+    math_algo_kb: List[Dict] = []
+    heatmaps: Dict[str, Any] = {}
     
-    # 載入知識庫
     if os.path.exists(kb_path):
         try:
             with open(kb_path, 'r', encoding="utf-8") as f:
@@ -66,7 +65,6 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     else:
         logger.warning(f"Knowledge base file not found at {kb_path}, using empty KB")
     
-    # 載入熱圖
     for hp in heatmap_paths:
         name = os.path.splitext(os.path.basename(hp))[0]
         try:
@@ -96,7 +94,7 @@ class AnalysisRequest(BaseModel):
 
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.array(grid, dtype=float)
+        grid_array = np.atleast_2d(np.array(grid, dtype=float))
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
@@ -105,7 +103,7 @@ class AnalysisRequest(BaseModel):
         open_nums = grid_array[grid_array != -1]
         if len(open_nums) > 0 and (len(set(open_nums)) != len(open_nums) or max(open_nums) > grid_array.size or min(open_nums) < 1):
             raise ValueError(f"Grid values must be unique and in range 1 to {grid_array.size} or -1")
-        return grid
+        return grid_array.tolist()
 
 class Prediction(BaseModel):
     """
@@ -115,6 +113,7 @@ class Prediction(BaseModel):
     col: int
     predicted_digit: int
     confidence: float
+    module_scores: Dict[str, float]
     true_digit: Optional[int] = None
 
 class AnalysisResponse(BaseModel):
@@ -142,12 +141,14 @@ DEFAULT_WEIGHTS = {
 }
 
 @lru_cache(maxsize=1000)
-def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
+def cache_board_analysis(
+    grid_tuple: Tuple[float, ...], shape: Tuple[int, int], target_num: int, model_path: str
+) -> Tuple[List[Dict], List[str]]:
     """
     Cache board analysis results.
 
-    Parameters:
-        grid_tuple (tuple): Flattened grid as tuple for caching.
+    Args:
+        grid_tuple (Tuple[float, ...]): Flattened grid as tuple for caching.
         shape (Tuple[int, int]): Original grid shape.
         target_num (int): Target number.
         model_path (str): Model path.
@@ -156,19 +157,12 @@ def cache_board_analysis(grid_tuple: tuple, shape: Tuple[int, int], target_num: 
         Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
     try:
-        grid = np.array(grid_tuple)
-
-        # 🧱 檢查實際資料是否可以 reshape 成預期形狀
-        if grid.ndim != 1:
-            raise ValueError(f"Expected 1D grid data for reshape, but got ndim={grid.ndim}")
-        if grid.size != shape[0] * shape[1]:
-            raise ValueError(f"Grid data size {grid.size} does not match target shape {shape}")
-
-        grid = grid.reshape(shape)
+        grid = np.array(grid_tuple).reshape(shape)
+        if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
+            raise ValueError(f"Invalid grid data for shape {shape}")
         logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
         predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
         return predictions, reasoning
-
     except Exception as e:
         logger.error(f"Cache analysis failed: {str(e)}")
         return [], []
@@ -177,7 +171,7 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     """
     Perform board analysis with detailed logging and validation.
 
-    Parameters:
+    Args:
         grid (np.ndarray): 2D board array.
         target_num (int): Target number.
         model_path (str): Model path.
@@ -197,37 +191,23 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         if len(empty_yx) == 0:
             raise ValueError("No hidden cells (-1) found for prediction")
 
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] != -1:
-                    masked_grid = grid.copy()
-                    true_val = int(masked_grid[i, j])
-                    masked_grid[i, j] = -1
-                    logger.debug(f"Simulating mask at position ({i}, {j}) with true value {true_val}")
-                    if os.path.exists(model_path):
-                        topk = predict_topk(masked_grid, model_path, target_num, k=3)
-                        predictions.extend([{
-                            "row": p[0],
-                            "col": p[1],
-                            "predicted_digit": p[2],
-                            "confidence": p[3],
-                            "true_digit": true_val if p[2] == target_num else None,
-                            "reasoning": p[4]
-                        } for p in topk if p[2] == target_num])
-                        logger.info(f"Successfully predicted {len(topk)} candidates for position ({i}, {j})")
-                    else:
-                        scores, pred_array, top3, _, reasoning = analyze_board(
-                            masked_grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps
-                        )
-                        predictions.extend([{
-                            "row": t[0],
-                            "col": t[1],
-                            "predicted_digit": int(pred_array[t[0], t[1]]) if pred_array[t[0], t[1]] != -1 else 0,
-                            "confidence": float(t[2]),
-                            "true_digit": true_val if pred_array[t[0], t[1]] == target_num else None,
-                            "reasoning": {"default": "heuristic"}
-                        } for t in top3])
-                        logger.info(f"Generated {len(top3)} heuristic predictions for position ({i}, {j})")
+        final_score, pred_array, top3, metrics, reasoning = analyze_board(
+            grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps, model_path
+        )
+        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
+        
+        predictions.extend([
+            {
+                "row": int(p["row"]),
+                "col": int(p["col"]),
+                "predicted_digit": int(p["predicted_digit"]),
+                "confidence": float(p["confidence"]),
+                "module_scores": {**p["module_scores"], "heatmap": float(heatmap[p["row"], p["col"]])},
+                "true_digit": None
+            }
+            for p in top3
+        ])
+        
     except Exception as e:
         logger.error(f"Analysis failed for grid: {str(e)}")
         raise
@@ -239,9 +219,6 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     logger.info(f"Analysis completed with {len(predictions)} predictions")
     return predictions, reasoning
 
-# --------------------------
-# Health Check 路由（從 patch 覆蓋）
-# --------------------------
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
     """
@@ -250,9 +227,6 @@ async def health_check() -> Dict[str, str]:
     logger.info("Health check requested")
     return {"status": "ok"}
 
-# --------------------------
-# Predict 路由（從 patch 覆蓋）
-# --------------------------
 @app.post(
     "/predict",
     response_model=AnalysisResponse,
@@ -262,71 +236,40 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     Predict hidden cells for a target number via JSON payload.
     """
-    # 1) 打印原始 payload，方便調試
     logger.info(f"🔍 RAW grid payload = {json.dumps(payload.grid)}")
-
-    # 2) 若 payload.grid 是一維 List[int]，則自動包成二維
-    if payload.grid and isinstance(payload.grid[0], (int, float)):
-        payload.grid = [payload.grid]  # e.g. [1,2,3] → [[1,2,3]]
-
-    # 3) 至少保證 2D
-    arr = np.atleast_2d(np.array(payload.grid, dtype=float))
-    logger.info(f"🔍 AFTER reshape arr.shape = {arr.shape}")
-
-    # 4) 嚴格校驗：必須二維，範圍 4x4 至 20x20
-    if arr.ndim != 2 or arr.shape[0] < 4 or arr.shape[1] < 4 or arr.shape[0] > 20 or arr.shape[1] > 20:
-        raise HTTPException(422, "grid 必須是 4x4 至 20x20 的二維數值矩陣")
-
-    # 5) 唯一性校驗
-    flat = [n for row in arr.tolist() for n in row if n != -1]
+    
+    grid = np.array(payload.grid, dtype=float)
+    logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
+    
+    if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
+        raise HTTPException(422, "Grid must be a 4x4 to 20x20 2D numeric matrix")
+    
+    flat = grid[grid != -1].flatten()
     if len(flat) != len(set(flat)):
-        raise HTTPException(422, "grid 中除 -1 外的數字必須唯一不可重複")
-
-    # 6) 默認 target_num
-    if payload.mode == "predict" and payload.target_num is None:
+        raise HTTPException(422, "Grid values except -1 must be unique and non-repeating")
+    
+    target = 6 if payload.mode == "predict" and payload.target_num is None else payload.target_num
+    if target is None:
         logger.warning("No target_num specified, defaulting to 6")
-        target = 6
-    else:
-        target = payload.target_num
-
-    # 7) 核心預測邏輯（提升：整合 analyze_board，返回 metrics 和完整 top3）
+    
     try:
-        # ------------------------------------------------------------
-        # 呼叫分析核心
         final_score, predictions, top3, metrics, reasoning = analyze_board(
-            arr,
-            payload.weights or DEFAULT_WEIGHTS,
-            return_predictions=True,
-            target_num=target,
-            json_heatmap_path=payload.json_heatmap,
-            knowledge_base=math_algo_kb,
-            heatmap_data=heatmaps,
-            model_path=payload.model_path,
+            grid, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap,
+            math_algo_kb, heatmaps, payload.model_path
         )
-
-        # --- 保險：把任何一維分數轉回 (M,N) 二維熱圖 -------------
-        if isinstance(final_score, np.ndarray) and final_score.ndim == 2 and final_score.shape == arr.shape:
-            heatmap = final_score
-        else:
-            heatmap = np.zeros_like(arr, dtype=float)
-            scores_1d = np.asarray(final_score).flatten()
-            empty_cells = np.argwhere(arr == -1)
-            if scores_1d.size == empty_cells.shape[0]:
-                heatmap[empty_cells[:, 0], empty_cells[:, 1]] = scores_1d
-        # ------------------------------------------------------------
-
-        # 臨時使用 dummy extended_features，後續從 analyzer.py 獲取真實數據
-        extended_features = {"dummy": 0.1}
-        # 確保 top3 包含 (row, col, digit, confidence, module_scores)，並添加 heatmap 和 features
-        predictions = [{
-            "row": int(t[0]),
-            "col": int(t[1]),
-            "predicted_digit": int(t[2]),
-            "confidence": float(t[3]),
-            "module_scores": {**t[4], "heatmap": float(heatmap[t[0], t[1]]), "features": extended_features}
-        } for t in top3]
+        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
+        
         result = AnalysisResponse(
-            predictions=predictions,
+            predictions=[
+                Prediction(
+                    row=int(p["row"]),
+                    col=int(p["col"]),
+                    predicted_digit=int(p["predicted_digit"]),
+                    confidence=float(p["confidence"]),
+                    module_scores={**p["module_scores"], "heatmap": float(heatmap[p["row"], p["col"]])}
+                )
+                for p in top3
+            ],
             error=None,
             source="🔥 from real API",
             reasoning=reasoning
@@ -335,12 +278,13 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
             status_code=200,
             content=result.dict()
         )
-
+    
     except Exception as e:
-        logger.exception("Prediction failed: %s", e)
-        raise HTTPException(status_code=500, detail="Prediction failed")
+        logger.error(f"Prediction failed: {e}")
+        error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 from real API", reasoning=[])
+        return JSONResponse(status_code=500, content=error_resp.dict())
 
-@app.post("/upload/", status_code=status.HTTP_200_OK)
+@app.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = BackgroundTasks()
@@ -348,7 +292,7 @@ async def upload_file(
     """
     Upload and process a scratch card file with detailed logging.
 
-    Parameters:
+    Args:
         file (UploadFile): File containing grid data.
         background_tasks (BackgroundTasks): Background task handler.
 
@@ -362,17 +306,17 @@ async def upload_file(
             logger.error(error_msg)
             raise HTTPException(status_code=400, detail=error_msg)
         
-        input_path = f"samples/data/{file.filename}"
-        os.makedirs("samples/data", exist_ok=True)
+        input_path = os.path.join("samples", "data", file.filename)
+        os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
         with open(input_path, "wb") as f:
             content = await file.read()
             f.write(content)
         logger.info(f"Successfully saved uploaded file to {input_path}")
         
-        output_prefix = f"samples/output/{os.path.splitext(file.filename)[0]}"
+        output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
-        json_heatmap = "samples/data/json"
+        json_heatmap = os.path.join("samples", "data", "json")
         
         background_tasks.add_task(
             process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
@@ -391,7 +335,7 @@ async def upload_file(
         logger.error(f"File upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/batch/", status_code=status.HTTP_200_OK)
+@app.post("/batch")
 async def batch_process(
     input_folder: str = Form(...),
     background_tasks: BackgroundTasks = BackgroundTasks()
@@ -399,7 +343,7 @@ async def batch_process(
     """
     Initiate batch processing of scratch card files with detailed logging.
 
-    Parameters:
+    Args:
         input_folder (str): Directory containing input files.
         background_tasks (BackgroundTasks): Background task handler.
 
@@ -416,9 +360,9 @@ async def batch_process(
         files = [f for f in os.listdir(input_folder) if f.endswith(('.json', '.csv', '.xls', '.xlsx'))]
         logger.info(f"Found {len(files)} valid files in {input_folder}: {files}")
         
-        output_folder = f"samples/output/batch_{os.path.basename(input_folder)}"
+        output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
-        json_heatmap = "samples/data/json"
+        json_heatmap = os.path.join("samples", "data", "json")
         
         background_tasks.add_task(
             process_batch, input_folder, weights, True, output_folder, None, json_heatmap
@@ -447,7 +391,7 @@ def save_results_to_file(
     """
     Save analysis results to a file.
 
-    Parameters:
+    Args:
         scores (np.ndarray): Scores for hidden cells.
         predictions (np.ndarray): Predicted values.
         best_pos (List[Tuple]): Top-3 predicted positions.
@@ -468,7 +412,7 @@ async def catch_all(request: Request, full_path: str) -> JSONResponse:
     """
     Catch all undefined routes.
 
-    Parameters:
+    Args:
         request (Request): HTTP request object.
         full_path (str): Requested path.
 
