@@ -253,14 +253,15 @@ def analyze_board(
         # 重新抛出，让上层捕获并返回 500
         raise
     Parameters:
-        grid: 2D board array.
-        weights: Module weights.
-        return_predictions: Return predicted values.
-        target_num: Target number.
-        json_heatmap_path: Path to JSON heatmap.
-        knowledge_base: Knowledge base.
-        heatmap_data: Preloaded heatmap.
-        model_path: Path to model.
+      grid (np.ndarray): 2D board array.
+      weights (Dict[str, float]): Module weights.
+      return_predictions (bool): Return predicted values.
+      target_num (Optional[int]): Target number.
+      json_heatmap_path (Optional[str]): Path to JSON heatmap.
+      knowledge_base (Optional[List[Dict[str, Any]]]): Knowledge base.
+      heatmap_data (Optional[Dict[str, Any]]): Preloaded heatmap.
+      model_path (str): Path to model.
+    """
 
     Returns:
         Tuple: Scores, predictions, top-3 positions, metrics, and reasoning steps.
