@@ -3,6 +3,7 @@ import numpy as np
 import logging
 import json
 import os
+from modules import compute_dynamic_hot_cold_vectorized
 from typing import List, Dict, Any, Tuple, Optional
 from modules import ScratchSolver
 from numpy.lib.stride_tricks import sliding_window_view
