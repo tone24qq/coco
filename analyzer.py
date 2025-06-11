@@ -213,10 +213,45 @@ def analyze_board(
     knowledge_base: Optional[List[Dict[str, Any]]] = None,
     heatmap_data: Optional[Dict[str, Any]] = None,
     model_path: str = "models/model.pkl"
-) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float], List[str]]:
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    List[Tuple[int, int, float, Dict[str, float]]],
+    Dict[str, float],
+    List[str]
+]:
     """
     Analyze a scratch card board with extended features and reasoning.
+    """
+    # —— 插入日志，确认收到的 grid 维度和形状 —— 
+    logger.info(f"🔍 [analyze_board] received grid ndim={grid.ndim}, shape={grid.shape}")
 
+    try:
+        # —— 原有的分析逻辑开始 —— 
+
+        # 例如：计算热力图
+        heatmap = compute_dynamic_hot_cold_vectorized(grid, weights["compute_dynamic_hot_cold_vectorized"])
+        # 以及其他模块……
+        M, N = heatmap.shape  # 假设 heatmap 真的是 2D
+        preds: List[Tuple[int,int,float,Dict[str,float]]] = []
+        module_weights: Dict[str,float] = {}
+
+        # 举例：遍历各格
+        for i in range(M):
+            for j in range(N):
+                # 这里如果 heatmap 不是 2D，就会在 heatmap[i,j] 时报错
+                score = heatmap[i, j]
+                # …后续逻辑填充 preds、module_weights …
+
+        reasoning: List[str] = ["Logic step 1", "Logic step 2"]
+        # 返回 heatmap, raw_preds, top3, module_weights, reasoning
+        return heatmap, heatmap, preds, module_weights, reasoning
+
+    except Exception as e:
+        # 打印完整 traceback，方便定位出错行
+        logger.error("🔍 [analyze_board] error during analysis", exc_info=True)
+        # 重新抛出，让上层捕获并返回 500
+        raise
     Parameters:
         grid: 2D board array.
         weights: Module weights.
