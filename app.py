@@ -46,25 +46,71 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Load knowledge base and heatmaps from data directory with detailed logging.
 
+    支援兩種 heatmap JSON：
+        1. {"heatmap": [[...], ...]}                 ← 單張
+        2. {"工作簿": {"工作表": [[...], ...]}}       ← 舊版巢狀
+
+    可用環境變數覆寫：
+        DATA_DIR      根目錄（預設 samples/data）
+        HEATMAP_DIR   heatmap 子目錄（預設 {DATA_DIR}/heatmaps）
+        HEATMAP_GLOB  檔名樣式（預設 *_heatmap.json）
+        KB_FILE       知識庫檔名（預設 math_algo_kb.json）
+
     Returns:
-        Tuple[List[Dict], Dict[str, Any]]: Knowledge base and heatmaps.
+        Tuple[List[Dict], Dict[str, Any]]: (knowledge_base, heatmaps_dict)
     """
-    kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    heatmap_paths = glob.glob(os.path.join(DATA_DIR, "heatmap_*.json"))
-    
+    import os, json, glob, logging
+    from pathlib import Path
+    from typing import List, Dict, Tuple, Any
+
+    logger = logging.getLogger(__name__)
+
+    # ---------- 路徑與檔名 ----------
+    data_dir     = Path(os.getenv("DATA_DIR", "samples/data"))
+    kb_file      = os.getenv("KB_FILE", "math_algo_kb.json")
+    heatmap_dir  = Path(os.getenv("HEATMAP_DIR", data_dir / "heatmaps"))
+    heatmap_glob = os.getenv("HEATMAP_GLOB", "*_heatmap.json")
+
+    kb_path = data_dir / kb_file
     math_algo_kb: List[Dict] = []
     heatmaps: Dict[str, Any] = {}
-    
-    if os.path.exists(kb_path):
+
+    # ---------- 讀知識庫 ----------
+    if kb_path.exists():
         try:
-            with open(kb_path, 'r', encoding="utf-8") as f:
-                math_algo_kb = json.load(f)["concepts"]
-            logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
-        except (OSError, json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
+            with kb_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            math_algo_kb = data["concepts"] if isinstance(data, dict) else data
+            logger.info("Loaded %d concepts from %s", len(math_algo_kb), kb_path)
+        except Exception as e:
+            logger.error("Failed to load KB %s → %s", kb_path, e)
     else:
-        logger.warning(f"Knowledge base file not found at {kb_path}, using empty KB")
-    
+        logger.warning("Knowledge base not found at %s, using empty KB", kb_path)
+
+    # ---------- 讀 heatmaps ----------
+    for p in heatmap_dir.glob(heatmap_glob):
+        try:
+            data = json.loads(p.read_text())
+
+            # (A) 新格式：單張
+            if "heatmap" in data and isinstance(data["heatmap"], list):
+                heatmaps[p.stem] = data["heatmap"]
+
+            # (B) 舊格式：巢狀
+            elif isinstance(data, dict) and all(isinstance(v, dict) for v in data.values()):
+                for wb in data.values():
+                    for sheet_name, hm in wb.items():
+                        if isinstance(hm, list):
+                            key = f"{p.stem}_{sheet_name}"
+                            heatmaps[key] = hm
+            else:
+                logger.warning("Skip %s → unrecognized schema", p.name)
+
+        except Exception as e:
+            logger.warning("Skip %s → %s", p.name, e)
+
+    logger.info("Loaded %d heatmaps from %s", len(heatmaps), heatmap_dir)
+    return math_algo_kb, heatmaps
     for hp in heatmap_paths:
         name = os.path.splitext(os.path.basename(hp))[0]
         try:
