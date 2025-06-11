@@ -5,7 +5,6 @@ import json
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from modules import ScratchSolver
-import sklearn
 import lightgbm as lgb
 import joblib
 
@@ -53,13 +52,23 @@ def compute_all_module_scores(
     solver = ScratchSolver()
     solver.update_tree(grid)
     features = []
+    empty_yx = np.argwhere(grid == -1)
     for mod_name, mod_func in sorted(solver.MODULE_REGISTRY.items()):
         try:
             result = safe_call(mod_func, mod_name, grid)
-            scores = result[0] if isinstance(result, tuple) else result
-            empty_yx = np.argwhere(grid == -1)
-            idx = np.where((empty_yx == target_pos).all(axis=1))[0]
-            features.append(scores[idx[0]] if idx.size > 0 else 0.1)
+            if mod_name == 'compute_difference_trend':
+                # Handle array of differences
+                score = np.mean(result) if result.size > 0 else 0.1
+                features.append(score)
+            elif mod_name == 'detect_mirror_sequences':
+                # Handle boolean mask
+                row_idx = target_pos[0]
+                score = 1.0 if result[row_idx] else 0.1
+                features.append(score)
+            else:
+                scores = result[0] if isinstance(result, tuple) else result
+                idx = np.where((empty_yx == target_pos).all(axis=1))[0]
+                features.append(scores[idx[0]] if idx.size > 0 else 0.1)
         except Exception as e:
             logger.warning(f"Module {mod_name} failed at {target_pos}: {e}")
             failed_modules.append(mod_name)
@@ -154,7 +163,6 @@ def train_extended_model(
         model_path (str): Path to save model.
         feature_log_path (str): Path to save feature log.
     """
-    assert grid.ndim == 2, "Grid must be 2-D after initialization"
     try:
         X = []
         y = []
@@ -294,18 +302,32 @@ def analyze_board(
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = safe_call(mod_func, mod_name, grid)
-                if isinstance(result, tuple):
-                    result = result[0]
-                if result.ndim != 2:
-                    if result.size == M * N:
-                        result = result.reshape(M, N)
-                    elif len(result) == len(empty_yx):
-                        temp_result = np.zeros((M, N), dtype=np.int64)
-                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                        result = temp_result
-                    else:
-                        result = np.zeros((M, N), dtype=np.int64)
-                module_scores[mod_name] = result
+                if mod_name == 'compute_difference_trend':
+                    # Handle array of differences
+                    score = np.zeros((M, N), dtype=np.int64)
+                    if result.size > 0:
+                        score[grid == -1] = np.mean(result)
+                    module_scores[mod_name] = score
+                elif mod_name == 'detect_mirror_sequences':
+                    # Handle boolean mask
+                    score = np.zeros((M, N), dtype=np.int64)
+                    for i in range(M):
+                        if result[i]:
+                            score[i, :] = 1.0
+                    module_scores[mod_name] = score
+                else:
+                    if isinstance(result, tuple):
+                        result = result[0]
+                    if result.ndim != 2:
+                        if result.size == M * N:
+                            result = result.reshape(M, N)
+                        elif len(result) == len(empty_yx):
+                            temp_result = np.zeros((M, N), dtype=np.int64)
+                            temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
+                            result = temp_result
+                        else:
+                            result = np.zeros((M, N), dtype=np.int64)
+                    module_scores[mod_name] = result
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
                 failed_modules.append(mod_name)
@@ -357,18 +379,32 @@ def analyze_board(
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = safe_call(mod_func, mod_name, grid)
-                if isinstance(result, tuple):
-                    result = result[0]
-                if result.ndim != 2:
-                    if result.size == M * N:
-                        result = result.reshape(M, N)
-                    elif len(result) == len(empty_yx):
-                        temp_result = np.zeros((M, N), dtype=np.int64)
-                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                        result = temp_result
-                    else:
-                        result = np.zeros((M, N), dtype=np.int64)
-                mod_scores[mod_name] = result
+                if mod_name == 'compute_difference_trend':
+                    # Handle array of differences
+                    score = np.zeros((M, N), dtype=np.int64)
+                    if result.size > 0:
+                        score[grid == -1] = np.mean(result)
+                    mod_scores[mod_name] = score
+                elif mod_name == 'detect_mirror_sequences':
+                    # Handle boolean mask
+                    score = np.zeros((M, N), dtype=np.int64)
+                    for i in range(M):
+                        if result[i]:
+                            score[i, :] = 1.0
+                    mod_scores[mod_name] = score
+                else:
+                    if isinstance(result, tuple):
+                        result = result[0]
+                    if result.ndim != 2:
+                        if result.size == M * N:
+                            result = result.reshape(M, N)
+                        elif len(result) == len(empty_yx):
+                            temp_result = np.zeros((M, N), dtype=np.int64)
+                            temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
+                            result = temp_result
+                        else:
+                            result = np.zeros((M, N), dtype=np.int64)
+                    mod_scores[mod_name] = result
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
                 failed_modules.append(mod_name)
