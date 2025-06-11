@@ -294,8 +294,18 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         final_score, predictions, top3, metrics, reasoning = analyze_board(
             arr, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap, math_algo_kb, heatmaps, payload.model_path
         )
-        # 確保 final_score 作為二維 heatmap
-        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(arr, dtype=float)
+        # --- 保險：把任何一維分數轉回 (M,N) 二維熱圖 ---
+        if final_score.ndim == 2 and final_score.shape == arr.shape:
+            heatmap = final_score
+        else:
+            # 建空白圖先全 0
+            heatmap = np.zeros_like(arr, dtype=float)
+            # 找出所有 -1 的座標
+            empty_cells = np.argwhere(arr == -1)
+            # 若 final_score 與空格數量一致 → 視為一維分數
+            if final_score.size == empty_cells.shape[0]:
+                heatmap[empty_cells[:, 0], empty_cells[:, 1]] = final_score
+        # ------------------------------------------------
         # 臨時使用 dummy extended_features，後續從 analyzer.py 獲取真實數據
         extended_features = {"dummy": 0.1}
         # 確保 top3 包含 (row, col, digit, confidence, module_scores)，並添加 heatmap 和 features
@@ -436,13 +446,13 @@ def save_results_to_file(
         output_filepath (str): Output file path.
         output_format (str): File format.
     """
-    from brain import save_results_to_file as brain_save
+    from brain import save_results_to_file, brain_save
     logger.info(f"Saving results to {output_filepath} in {output_format} format")
     try:
         brain_save(scores, predictions, best_pos, output_filepath, output_format)
         logger.info(f"Successfully saved results to {output_filepath}")
     except Exception as e:
-        logger.error(f"Failed to save results to {output_filepath}: {str(e)}")
+        logger.error(f"Failed to save results to {output_filepath}: {e}")
         raise
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
