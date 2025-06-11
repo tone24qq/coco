@@ -82,13 +82,19 @@ class AnalysisRequest(BaseModel):
     model_path: str = Field("models/model.pkl", description="Trained model path")
 
     @validator("grid")
-    def validate_grid(cls, grid):
-        grid_array = np.array(grid, dtype=float)
-        if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
-           grid_array.shape[0] > 20 or grid_array.shape[1] > 20
-            raise ValueError("Grid size must be 4x4 to 20x20")
-        if not np.any(grid_array == -1.0):
-            raise ValueError("Grid must contain at least one hidden cell (-1) for prediction")
+def validate_grid(cls, grid):
+    try:
+        grid_array = np.asarray(grid, dtype=float)
+    except Exception:
+        raise ValueError("Grid must be convertible to a 2D float array")
+
+    rows, cols = grid_array.shape
+    if grid_array.ndim != 2 or rows < 4 or cols < 4 or rows > 20 or cols > 20:
+        raise ValueError(f"Grid size must be 4x4 to 20x20, got {rows}x{cols}")
+    if not np.any(grid_array == -1.0):
+        raise ValueError("Grid must contain at least one hidden cell (-1) for prediction")
+
+    return grid
         open_nums = grid_array[grid_array != -1.0].flatten()
         if len(open_nums) > 0:
             if len(set(open_nums)) != len(open_nums) or max(open_nums) > grid_array.size or min(open_nums) < 1:
