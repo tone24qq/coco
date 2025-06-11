@@ -5,6 +5,7 @@ import json
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from modules import ScratchSolver
+from numpy.lib.stride_tricks import sliding_window_view
 from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
@@ -56,12 +57,12 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     open_nums = grid[grid != -1]
     
     for i in range(M):
-        row = grid[i][grid[i] != -1]
+        row = open_nums[i]
         features[f"row_{i}_mean"] = np.mean(row) if row.size else 0
         features[f"row_{i}_std"] = np.std(row) if row.size > 1 else 0
     
     for j in range(N):
-        col = grid[:, j][grid[:, j] != -1]
+        col = open_nums[:, j]
         features[f"col_{j}_mean"] = np.mean(col) if col.size else 0
         features[f"col_{j}_std"] = np.std(col) if col.size > 1 else 0
     
@@ -103,7 +104,7 @@ def generate_masked_samples(
             if true_val == -1 or true_val not in target_nums:
                 continue
             masked = grid.copy()
-            masked[i, j] = -1
+            masked[i, j] = -1  # 模擬遮罩
             module_scores = compute_all_module_scores(masked, (i, j), (M, N))
             sample_features = {
                 "module_scores": module_scores.tolist(),
@@ -162,7 +163,7 @@ def predict_topk(
     Predict top-k positions for a target number using the trained model.
 
     Parameters:
-        masked_grid (np.ndarray): 2D grid with hidden cells.
+        masked_grid (np.ndarray): Grid with hidden cells.
         model_path (str): Path to trained model.
         target_num (int): Target number to predict.
         k (int): Number of top predictions.
@@ -182,7 +183,7 @@ def predict_topk(
     
     for i in range(M):
         for j in range(N):
-            if masked_grid[i, j] == -1:
+            if masked_grid[i, j] == -1:  # 只處理 -1 格
                 features = compute_all_module_scores(masked_grid, (i, j), (M, N))
                 combined = np.concatenate([
                     features,
@@ -196,7 +197,7 @@ def predict_topk(
                     "module_scores": features.tolist(),
                     "extended_features": extended_features,
                     "confidence_contributors": {
-                        name: float(features[idx]) for idx, name in enumerate(ScratchSolver.MODULE_REGISTRY.keys())
+                        name: float(features[idx]) for idx, name in enumerate(ScratchSolver().MODULE_REGISTRY.keys())
                     }
                 }
                 candidates.append((i, j, target_num, confidence, reasoning))
@@ -211,58 +212,56 @@ def analyze_board(
     json_heatmap_path: Optional[str] = None,
     knowledge_base: Optional[List[Dict[str, Any]]] = None,
     heatmap_data: Optional[Dict[str, Any]] = None,
-    model_path: Optional[str] = None
-) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], Dict[str, float], List[str]]:
+    model_path: str = "models/model.pkl"
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[int, int, float, Dict[str, float]]], Dict[str, float], List[str]]:
     """
     Analyze a scratch card board.
 
-    Args:
+    Parameters:
         grid (np.ndarray): 2D board array.
-        weights (Dict[str, float]): Dictionary mapping function name to weight.
+        weights (Dict[str, float]): Module weights.
         return_predictions (bool): Whether to return predictions.
-        target_num (int, optional): Target number to locate.
-        json_heatmap_path (str, optional): Path to JSON heatmap.
-        knowledge_base (List[Dict], optional): Knowledge base data.
-        heatmap_data (Dict, optional): Preloaded heatmaps.
-        model_path (str, optional): Path to trained model.
+        target_num (Optional[int]): Target number to locate.
+        json_heatmap_path (Optional[str]): Path to JSON heatmap.
+        knowledge_base (Optional[List[Dict]]): Knowledge base data.
+        heatmap_data (Optional[Dict]): Preloaded heatmaps.
+        model_path (str): Path to trained model.
 
     Returns:
-        Tuple containing:
-            - np.ndarray: Final scores for hidden cells.
-            - np.ndarray: Predicted values for the grid.
-            - List[Dict]: Top-3 predictions with row, col, digit, confidence, and contributions.
-            - Dict[str, float]: Evaluation metrics.
-            - List[str]: Reasoning steps.
+        Tuple: Scores, predictions, top-3 positions, metrics, and reasoning steps.
     """
+    # 2. 添加形狀檢查與日誌
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
+    grid = np.asarray(grid)  # 修正：有時 grid 是 dict
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
     try:
+        # 3. 包裹核心邏輯
+        # 創建 ScratchSolver 實例
         solver = ScratchSolver()
         solver.update_tree(grid)
-        M, N = grid.shape
 
-        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(
-            grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9)
-        )
+        # 計算初始 heatmap，確保返回二維陣列
+        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
+        # 將一維得分轉換為與 grid 同形的二維陣列
+        M, N = grid.shape
         heatmap = np.zeros_like(grid, dtype=float)
         empty_yx = np.argwhere(grid == -1)
         if len(heatmap_scores) == len(empty_yx):
             heatmap[empty_yx[:, 0], empty_yx[:, 1]] = heatmap_scores
         else:
-            logger.warning(
-                f"heatmap_scores length {len(heatmap_scores)} does not match empty cells {len(empty_yx)}, filling with 0.1"
-            )
+            logger.warning(f"heatmap_scores length {len(heatmap_scores)} does not match empty cells {len(empty_yx)}, filling with 0.1")
             heatmap[grid == -1] = 0.1
         assert heatmap.ndim == 2, f"heatmap must be 2D, got ndim={heatmap.ndim}"
 
+        # 初始化 module_scores 和 preds
         module_scores = {}
+        preds = []
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = mod_func(grid)
-                if isinstance(result, tuple):
-                    result = result[0]
+                # 確保 result 是二維陣列，若不是則轉換為 (M, N)
                 if result.ndim != 2:
                     if result.size == M * N:
                         result = result.reshape(M, N)
@@ -277,18 +276,13 @@ def analyze_board(
                 logger.error(f"{mod_name} failed: {e}")
                 module_scores[mod_name] = np.zeros((M, N))
 
-        preds = [
-            {
-                "row": i,
-                "col": j,
-                "score": float(heatmap[i, j]),
-                "module_scores": {k: float(v[i, j]) for k, v in module_scores.items()}
-            }
-            for i in range(M)
-            for j in range(N)
-            if grid[i, j] == -1
-        ]
+        # 計算分數並生成 preds
+        for i in range(M):
+            for j in range(N):
+                score = heatmap[i, j]
+                preds.append((i, j, score, {k: v[i, j] for k, v in module_scores.items()}))
 
+        # 處理 target_num 邏輯
         if target_num is None:
             remaining_nums = list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))
             if not remaining_nums:
@@ -296,35 +290,38 @@ def analyze_board(
             target_num = remaining_nums[0]
             logger.warning(f"No target number specified, using {target_num}")
 
-        if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
+        # 檢查 grid 尺寸
+        n, m = grid.shape
+        if n < 4 or m < 4:
+            return np.zeros((n,), dtype=bool)  # 修正：detect_mirror_sequences grid 尺寸過小時 index 超出
+        if grid.shape[0] > 20 or grid.shape[1] > 20:
             logger.error("Grid size out of bounds")
-            return np.array([]), np.array(grid), [], {"accuracy": 0}, ["Invalid grid size"]
+            return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0}, ["Invalid grid size"]
 
         open_nums = set(grid[grid != -1])
         if len(open_nums) != len(set(open_nums)) or max(open_nums, default=0) > grid.size:
             logger.error("Invalid numbers detected")
-            return np.array([]), np.array(grid), [], {"accuracy": 0}, ["Invalid numbers"]
+            return np.array([]), np.array(grid), [(0, 0, 0.1, {"default": 0.1})], {"accuracy": 0}, ["Invalid numbers"]
 
         if target_num in open_nums:
             logger.warning(f"Target number {target_num} already present")
             return np.array([]), np.array(grid), [], {"accuracy": 0}, [f"Target {target_num} already open"]
 
+        # 提取並保存 extended_features
         extended_features = extract_extended_features(grid)
-        if json_heatmap_path:
-            features_path = json_heatmap_path.replace(".json", "_features.json")
-            try:
-                os.makedirs(os.path.dirname(features_path), exist_ok=True)
-                with open(features_path, "w", encoding="utf-8") as f:
-                    json.dump(extended_features, f, ensure_ascii=False, indent=2)
-            except OSError as e:
-                logger.error(f"Failed to save features: {e}")
+        features_path = json_heatmap_path.replace(".json", "_features.json") if json_heatmap_path else "samples/data/features.json"
+        try:
+            os.makedirs(os.path.dirname(features_path), exist_ok=True)
+            with open(features_path, "w", encoding="utf-8") as f:
+                json.dump(extended_features, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            logger.error(f"Failed to save features: {e}")
 
+        # 計算模組分數
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = mod_func(grid)
-                if isinstance(result, tuple):
-                    result = result[0]
                 if result.ndim != 2:
                     if result.size == M * N:
                         result = result.reshape(M, N)
@@ -335,57 +332,39 @@ def analyze_board(
                     else:
                         result = np.zeros((M, N))
                 mod_scores[mod_name] = result
+                if mod_scores[mod_name].size != np.count_nonzero(grid == -1):
+                    logger.warning(f"{mod_name} score size mismatch")
+                    mod_scores[mod_name] = np.zeros((M, N))
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
                 mod_scores[mod_name] = np.zeros((M, N))
 
-        board_type = solver.classify_board_type(
-            mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N)))
-        )
+        board_type = solver.classify_board_type(mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N))))
         solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
+        # 整合預測
         patterns = solver.analyze_number_patterns(grid)
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
+        # 計算 top3
         top3 = []
-        reasoning_steps = [
-            f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}",
-            f"Target number: {target_num}"
-        ]
-        if model_path and os.path.exists(model_path):
+        reasoning_steps = [f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}", f"Target number: {target_num}"]
+        if os.path.exists(model_path):
             top3_predictions = predict_topk(grid, model_path, target_num, k=3)
-            top3 = [
-                {
-                    "row": int(p[0]),
-                    "col": int(p[1]),
-                    "predicted_digit": int(p[2]),
-                    "confidence": float(p[3]),
-                    "module_scores": p[4]["confidence_contributors"]
-                }
-                for p in top3_predictions
-            ]
-            reasoning_steps.extend(
-                [f"Candidate at {p[4]['position']} with confidence {p[3]}" for p in top3_predictions]
-            )
+            top3 = [(p[0], p[1], p[2], p[3], p[4]["confidence_contributors"]) for p in top3_predictions]  # 確保五元組
+            reasoning_steps.extend([f"Candidate at {p[4]['position']} with confidence {p[3]}" for p in top3_predictions])
         else:
             empty_yx = np.argwhere(grid == -1)
             if len(empty_yx) == 0:
                 logger.warning("No hidden cells (-1) found, returning empty predictions")
                 return np.array([]), np.array(grid), [], {"accuracy": 0}, ["No hidden cells to predict"]
-            top3_pred = solver.predict_top3_vectorized(final_score, empty_yx)
-            top3 = [
-                {
-                    "row": int(pos[0]),
-                    "col": int(pos[1]),
-                    "predicted_digit": target_num,
-                    "confidence": float(pos[2]),
-                    "module_scores": pos[3]
-                }
-                for pos in top3_pred
-            ]
+            top3 = solver.predict_top3_vectorized(final_score, empty_yx, target_num=target_num)
+            # 補充 digit 為 target_num，確保五元組
+            top3 = [(pos[0], pos[1], target_num, pos[2], pos[3]) for pos in top3]
             reasoning_steps.append(f"Top-3 predicted using heuristic scores: {top3}")
 
+        # 計算 metrics
         true_values = grid.copy()
         remaining_nums = list(set(range(1, grid.size + 1)) - set(open_nums))
         np.random.shuffle(remaining_nums)
@@ -395,8 +374,8 @@ def analyze_board(
 
         return final_score, predictions, top3, metrics, reasoning_steps
 
-    except Exception as e:
-        logger.exception(f"Error in analyze_board: {e}")
+    except Exception:
+        logger.exception("Error in analyze_board")
         raise
 
 # Self-Inspection Report:
