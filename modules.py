@@ -131,7 +131,7 @@ class ScratchSolver:
             np.ndarray: Scores for hidden cells.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        empty_yx = np.argwhere(grid == -1)
+        empty_yx = np.argwhere(grid != -1)
         if empty_yx.size == 0:
             return np.array([])
         if self.tree is None or self.known_yx is None or self.known_vals is None:
@@ -346,96 +346,53 @@ class ScratchSolver:
         scores = np.where(scores < 0.1, 0.1, scores)
         return scores[grid == -1], pred[grid == -1]
 
-    def compute_difference_trend(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def compute_difference_trend(self, grid: np.ndarray, *, ignore_val: int = -1) -> np.ndarray:
         """
         Computes difference trends based on grid gradients.
 
         Args:
             grid (np.ndarray): 2D board array.
+            ignore_val (int): Value to ignore in computations (default: -1).
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            np.ndarray: Differences between sorted known values.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        M, N = grid.shape
-        scores = np.zeros((M, N), dtype=np.int64)
-        pred = np.full((M, N), -1, dtype=np.int64)
-        d1 = np.diff(grid, axis=1)
-        d2 = np.diff(grid, axis=0)
-        diff_freq = np.bincount(
-            d1.flatten()[d1.flatten() != -1].astype(np.int64), minlength=grid.size+1
-        ) + np.bincount(
-            d2.flatten()[d2.flatten() != -1].astype(np.int64), minlength=grid.size+1
-        )
-        diff_len = len(diff_freq)
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] == -1:
-                    seq = diff_freq[diff_freq != -1]
-                    k = max(0, len(seq) - diff_len)
-                    sample = random.sample(list(seq), k) if k else []
-                    if sample:
-                        expected = np.mean(sample)
-                        if j >= 1 and grid[i, j-1] != -1:
-                            expected = grid[i, j-1] + expected
-                            if 1 <= expected <= grid.size:
-                                scores[i, j] = diff_freq[int(expected)] / (diff_freq.sum() + 1e-8)
-                                pred[i, j] = int(expected)
-                        if i >= 1 and grid[i-1, j] != -1:
-                            expected = grid[i-1, j] + expected
-                            if 1 <= expected <= grid.size:
-                                scores[i, j] = max(scores[i, j], diff_freq[int(expected)] / (diff_freq.sum() + 1e-8))
-                                pred[i, j] = int(expected)
-        scores[grid != -1] = 0
-        mn, mx = scores.min(), scores.max()
-        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
-        scores = np.where(scores < 0.1, 0.1, scores)
-        return scores[grid == -1], pred[grid == -1]
+        # Flatten and filter out hidden cells
+        flat = [x for x in grid.flatten().tolist() if x != ignore_val]
+        
+        # Need at least two points for a diff; otherwise return empty array
+        if len(flat) < 2:
+            return np.array([], dtype=float)
+        
+        diffs = np.diff(sorted(flat))
+        return diffs.astype(float)
 
-    def detect_mirror_sequences(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def detect_mirror_sequences(self, grid: np.ndarray) -> np.ndarray:
         """
-        Detects mirror symmetry patterns in the grid.
+        Detects mirror symmetry patterns in rows of the grid.
 
         Args:
             grid (np.ndarray): 2D board array.
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            np.ndarray: Boolean mask indicating rows with mirror symmetry.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        if grid.shape[1] < 4:
-            return np.array([0.0]), np.array([-1])
-        M, N = grid.shape
-        scores = np.zeros((M, N), dtype=np.int64)
-        pred = np.full((M, N), -1, dtype=np.int64)
-        mid_x = N // 2
-        mid_y = M // 2
-        left = grid[:, :mid_x]
-        right = np.fliplr(grid[:, -mid_x:])
-        mirror_lr = np.all((left == right) | (left == -1) | (right == -1), axis=1)
-        top = grid[:mid_y, :]
-        bottom = np.flipud(grid[-mid_y:, :])
-        mirror_ud = np.all((top == bottom) | (top == -1) | (bottom == -1), axis=1)
-        diag1 = np.diagonal(grid)
-        diag2 = np.diagonal(np.fliplr(grid))
-        mirror_diag = np.all((diag1 == diag2) | (diag1 == -1) | (diag2 == -1))
-        for i in range(M):
-            for j in range(N):
-                if grid[i, j] == -1:
-                    if j < mid_x and mirror_lr[i] and grid[i, N-1-j] != -1:
-                        scores[i, j] = 1.0
-                        pred[i, j] = int(grid[i, N-1-j])
-                    if i < mid_y and mirror_ud[j] and grid[M-1-i, j] != -1:
-                        scores[i, j] = 1.0
-                        pred[i, j] = int(grid[M-1-i, j])
-                    if mirror_diag and i == j and grid[M-1-i, M-1-i] != -1:
-                        scores[i, j] = 1.0
-                        pred[i, j] = int(grid[M-1-i, M-1-i])
-        scores[grid != -1] = 0
-        mn, mx = scores.min(), scores.max()
-        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
-        scores = np.where(scores < 0.1, 0.1, scores)
-        return scores[grid == -1], pred[grid == -1]
+        g = np.asarray(grid)
+        n, m = g.shape
+        
+        # If rows or cols < 4 we cannot check mirror patterns – return all-False mask
+        if n < 4 or m < 4:
+            return np.zeros((n,), dtype=bool)
+        
+        mirror_rows = (
+            (g[:, 0] == g[:, -1]) &
+            (g[:, 1] == g[:, -2]) &
+            (g[:, 2] == g[:, -3]) &
+            (g[:, 3] == g[:, -4])
+        )
+        return mirror_rows
 
     def connectivity_heatmap(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -494,17 +451,21 @@ class ScratchSolver:
         scores = np.where(scores < 0.1, 0.1, scores)
         return scores[grid == -1], pred[grid == -1]
 
-    def analyze_number_patterns(self, grid: np.ndarray) -> Dict[Tuple[int, str], Dict[str, Any]]:
+    def analyze_number_patterns(self, grid: np.ndarray, *args, **kwargs) -> Dict[Tuple[int, str], Dict[str, Any]]:
         """
         Analyzes arithmetic patterns in rows and columns.
 
         Args:
             grid (np.ndarray): 2D board array.
+            *args: Additional positional arguments.
+            **kwargs: Additional keyword arguments.
 
         Returns:
             Dict[Tuple[int, str], Dict[str, Any]]: Detected patterns.
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        grid = np.asarray(grid)
+        if grid.ndim != 2:
+            raise ValueError("grid must be 2-D")
         M, N = grid.shape
         patterns: Dict[Tuple[int, str], Dict[str, Any]] = {}
         
