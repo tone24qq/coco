@@ -241,10 +241,18 @@ def analyze_board(
         solver = ScratchSolver()
         solver.update_tree(grid)
 
-        # 計算初始 heatmap
-        heatmap = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
+        # 計算初始 heatmap，確保返回二維陣列
+        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
+        # 將一維得分轉換為與 grid 同形的二維陣列
+        M, N = grid.shape
+        heatmap = np.zeros_like(grid, dtype=float)
+        empty_yx = np.argwhere(grid == -1)
+        if len(heatmap_scores) == len(empty_yx):
+            heatmap[empty_yx[:, 0], empty_yx[:, 1]] = heatmap_scores
+        else:
+            logger.warning(f"heatmap_scores length {len(heatmap_scores)} does not match empty cells {len(empty_yx)}, filling with 0.1")
+            heatmap[grid == -1] = 0.1
         assert heatmap.ndim == 2, f"heatmap must be 2D, got ndim={heatmap.ndim}"
-        M, N = heatmap.shape
 
         # 初始化 module_scores 和 preds
         module_scores = {}
@@ -256,6 +264,10 @@ def analyze_board(
                 if result.ndim != 2:
                     if result.size == M * N:
                         result = result.reshape(M, N)
+                    elif len(result) == len(empty_yx):
+                        temp_result = np.zeros((M, N))
+                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
+                        result = temp_result
                     else:
                         result = np.zeros((M, N))
                 module_scores[mod_name] = result
@@ -309,6 +321,10 @@ def analyze_board(
                 if result.ndim != 2:
                     if result.size == M * N:
                         result = result.reshape(M, N)
+                    elif len(result) == len(empty_yx):
+                        temp_result = np.zeros((M, N))
+                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
+                        result = temp_result
                     else:
                         result = np.zeros((M, N))
                 mod_scores[mod_name] = result
