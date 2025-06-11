@@ -273,32 +273,49 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     arr = np.atleast_2d(np.array(payload.grid, dtype=float))
     logger.info(f"🔍 AFTER reshape arr.shape = {arr.shape}")
 
-    # 4) 嚴格校驗：必須二維
-    if arr.ndim != 2:
-        raise HTTPException(422, "grid 必須是規則的二維數值矩陣")
+    # 4) 嚴格校驗：必須二維，範圍 4x4 至 20x20
+    if arr.ndim != 2 or arr.shape[0] < 4 or arr.shape[1] < 4 or arr.shape[0] > 20 or arr.shape[1] > 20:
+        raise HTTPException(422, "grid 必須是 4x4 至 20x20 的二維數值矩陣")
 
-    # 5) 默認 target_num
+    # 5) 唯一性校驗
+    flat = [n for row in arr.tolist() for n in row if n != -1]
+    if len(flat) != len(set(flat)):
+        raise HTTPException(422, "grid 中除 -1 外的數字必須唯一不可重複")
+
+    # 6) 默認 target_num
     if payload.mode == "predict" and payload.target_num is None:
         logger.warning("No target_num specified, defaulting to 6")
         target = 6
     else:
         target = payload.target_num
 
-    # 6) 核心預測邏輯（示例：所有 -1 位置都預測為 target，confidence = 0.5）
+    # 7) 核心預測邏輯（提升：整合 analyze_board，返回 metrics 和完整 top3）
     try:
-        preds = []
-        M, N = arr.shape
-        for i in range(M):
-            for j in range(N):
-                if arr[i, j] == -1:
-                    preds.append({
-                        "row": i,
-                        "col": j,
-                        "predicted_digit": int(target),
-                        "confidence": 0.5
-                    })
-        result = AnalysisResponse(predictions=preds, error=None, source="🔥 from real API", reasoning=[])
-        return JSONResponse(status_code=200, content=result.dict())
+        final_score, predictions, top3, metrics, reasoning = analyze_board(
+            arr, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap, math_algo_kb, heatmaps, payload.model_path
+        )
+        # 確保 final_score 作為二維 heatmap
+        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(arr, dtype=float)
+        # 臨時使用 dummy extended_features，後續從 analyzer.py 獲取真實數據
+        extended_features = {"dummy": 0.1}
+        # 確保 top3 包含 (row, col, digit, confidence, module_scores)，並添加 heatmap 和 features
+        predictions = [{
+            "row": int(t[0]),
+            "col": int(t[1]),
+            "predicted_digit": int(t[2]),
+            "confidence": float(t[3]),
+            "module_scores": {**t[4], "heatmap": float(heatmap[t[0], t[1]]), "features": extended_features}
+        } for t in top3]
+        result = AnalysisResponse(
+            predictions=predictions,
+            error=None,
+            source="🔥 from real API",
+            reasoning=reasoning
+        )
+        return JSONResponse(
+            status_code=200,
+            content=result.dict()
+        )
 
     except Exception as e:
         logger.error(f"Prediction failed: {e}")
