@@ -85,7 +85,7 @@ class AnalysisRequest(BaseModel):
     def validate_grid(cls, grid):
         grid_array = np.array(grid, dtype=float)
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
-           grid_array.shape[0] > 20 or grid_array.shape[1] > 20]:
+           grid_array.shape[0] > 20 or grid_array.shape[1] > 20
             raise ValueError("Grid size must be 4x4 to 20x20")
         if not np.any(grid_array == -1.0):
             raise ValueError("Grid must contain at least one hidden cell (-1) for prediction")
