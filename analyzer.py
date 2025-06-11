@@ -237,15 +237,19 @@ def analyze_board(
 
     try:
         # 3. 包裹核心邏輯
+        # 創建 ScratchSolver 實例
+        solver = ScratchSolver()
+        solver.update_tree(grid)
+
         # 計算初始 heatmap
-        heatmap = compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
+        heatmap = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
         assert heatmap.ndim == 2, f"heatmap must be 2D, got ndim={heatmap.ndim}"
         M, N = heatmap.shape
 
         # 初始化 module_scores 和 preds
         module_scores = {}
         preds = []
-        for mod_name, mod_func in ScratchSolver().MODULE_REGISTRY.items():
+        for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = mod_func(grid)
                 # 確保 result 是二維陣列，若不是則轉換為 (M, N)
@@ -272,9 +276,6 @@ def analyze_board(
                 raise ValueError("No remaining numbers to predict")
             target_num = remaining_nums[0]
             logger.warning(f"No target number specified, using {target_num}")
-
-        solver = ScratchSolver()
-        solver.update_tree(grid)
 
         # 檢查 grid 尺寸
         if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
@@ -331,7 +332,7 @@ def analyze_board(
         reasoning_steps = [f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}", f"Target number: {target_num}"]
         if os.path.exists(model_path):
             top3_predictions = predict_topk(grid, model_path, target_num, k=3)
-            top3 = [(p[0], p[1], p[3], p[4]["confidence_contributors"]) for p in top3_predictions]
+            top3 = [(p[0], p[1], p[2], p[3], p[4]["confidence_contributors"]) for p in top3_predictions]  # 確保五元組
             reasoning_steps.extend([f"Candidate at {p[4]['position']} with confidence {p[3]}" for p in top3_predictions])
         else:
             empty_yx = np.argwhere(grid == -1)
@@ -339,6 +340,8 @@ def analyze_board(
                 logger.warning("No hidden cells (-1) found, returning empty predictions")
                 return np.array([]), np.array(grid), [], {"accuracy": 0}, ["No hidden cells to predict"]
             top3 = solver.predict_top3_vectorized(final_score, empty_yx, target_num=target_num)
+            # 補充 digit 為 target_num，確保五元組
+            top3 = [(pos[0], pos[1], target_num, pos[2], pos[3]) for pos in top3]
             reasoning_steps.append(f"Top-3 predicted using heuristic scores: {top3}")
 
         # 計算 metrics
