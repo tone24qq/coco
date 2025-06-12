@@ -431,7 +431,7 @@ class ScratchSolver:
                 block_tails = block[block != -1] % 10
                 if block_tails.size > 0:
                     local_freq = np.bincount(block_tails, minlength=10) / (block_tails.size + 1e-8)
-                    if grid[i, j] ==sweet:
+                    if grid[i, j] == -1:
                         best_tail = np.argmax(local_freq)
                         scores[i, j] = local_freq[best_tail]
                         candidates = grid[grid != -1][(grid[grid != -1] % 10) == best_tail]
