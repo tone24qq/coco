@@ -1,5 +1,6 @@
 # modules.py
 import numpy as np
+import pandas as pd  # 添加 pandas 支援
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import convolve2d
 from scipy.spatial import cKDTree
@@ -7,6 +8,7 @@ import logging
 import json
 import os
 from typing import Dict, List, Tuple, Any, Optional
+from joblib import Parallel, delayed  # 添加並行計算支援
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -78,6 +80,7 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         M, N = grid.shape
+        grid_df = pd.DataFrame(grid)  # 使用 pandas 優化數據處理
         features_dict: Dict[str, Any] = {
             "row_features": {},
             "col_features": {},
@@ -86,28 +89,50 @@ class ScratchSolver:
             "difference_features": {}
         }
 
-        for i in range(M):
-            for j in range(N):
-                num = grid[i, j]
-                if num == -1:
-                    continue
-                features_dict["row_features"].setdefault(i, []).append(num)
-                features_dict["col_features"].setdefault(j, []).append(num)
-                if i == j:
-                    features_dict["diagonal_features"].setdefault("main", []).append(num)
-                if i + j == M - 1:
-                    features_dict["diagonal_features"].setdefault("anti", []).append(num)
-                window = sliding_window_view(
-                    np.pad(grid, ((1, 1), (1, 1)), mode='edge'), (3, 3)
-                )[i, j]
-                neighbors = window[window != -1].flatten()
-                features_dict["neighborhood_features"].setdefault(f"{i},{j}", []).extend(neighbors.tolist())
-                diffs = []
-                for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    ni, nj = i + di, j + dj
-                    if 0 <= ni < M and 0 <= nj < N and grid[ni, nj] != -1:
-                        diffs.append(abs(num - grid[ni, nj]))
-                features_dict["difference_features"].setdefault(f"{i},{j}", diffs)
+        def process_cell(i, j):
+            num = grid[i, j]
+            if num == -1:
+                return None
+            result = {}
+            result["row"] = (i, [num])
+            result["col"] = (j, [num])
+            if i == j:
+                result["main_diag"] = ("main", [num])
+            if i + j == M - 1:
+                result["anti_diag"] = ("anti", [num])
+            window = sliding_window_view(
+                np.pad(grid, ((1, 1), (1, 1)), mode='edge'), (3, 3)
+            )[i, j]
+            neighbors = window[window != -1].flatten()
+            result["neighbors"] = (f"{i},{j}", neighbors.tolist())
+            diffs = []
+            for di, dj in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < M and 0 <= nj < N and grid[ni, nj] != -1:
+                    diffs.append(abs(num - grid[ni, nj]))
+            result["diffs"] = (f"{i},{j}", diffs)
+            return result
+
+        # 使用並行計算提取特徵
+        results = Parallel(n_jobs=-1)(
+            delayed(process_cell)(i, j) for i in range(M) for j in range(N)
+        )
+        
+        for result in results:
+            if result is None:
+                continue
+            if "row" in result:
+                features_dict["row_features"].setdefault(result["row"][0], []).extend(result["row"][1])
+            if "col" in result:
+                features_dict["col_features"].setdefault(result["col"][0], []).extend(result["col"][1])
+            if "main_diag" in result:
+                features_dict["diagonal_features"].setdefault(result["main_diag"][0], []).extend(result["main_diag"][1])
+            if "anti_diag" in result:
+                features_dict["diagonal_features"].setdefault(result["anti_diag"][0], []).extend(result["anti_diag"][1])
+            if "neighbors" in result:
+                features_dict["neighborhood_features"].setdefault(result["neighbors"][0], []).extend(result["neighbors"][1])
+            if "diffs" in result:
+                features_dict["difference_features"].setdefault(result["diffs"][0], result["diffs"][1])
 
         try:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -361,8 +386,14 @@ class ScratchSolver:
         pred = np.full((M, N), -1, dtype=int)
         d1 = np.diff(grid, axis=1)
         d2 = np.diff(grid, axis=0)
-        diff_freq = np.bincount(d1.flatten()[d1.flatten() != -1].astype(int), minlength=grid.size+1) + \
-                    np.bincount(d2.flatten()[d2.flatten() != -1].astype(int), minlength=grid.size+1)
+        # 過濾正差值，確保 np.bincount 穩定
+        d1_pos = d1[d1 > 0]
+        d2_pos = d2[d2 > 0]
+        d1_pos_int = np.round(d1_pos).astype(int)
+        d2_pos_int = np.round(d2_pos).astype(int)
+        max_val = int(np.max(grid[grid != -1])) if np.any(grid != -1) else grid.size
+        minlength = max_val + 1
+        diff_freq = np.bincount(d1_pos_int, minlength=minlength) + np.bincount(d2_pos_int, minlength=minlength)
         for i in range(M):
             for j in range(N):
                 if grid[i, j] == -1:
@@ -392,7 +423,7 @@ class ScratchSolver:
         Returns:
             Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"Expected 2D grid, got {grid.shape}"
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
@@ -410,12 +441,16 @@ class ScratchSolver:
         for i in range(M):
             for j in range(N):
                 if grid[i, j] == -1:
-                    if j < mid_x and mirror_lr[i] and grid[i, N-1-j] != -1:
+                    # Left-right symmetry
+                    if mirror_lr[i] and grid[i, N-1-j] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[i, N-1-j])
-                    if i < mid_y and mirror_ud[j] and grid[M-1-i, j] != -1:
+                    # Up-down symmetry: 修正索引誤用
+                    k = min(i, M-1-i)
+                    if k < mid_y and mirror_ud[k] and grid[M-1-i, j] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-1-i, j])
+                    # Diagonal symmetry
                     if mirror_diag and i == j and grid[M-1-i, M-1-i] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-1-i, M-1-i])
@@ -441,7 +476,7 @@ class ScratchSolver:
         kernel_4 = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
         kernel_8 = np.ones((3, 3)) - np.eye(3)
         conn_4 = convolve2d(mask, kernel_4, mode='same', boundary='symm')
-        conn_8 = convolve2d(mask, kernel_8, mode='same', boundary='symm')
+        conn_8-Romance = convolve2d(mask, kernel_8, mode='same', boundary='symm')
         conn_map = (conn_4 + conn_8) / 2
         scores = conn_map[grid == -1]
         scores = np.where(scores < 0.1, 0.1, scores)
@@ -461,19 +496,21 @@ class ScratchSolver:
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
-        tails = grid[grid != -1] % 10
-        freq = np.bincount(tails.flatten(), minlength=10) / (np.count_nonzero(grid != -1) + 1e-8)
-        windows = sliding_window_view(np.pad(grid, ((1, 1), (1, 1)), mode='edge'), (3, 3))
+        grid_int = np.round(grid).astype(int)  # 確保整數型態
+        tails = grid_int[grid_int != -1] % 10
+        freq = np.bincount(tails.flatten(), minlength=10) / (np.count_nonzero(grid_int != -1) + 1e-8)
+        windows = sliding_window_view(np.pad(grid_int, ((1, 1), (1, 1)), mode='edge'), (3, 3))
         for i in range(M):
             for j in range(N):
                 block = windows[i, j]
-                block_tails = block[block != -1] % 10
+                block_int = np.round(block).astype(int)
+                block_tails = block_int[block_int != -1] % 10
                 if block_tails.size > 0:
                     local_freq = np.bincount(block_tails, minlength=10) / (block_tails.size + 1e-8)
                     if grid[i, j] == -1:
                         best_tail = np.argmax(local_freq)
                         scores[i, j] = local_freq[best_tail]
-                        candidates = grid[grid != -1][(grid[grid != -1] % 10) == best_tail]
+                        candidates = grid_int[grid_int != -1][(grid_int % 10) == best_tail]
                         if candidates.size > 0:
                             pred[i, j] = int(min(candidates) + (best_tail * 10) if min(candidates) < 50 else -1)
         scores[grid != -1] = 0
@@ -504,15 +541,16 @@ class ScratchSolver:
                 return {'type': 'arithmetic', 'diff': diffs[0]}
             return None
         
+        grid_df = pd.DataFrame(grid)  # 使用 pandas 優化
         for i in range(M):
-            nums = grid[i][grid[i] != -1]
+            nums = grid_df.iloc[i][grid_df.iloc[i] != -1].values
             if len(nums) >= 3:
                 pattern = find_arithmetic(nums)
                 if pattern:
                     patterns[(i, 'h')] = pattern
         
         for j in range(N):
-            nums = grid[:, j][grid[:, j] != -1]
+            nums = grid_df[j][grid_df[j] != -1].values
             if len(nums) >= 3:
                 pattern = find_arithmetic(nums)
                 if pattern:
@@ -611,7 +649,7 @@ class ScratchSolver:
         return pred, confidence
 
     def integrate_predictions(
-        self, grid: np.ndarray, scores: np.ndarray, patterns: Dict[Tuple[int, str], Dict[str, Any]]
+        self, grid: np.ndarray, scores: np.ndarray, patterns: Dict
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Integrates multiple prediction methods.
@@ -639,213 +677,4 @@ class ScratchSolver:
         empty_mask = (grid == -1)
         empty_yx = np.where(empty_mask)
         for i, j in zip(empty_yx[0], empty_yx[1]):
-            predictions[i, j] = (
-                pattern_pred[i, j] * w_pattern +
-                heatmap_pred[i, j] * w_heatmap +
-                local_pred[i, j] * w_local
-            )
-            confidence[i, j] = max(pattern_scores[i, j], heatmap_scores[i, j], local_scores[i, j])
-            predictions[i, j] = np.clip(predictions[i, j], 1, grid.size)
-            confidence[i, j] = max(confidence[i, j], 0.1)
-        
-        return predictions, confidence
-
-    def evaluate_prediction(
-        self, grid: np.ndarray, prediction: np.ndarray, true_values: np.ndarray
-    ) -> Dict[str, float]:
-        """
-        Evaluates prediction accuracy and pattern matching.
-
-        Args:
-            grid (np.ndarray): Original board array.
-            prediction (np.ndarray): Predicted values.
-            true_values (np.ndarray): True values for evaluation.
-
-        Returns:
-            Dict[str, float]: Evaluation metrics.
-        """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        assert prediction.ndim == 2, f"Expected 2D prediction, got {prediction.ndim}D array with shape {prediction.shape}"
-        assert true_values.ndim == 2, f"Expected 2D true_values, got {true_values.ndim}D array with shape {true_values.shape}"
-        metrics = {
-            'accuracy': 0.0,
-            'pattern_match': 0.0,
-            'value_diff': 0.0
-        }
-        
-        mask = (grid == -1)
-        if np.any(mask):
-            correct = (prediction[mask] == true_values[mask])
-            metrics['accuracy'] = correct.mean() if correct.size > 0 else 0.0
-            metrics['value_diff'] = np.abs(prediction[mask] - true_values[mask]).mean() if correct.size > 0 else 0.0
-        
-        pred_patterns = self.analyze_number_patterns(prediction)
-        true_patterns = self.analyze_number_patterns(true_values)
-        metrics['pattern_match'] = len(
-            set(pred_patterns.keys()) & set(true_patterns.keys())
-        ) / max(len(pred_patterns), len(true_patterns), 1)
-        
-        return metrics
-
-    def classify_board_type(self, dynamic_scores: np.ndarray, hot_thresh: float = 0.5, cold_thresh: float = -0.5) -> str:
-        """
-        Classifies board as HOT, COLD, or UNIFORM based on scores.
-
-        Args:
-            dynamic_scores (np.ndarray): Dynamic hot/cold scores.
-            hot_thresh (float): Hot threshold.
-            cold_thresh (float): Cold threshold.
-
-        Returns:
-            str: Board type ('HOT', 'COLD', 'UNIFORM').
-        """
-        total = dynamic_scores.sum() / (np.count_nonzero(dynamic_scores != 0) + 1e-8)
-        if total >= hot_thresh:
-            return 'HOT'
-        elif total <= cold_thresh:
-            return 'COLD'
-        return 'UNIFORM'
-
-    def fuse_scores_vectorized(
-        self, mod_scores: Dict[str, np.ndarray], board_type: str, default_weights: Dict[str, float]
-    ) -> np.ndarray:
-        """
-        Fuses scores from multiple modules using adaptive weights.
-
-        Args:
-            mod_scores (Dict[str, np.ndarray]): Module scores.
-            board_type (str): Board type ('HOT', 'COLD', 'UNIFORM').
-            default_weights (Dict[str, float]): Default module weights.
-
-        Returns:
-            np.ndarray: Fused scores for hidden cells.
-        """
-        w = self.weights_for(board_type, default_weights)
-        names = list(mod_scores.keys())
-        empty_yx = np.argwhere(list(mod_scores.values())[0] != 0)
-        score_mat = np.stack([mod_scores[n][empty_yx[:, 0], empty_yx[:, 1]] for n in names], axis=1)
-        weight_arr = np.array([w.get(n, 0.1) for n in names])
-        heat_factor = np.abs(
-            mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros(score_mat.shape[0])).sum()
-        ) / (score_mat.shape[0] + 1e-8)
-        final = (score_mat.dot(weight_arr) / (weight_arr.sum() + 1e-8)) * (1 + heat_factor * 0.5)
-        return np.where(final < 0.1, 0.1, final)
-
-    def weights_for(self, board_type: str, default_weights: Dict[str, float]) -> Dict[str, float]:
-        """
-        Adjusts weights based on board type.
-
-        Args:
-            board_type (str): Board type ('HOT', 'COLD', 'UNIFORM').
-            default_weights (Dict[str, float]): Default weights.
-
-        Returns:
-            Dict[str, float]: Adjusted weights.
-        """
-        w = default_weights.copy()
-        if board_type == 'HOT':
-            w['compute_dynamic_hot_cold_advanced'] *= 1.5
-            w['compute_block_heatmap_vectorized'] *= 1.2
-        elif board_type == 'COLD':
-            w['idw_vectorized'] *= 1.3
-        else:
-            w['analyze_number_patterns'] *= 1.2
-            w['compute_difference_trend'] *= 1.1
-        return w
-
-    def predict_top3_vectorized(
-        self, final_scores: np.ndarray, empty_positions: np.ndarray, target_num: Optional[int] = None
-    ) -> List[Tuple[int, int, float, Dict[str, float]]]:
-        """
-        Predicts top 3 positions for hidden numbers.
-
-        Args:
-            final_scores (np.ndarray): Final scores for hidden cells.
-            empty_positions (np.ndarray): Coordinates of hidden cells.
-            target_num (Optional[int]): Target number for prediction.
-
-        Returns:
-            List[Tuple[int, int, float, Dict[str, float]]]: Top 3 predictions.
-        """
-        idxs = np.argsort(-final_scores)[:3]
-        unique_idx = np.unique(idxs, return_index=True)[1]
-        top3_idx = idxs[np.sort(unique_idx)[:3]]
-        contributions = {
-            name: float(final_scores[i]) for i, name in enumerate(self.MODULE_REGISTRY.keys()) if i in top3_idx
-        }
-        top3 = [
-            (
-                int(empty_positions[i][0]),
-                int(empty_positions[i][1]),
-                max(float(final_scores[i]), 0.1),
-                contributions
-            )
-            for i in top3_idx
-        ]
-        return top3[:3]
-
-class AdaptiveWeights:
-    """
-    Manages adaptive weights for module scoring.
-    """
-    def __init__(self, initial_weights: Dict[str, float]):
-        self.weights = initial_weights.copy()
-        self.history: List[Dict[str, Any]] = []
-    
-    def update(self, success_rate: float, module_scores: Dict[str, np.ndarray]) -> None:
-        """
-        Updates weights based on success rate and module scores.
-
-        Args:
-            success_rate (float): Prediction success rate.
-            module_scores (Dict[str, np.ndarray]): Module scores.
-        """
-        alpha = 0.1
-        self.history.append({
-            'success_rate': success_rate,
-            'weights': self.weights.copy(),
-            'scores': {k: v.tolist() for k, v in module_scores.items()}
-        })
-        
-        if len(self.history) >= 5:
-            best_config = max(self.history[-5:], key=lambda x: x['success_rate'])
-            for key in self.weights:
-                self.weights[key] += alpha * (best_config['weights'][key] - self.weights[key])
-            total = sum(self.weights.values())
-            self.weights = {k: v/total for k, v in self.weights.items()}
-    
-    def save_history(self, filepath: str) -> None:
-        """
-        Saves weight history to a JSON file.
-
-        Args:
-            filepath (str): Path to save history.
-        """
-        try:
-            os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            logger.error(f"Failed to save weight history to {filepath}: {e}")
-            raise
-    
-    def load_history(self, filepath: str) -> None:
-        """
-        Loads weight history from a JSON file.
-
-        Args:
-            filepath (str): Path to load history.
-        """
-        if os.path.exists(filepath):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    self.history = json.load(f)
-            except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to load weight history from {filepath}: {e}")
-                raise
-
-# 自檢報告：
-# - 語法檢查：通過
-# - 括號配對：無遺漏
-# - 標識符定義：無未定義/拼寫錯誤
-# - 測試環境：Python 3.11
+            predictions
