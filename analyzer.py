@@ -6,7 +6,6 @@ import json
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from modules import ScratchSolver
-from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
 from joblib import Parallel, delayed
@@ -31,19 +30,20 @@ def compute_all_module_scores(
     solver = ScratchSolver()
     solver.update_tree(grid)
     features = []
+    empty_yx = np.argwhere(grid == -1)
+    idx = np.where((empty_yx == target_pos).all(axis=1))[0]
+    
     for mod_name, mod_func in solver.MODULE_REGISTRY.items():
         try:
-            # --- 跳過只回傳 dict 的模式分析模組 ---
-            if mod_name == "analyze_number_patterns":
-                continue
             result = mod_func(grid)
             scores = result[0] if isinstance(result, tuple) else result
-            empty_yx = np.argwhere(grid == -1)
-            idx = np.where((empty_yx == target_pos).all(axis=1))[0]
-            features.append(scores[idx[0]] if idx.size > 0 else 0.1)
+            score = scores[idx[0]] if idx.size > 0 else 0.1
+            features.append(score)
+            logger.debug(f"Module {mod_name} score at {target_pos}: {score}")
         except Exception as e:
-            logger.warning(f"Module {mod_name} failed at {target_pos}: {e}")
+            logger.warning(f"Module {mod_name} failed at {target_pos}: {str(e)}")
             features.append(0.1)
+    
     return np.array(features)
 
 def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
@@ -56,7 +56,7 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     Returns:
         Dict[str, float]: Statistical features.
     """
-    grid = grid.astype(np.int64)  # 確保 int64
+    grid = grid.astype(np.int64)
     features = {}
     M, N = grid.shape
     open_nums = grid[grid != -1]
@@ -78,8 +78,14 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     features["anti_diag_std"] = np.std(anti_diag[anti_diag != -1]) if np.any(anti_diag != -1) else 0
     
     solver = ScratchSolver()
-    heatmap = solver.compute_dynamic_hot_cold_vectorized(grid)
-    features["heatmap_top5_mean"] = np.mean(np.sort(heatmap)[-min(5, len(heatmap)):]) if heatmap.size else 0
+    try:
+        heatmap = solver.compute_dynamic_hot_cold_vectorized(grid)
+        features["heatmap_top5_mean"] = np.mean(np.sort(heatmap)[-min(5, len(heatmap)):]) if heatmap.size else 0
+        logger.debug(f"Heatmap top5 mean: {features['heatmap_top5_mean']}")
+    except Exception as e:
+        logger.warning(f"Failed to compute heatmap features: {str(e)}")
+        features["heatmap_top5_mean"] = 0.0
+    
     features["global_variance"] = np.var(open_nums) if open_nums.size else 0
     
     return features
@@ -90,7 +96,7 @@ def generate_masked_samples(
     """
     Generate masked samples with extended features for training.
     """
-    grid = grid.astype(np.int64)  # 確保 int64
+    grid = grid.astype(np.int64)
     samples = []
     M, N = grid.shape
     remaining_nums = list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))
@@ -103,14 +109,18 @@ def generate_masked_samples(
             return []
         masked = grid.copy()
         masked[i, j] = -1
-        module_scores = compute_all_module_scores(masked, (i, j), (M, N))
-        sample_features = {
-            "module_scores": module_scores.tolist(),
-            "extended_features": extended_features,
-            "position": (i, j),
-            "remaining_nums": remaining_nums
-        }
-        return [(masked, int(true_val), sample_features)]
+        try:
+            module_scores = compute_all_module_scores(masked, (i, j), (M, N))
+            sample_features = {
+                "module_scores": module_scores.tolist(),
+                "extended_features": extended_features,
+                "position": (i, j),
+                "remaining_nums": remaining_nums
+            }
+            return [(masked, int(true_val), sample_features)]
+        except Exception as e:
+            logger.warning(f"Failed to process cell ({i}, {j}): {str(e)}")
+            return []
     
     results = Parallel(n_jobs=-1)(
         delayed(process_cell)(i, j, grid[i, j])
@@ -153,7 +163,7 @@ def train_extended_model(
         
         logger.info(f"Model trained and saved to {model_path}, features logged to {feature_log_path}")
     except Exception as e:
-        logger.error(f"Model training failed: {e}")
+        logger.error(f"Model training failed: {str(e)}")
         raise
 
 def predict_topk(
@@ -162,7 +172,7 @@ def predict_topk(
     """
     Predict top-k positions for a target number using the trained model.
     """
-    masked_grid = masked_grid.astype(np.int64)  # 確保 int64
+    masked_grid = masked_grid.astype(np.int64)
     try:
         clf = joblib.load(model_path)
     except FileNotFoundError:
@@ -176,23 +186,27 @@ def predict_topk(
     def process_position(i, j):
         if masked_grid[i, j] != -1:
             return []
-        features = compute_all_module_scores(masked_grid, (i, j), (M, N))
-        combined = np.concatenate([
-            features,
-            np.array([v for v in extended_features.values()])
-        ])
-        probs = clf.predict_proba([combined])[0]
-        target_idx = np.where(clf.classes_ == target_num)[0]
-        confidence = probs[target_idx[0]] if target_idx.size else 0.0
-        reasoning = {
-            "position": (i, j),
-            "module_scores": features.tolist(),
-            "extended_features": extended_features,
-            "confidence_contributors": {
-                name: float(features[idx]) for idx, name in enumerate(ScratchSolver.MODULE_REGISTRY.keys())
+        try:
+            features = compute_all_module_scores(masked_grid, (i, j), (M, N))
+            combined = np.concatenate([
+                features,
+                np.array([v for v in extended_features.values()])
+            ])
+            probs = clf.predict_proba([combined])[0]
+            target_idx = np.where(clf.classes_ == target_num)[0]
+            confidence = probs[target_idx[0]] if target_idx.size else 0.0
+            reasoning = {
+                "position": (i, j),
+                "module_scores": features.tolist(),
+                "extended_features": extended_features,
+                "confidence_contributors": {
+                    name: float(features[idx]) for idx, name in enumerate(ScratchSolver.MODULE_REGISTRY.keys())
+                }
             }
-        }
-        return [(i, j, target_num, confidence, reasoning)]
+            return [(i, j, target_num, confidence, reasoning)]
+        except Exception as e:
+            logger.warning(f"Failed to predict for position ({i}, {j}): {str(e)}")
+            return []
     
     results = Parallel(n_jobs=-1)(
         delayed(process_position)(i, j)
@@ -217,7 +231,7 @@ def analyze_board(
     Analyze a scratch card board.
     """
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
-    grid = grid.astype(np.int64)  # 確保 int64
+    grid = grid.astype(np.int64)
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
@@ -233,6 +247,7 @@ def analyze_board(
         empty_yx = np.argwhere(grid == -1)
         if len(heatmap_scores) == len(empty_yx):
             heatmap[empty_yx[:, 0], empty_yx[:, 1]] = heatmap_scores
+            logger.debug(f"Heatmap scores applied: {heatmap_scores[:5]}")
         else:
             logger.warning(
                 f"heatmap_scores length {len(heatmap_scores)} does not match empty cells {len(empty_yx)}, filling with 0.1"
@@ -242,9 +257,6 @@ def analyze_board(
 
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-            # --- 跳過只回傳 dict 的模式分析模組 ---
-            if mod_name == "analyze_number_patterns":
-                continue
             try:
                 result = mod_func(grid)
                 if isinstance(result, tuple):
@@ -259,8 +271,9 @@ def analyze_board(
                     else:
                         result = np.zeros((M, N))
                 module_scores[mod_name] = result
+                logger.debug(f"Module {mod_name} scores shape: {result.shape}")
             except Exception as e:
-                logger.error(f"{mod_name} failed: {e}")
+                logger.error(f"{mod_name} failed: {str(e)}")
                 module_scores[mod_name] = np.zeros((M, N))
 
         preds = [
@@ -303,13 +316,10 @@ def analyze_board(
                 with open(features_path, "w", encoding="utf-8") as f:
                     json.dump(extended_features, f, ensure_ascii=False, indent=2)
             except OSError as e:
-                logger.error(f"Failed to save features: {e}")
+                logger.error(f"Failed to save features: {str(e)}")
 
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-            # --- 跳過只回傳 dict 的模式分析模組 ---
-            if mod_name == "analyze_number_patterns":
-                continue
             try:
                 result = mod_func(grid)
                 if isinstance(result, tuple):
@@ -325,7 +335,7 @@ def analyze_board(
                         result = np.zeros((M, N))
                 mod_scores[mod_name] = result
             except Exception as e:
-                logger.error(f"{mod_name} failed: {e}")
+                logger.error(f"{mod_name} failed: {str(e)}")
                 mod_scores[mod_name] = np.zeros((M, N))
 
         board_type = solver.classify_board_type(
@@ -388,7 +398,7 @@ def analyze_board(
         return final_score, predictions, top3, metrics, reasoning_steps
 
     except Exception as e:
-        logger.exception(f"Error in analyze_board: {e}")
+        logger.exception(f"Error in analyze_board: {str(e)}")
         raise
 
 # Self-Inspection Report:
