@@ -14,6 +14,7 @@ from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
+from modules import ScratchSolver  # 確保從 modules.py 導入
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
@@ -242,53 +243,42 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
     
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        raise HTTPException(422, "Grid must be a 4x4 to 20x20 2D numeric matrix")
+        raise HTTPException(422, "Grid must be a 4x4 to 20x20 2D array")
+    if not np.any(grid == -1):
+        raise HTTPException(422, "Grid must contain at least one hidden cell (-1) for prediction")
     
-    flat = grid[grid != -1].flatten()
-    if len(flat) != len(set(flat)):
-        raise HTTPException(422, "Grid values except -1 must be unique and non-repeating")
-    
-    target = 6 if payload.mode == "predict" and payload.target_num is None else payload.target_num
-    if target is None:
-        logger.warning("No target_num specified, defaulting to 6")
+    weights = payload.weights if payload.weights else DEFAULT_WEIGHTS
+    target_num = payload.target_num if payload.target_num is not None else None
+    model_path = payload.model_path
     
     try:
-        final_score, predictions, top3, metrics, reasoning = analyze_board(
-            grid, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap,
-            math_algo_kb, heatmaps, payload.model_path
-        )
-        heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
+        grid_tuple = tuple(grid.flatten())
+        predictions, reasoning = cache_board_analysis(grid_tuple, grid.shape, target_num, model_path)
+        if not predictions:
+            raise ValueError("No predictions generated")
         
         result = AnalysisResponse(
-            predictions=[
-                Prediction(
-                    row=int(p["row"]),
-                    col=int(p["col"]),
-                    predicted_digit=int(p["predicted_digit"]),
-                    confidence=float(p["confidence"]),
-                    module_scores={**p["module_scores"], "heatmap": float(heatmap[p["row"], p["col"]])}
-                )
-                for p in top3
-            ],
+            predictions=[Prediction(**p) for p in predictions],
             error=None,
-            source="🔥 from real API",
             reasoning=reasoning
         )
-        return JSONResponse(
-            status_code=200,
-            content=result.dict()
-        )
-    
+        return JSONResponse(content=result.dict())
     except Exception as e:
-        logger.error(f"Prediction failed: {e}")
-        error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 from real API", reasoning=[])
-        return JSONResponse(status_code=500, content=error_resp.dict())
+        logger.error(f"Prediction failed: {str(e)}")
+        return JSONResponse(
+            content=AnalysisResponse(
+                predictions=[],
+                error=str(e),
+                reasoning=["Analysis failed"]
+            ).dict(),
+            status_code=500
+        )
 
 @app.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
     background_tasks: BackgroundTasks = BackgroundTasks()
-) -> JSONResponse:
+):
     """
     Upload and process a scratch card file with detailed logging.
 
@@ -299,47 +289,33 @@ async def upload_file(
     Returns:
         JSONResponse: Upload status and output path.
     """
-    logger.info(f"Received upload request for file: {file.filename}")
+    output_prefix = os.path.join("outputs", f"upload_{os.path.splitext(file.filename)[0]}")
     try:
-        if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
-            error_msg = f"Unsupported file format: {file.filename}"
-            logger.error(error_msg)
-            raise HTTPException(status_code=400, detail=error_msg)
-        
-        input_path = os.path.join("samples", "data", file.filename)
-        os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        
-        with open(input_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        logger.info(f"Successfully saved uploaded file to {input_path}")
-        
-        output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
-        weights = DEFAULT_WEIGHTS
-        json_heatmap = os.path.join("samples", "data", "json")
+        file_path = os.path.join("uploads", file.filename)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, "wb") as f:
+            f.write(await file.read())
+        logger.info(f"Uploaded file saved to {file_path}")
         
         background_tasks.add_task(
-            process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
+            process_single_board,
+            file_path,
+            DEFAULT_WEIGHTS,
+            True,
+            output_prefix,
+            None,
+            "samples/data"
         )
-        logger.info(f"Scheduled background processing for {input_path}")
-        
-        return JSONResponse(
-            content={"message": f"File {file.filename} uploaded, processing started", "output_path": output_prefix},
-            status_code=200
-        )
-    
-    except HTTPException as e:
-        logger.error(f"File upload failed: {e.detail}")
-        raise
+        return JSONResponse({"status": "processing", "output_path": output_prefix})
     except Exception as e:
-        logger.error(f"File upload failed: {str(e)}")
+        logger.error(f"Upload failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/batch")
 async def batch_process(
     input_folder: str = Form(...),
     background_tasks: BackgroundTasks = BackgroundTasks()
-) -> JSONResponse:
+):
     """
     Initiate batch processing of scratch card files with detailed logging.
 
@@ -350,65 +326,26 @@ async def batch_process(
     Returns:
         JSONResponse: Batch processing status.
     """
-    logger.info(f"Received batch processing request for folder: {input_folder}")
+    output_folder = os.path.join("outputs", "batch")
     try:
         if not os.path.exists(input_folder):
-            error_msg = f"Folder {input_folder} does not exist"
-            logger.error(error_msg)
-            raise HTTPException(status_code=404, detail=error_msg)
-        
-        files = [f for f in os.listdir(input_folder) if f.endswith(('.json', '.csv', '.xls', '.xlsx'))]
-        logger.info(f"Found {len(files)} valid files in {input_folder}: {files}")
-        
-        output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
-        weights = DEFAULT_WEIGHTS
-        json_heatmap = os.path.join("samples", "data", "json")
-        
+            raise ValueError(f"Input folder {input_folder} does not exist")
         background_tasks.add_task(
-            process_batch, input_folder, weights, True, output_folder, None, json_heatmap
+            process_batch,
+            input_folder,
+            DEFAULT_WEIGHTS,
+            True,
+            output_folder,
+            None,
+            "samples/data"
         )
-        logger.info(f"Scheduled batch processing, results will be saved to {output_folder}")
-        
-        return JSONResponse(
-            content={"message": f"Batch processing started with {len(files)} files, results will be saved to {output_folder}"},
-            status_code=200
-        )
-    
-    except HTTPException as e:
-        logger.error(f"Batch processing failed: {e.detail}")
-        raise
+        return JSONResponse({"status": "processing", "output_folder": output_folder})
     except Exception as e:
-        logger.error(f"Batch processing failed: {str(e)}")
+        logger.error(f"Batch process failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def save_results_to_file(
-    scores: np.ndarray,
-    predictions: np.ndarray,
-    best_pos: List[Tuple[int, int, float, Dict[str, float]]],
-    output_filepath: str,
-    output_format: str
-) -> None:
-    """
-    Save analysis results to a file.
-
-    Args:
-        scores (np.ndarray): Scores for hidden cells.
-        predictions (np.ndarray): Predicted values.
-        best_pos (List[Tuple]): Top-3 predicted positions.
-        output_filepath (str): Output file path.
-        output_format (str): File format.
-    """
-    from brain import save_results_to_file as brain_save
-    logger.info(f"Saving results to {output_filepath} in {output_format} format")
-    try:
-        brain_save(scores, predictions, best_pos, output_filepath, output_format)
-        logger.info(f"Successfully saved results to {output_filepath}")
-    except Exception as e:
-        logger.error(f"Failed to save results to {output_filepath}: {str(e)}")
-        raise
-
-@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-async def catch_all(request: Request, full_path: str) -> JSONResponse:
+@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+async def catch_all(request: Request, full_path: str):
     """
     Catch all undefined routes.
 
@@ -419,14 +356,8 @@ async def catch_all(request: Request, full_path: str) -> JSONResponse:
     Returns:
         JSONResponse: Running status.
     """
-    logger.debug(f"Catch-all: {request.method} {full_path}")
-    return JSONResponse(status_code=200, content={"status": "running"})
+    logger.warning(f"Catch-all route triggered for {request.method} {full_path}")
+    return JSONResponse({"status": "running", "message": f"Unknown route {full_path}"})
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# Self-Inspection Report:
-# - Syntax Check: Passed
-# - Parentheses Matching: No issues
-# - Identifier Definitions: All variables, functions, and modules defined before use
-# - Testing Environment: Python 3.11
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
