@@ -385,6 +385,9 @@ def analyze_board(
         logger.debug(f"Calling analyze_number_patterns with grid shape {grid.shape}, type {type(grid)}")
         patterns = solver.analyze_number_patterns(grid)
         logger.debug(f"Patterns generated: {patterns}")
+        if not isinstance(patterns, dict):
+            logger.error(f"Unexpected patterns type: {type(patterns)}, expected dict")
+            patterns = {}
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
