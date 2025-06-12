@@ -384,6 +384,7 @@ def analyze_board(
         # 確保 patterns 使用 grid 數組
         logger.debug(f"Calling analyze_number_patterns with grid shape {grid.shape}, type {type(grid)}")
         patterns = solver.analyze_number_patterns(grid)
+        logger.debug(f"Patterns generated: {patterns}")
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
