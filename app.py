@@ -12,9 +12,11 @@ import glob
 from typing import Dict, List, Optional, Tuple, Any
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
-from pydantic import BaseModel, Field, validator, ConfigDict
+from pydantic import BaseModel, Field, validator
 from functools import lru_cache
-from joblib import Parallel, delayed
+from jobjob import Parallel, delayed
+import zipfile
+import shutil
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
@@ -46,31 +48,74 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Load knowledge base and heatmaps from data directory with detailed logging.
-    Returns a default knowledge base if the file is not found.
+    Handles ZIP files containing heatmap.json and extracts them.
+
+    Returns:
+        Tuple[List[Dict], Dict[str, Any]]: Knowledge base and heatmaps.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     heatmap_paths = glob.glob(os.path.join(DATA_DIR, "*_heatmap.json"))
+    zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
 
+    default_kb = [
+        {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
+        {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
+    ]
     math_algo_kb: List[Dict] = []
     heatmaps: Dict[str, Any] = {}
 
     # Load knowledge base
     if os.path.exists(kb_path):
         try:
-            with open(kb_path, "r", encoding="utf-8") as f:
-                math_algo_kb = json.load(f).get("concepts", [])
-            print(f"✅ Loaded knowledge base with {len(math_algo_kb)} concepts from {kb_path}")
-        except Exception as e:
-            print(f"⚠️ Failed to load KB file: {e}")
+            with open(kb_path, 'r', encoding="utf-8") as f:
+                math_algo_kb = json.load(f)["concepts"]
+            logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
+            math_algo_kb = default_kb
+            logger.warning(f"Using default knowledge base due to error: {str(e)}")
+    else:
+        math_algo_kb = default_kb
+        logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
 
-    # Load heatmaps
-    for path in heatmap_paths:
-        name = os.path.basename(path).replace(".json", "")
+    # Handle ZIP files and extract heatmap.json
+    temp_extract_dir = os.path.join(DATA_DIR, "temp_extract")
+    os.makedirs(temp_extract_dir, exist_ok=True)
+
+    for zip_path in zip_paths:
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(temp_extract_dir)
+                logger.info(f"Successfully extracted ZIP file: {zip_path} to {temp_extract_dir}")
+                extracted_heatmap = os.path.join(temp_extract_dir, "heatmap.json")
+                if os.path.exists(extracted_heatmap):
+                    name = os.path.splitext(os.path.basename(zip_path))[0]
+                    with open(extracted_heatmap, 'r', encoding="utf-8") as f:
+                        heatmaps[name] = json.load(f)
+                    logger.info(f"Successfully loaded heatmap {name} from {extracted_heatmap}")
+                else:
+                    logger.warning(f"No heatmap.json found in {zip_path} after extraction")
+        except (zipfile.BadZipFile, OSError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to process ZIP file {zip_path}: {str(e)}")
+        finally:
+            # Clean up temporary extraction directory
+            if os.path.exists(temp_extract_dir):
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
+                os.makedirs(temp_extract_dir, exist_ok=True)
+                logger.info(f"Cleaned up temporary extraction directory {temp_extract_dir}")
+
+    # Load additional heatmap files from the data directory
+    for hp in heatmap_paths:
+        name = os.path.splitext(os.path.basename(hp))[0]
+        try:
+            with open(hp, 'r', encoding="utf-8") as f:
                 heatmaps[name] = json.load(f)
-        except Exception as e:
-            print(f"⚠️ Failed to load heatmap {name}: {e}")
+            logger.info(f"Successfully loaded heatmap {name} from {hp}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load heatmap {name} from {hp}: {str(e)}")
+
+    if not heatmaps:
+        logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
 
     return math_algo_kb, heatmaps
 
@@ -86,8 +131,6 @@ class AnalysisRequest(BaseModel):
     target_num: Optional[int] = Field(None, description="Target number to predict")
     json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
-
-    model_config = ConfigDict(protected_namespaces=())
 
     @validator("grid")
     def validate_grid(cls, grid):
@@ -113,8 +156,6 @@ class Prediction(BaseModel):
     module_scores: Dict[str, float]
     true_digit: Optional[int] = None
 
-    model_config = ConfigDict(protected_namespaces=())
-
 class AnalysisResponse(BaseModel):
     """
     Schema for API response.
@@ -124,11 +165,9 @@ class AnalysisResponse(BaseModel):
     source: str = "🔥 from real API"
     reasoning: List[str]
 
-    model_config = ConfigDict(protected_namespaces=())
-
 DEFAULT_WEIGHTS = {
-    "compute_single_hot_cold_vectorized": 0.15,
-    "compute_single_hot_cold_advanced": 0.2,
+    "compute_dynamic_hot_cold_vectorized": 0.15,
+    "compute_dynamic_hot_cold_advanced": 0.2,
     "compute_block_heatmap_vectorized": 0.1,
     "idw_vectorized": 0.1,
     "compute_global_diff_heatmap": 0.05,
@@ -229,11 +268,11 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
     
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        raise HTTPException(status_code=422, detail="Grid must be a 4x4 to 20x20 2D numeric matrix")
+        raise HTTPException(422, "Grid must be a 4x4 to 20x20 2D numeric matrix")
     
     flat = grid[grid != -1].flatten()
     if len(flat) != len(set(flat)):
-        raise HTTPException(status_code=422, detail="Grid values except -1 must be unique and non-repeating")
+        raise HTTPException(422, "Grid values except -1 must be unique and non-repeating")
     
     target = 6 if payload.mode == "predict" and payload.target_num is None else payload.target_num
     if target is None:
