@@ -9,6 +9,7 @@ import requests
 from typing import Dict, List, Optional, Tuple, Any
 from fastapi import HTTPException
 from analyzer import analyze_board, predict_topk
+from joblib import Parallel, delayed  # 添加並行計算支持
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,10 +37,10 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             if isinstance(data, list):
                 if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
                     for grid_data in data:
-                        grid = np.atleast_2d(np.array(grid_data, dtype=float))
+                        grid = np.atleast_2d(np.array(grid_data, dtype=int))  # 改為 int 型態
                         grids.append(grid)
                 else:
-                    grid = np.atleast_2d(np.array(data, dtype=float))
+                    grid = np.atleast_2d(np.array(data, dtype=int))
                     grids.append(grid)
             else:
                 logger.error(f"JSON file {filepath} has invalid format")
@@ -48,18 +49,18 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
         elif ext in ['.csv', '.xls', '.xlsx']:
             if ext == '.csv':
                 df = pd.read_csv(filepath, header=None)
-                grid = np.atleast_2d(df.to_numpy(dtype=float))
+                grid = np.atleast_2d(df.to_numpy(dtype=int))
                 grids.append(grid)
             else:
                 xl = pd.ExcelFile(filepath)
                 for sheet_name in xl.sheet_names:
                     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
-                    grid = np.atleast_2d(df.to_numpy(dtype=float))
+                    grid = np.atleast_2d(df.to_numpy(dtype=int))
                     grids.append(grid)
         
         cleaned_grids: List[np.ndarray] = []
         for grid in grids:
-            grid = np.where(np.isnan(grid) | (grid < 0), -1.0, grid)
+            grid = np.where(np.isnan(grid) | (grid < 0), -1, grid)
             assert grid.ndim == 2, f"Grid {grid.shape} is not 2D after cleaning"
             M, N = grid.shape
             if M < 4 or N < 4 or M > 20 or N > 20:
@@ -105,7 +106,7 @@ def save_results_to_file(
         HTTPException: If saving fails.
     """
     assert scores.ndim == 1 or scores.shape == predictions.shape, f"Scores shape {scores.shape} must match predictions shape {predictions.shape}"
-    assert predictions.ndim == 2, f"Expected 2D predictions, got {predictions.ndim}D array with shape {predictions.shape}"
+    assert predictions.ndim == 2, f"Expected 2D predictions, got {predictions.ndim}D array {predictions.shape}"
     empty_yx = np.argwhere(predictions == -1)
     result = {
         'scores': scores.tolist() if scores.ndim == 1 else scores[empty_yx[:, 0], empty_yx[:, 1]].tolist(),
@@ -130,7 +131,7 @@ def save_results_to_file(
         elif output_format == 'csv':
             df = pd.DataFrame({
                 'row': empty_yx[:, 0],
-                'col': empty_yx[:, 1],
+                'col': empty_yx[:, 0],
                 'score': scores if scores.ndim == 1 else scores[empty_yx[:, 0], empty_yx[:, 1]],
                 'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
             })
@@ -199,37 +200,45 @@ async def process_single_board(
                 all_predictions = None
             else:
                 all_predictions = []
-                for i in range(M):
-                    for j in range(N):
-                        masked_grid = grid.copy()
-                        true_val = masked_grid[i, j]
-                        masked_grid[i, j] = -1
-                        assert masked_grid.ndim == 2, f"Masked grid {masked_grid.shape} is not 2D at {i},{j}"
-                        if os.path.exists(model_path):
-                            topk = predict_topk(masked_grid, model_path, target_num or 0, k=3)
-                            all_predictions.extend([
-                                {
-                                    "row": p[0],
-                                    "col": p[1],
-                                    "predicted_digit": int(p[2]),
-                                    "confidence": float(p[3]),
-                                    "true_digit": int(true_val)
-                                } for p in topk if p[1] < grid.shape[1]
-                            ])
-                        else:
-                            scores, pred_array, top3, _ = analyze_board(
-                                masked_grid, weights, return_predictions, target_num,
-                                sheet_heatmap_path, model_path=None
-                            )
-                            all_predictions.extend([
-                                {
-                                    "row": t[0],
-                                    "col": t[1],
-                                    "predicted_digit": int(pred_array[t[0], t[1]]) if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] != -1 else 0,
-                                    "confidence": float(t[2]),
-                                    "true_digit": int(true_val)
-                                } for t in top3 if t[1] < grid.shape[1]
-                            ])
+                def process_cell(i, j, grid, model_path, target_num):
+                    masked_grid = grid.copy()
+                    true_val = masked_grid[i, j]
+                    masked_grid[i, j] = -1
+                    assert masked_grid.ndim == 2, f"Masked grid {masked_grid.shape} is not 2D at {i},{j}"
+                    if os.path.exists(model_path):
+                        topk = predict_topk(masked_grid, model_path, target_num or 0, k=3)
+                        return [
+                            {
+                                "row": p[0],
+                                "col": p[1],
+                                "predicted_digit": int(p[2]),
+                                "confidence": float(p[3]),
+                                "true_digit": int(true_val)
+                            } for p in topk if p[1] < grid.shape[1]
+                        ]
+                    else:
+                        scores, pred_array, top3, _ = analyze_board(
+                            masked_grid, weights, return_predictions, target_num,
+                            sheet_heatmap_path, model_path=None
+                        )
+                        return [
+                            {
+                                "row": t[0],
+                                "col": t[1],
+                                "predicted_digit": int(pred_array[t[0], t[1]]) if t[1] < pred_array.shape[1] and pred_array[t[0], t[1]] != -1 else 0,
+                                "confidence": float(t[2]),
+                                "true_digit": int(true_val)
+                            } for t in top3 if t[1] < grid.shape[1]
+                        ]
+                
+                # 使用並行計算處理每個單元格
+                results = Parallel(n_jobs=-1)(
+                    delayed(process_cell)(i, j, grid, model_path, target_num)
+                    for i in range(M) for j in range(N)
+                )
+                for result in results:
+                    all_predictions.extend(result)
+                
                 scores, predictions, top3, metrics = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
                     model_path=None
