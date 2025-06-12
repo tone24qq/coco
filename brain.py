@@ -9,7 +9,7 @@ import requests
 from typing import Dict, List, Optional, Tuple, Any
 from fastapi import HTTPException
 from analyzer import analyze_board, predict_topk
-from joblib import Parallel, delayed  # 添加並行計算支持
+from joblib import Parallel, delayed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,10 +37,10 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             if isinstance(data, list):
                 if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
                     for grid_data in data:
-                        grid = np.atleast_2d(np.array(grid_data, dtype=int))  # 改為 int 型態
+                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))  # 使用 int64
                         grids.append(grid)
                 else:
-                    grid = np.atleast_2d(np.array(data, dtype=int))
+                    grid = np.atleast_2d(np.array(data, dtype=np.int64))
                     grids.append(grid)
             else:
                 logger.error(f"JSON file {filepath} has invalid format")
@@ -49,13 +49,13 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
         elif ext in ['.csv', '.xls', '.xlsx']:
             if ext == '.csv':
                 df = pd.read_csv(filepath, header=None)
-                grid = np.atleast_2d(df.to_numpy(dtype=int))
+                grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                 grids.append(grid)
             else:
                 xl = pd.ExcelFile(filepath)
                 for sheet_name in xl.sheet_names:
                     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
-                    grid = np.atleast_2d(df.to_numpy(dtype=int))
+                    grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                     grids.append(grid)
         
         cleaned_grids: List[np.ndarray] = []
@@ -93,17 +93,6 @@ def save_results_to_file(
 ) -> None:
     """
     Saves analysis results to a file, including per-cell predictions if provided.
-
-    Args:
-        scores (np.ndarray): Scores for hidden cells.
-        predictions (np.ndarray): Predicted values for the grid.
-        best_pos (List[Tuple]): Top 3 predicted positions.
-        output_filepath (str): Path to save the output file.
-        output_format (str): Format of output ('json', 'csv', 'xls', 'xlsx').
-        all_predictions (List[Dict], optional): All per-cell predictions.
-
-    Raises:
-        HTTPException: If saving fails.
     """
     assert scores.ndim == 1 or scores.shape == predictions.shape, f"Scores shape {scores.shape} must match predictions shape {predictions.shape}"
     assert predictions.ndim == 2, f"Expected 2D predictions, got {predictions.ndim}D array {predictions.shape}"
@@ -131,7 +120,7 @@ def save_results_to_file(
         elif output_format == 'csv':
             df = pd.DataFrame({
                 'row': empty_yx[:, 0],
-                'col': empty_yx[:, 0],
+                'col': empty_yx[:, 1],
                 'score': scores if scores.ndim == 1 else scores[empty_yx[:, 0], empty_yx[:, 1]],
                 'prediction': predictions[empty_yx[:, 0], empty_yx[:, 1]]
             })
@@ -169,18 +158,6 @@ async def process_single_board(
 ) -> None:
     """
     Processes a single board file, auto-masking each cell for prediction and saving results.
-
-    Args:
-        filepath (str): Path to input file.
-        weights (Dict[str, float]): Module weights.
-        return_predictions (bool): Whether to return predictions.
-        output_prefix (str): Prefix for output files.
-        target_num (Optional[int]): Target number to locate.
-        json_heatmap (Optional[str]): Path to JSON heatmap directory.
-        model_path (str): Path to trained model.
-
-    Raises:
-        HTTPException: If processing fails.
     """
     try:
         grids = load_grid_from_file(filepath)
@@ -231,7 +208,6 @@ async def process_single_board(
                             } for t in top3 if t[1] < grid.shape[1]
                         ]
                 
-                # 使用並行計算處理每個單元格
                 results = Parallel(n_jobs=-1)(
                     delayed(process_cell)(i, j, grid, model_path, target_num)
                     for i in range(M) for j in range(N)
@@ -284,17 +260,6 @@ async def process_batch(
 ) -> None:
     """
     Processes multiple board files in a folder.
-
-    Args:
-        input_folder (str): Directory containing input files.
-        weights (Dict[str, float]): Module weights.
-        return_predictions (bool): Whether to return predictions.
-        output_folder: Directory to save output files.
-        target_num (Optional[int]): Target number to locate.
-        json_heatmap (Optional[str]): Path to JSON heatmap directory.
-
-    Raises:
-        HTTPException: If processing fails or no valid files found.
     """
     if not os.path.exists(input_folder):
         logger.error(f"Input folder {input_folder} does not exist")
