@@ -296,6 +296,7 @@ def analyze_board(
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
+                logger.debug(f"Calling module {mod_name} with grid shape {grid.shape}")
                 result = mod_func(grid)
                 if isinstance(result, tuple):
                     result = result[0]
@@ -358,6 +359,7 @@ def analyze_board(
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
+                logger.debug(f"Calling module {mod_name} with grid shape {grid.shape}")
                 result = mod_func(grid)
                 if isinstance(result, tuple):
                     result = result[0]
@@ -386,7 +388,7 @@ def analyze_board(
         patterns = solver.analyze_number_patterns(grid)
         logger.debug(f"Patterns generated: {patterns}")
         if not isinstance(patterns, dict):
-            logger.error(f"Unexpected patterns type: {type(patterns)}, expected dict")
+            logger.error(f"Unexpected patterns type: {type(patterns)}, expected dict, forcing empty dict")
             patterns = {}
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
