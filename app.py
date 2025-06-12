@@ -41,24 +41,17 @@ BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Load knowledge base and heatmaps with default fallback
+# Load knowledge base and heatmaps
 def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Load knowledge base and heatmaps from data directory with detailed logging.
-    Returns a default knowledge base if the file is not found.
 
     Returns:
         Tuple[List[Dict], Dict[str, Any]]: Knowledge base and heatmaps.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    # 擴展載入邏輯，匹配所有以 _heatmap.json 結尾的檔案
     heatmap_paths = glob.glob(os.path.join(DATA_DIR, "*_heatmap.json"))
     
-    # Default knowledge base if file is not found
-    default_kb = [
-        {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
-        {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
-    ]
     math_algo_kb: List[Dict] = []
     heatmaps: Dict[str, Any] = {}
     
@@ -69,17 +62,14 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
             logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
         except (OSError, json.JSONDecodeError, KeyError) as e:
             logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
-            math_algo_kb = default_kb
-            logger.warning(f"Using default knowledge base due to error: {str(e)}")
     else:
-        math_algo_kb = default_kb
-        logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
+        logger.warning(f"Knowledge base file not found at {kb_path}, using empty KB")
     
     for hp in heatmap_paths:
-        name = os.path.splitext(os.path.basename(hp))[0]  # 提取檔案名稱，如 "樣本1_Sheet25"
+        name = os.path.splitext(os.path.basename(hp))[0]
         try:
             with open(hp, 'r', encoding="utf-8") as f:
-                heatmaps[name] = json.load(f)  # 直接存儲整個 JSON 內容
+                heatmaps[name] = json.load(f)
             logger.info(f"Successfully loaded heatmap {name} from {hp}")
         except (OSError, json.JSONDecodeError) as e:
             logger.error(f"Failed to load heatmap {name} from {hp}: {str(e)}")
@@ -95,7 +85,7 @@ class AnalysisRequest(BaseModel):
     """
     Schema for JSON payload to analyze a scratch card grid.
     """
-    grid: List[List[float]] = Field(..., description="2D array, -1 for hidden cells")
+    grid: List[List[int]] = Field(..., description="2D array, -1 for hidden cells")
     weights: Optional[Dict[str, float]] = None
     mode: str = Field("predict", description="Analysis mode: 'predict' or 'heatmap'")
     target_num: Optional[int] = Field(None, description="Target number to predict")
@@ -104,7 +94,7 @@ class AnalysisRequest(BaseModel):
 
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.atleast_2d(np.array(grid, dtype=float))
+        grid_array = np.atleast_2d(np.array(grid, dtype=int))
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
@@ -152,13 +142,13 @@ DEFAULT_WEIGHTS = {
 
 @lru_cache(maxsize=1000)
 def cache_board_analysis(
-    grid_tuple: Tuple[float, ...], shape: Tuple[int, int], target_num: int, model_path: str
+    grid_tuple: Tuple[int, ...], shape: Tuple[int, int], target_num: int, model_path: str
 ) -> Tuple[List[Dict], List[str]]:
     """
     Cache board analysis results.
 
     Args:
-        grid_tuple (Tuple[float, ...]): Flattened grid as tuple for caching.
+        grid_tuple (Tuple[int, ...]): Flattened grid as tuple for caching.
         shape (Tuple[int, int]): Original grid shape.
         target_num (int): Target number.
         model_path (str): Model path.
@@ -248,7 +238,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     logger.info(f"🔍 RAW grid payload = {json.dumps(payload.grid)}")
     
-    grid = np.array(payload.grid, dtype=float)
+    grid = np.array(payload.grid, dtype=int)
     logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
     
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
