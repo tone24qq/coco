@@ -203,6 +203,27 @@ def predict_topk(
     
     return sorted(candidates, key=lambda x: x[3], reverse=True)[:k] if candidates else []
 
+def integrate_patterns(grid: np.ndarray, patterns: Dict[Tuple[int, str], Dict[str, Any]]) -> np.ndarray:
+    """
+    Converts pattern results to a NumPy array of scores.
+
+    Args:
+        grid (np.ndarray): 2D board array.
+        patterns (Dict[Tuple[int, str], Dict[str, Any]]): Detected patterns.
+
+    Returns:
+        np.ndarray: Scores for hidden cells.
+    """
+    M, N = grid.shape
+    arr = np.zeros((M, N), dtype=float)
+    for (idx, direction), info in patterns.items():
+        confidence = info.get("confidence", 1.0)
+        if direction == 'h':
+            arr[idx, grid[idx] == -1] = confidence
+        else:  # 'v'
+            arr[grid[:, idx] == -1, idx] = confidence
+    return arr
+
 def analyze_board(
     grid: np.ndarray,
     weights: Dict[str, float],
@@ -258,27 +279,42 @@ def analyze_board(
         assert heatmap.ndim == 2, f"heatmap must be 2D, got ndim={heatmap.ndim}"
 
         module_scores = {}
+        pattern_results = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = mod_func(grid)
-                # 如果返回的是 dict，就跳过 ndim 检查
-                if isinstance(result, dict):
-                    continue
                 if isinstance(result, tuple):
-                    result = result[0]
-                if not hasattr(result, "ndim") or result.ndim != 2:
-                    if result.size == M * N:
-                        result = result.reshape(M, N)
-                    elif len(result) == len(empty_yx):
-                        temp_result = np.zeros((M, N))
-                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                        result = temp_result
+                    # Handle tuple (e.g., analyze_number_patterns returns (scores, patterns))
+                    if len(result) >= 1 and hasattr(result[0], "ndim"):
+                        scores = result[0]
+                        if mod_name == "analyze_number_patterns" and len(result) >= 2:
+                            pattern_results = result[1]  # Save patterns dict
                     else:
-                        result = np.zeros((M, N))
-                module_scores[mod_name] = result
+                        scores = np.array([])
+                else:
+                    scores = result
+                if isinstance(scores, dict):
+                    if mod_name == "analyze_number_patterns":
+                        pattern_results = scores
+                    continue
+                if not hasattr(scores, "ndim") or scores.ndim != 2:
+                    if scores.size == M * N:
+                        scores = scores.reshape(M, N)
+                    elif scores.size == len(empty_yx):
+                        temp_result = np.zeros((M, N))
+                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = scores
+                        scores = temp_result
+                    else:
+                        scores = np.zeros((M, N))
+                module_scores[mod_name] = scores
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
                 module_scores[mod_name] = np.zeros((M, N))
+
+        # Integrate patterns into module_scores
+        if pattern_results:
+            pattern_array = integrate_patterns(grid, pattern_results)
+            module_scores["analyze_number_patterns"] = pattern_array
 
         preds = [
             {
@@ -322,28 +358,36 @@ def analyze_board(
             except OSError as e:
                 logger.error(f"Failed to save features: {e}")
 
-        mod_scores = {}
+        mod_scores = module_scores.copy()
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
                 result = mod_func(grid)
-                # 如果返回的是 dict，就跳过 ndim 检查
-                if isinstance(result, dict):
-                    continue
                 if isinstance(result, tuple):
-                    result = result[0]
-                if not hasattr(result, "ndim") or result.ndim != 2:
-                    if result.size == M * N:
-                        result = result.reshape(M, N)
-                    elif len(result) == len(empty_yx):
-                        temp_result = np.zeros((M, N))
-                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                        result = temp_result
+                    if len(result) >= 1 and hasattr(result[0], "ndim"):
+                        scores = result[0]
                     else:
-                        result = np.zeros((M, N))
-                mod_scores[mod_name] = result
+                        scores = np.array([])
+                else:
+                    scores = result
+                if isinstance(scores, dict):
+                    continue
+                if not hasattr(scores, "ndim") or scores.ndim != 2:
+                    if scores.size == M * N:
+                        scores = scores.reshape(M, N)
+                    elif scores.size == len(empty_yx):
+                        temp_result = np.zeros((M, N))
+                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = scores
+                        scores = temp_result
+                    else:
+                        scores = np.zeros((M, N))
+                mod_scores[mod_name] = scores
             except Exception as e:
                 logger.error(f"{mod_name} failed: {e}")
                 mod_scores[mod_name] = np.zeros((M, N))
+
+        # Ensure pattern_array is in mod_scores
+        if pattern_results:
+            mod_scores["analyze_number_patterns"] = module_scores["analyze_number_patterns"]
 
         board_type = solver.classify_board_type(
             mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N)))
@@ -351,7 +395,7 @@ def analyze_board(
         solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
-        patterns = solver.analyze_number_patterns(grid)
+        patterns = pattern_results if pattern_results else solver.analyze_number_patterns(grid)[1]
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
