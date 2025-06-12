@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
-from joblib import Parallel, delayed  # 添加並行計算支持
+from joblib import Parallel, delayed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,7 +58,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-dir", default="stats/models", type=str, help="Model output folder"
     )
-    parser.add_argument("--n-jobs", type=int, default=1, help="Number of parallel jobs (for training)")
+    parser.add_argument("--n-jobs", type=int, default=1, help="Number of parallel jobs")
     return parser.parse_args()
 
 def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = None) -> np.ndarray:
@@ -78,7 +78,7 @@ def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = No
         np.random.seed(seed)
     total = m * n
     nums = np.random.permutation(np.arange(1, total + 1))
-    grid = np.full((m, n), -1, dtype=int)  # 改為 int 型態
+    grid = np.full((m, n), -1, dtype=np.int64)  # 使用 int64
     open_cells = int(total * open_ratio)
     idx = np.random.choice(total, open_cells, replace=False)
     grid[np.unravel_index(idx, (m, n))] = nums[:open_cells]
@@ -139,7 +139,6 @@ async def main() -> None:
                 for i in range(100 - len(grids)):
                     grids.append(generate_random_grid(8, 10, 0.5, seed=i))
             
-            # 使用並行計算生成樣本
             samples: List[Tuple[np.ndarray, int, Dict[str, Any]]] = []
             def process_grid(grid):
                 m, n = grid.shape
