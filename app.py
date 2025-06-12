@@ -14,6 +14,7 @@ from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
+from joblib import Parallel, delayed  # 添加並行計算支持
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
