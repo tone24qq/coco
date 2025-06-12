@@ -50,39 +50,28 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     heatmap_paths = glob.glob(os.path.join(DATA_DIR, "*_heatmap.json"))
-    
-    default_kb = [
-        {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
-        {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
-    ]
+
     math_algo_kb: List[Dict] = []
     heatmaps: Dict[str, Any] = {}
-    
+
+    # Load knowledge base
     if os.path.exists(kb_path):
         try:
-            with open(kb_path, 'r', encoding="utf-8") as f:
-                math_algo_kb = json.load(f)["concepts"]
-            logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
-        except (OSError, json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
-            math_algo_kb = default_kb
-            logger.warning(f"Using default knowledge base due to error: {str(e)}")
-    else:
-        math_algo_kb = default_kb
-        logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
-    
-    for heatmap_path in heatmap_paths:
-        name = os.path.splitext(os.path.basename(heatmap_path))[0]
+            with open(kb_path, "r", encoding="utf-8") as f:
+                math_algo_kb = json.load(f).get("concepts", [])
+            print(f"✅ Loaded knowledge base with {len(math_algo_kb)} concepts from {kb_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to load KB file: {e}")
+
+    # Load heatmaps
+    for path in heatmap_paths:
+        name = os.path.basename(path).replace(".json", "")
         try:
-            with open(heatmap_path, 'r', encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 heatmaps[name] = json.load(f)
-            logger.info(f"Successfully loaded heatmap {name} from {heatmap_path}")
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load heatmap {name} from {heatmap_path}: {str(e)}")
-    
-    if not heatmaps:
-        logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
-    
+        except Exception as e:
+            print(f"⚠️ Failed to load heatmap {name}: {e}")
+
     return math_algo_kb, heatmaps
 
 math_algo_kb, heatmaps = load_data_resources()
