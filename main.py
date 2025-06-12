@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(description="Scratch Card Analysis Tool")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--input-file", type=str, help="Single input file (JSON/CSV/Excel)")
+    group.add_argument("--input-file", type=str, help="Single input file (JSON/CSV/Excel/ZIP)")
     group.add_argument("--input-folder", type=str, help="Input folder (samples/data/)")
     parser.add_argument("--output-dir", type=str, required=True, help="Output file or folder")
     parser.add_argument("--weights", type=str, default=None, help="Module weights JSON")
@@ -78,7 +78,7 @@ def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = No
         np.random.seed(seed)
     total = m * n
     nums = np.random.permutation(np.arange(1, total + 1))
-    grid = np.full((m, n), -1, dtype=np.int64)  # 使用 int64
+    grid = np.full((m, n), -1, dtype=np.int64)
     open_cells = int(total * open_ratio)
     idx = np.random.choice(total, open_cells, replace=False)
     grid[np.unravel_index(idx, (m, n))] = nums[:open_cells]
@@ -131,8 +131,10 @@ async def main() -> None:
             if not os.path.isdir(args.input_folder):
                 raise NotADirectoryError(f"Input folder {args.input_folder} is not a directory")
             for filename in os.listdir(args.input_folder):
-                if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
-                    grids.extend(load_grid_from_file(os.path.join(args.input_folder, filename)))
+                if filename.endswith(('.json', '.csv', '.xls', '.xlsx', '.zip')):
+                    file_path = os.path.join(args.input_folder, filename)
+                    logger.info(f"Loading grids from {file_path}")
+                    grids.extend(load_grid_from_file(file_path))
             
             if len(grids) < 100:
                 logger.warning(f"Only {len(grids)} grids found, generating additional grids")
