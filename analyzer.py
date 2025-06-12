@@ -288,25 +288,25 @@ def analyze_board(
             if grid[i, j] == -1
         ]
 
-        if target_num is None:
-            remaining_nums = list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))
-            if not remaining_nums:
-                raise ValueError("No remaining numbers to predict")
+        # Handle target_num selection
+        open_nums = set(grid[grid != -1])
+        remaining_nums = list(set(range(1, grid.size + 1)) - open_nums)
+        if not remaining_nums:
+            raise ValueError("No remaining numbers to predict")
+        
+        if target_num is None or target_num in open_nums:
+            if target_num in open_nums:
+                logger.warning(f"Target number {target_num} already present, selecting alternative")
             target_num = remaining_nums[0]
-            logger.warning(f"No target number specified, using {target_num}")
+            logger.info(f"Selected target number: {target_num}")
 
         if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
             logger.error("Grid size out of bounds")
             return np.array([]), np.array(grid), [], {"accuracy": 0}, ["Invalid grid size"]
 
-        open_nums = set(grid[grid != -1])
         if len(open_nums) != len(set(open_nums)) or max(open_nums, default=0) > grid.size:
             logger.error("Invalid numbers detected")
             return np.array([]), np.array(grid), [], {"accuracy": 0}, ["Invalid numbers"]
-
-        if target_num in open_nums:
-            logger.warning(f"Target number {target_num} already present")
-            return np.array([]), np.array(grid), [], {"accuracy": 0}, [f"Target {target_num} already open"]
 
         extended_features = extract_extended_features(grid)
         if json_heatmap_path:
@@ -348,11 +348,12 @@ def analyze_board(
         if not isinstance(patterns, dict):
             logger.error(f"Expected dict from analyze_number_patterns, got {type(patterns)}")
             patterns = {}
+
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
         reasoning_steps = [
-            f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}",
+            f"Remaining numbers: {remaining_nums}",
             f"Target number: {target_num}"
         ]
         if model_path and os.path.exists(model_path):
@@ -389,7 +390,6 @@ def analyze_board(
             reasoning_steps.append(f"Top-3 predicted using heuristic scores: {top3}")
 
         true_values = grid.copy()
-        remaining_nums = list(set(range(1, grid.size + 1)) - set(open_nums))
         np.random.shuffle(remaining_nums)
         for (i, j), num in zip(np.argwhere(grid == -1), remaining_nums):
             true_values[i, j] = num
