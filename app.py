@@ -56,7 +56,7 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
         {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
     ]
     math_algo_kb: List[Dict] = []
-    heatmaps: Dict[str, Any] = []
+    heatmaps: Dict[str, Any] = {}
     
     if os.path.exists(kb_path):
         try:
