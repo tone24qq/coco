@@ -19,12 +19,23 @@ def compute_all_module_scores(
 ) -> np.ndarray:
     """
     Compute scores for a specific position using all registered modules.
+
+    Parameters:
+        grid (np.ndarray): 2D board array.
+        target_pos (Tuple[int, int]): Position to compute scores for.
+        grid_shape (Tuple[int, int]): Grid shape.
+
+    Returns:
+        np.ndarray: Concatenated score vector.
     """
     solver = ScratchSolver()
     solver.update_tree(grid)
     features = []
     for mod_name, mod_func in solver.MODULE_REGISTRY.items():
         try:
+            # --- 跳過只回傳 dict 的模式分析模組 ---
+            if mod_name == "analyze_number_patterns":
+                continue
             result = mod_func(grid)
             scores = result[0] if isinstance(result, tuple) else result
             empty_yx = np.argwhere(grid == -1)
@@ -38,8 +49,14 @@ def compute_all_module_scores(
 def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     """
     Extract extended statistical features from the grid.
+
+    Parameters:
+        grid (np.ndarray): 2D board array.
+
+    Returns:
+        Dict[str, float]: Statistical features.
     """
-    grid = grid.astype(np.int64)
+    grid = grid.astype(np.int64)  # 確保 int64
     features = {}
     M, N = grid.shape
     open_nums = grid[grid != -1]
@@ -73,7 +90,7 @@ def generate_masked_samples(
     """
     Generate masked samples with extended features for training.
     """
-    grid = grid.astype(np.int64)
+    grid = grid.astype(np.int64)  # 確保 int64
     samples = []
     M, N = grid.shape
     remaining_nums = list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))
@@ -145,7 +162,7 @@ def predict_topk(
     """
     Predict top-k positions for a target number using the trained model.
     """
-    masked_grid = masked_grid.astype(np.int64)
+    masked_grid = masked_grid.astype(np.int64)  # 確保 int64
     try:
         clf = joblib.load(model_path)
     except FileNotFoundError:
@@ -200,7 +217,7 @@ def analyze_board(
     Analyze a scratch card board.
     """
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
-    grid = grid.astype(np.int64)
+    grid = grid.astype(np.int64)  # 確保 int64
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
@@ -225,9 +242,11 @@ def analyze_board(
 
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
+            # --- 跳過只回傳 dict 的模式分析模組 ---
+            if mod_name == "analyze_number_patterns":
+                continue
             try:
                 result = mod_func(grid)
-                logger.debug(f"Module {mod_name} result type: {type(result)}, shape: {getattr(result, 'shape', 'N/A')}")
                 if isinstance(result, tuple):
                     result = result[0]
                 if result.ndim != 2:
@@ -288,6 +307,9 @@ def analyze_board(
 
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
+            # --- 跳過只回傳 dict 的模式分析模組 ---
+            if mod_name == "analyze_number_patterns":
+                continue
             try:
                 result = mod_func(grid)
                 if isinstance(result, tuple):
@@ -313,7 +335,6 @@ def analyze_board(
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
         patterns = solver.analyze_number_patterns(grid)
-        logger.debug(f"Patterns type: {type(patterns)}, content: {patterns}")
         if not isinstance(patterns, dict):
             logger.error(f"Expected dict from analyze_number_patterns, got {type(patterns)}")
             patterns = {}
