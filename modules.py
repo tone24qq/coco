@@ -400,31 +400,38 @@ class ScratchSolver:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         M, N = grid.shape
         if M < 3 or N < 3:
-            logger.warning(f"Grid size {M}x{N} too small for mirror sequence detection, returning zeros")
+            logger.warning(f"Grid size {M}x{N} too small for mirror sequence detection, returning default scores")
             return np.full(np.count_nonzero(grid == -1), 0.1), np.full(np.count_nonzero(grid == -1), -1, dtype=int)
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
         mid_x = N // 2
         mid_y = M // 2
-        left = grid[:, :mid_x]
-        right = np.fliplr(grid[:, -mid_x:]) if N >= 2 * mid_x else np.zeros_like(left)
-        mirror_lr = np.all((left == right) | (left == -1) | (right == -1), axis=1) if N >= 2 * mid_x else np.zeros(M, dtype=bool)
-        top = grid[:mid_y, :]
-        bottom = np.flipud(grid[-mid_y:, :]) if M >= 2 * mid_y else np.zeros_like(top)
-        mirror_ud = np.all((top == bottom) | (top == -1) | (bottom == -1), axis=1) if M >= 2 * mid_y else np.zeros(N, dtype=bool)
-        diag1 = np.diagonal(grid)
-        diag2 = np.diagonal(np.fliplr(grid)) if M == N else np.array([])
-        mirror_diag = np.all((diag1 == diag2) | (diag1 == -1) | (diag2 == -1)) if M == N and len(diag2) > 0 else False
+        # 確保至少有足夠的列和行進行鏡像檢查
+        if N >= 2 * mid_x and M >= 2 * mid_y:
+            left = grid[:, :mid_x]
+            right = np.fliplr(grid[:, -mid_x:]) if N >= 2 * mid_x else np.zeros_like(left)
+            mirror_lr = np.all((left == right) | (left == -1) | (right == -1), axis=1)
+            top = grid[:mid_y, :]
+            bottom = np.flipud(grid[-mid_y:, :]) if M >= 2 * mid_y else np.zeros_like(top)
+            mirror_ud = np.all((top == bottom) | (top == -1) | (bottom == -1), axis=1)
+            diag1 = np.diagonal(grid)
+            diag2 = np.diagonal(np.fliplr(grid)) if M == N else np.array([])
+            mirror_diag = np.all((diag1 == diag2) | (diag1 == -1) | (diag2 == -1)) if M == N and len(diag2) > 0 else False
+        else:
+            mirror_lr = np.zeros(M, dtype=bool)
+            mirror_ud = np.zeros(N, dtype=bool)
+            mirror_diag = False
+
         for i in range(M):
             for j in range(N):
                 if grid[i, j] == -1:
-                    if j < mid_x and mirror_lr[i] and grid[i, N-1-j] != -1 and N >= 2 * mid_x:
+                    if j < mid_x and mirror_lr[i] and N >= 2 * mid_x and grid[i, N-1-j] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[i, N-1-j])
-                    if i < mid_y and mirror_ud[j] and grid[M-1-i, j] != -1 and M >= 2 * mid_y:
+                    if i < mid_y and mirror_ud[j] and M >= 2 * mid_y and grid[M-1-i, j] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-1-i, j])
-                    if mirror_diag and i == j and grid[M-1-i, M-1-i] != -1 and M == N:
+                    if mirror_diag and i == j and M == N and grid[M-1-i, M-1-i] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-1-i, M-1-i])
         scores[grid != -1] = 0
