@@ -35,6 +35,7 @@ class ScratchSolver:
             'sequence_tail_analyzer': self.sequence_tail_analyzer,
             'analyze_number_patterns': self.analyze_number_patterns
         }
+        logger.debug(f"ScratchSolver initialized with MODULE_REGISTRY: {list(self.MODULE_REGISTRY.keys())}")
         self.adaptive_weights = AdaptiveWeights({
             "compute_dynamic_hot_cold_vectorized": 0.15,
             "compute_dynamic_hot_cold_advanced": 0.2,
@@ -399,15 +400,16 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         M, N = grid.shape
-        # 檢查有效行數
+        # 檢查有效行數，忽略 -1
         valid_rows = np.sum(grid != -1, axis=1)
         if np.max(valid_rows) < 3 or N < 3:
-            logger.warning(f"Grid size {M}x{N} with {np.max(valid_rows)} valid rows too small for mirror sequence detection, returning default scores")
+            logger.warning(f"Grid size {M}x{N} with max {np.max(valid_rows)} valid rows too small for mirror sequence detection, returning default scores")
             return np.full(np.count_nonzero(grid == -1), 0.1), np.full(np.count_nonzero(grid == -1), -1, dtype=int)
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
         mid_x = N // 2
         mid_y = M // 2
+        # 僅在滿足條件時進行鏡像檢查
         if N >= 2 * mid_x and M >= 2 * mid_y:
             left = grid[:, :mid_x]
             right = np.fliplr(grid[:, -mid_x:]) if N >= 2 * mid_x else np.zeros_like(left)
@@ -508,7 +510,8 @@ class ScratchSolver:
         Returns:
             Dict[Tuple[int, str], Dict[str, Any]]: Detected patterns.
         """
-        assert isinstance(grid, np.ndarray) and grid.ndim == 2, f"Expected 2D numpy array, got {type(grid)} with ndim={grid.ndim}"
+        logger.debug(f"analyze_number_patterns called with grid type={type(grid)}, shape={grid.shape if isinstance(grid, np.ndarray) else None}")
+        assert isinstance(grid, np.ndarray) and grid.ndim == 2, f"Expected 2D numpy array, got {type(grid)} with ndim={grid.ndim if isinstance(grid, np.ndarray) else None}"
         M, N = grid.shape
         patterns: Dict[Tuple[int, str], Dict[str, Any]] = {}
         
@@ -534,6 +537,7 @@ class ScratchSolver:
                 if pattern:
                     patterns[(j, 'v')] = pattern
         
+        logger.debug(f"analyze_number_patterns returning patterns: {patterns}")
         return patterns
 
     def pattern_based_prediction(
