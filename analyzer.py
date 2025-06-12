@@ -8,8 +8,6 @@ from modules import ScratchSolver
 from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
-from scipy.ndimage import zoom
-from scipy.stats import norm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -236,7 +234,7 @@ def analyze_board(
             - Dict[str, float]: Evaluation metrics.
             - List[str]: Reasoning steps.
     """
-    logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}, type={type(grid)}, heatmap_data={type(heatmap_data) if heatmap_data else None}")
+    logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
@@ -245,44 +243,10 @@ def analyze_board(
         solver.update_tree(grid)
         M, N = grid.shape
 
-        # 提取熱圖規律並適配
+        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(
+            grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9)
+        )
         heatmap = np.zeros_like(grid, dtype=float)
-        if heatmap_data and isinstance(heatmap_data, dict):
-            default_heatmap_key = next(iter(heatmap_data.keys()), None)
-            if default_heatmap_key:
-                default_heatmap = heatmap_data[default_heatmap_key].get("heatmap", None)
-                if default_heatmap is not None and isinstance(default_heatmap, (list, np.ndarray)):
-                    heatmap_data_array = np.array(default_heatmap, dtype=float) if isinstance(default_heatmap, list) else default_heatmap
-                    hm_M, hm_N = heatmap_data_array.shape
-                    # 計算熱圖統計特性
-                    hm_mean = np.mean(heatmap_data_array[heatmap_data_array != -1])
-                    hm_std = np.std(heatmap_data_array[heatmap_data_array != -1])
-                    hm_hotspots = np.percentile(heatmap_data_array[heatmap_data_array != -1], 90)
-                    # 根據格子尺寸生成適配熱圖
-                    x, y = np.meshgrid(np.linspace(0, 1, N), np.linspace(0, 1, M))
-                    base_heatmap = np.zeros((M, N))
-                    if hm_std > 0:
-                        base_heatmap = hm_mean + hm_std * norm.pdf(x, 0.5, 0.2) * norm.pdf(y, 0.5, 0.2)
-                        base_heatmap = np.clip(base_heatmap, 0, hm_hotspots)
-                    heatmap = base_heatmap
-                else:
-                    logger.warning("Invalid heatmap_data format, using zeros")
-            else:
-                logger.warning("No valid heatmap_data key found, using zeros")
-        elif heatmap_data is not None and isinstance(heatmap_data, np.ndarray):
-            hm_M, hm_N = heatmap_data.shape
-            hm_mean = np.mean(heatmap_data[heatmap_data != -1])
-            hm_std = np.std(heatmap_data[heatmap_data != -1])
-            hm_hotspots = np.percentile(heatmap_data[heatmap_data != -1], 90)
-            x, y = np.meshgrid(np.linspace(0, 1, N), np.linspace(0, 1, M))
-            base_heatmap = np.zeros((M, N))
-            if hm_std > 0:
-                base_heatmap = hm_mean + hm_std * norm.pdf(x, 0.5, 0.2) * norm.pdf(y, 0.5, 0.2)
-                base_heatmap = np.clip(base_heatmap, 0, hm_hotspots)
-            heatmap = base_heatmap
-
-        # 結合動態熱圖得分
-        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
         empty_yx = np.argwhere(grid == -1)
         if len(heatmap_scores) == len(empty_yx):
             heatmap[empty_yx[:, 0], empty_yx[:, 1]] = heatmap_scores
@@ -296,11 +260,13 @@ def analyze_board(
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
-                logger.debug(f"Calling module {mod_name} with grid shape {grid.shape}")
                 result = mod_func(grid)
+                # 如果返回的是 dict，就跳过 ndim 检查
+                if isinstance(result, dict):
+                    continue
                 if isinstance(result, tuple):
                     result = result[0]
-                if result.ndim != 2:
+                if not hasattr(result, "ndim") or result.ndim != 2:
                     if result.size == M * N:
                         result = result.reshape(M, N)
                     elif len(result) == len(empty_yx):
@@ -359,11 +325,13 @@ def analyze_board(
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
             try:
-                logger.debug(f"Calling module {mod_name} with grid shape {grid.shape}")
                 result = mod_func(grid)
+                # 如果返回的是 dict，就跳过 ndim 检查
+                if isinstance(result, dict):
+                    continue
                 if isinstance(result, tuple):
                     result = result[0]
-                if result.ndim != 2:
+                if not hasattr(result, "ndim") or result.ndim != 2:
                     if result.size == M * N:
                         result = result.reshape(M, N)
                     elif len(result) == len(empty_yx):
@@ -383,13 +351,7 @@ def analyze_board(
         solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
-        # 確保 patterns 使用 grid 數組
-        logger.debug(f"Calling analyze_number_patterns with grid shape {grid.shape}, type {type(grid)}")
         patterns = solver.analyze_number_patterns(grid)
-        logger.debug(f"Patterns generated: {patterns}")
-        if not isinstance(patterns, dict):
-            logger.error(f"Unexpected patterns type: {type(patterns)}, expected dict, forcing empty dict")
-            patterns = {}
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
