@@ -322,30 +322,25 @@ class ScratchSolver:
         pred = np.full((M, N), -1, dtype=np.int64)
         
         try:
-            # Compute differences along rows and columns
-            d1 = np.diff(grid, axis=1)  # Shape: (M, N-1)
-            d2 = np.diff(grid, axis=0)  # Shape: (M-1, N)
+            d1 = np.diff(grid, axis=1)
+            d2 = np.diff(grid, axis=0)
             d1_pos = d1[d1 > 0].astype(np.int64)
             d2_pos = d2[d2 > 0].astype(np.int64)
             
-            # Determine minlength dynamically
             max_diff = max(
                 d1_pos.max() if d1_pos.size > 0 else 0,
                 d2_pos.max() if d2_pos.size > 0 else 0,
-                1  # Ensure minlength is at least 1
+                1
             )
             minlength = max_diff + 1
             
-            # Initialize diff_freq with consistent shape
             diff_freq = np.zeros(minlength, dtype=np.int64)
             
-            # Accumulate frequencies
             if d1_pos.size > 0:
                 diff_freq[:np.bincount(d1_pos).size] += np.bincount(d1_pos)
             if d2_pos.size > 0:
                 diff_freq[:np.bincount(d2_pos).size] += np.bincount(d2_pos)
             
-            # Compute scores for hidden cells
             for i in range(M):
                 for j in range(N):
                     if grid[i, j] == -1:
@@ -360,7 +355,6 @@ class ScratchSolver:
                                 scores[i, j] = max(scores[i, j], diff_freq[1] / (diff_freq.sum() + 1e-8))
                                 pred[i, j] = int(expected)
             
-            # Normalize scores
             scores[grid != -1] = 0
             mn, mx = scores.min(), scores.max()
             if mx > mn:
@@ -369,7 +363,6 @@ class ScratchSolver:
             
         except Exception as e:
             logger.error(f"compute_difference_trend failed: {str(e)}")
-            # Return default scores and predictions on failure
             return np.full(np.count_nonzero(grid == -1), 0.1), np.full(np.count_nonzero(grid == -1), -1, dtype=np.int64)
         
         return scores[grid == -1], pred[grid == -1]
@@ -631,11 +624,19 @@ class ScratchSolver:
             metrics['accuracy'] = correct.mean() if correct.size > 0 else 0.0
             metrics['value_diff'] = np.abs(prediction[mask] - true_values[mask]).mean() if correct.size > 0 else 0.0
         
-        pred_patterns = self.analyze_number_patterns(prediction)
-        true_patterns = self.analyze_number_patterns(true_values)
-        metrics['pattern_match'] = len(
-            set(pred_patterns.keys()) & set(true_patterns.keys())
-        ) / max(len(pred_patterns), len(true_patterns), 1)
+        try:
+            pred_patterns = self.analyze_number_patterns(prediction)
+            true_patterns = self.analyze_number_patterns(true_values)
+            if not (isinstance(pred_patterns, dict) and isinstance(true_patterns, dict)):
+                logger.warning("Invalid pattern types in evaluate_prediction, skipping pattern match")
+                metrics['pattern_match'] = 0.0
+            else:
+                metrics['pattern_match'] = len(
+                    set(pred_patterns.keys()) & set(true_patterns.keys())
+                ) / max(len(pred_patterns), len(true_patterns), 1)
+        except Exception as e:
+            logger.warning(f"Pattern evaluation failed: {str(e)}")
+            metrics['pattern_match'] = 0.0
         
         return metrics
 
