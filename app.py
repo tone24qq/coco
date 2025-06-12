@@ -14,7 +14,7 @@ from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
-from jobjob import Parallel, delayed
+from joblib import Parallel, delayed
 import zipfile
 import shutil
 
