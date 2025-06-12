@@ -14,7 +14,7 @@ from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
 from pydantic import BaseModel, Field, validator
 from functools import lru_cache
-from joblib import Parallel, delayed  # 添加並行計算支持
+from joblib import Parallel, delayed
 
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
@@ -52,10 +52,8 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
         Tuple[List[Dict], Dict[str, Any]]: Knowledge base and heatmaps.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    # 擴展載入邏輯，匹配所有以 _heatmap.json 結尾的檔案
     heatmap_paths = glob.glob(os.path.join(DATA_DIR, "*_heatmap.json"))
     
-    # Default knowledge base if file is not found
     default_kb = [
         {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
         {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
@@ -77,10 +75,10 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
         logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
     
     for hp in heatmap_paths:
-        name = os.path.splitext(os.path.basename(hp))[0]  # 提取檔案名稱，如 "樣本1_Sheet25"
+        name = os.path.splitext(os.path.basename(hp))[0]
         try:
             with open(hp, 'r', encoding="utf-8") as f:
-                heatmaps[name] = json.load(f)  # 直接存儲整個 JSON 內容
+                heatmaps[name] = json.load(f)
             logger.info(f"Successfully loaded heatmap {name} from {hp}")
         except (OSError, json.JSONDecodeError) as e:
             logger.error(f"Failed to load heatmap {name} from {hp}: {str(e)}")
@@ -105,7 +103,7 @@ class AnalysisRequest(BaseModel):
 
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.atleast_2d(np.array(grid, dtype=float))
+        grid_array = np.atleast_2d(np.array(grid, dtype=np.int64))  # 使用 int64
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
@@ -157,18 +155,9 @@ def cache_board_analysis(
 ) -> Tuple[List[Dict], List[str]]:
     """
     Cache board analysis results.
-
-    Args:
-        grid_tuple (Tuple[float, ...]): Flattened grid as tuple for caching.
-        shape (Tuple[int, int]): Original grid shape.
-        target_num (int): Target number.
-        model_path (str): Model path.
-
-    Returns:
-        Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
     try:
-        grid = np.array(grid_tuple).reshape(shape)
+        grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)  # 使用 int64
         if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
             raise ValueError(f"Invalid grid data for shape {shape}")
         logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
@@ -181,14 +170,6 @@ def cache_board_analysis(
 def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
     Perform board analysis with detailed logging and validation.
-
-    Args:
-        grid (np.ndarray): 2D board array.
-        target_num (int): Target number.
-        model_path (str): Model path.
-
-    Returns:
-        Tuple[List[Dict], List[str]]: Predictions and reasoning.
     """
     M, N = grid.shape
     predictions = []
@@ -197,6 +178,9 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
     try:
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
             raise ValueError(f"Invalid grid type or shape: {type(grid)}, {grid.shape if hasattr(grid, 'shape') else 'None'}")
+        if grid.dtype != np.int64:
+            grid = grid.astype(np.int64)  # 確保 int64
+            logger.info("Grid cast to int64 for consistency")
         
         empty_yx = np.argwhere(grid == -1)
         if len(empty_yx) == 0:
@@ -249,7 +233,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     logger.info(f"🔍 RAW grid payload = {json.dumps(payload.grid)}")
     
-    grid = np.array(payload.grid, dtype=float)
+    grid = np.array(payload.grid, dtype=np.int64)  # 使用 int64
     logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
     
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
@@ -302,13 +286,6 @@ async def upload_file(
 ) -> JSONResponse:
     """
     Upload and process a scratch card file with detailed logging.
-
-    Args:
-        file (UploadFile): File containing grid data.
-        background_tasks (BackgroundTasks): Background task handler.
-
-    Returns:
-        JSONResponse: Upload status and output path.
     """
     logger.info(f"Received upload request for file: {file.filename}")
     try:
@@ -353,13 +330,6 @@ async def batch_process(
 ) -> JSONResponse:
     """
     Initiate batch processing of scratch card files with detailed logging.
-
-    Args:
-        input_folder (str): Directory containing input files.
-        background_tasks (BackgroundTasks): Background task handler.
-
-    Returns:
-        JSONResponse: Batch processing status.
     """
     logger.info(f"Received batch processing request for folder: {input_folder}")
     try:
@@ -401,13 +371,6 @@ def save_results_to_file(
 ) -> None:
     """
     Save analysis results to a file.
-
-    Args:
-        scores (np.ndarray): Scores for hidden cells.
-        predictions (np.ndarray): Predicted values.
-        best_pos (List[Tuple]): Top-3 predicted positions.
-        output_filepath (str): Output file path.
-        output_format (str): File format.
     """
     from brain import save_results_to_file as brain_save
     logger.info(f"Saving results to {output_filepath} in {output_format} format")
@@ -422,13 +385,6 @@ def save_results_to_file(
 async def catch_all(request: Request, full_path: str) -> JSONResponse:
     """
     Catch all undefined routes.
-
-    Args:
-        request (Request): HTTP request object.
-        full_path (str): Requested path.
-
-    Returns:
-        JSONResponse: Running status.
     """
     logger.debug(f"Catch-all: {request.method} {full_path}")
     return JSONResponse(status_code=200, content={"status": "running"})
