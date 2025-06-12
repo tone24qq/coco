@@ -236,7 +236,7 @@ def analyze_board(
             - Dict[str, float]: Evaluation metrics.
             - List[str]: Reasoning steps.
     """
-    logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
+    logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}, type={type(grid)}, heatmap_data={type(heatmap_data) if heatmap_data else None}")
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
@@ -382,6 +382,7 @@ def analyze_board(
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
         # 確保 patterns 使用 grid 數組
+        logger.debug(f"Calling analyze_number_patterns with grid shape {grid.shape}, type {type(grid)}")
         patterns = solver.analyze_number_patterns(grid)
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
