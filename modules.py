@@ -57,7 +57,7 @@ class ScratchSolver:
         Updates the KDTree with known cell coordinates and values.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         self.known_yx = np.argwhere(grid != -1)
         self.known_vals = grid[grid != -1]
         if self.known_yx.size > 0:
@@ -74,7 +74,7 @@ class ScratchSolver:
         Extracts features from multiple angles for each number in the grid.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         features_dict: Dict[str, Any] = {
             "row_features": {},
@@ -136,7 +136,7 @@ class ScratchSolver:
         Computes inverse distance weighting scores for hidden cells.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         empty_yx = np.argwhere(grid == -1)
         if empty_yx.size == 0:
             return np.array([])
@@ -155,7 +155,7 @@ class ScratchSolver:
         Computes hot/cold scores based on quantile or std thresholds.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         known = grid[grid != -1]
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
@@ -193,7 +193,7 @@ class ScratchSolver:
         Advanced hot/cold scoring with position and difference weights.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         known = grid[grid != -1]
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
@@ -233,7 +233,7 @@ class ScratchSolver:
         Computes block-based heatmap scores.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         h, w = grid.shape
         bs = min(block_size, h, w)
         padded = np.pad(grid, ((0, max(0, bs - h)), (0, max(0, bs - w))), mode='edge')
@@ -252,7 +252,7 @@ class ScratchSolver:
         Computes global difference heatmap using Laplacian kernel.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         arr = np.where(grid == -1, 0, grid).astype(float)
         kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=float)
         lap = convolve2d(arr, kernel, mode='same', boundary='symm')
@@ -268,7 +268,7 @@ class ScratchSolver:
         Computes focus scores based on neighboring cell values.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         mask = (grid != -1).astype(np.int64)
         kernel = np.ones((3, 3)) / 9
         summed = convolve2d(np.where(grid != -1, grid, 0), kernel, mode='same', boundary='symm')
@@ -283,7 +283,7 @@ class ScratchSolver:
         Detects arithmetic skip patterns in rows and columns.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=np.int64)
@@ -321,7 +321,7 @@ class ScratchSolver:
         Computes difference trends based on grid gradients.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=np.int64)
@@ -362,7 +362,7 @@ class ScratchSolver:
         Detects mirror symmetry patterns in the grid.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=np.int64)
@@ -401,7 +401,7 @@ class ScratchSolver:
         Computes connectivity heatmap based on neighboring cells.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         mask = (grid != -1).astype(np.uint8)
         kernel_4 = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
@@ -418,7 +418,7 @@ class ScratchSolver:
         Analyzes number tails for pattern prediction.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=np.int64)
@@ -431,7 +431,7 @@ class ScratchSolver:
                 block_tails = block[block != -1] % 10
                 if block_tails.size > 0:
                     local_freq = np.bincount(block_tails, minlength=10) / (block_tails.size + 1e-8)
-                    if grid[i, j] == -1:
+                    if grid[i, j] ==sweet:
                         best_tail = np.argmax(local_freq)
                         scores[i, j] = local_freq[best_tail]
                         candidates = grid[grid != -1][(grid[grid != -1] % 10) == best_tail]
@@ -448,7 +448,7 @@ class ScratchSolver:
         Analyzes arithmetic patterns in rows and columns.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         patterns: Dict[Tuple[int, str], Dict[str, Any]] = {}
         
@@ -492,7 +492,7 @@ class ScratchSolver:
         Predicts values based on detected patterns.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         pred = np.full_like(grid, -1, dtype=float)
         scores = np.zeros_like(grid, dtype=float)
@@ -529,7 +529,7 @@ class ScratchSolver:
         Predicts values based on local neighbor relationships.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         M, N = grid.shape
         pred = np.full_like(grid, -1, dtype=float)
         scores = np.zeros_like(grid, dtype=float)
@@ -547,7 +547,7 @@ class ScratchSolver:
         Generates predictions based on heatmap scores.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         pred = np.zeros_like(grid, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
         empty_yx = np.argwhere(grid == -1)
@@ -565,7 +565,7 @@ class ScratchSolver:
         Integrates multiple prediction methods.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         predictions = np.full_like(grid, -1, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
         
@@ -600,7 +600,7 @@ class ScratchSolver:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         assert prediction.ndim == 2, f"Expected 2D prediction, got {prediction.ndim}D array with shape {prediction.shape}"
         assert true_values.ndim == 2, f"Expected 2D true_values, got {true_values.ndim}D array with shape {true_values.shape}"
-        grid = grid.astype(np.int64)  # 確保 int64
+        grid = grid.astype(np.int64)
         metrics = {
             'accuracy': 0.0,
             'pattern_match': 0.0,
@@ -616,9 +616,7 @@ class ScratchSolver:
         pred_patterns = self.analyze_number_patterns(prediction)
         true_patterns = self.analyze_number_patterns(true_values)
         metrics['pattern_match'] = len(
-            {
-                set(pred_patterns.keys()) & set(true_patterns.keys())
-            }
+            set(pred_patterns.keys()) & set(true_patterns.keys())
         ) / max(len(pred_patterns), len(true_patterns), 1)
         
         return metrics
