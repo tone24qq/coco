@@ -58,7 +58,7 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     math_algo_kb: List[Dict] = []
     heatmaps: Dict[str, Any] = []
     
-    if os.path.exists(kb_path)):
+    if os.path.exists(kb_path):
         try:
             with open(kb_path, 'r', encoding="utf-8") as f:
                 math_algo_kb = json.load(f)["concepts"]
