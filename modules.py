@@ -359,10 +359,15 @@ class ScratchSolver:
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
-        d1 = np.diff(grid, axis=1)
-        d2 = np.diff(grid, axis=0)
-        diff_freq = np.bincount(d1.flatten()[d1.flatten() != -1].astype(int), minlength=grid.size+1) + \
-                    np.bincount(d2.flatten()[d2.flatten() != -1].astype(int), minlength=grid.size+1)
+        d1 = np.diff(grid, axis=1, prepend=0)
+        d2 = np.diff(grid, axis=0, prepend=0)
+        diff_freq = np.bincount(
+            np.clip(d1.flatten()[d1.flatten() != -1].astype(int), 0, grid.size),
+            minlength=grid.size + 1
+        ) + np.bincount(
+            np.clip(d2.flatten()[d2.flatten() != -1].astype(int), 0, grid.size),
+            minlength=grid.size + 1
+        )
         for i in range(M):
             for j in range(N):
                 if grid[i, j] == -1:
@@ -394,29 +399,32 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         M, N = grid.shape
+        if M < 3 or N < 3:
+            logger.warning(f"Grid size {M}x{N} too small for mirror sequence detection, returning zeros")
+            return np.full(np.count_nonzero(grid == -1), 0.1), np.full(np.count_nonzero(grid == -1), -1, dtype=int)
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
         mid_x = N // 2
         mid_y = M // 2
         left = grid[:, :mid_x]
-        right = np.fliplr(grid[:, -mid_x:])
-        mirror_lr = np.all((left == right) | (left == -1) | (right == -1), axis=1)
+        right = np.fliplr(grid[:, -mid_x:]) if N >= 2 * mid_x else np.zeros_like(left)
+        mirror_lr = np.all((left == right) | (left == -1) | (right == -1), axis=1) if N >= 2 * mid_x else np.zeros(M, dtype=bool)
         top = grid[:mid_y, :]
-        bottom = np.flipud(grid[-mid_y:, :])
-        mirror_ud = np.all((top == bottom) | (top == -1) | (bottom == -1), axis=1)
+        bottom = np.flipud(grid[-mid_y:, :]) if M >= 2 * mid_y else np.zeros_like(top)
+        mirror_ud = np.all((top == bottom) | (top == -1) | (bottom == -1), axis=1) if M >= 2 * mid_y else np.zeros(N, dtype=bool)
         diag1 = np.diagonal(grid)
-        diag2 = np.diagonal(np.fliplr(grid))
-        mirror_diag = np.all((diag1 == diag2) | (diag1 == -1) | (diag2 == -1))
+        diag2 = np.diagonal(np.fliplr(grid)) if M == N else np.array([])
+        mirror_diag = np.all((diag1 == diag2) | (diag1 == -1) | (diag2 == -1)) if M == N and len(diag2) > 0 else False
         for i in range(M):
             for j in range(N):
                 if grid[i, j] == -1:
-                    if j < mid_x and mirror_lr[i] and grid[i, N-1-j] != -1:
+                    if j < mid_x and mirror_lr[i] and grid[i, N-1-j] != -1 and N >= 2 * mid_x:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[i, N-1-j])
-                    if i < mid_y and mirror_ud[j] and grid[M-1-i, j] != -1:
+                    if i < mid_y and mirror_ud[j] and grid[M-1-i, j] != -1 and M >= 2 * mid_y:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-1-i, j])
-                    if mirror_diag and i == j and grid[M-1-i, M-1-i] != -1:
+                    if mirror_diag and i == j and grid[M-1-i, M-1-i] != -1 and M == N:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[M-1-i, M-1-i])
         scores[grid != -1] = 0
@@ -461,19 +469,19 @@ class ScratchSolver:
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
-        tails = grid[grid != -1] % 10
-        freq = np.bincount(tails.flatten(), minlength=10) / (np.count_nonzero(grid != -1) + 1e-8)
+        tails = np.mod(grid[grid != -1].astype(int), 10)
+        freq = np.bincount(tails, minlength=10) / (np.count_nonzero(grid != -1) + 1e-8)
         windows = sliding_window_view(np.pad(grid, ((1, 1), (1, 1)), mode='edge'), (3, 3))
         for i in range(M):
             for j in range(N):
                 block = windows[i, j]
-                block_tails = block[block != -1] % 10
+                block_tails = np.mod(block[block != -1].astype(int), 10)
                 if block_tails.size > 0:
                     local_freq = np.bincount(block_tails, minlength=10) / (block_tails.size + 1e-8)
                     if grid[i, j] == -1:
                         best_tail = np.argmax(local_freq)
                         scores[i, j] = local_freq[best_tail]
-                        candidates = grid[grid != -1][(grid[grid != -1] % 10) == best_tail]
+                        candidates = grid[grid != -1][np.mod(grid[grid != -1], 10) == best_tail]
                         if candidates.size > 0:
                             pred[i, j] = int(min(candidates) + (best_tail * 10) if min(candidates) < 50 else -1)
         scores[grid != -1] = 0
