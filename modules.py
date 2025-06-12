@@ -399,14 +399,15 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         M, N = grid.shape
-        if M < 3 or N < 3:
-            logger.warning(f"Grid size {M}x{N} too small for mirror sequence detection, returning default scores")
+        # 檢查有效行數
+        valid_rows = np.sum(grid != -1, axis=1)
+        if np.max(valid_rows) < 3 or N < 3:
+            logger.warning(f"Grid size {M}x{N} with {np.max(valid_rows)} valid rows too small for mirror sequence detection, returning default scores")
             return np.full(np.count_nonzero(grid == -1), 0.1), np.full(np.count_nonzero(grid == -1), -1, dtype=int)
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=int)
         mid_x = N // 2
         mid_y = M // 2
-        # 確保至少有足夠的列和行進行鏡像檢查
         if N >= 2 * mid_x and M >= 2 * mid_y:
             left = grid[:, :mid_x]
             right = np.fliplr(grid[:, -mid_x:]) if N >= 2 * mid_x else np.zeros_like(left)
@@ -424,7 +425,7 @@ class ScratchSolver:
 
         for i in range(M):
             for j in range(N):
-                if grid[i, j] == -1:
+                if grid[i, j] == -1 and valid_rows[i] >= 3:
                     if j < mid_x and mirror_lr[i] and N >= 2 * mid_x and grid[i, N-1-j] != -1:
                         scores[i, j] = 1.0
                         pred[i, j] = int(grid[i, N-1-j])
@@ -507,7 +508,7 @@ class ScratchSolver:
         Returns:
             Dict[Tuple[int, str], Dict[str, Any]]: Detected patterns.
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert isinstance(grid, np.ndarray) and grid.ndim == 2, f"Expected 2D numpy array, got {type(grid)} with ndim={grid.ndim}"
         M, N = grid.shape
         patterns: Dict[Tuple[int, str], Dict[str, Any]] = {}
         
