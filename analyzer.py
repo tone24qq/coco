@@ -243,10 +243,22 @@ def analyze_board(
         solver.update_tree(grid)
         M, N = grid.shape
 
-        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(
-            grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9)
-        )
+        # 確保 heatmap_data 是數組
         heatmap = np.zeros_like(grid, dtype=float)
+        if heatmap_data and isinstance(heatmap_data, dict):
+            default_heatmap = next(iter(heatmap_data.values()), {}).get("heatmap", None)
+            if default_heatmap is not None and isinstance(default_heatmap, (list, np.ndarray)):
+                heatmap_data_array = np.array(default_heatmap, dtype=float) if isinstance(default_heatmap, list) else default_heatmap
+                if heatmap_data_array.shape == grid.shape:
+                    heatmap = heatmap_data_array
+                else:
+                    logger.warning(f"heatmap_data shape {heatmap_data_array.shape} does not match grid shape {grid.shape}, using zeros")
+            else:
+                logger.warning("Invalid heatmap_data format, using zeros")
+        elif heatmap_data is not None and isinstance(heatmap_data, np.ndarray):
+            heatmap = heatmap_data
+
+        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
         empty_yx = np.argwhere(grid == -1)
         if len(heatmap_scores) == len(empty_yx):
             heatmap[empty_yx[:, 0], empty_yx[:, 1]] = heatmap_scores
