@@ -86,7 +86,7 @@ class ScratchSolver:
 
         grid_df = pd.DataFrame(grid)
         for i in range(M):
-            row = grid_df.iloc[i][grid_df.iloc[i]]
+            row = grid_df.iloc[i][grid_df.iloc[i] != -1]
             features_dict["row_features"][i] = row.tolist()
         
         for j in range(N):
@@ -616,7 +616,9 @@ class ScratchSolver:
         pred_patterns = self.analyze_number_patterns(prediction)
         true_patterns = self.analyze_number_patterns(true_values)
         metrics['pattern_match'] = len(
-            set(pred_patterns.keys()) & set(true_patterns.keys())
+            {
+                set(pred_patterns.keys()) & set(true_patterns.keys())
+            }
         ) / max(len(pred_patterns), len(true_patterns), 1)
         
         return metrics
