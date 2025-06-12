@@ -1,6 +1,6 @@
 # analyzer.py
 import numpy as np
-import pandas as pd  # 添加 pandas 支援
+import pandas as pd
 import logging
 import json
 import os
@@ -9,7 +9,7 @@ from modules import ScratchSolver
 from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
-from joblib import Parallel, delayed  # 添加並行計算支援
+from joblib import Parallel, delayed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,11 +53,11 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     Returns:
         Dict[str, float]: Statistical features.
     """
+    grid = grid.astype(np.int64)  # 確保 int64
     features = {}
     M, N = grid.shape
     open_nums = grid[grid != -1]
     
-    # 使用 pandas 加速統計計算
     grid_df = pd.DataFrame(grid)
     for i in range(M):
         row = grid_df.iloc[i][grid_df.iloc[i] != -1]
@@ -86,14 +86,8 @@ def generate_masked_samples(
 ) -> List[Tuple[np.ndarray, int, Dict[str, Any]]]:
     """
     Generate masked samples with extended features for training.
-
-    Parameters:
-        grid (np.ndarray): 2D board array.
-        target_nums (Optional[List[int]]): Specific numbers to predict.
-
-    Returns:
-        List[Tuple[np.ndarray, int, Dict]]: Samples with grid, true value, and features.
     """
+    grid = grid.astype(np.int64)  # 確保 int64
     samples = []
     M, N = grid.shape
     remaining_nums = list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))
@@ -115,7 +109,6 @@ def generate_masked_samples(
         }
         return [(masked, int(true_val), sample_features)]
     
-    # 使用並行計算生成樣本
     results = Parallel(n_jobs=-1)(
         delayed(process_cell)(i, j, grid[i, j])
         for i in range(M) for j in range(N)
@@ -131,11 +124,6 @@ def train_extended_model(
 ) -> None:
     """
     Train a LightGBM model with extended features and log them.
-
-    Parameters:
-        samples (List[Tuple]): Training samples with grid, true value, and features.
-        model_path (str): Path to save model.
-        feature_log_path (str): Path to save feature log.
     """
     try:
         X = []
@@ -170,16 +158,8 @@ def predict_topk(
 ) -> List[Tuple[int, int, int, float, Dict[str, Any]]]:
     """
     Predict top-k positions for a target number using the trained model.
-
-    Parameters:
-        masked_grid (np.ndarray): 2D grid with hidden cells.
-        model_path (str): Path to trained model.
-        target_num (int): Target number to predict.
-        k (int): Number of top predictions.
-
-    Returns:
-        List[Tuple]: Top-k predictions with row, col, digit, confidence, and reasoning.
     """
+    masked_grid = masked_grid.astype(np.int64)  # 確保 int64
     try:
         clf = joblib.load(model_path)
     except FileNotFoundError:
@@ -211,7 +191,6 @@ def predict_topk(
         }
         return [(i, j, target_num, confidence, reasoning)]
     
-    # 使用並行計算處理候選位置
     results = Parallel(n_jobs=-1)(
         delayed(process_position)(i, j)
         for i in range(M) for j in range(N)
@@ -233,26 +212,9 @@ def analyze_board(
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], Dict[str, float], List[str]]:
     """
     Analyze a scratch card board.
-
-    Args:
-        grid (np.ndarray): 2D board array.
-        weights (Dict[str, float]): Dictionary mapping function name to weight.
-        return_predictions (bool): Whether to return predictions.
-        target_num (int, optional): Target number to locate.
-        json_heatmap_path (str, optional): Path to JSON heatmap.
-        knowledge_base (List[Dict], optional): Knowledge base data.
-        heatmap_data (Dict, optional): Preloaded heatmaps.
-        model_path (str, optional): Path to trained model.
-
-    Returns:
-        Tuple containing:
-            - np.ndarray: Final scores for hidden cells.
-            - np.ndarray: Predicted values for the grid.
-            - List[Dict]: Top-3 predictions with row, col, digit, confidence, and contributions.
-            - Dict[str, float]: Evaluation metrics.
-            - List[str]: Reasoning steps.
     """
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
+    grid = grid.astype(np.int64)  # 確保 int64
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
@@ -273,7 +235,7 @@ def analyze_board(
                 f"heatmap_scores length {len(heatmap_scores)} does not match empty cells {len(empty_yx)}, filling with 0.1"
             )
             heatmap[grid == -1] = 0.1
-        assert heatmap.ndim == 2, f"heatmap must be 2D, got ndim={heatmap.ndim}"
+        assert heatmap.shape == grid.shape, f"heatmap shape {heatmap.shape} must match grid shape {grid.shape}"
 
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
@@ -329,7 +291,7 @@ def analyze_board(
 
         extended_features = extract_extended_features(grid)
         if json_heatmap_path:
-            features_path = json_heatmap_path.replace(".json", "_features.json")
+            features_path = json_heatmap_path.replace(".", "_features.")
             try:
                 os.makedirs(os.path.dirname(features_path), exist_ok=True)
                 with open(features_path, "w", encoding="utf-8") as f:
@@ -364,7 +326,6 @@ def analyze_board(
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
         patterns = solver.analyze_number_patterns(grid)
-        # 確保正確處理 patterns（字典）
         if not isinstance(patterns, dict):
             logger.error(f"Expected dict from analyze_number_patterns, got {type(patterns)}")
             patterns = {}
