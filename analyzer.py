@@ -8,6 +8,8 @@ from modules import ScratchSolver
 from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
+from scipy.ndimage import zoom
+from scipy.stats import norm
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -243,21 +245,44 @@ def analyze_board(
         solver.update_tree(grid)
         M, N = grid.shape
 
-        # 確保 heatmap_data 是數組
+        # 提取熱圖規律並適配
         heatmap = np.zeros_like(grid, dtype=float)
         if heatmap_data and isinstance(heatmap_data, dict):
-            default_heatmap = next(iter(heatmap_data.values()), {}).get("heatmap", None)
-            if default_heatmap is not None and isinstance(default_heatmap, (list, np.ndarray)):
-                heatmap_data_array = np.array(default_heatmap, dtype=float) if isinstance(default_heatmap, list) else default_heatmap
-                if heatmap_data_array.shape == grid.shape:
-                    heatmap = heatmap_data_array
+            default_heatmap_key = next(iter(heatmap_data.keys()), None)
+            if default_heatmap_key:
+                default_heatmap = heatmap_data[default_heatmap_key].get("heatmap", None)
+                if default_heatmap is not None and isinstance(default_heatmap, (list, np.ndarray)):
+                    heatmap_data_array = np.array(default_heatmap, dtype=float) if isinstance(default_heatmap, list) else default_heatmap
+                    hm_M, hm_N = heatmap_data_array.shape
+                    # 計算熱圖的統計特性
+                    hm_mean = np.mean(heatmap_data_array[heatmap_data_array != -1])
+                    hm_std = np.std(heatmap_data_array[heatmap_data_array != -1])
+                    hm_hotspots = np.percentile(heatmap_data_array[heatmap_data_array != -1], 90)
+                    # 根據格子尺寸正規化生成適配熱圖
+                    x, y = np.meshgrid(np.linspace(0, 1, N), np.linspace(0, 1, M))
+                    base_heatmap = np.zeros((M, N))
+                    if hm_std > 0:
+                        # 使用正態分佈模擬熱點分佈
+                        base_heatmap = hm_mean + hm_std * norm.pdf(x, 0.5, 0.2) * norm.pdf(y, 0.5, 0.2)
+                        base_heatmap = np.clip(base_heatmap, 0, hm_hotspots)
+                    heatmap = base_heatmap
                 else:
-                    logger.warning(f"heatmap_data shape {heatmap_data_array.shape} does not match grid shape {grid.shape}, using zeros")
+                    logger.warning("Invalid heatmap_data format, using zeros")
             else:
-                logger.warning("Invalid heatmap_data format, using zeros")
+                logger.warning("No valid heatmap_data key found, using zeros")
         elif heatmap_data is not None and isinstance(heatmap_data, np.ndarray):
-            heatmap = heatmap_data
+            hm_M, hm_N = heatmap_data.shape
+            hm_mean = np.mean(heatmap_data[heatmap_data != -1])
+            hm_std = np.std(heatmap_data[heatmap_data != -1])
+            hm_hotspots = np.percentile(heatmap_data[heatmap_data != -1], 90)
+            x, y = np.meshgrid(np.linspace(0, 1, N), np.linspace(0, 1, M))
+            base_heatmap = np.zeros((M, N))
+            if hm_std > 0:
+                base_heatmap = hm_mean + hm_std * norm.pdf(x, 0.5, 0.2) * norm.pdf(y, 0.5, 0.2)
+                base_heatmap = np.clip(base_heatmap, 0, hm_hotspots)
+            heatmap = base_heatmap
 
+        # 結合動態熱圖得分
         heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9))
         empty_yx = np.argwhere(grid == -1)
         if len(heatmap_scores) == len(empty_yx):
@@ -357,6 +382,7 @@ def analyze_board(
         solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
+        # 確保 patterns 使用 grid 數組
         patterns = solver.analyze_number_patterns(grid)
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
@@ -412,7 +438,4 @@ def analyze_board(
         raise
 
 # Self-Inspection Report:
-# - Syntax Check: Passed
-# - Parentheses Matching: No issues
-# - Identifier Definitions: All variables, functions, and modules defined before use
-# - Testing Environment: Python 3.11
+# - Syntax
