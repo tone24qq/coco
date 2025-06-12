@@ -1,5 +1,6 @@
 # analyzer.py
 import numpy as np
+import pandas as pd  # 添加 pandas 支援
 import logging
 import json
 import os
@@ -8,6 +9,7 @@ from modules import ScratchSolver
 from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
+from joblib import Parallel, delayed  # 添加並行計算支援
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,15 +57,17 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     M, N = grid.shape
     open_nums = grid[grid != -1]
     
+    # 使用 pandas 加速統計計算
+    grid_df = pd.DataFrame(grid)
     for i in range(M):
-        row = grid[i][grid[i] != -1]
-        features[f"row_{i}_mean"] = np.mean(row) if row.size else 0
-        features[f"row_{i}_std"] = np.std(row) if row.size > 1 else 0
+        row = grid_df.iloc[i][grid_df.iloc[i] != -1]
+        features[f"row_{i}_mean"] = row.mean() if not row.empty else 0
+        features[f"row_{i}_std"] = row.std() if len(row) > 1 else 0
     
     for j in range(N):
-        col = grid[:, j][grid[:, j] != -1]
-        features[f"col_{j}_mean"] = np.mean(col) if col.size else 0
-        features[f"col_{j}_std"] = np.std(col) if col.size > 1 else 0
+        col = grid_df[j][grid_df[j] != -1]
+        features[f"col_{j}_mean"] = col.mean() if not col.empty else 0
+        features[f"col_{j}_std"] = col.std() if len(col) > 1 else 0
     
     diag = np.diagonal(grid)
     anti_diag = np.diagonal(np.fliplr(grid))
@@ -97,21 +101,27 @@ def generate_masked_samples(
     
     extended_features = extract_extended_features(grid)
     
-    for i in range(M):
-        for j in range(N):
-            true_val = grid[i, j]
-            if true_val == -1 or true_val not in target_nums:
-                continue
-            masked = grid.copy()
-            masked[i, j] = -1
-            module_scores = compute_all_module_scores(masked, (i, j), (M, N))
-            sample_features = {
-                "module_scores": module_scores.tolist(),
-                "extended_features": extended_features,
-                "position": (i, j),
-                "remaining_nums": remaining_nums
-            }
-            samples.append((masked, int(true_val), sample_features))
+    def process_cell(i, j, true_val):
+        if true_val == -1 or true_val not in target_nums:
+            return []
+        masked = grid.copy()
+        masked[i, j] = -1
+        module_scores = compute_all_module_scores(masked, (i, j), (M, N))
+        sample_features = {
+            "module_scores": module_scores.tolist(),
+            "extended_features": extended_features,
+            "position": (i, j),
+            "remaining_nums": remaining_nums
+        }
+        return [(masked, int(true_val), sample_features)]
+    
+    # 使用並行計算生成樣本
+    results = Parallel(n_jobs=-1)(
+        delayed(process_cell)(i, j, grid[i, j])
+        for i in range(M) for j in range(N)
+    )
+    for result in results:
+        samples.extend(result)
     
     logger.info(f"Generated {len(samples)} samples for grid {M}x{N}")
     return samples
@@ -180,26 +190,34 @@ def predict_topk(
     extended_features = extract_extended_features(masked_grid)
     candidates = []
     
-    for i in range(M):
-        for j in range(N):
-            if masked_grid[i, j] == -1:
-                features = compute_all_module_scores(masked_grid, (i, j), (M, N))
-                combined = np.concatenate([
-                    features,
-                    np.array([v for v in extended_features.values()])
-                ])
-                probs = clf.predict_proba([combined])[0]
-                target_idx = np.where(clf.classes_ == target_num)[0]
-                confidence = probs[target_idx[0]] if target_idx.size else 0.0
-                reasoning = {
-                    "position": (i, j),
-                    "module_scores": features.tolist(),
-                    "extended_features": extended_features,
-                    "confidence_contributors": {
-                        name: float(features[idx]) for idx, name in enumerate(ScratchSolver.MODULE_REGISTRY.keys())
-                    }
-                }
-                candidates.append((i, j, target_num, confidence, reasoning))
+    def process_position(i, j):
+        if masked_grid[i, j] != -1:
+            return []
+        features = compute_all_module_scores(masked_grid, (i, j), (M, N))
+        combined = np.concatenate([
+            features,
+            np.array([v for v in extended_features.values()])
+        ])
+        probs = clf.predict_proba([combined])[0]
+        target_idx = np.where(clf.classes_ == target_num)[0]
+        confidence = probs[target_idx[0]] if target_idx.size else 0.0
+        reasoning = {
+            "position": (i, j),
+            "module_scores": features.tolist(),
+            "extended_features": extended_features,
+            "confidence_contributors": {
+                name: float(features[idx]) for idx, name in enumerate(ScratchSolver.MODULE_REGISTRY.keys())
+            }
+        }
+        return [(i, j, target_num, confidence, reasoning)]
+    
+    # 使用並行計算處理候選位置
+    results = Parallel(n_jobs=-1)(
+        delayed(process_position)(i, j)
+        for i in range(M) for j in range(N)
+    )
+    for result in results:
+        candidates.extend(result)
     
     return sorted(candidates, key=lambda x: x[3], reverse=True)[:k] if candidates else []
 
@@ -346,6 +364,10 @@ def analyze_board(
         final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
 
         patterns = solver.analyze_number_patterns(grid)
+        # 確保正確處理 patterns（字典）
+        if not isinstance(patterns, dict):
+            logger.error(f"Expected dict from analyze_number_patterns, got {type(patterns)}")
+            patterns = {}
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
         top3 = []
