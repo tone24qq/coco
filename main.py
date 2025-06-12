@@ -76,7 +76,7 @@ def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = No
         np.random.seed(seed)
     total = m * n
     nums = np.random.permutation(np.arange(1, total + 1))
-    grid = np.full((m, n), -1, dtype=float)
+    grid = np.full((m, n), -1, dtype=int)
     open_cells = int(total * open_ratio)
     idx = np.random.choice(total, open_cells, replace=False)
     grid[np.unravel_index(idx, (m, n))] = nums[:open_cells]
