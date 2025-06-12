@@ -36,10 +36,10 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             if isinstance(data, list):
                 if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
                     for grid_data in data:
-                        grid = np.atleast_2d(np.array(grid_data, dtype=float))
+                        grid = np.atleast_2d(np.array(grid_data, dtype=int))
                         grids.append(grid)
                 else:
-                    grid = np.atleast_2d(np.array(data, dtype=float))
+                    grid = np.atleast_2d(np.array(data, dtype=int))
                     grids.append(grid)
             else:
                 logger.error(f"JSON file {filepath} has invalid format")
@@ -48,18 +48,18 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
         elif ext in ['.csv', '.xls', '.xlsx']:
             if ext == '.csv':
                 df = pd.read_csv(filepath, header=None)
-                grid = np.atleast_2d(df.to_numpy(dtype=float))
+                grid = np.atleast_2d(df.to_numpy(dtype=int))
                 grids.append(grid)
             else:
                 xl = pd.ExcelFile(filepath)
                 for sheet_name in xl.sheet_names:
                     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
-                    grid = np.atleast_2d(df.to_numpy(dtype=float))
+                    grid = np.atleast_2d(df.to_numpy(dtype=int))
                     grids.append(grid)
         
         cleaned_grids: List[np.ndarray] = []
         for grid in grids:
-            grid = np.where(np.isnan(grid) | (grid < 0), -1.0, grid)
+            grid = np.where(np.isnan(grid) | (grid < 0), -1, grid)
             assert grid.ndim == 2, f"Grid {grid.shape} is not 2D after cleaning"
             M, N = grid.shape
             if M < 4 or N < 4 or M > 20 or N > 20:
