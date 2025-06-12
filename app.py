@@ -12,7 +12,7 @@ import glob
 from typing import Dict, List, Optional, Tuple, Any
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, ConfigDict
 from functools import lru_cache
 from joblib import Parallel, delayed
 
@@ -47,9 +47,6 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     """
     Load knowledge base and heatmaps from data directory with detailed logging.
     Returns a default knowledge base if the file is not found.
-
-    Returns:
-        Tuple[List[Dict], Dict[str, Any]]: Knowledge base and heatmaps.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     heatmap_paths = glob.glob(os.path.join(DATA_DIR, "*_heatmap.json"))
@@ -59,9 +56,9 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
         {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
     ]
     math_algo_kb: List[Dict] = []
-    heatmaps: Dict[str, Any] = {}
+    heatmaps: Dict[str, Any] = []
     
-    if os.path.exists(kb_path):
+    if os.path.exists(kb_path)):
         try:
             with open(kb_path, 'r', encoding="utf-8") as f:
                 math_algo_kb = json.load(f)["concepts"]
@@ -74,14 +71,14 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
         math_algo_kb = default_kb
         logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
     
-    for hp in heatmap_paths:
-        name = os.path.splitext(os.path.basename(hp))[0]
+    for heatmap_path in heatmap_paths:
+        name = os.path.splitext(os.path.basename(heatmap_path))[0]
         try:
-            with open(hp, 'r', encoding="utf-8") as f:
+            with open(heatmap_path, 'r', encoding="utf-8") as f:
                 heatmaps[name] = json.load(f)
-            logger.info(f"Successfully loaded heatmap {name} from {hp}")
+            logger.info(f"Successfully loaded heatmap {name} from {heatmap_path}")
         except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load heatmap {name} from {hp}: {str(e)}")
+            logger.error(f"Failed to load heatmap {name} from {heatmap_path}: {str(e)}")
     
     if not heatmaps:
         logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
@@ -101,9 +98,11 @@ class AnalysisRequest(BaseModel):
     json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
 
+    model_config = ConfigDict(protected_namespaces=())
+
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.atleast_2d(np.array(grid, dtype=np.int64))  # 使用 int64
+        grid_array = np.atleast_2d(np.array(grid, dtype=np.int64))
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid size must be 4x4 to 20x20")
@@ -125,6 +124,8 @@ class Prediction(BaseModel):
     module_scores: Dict[str, float]
     true_digit: Optional[int] = None
 
+    model_config = ConfigDict(protected_namespaces=())
+
 class AnalysisResponse(BaseModel):
     """
     Schema for API response.
@@ -134,9 +135,11 @@ class AnalysisResponse(BaseModel):
     source: str = "🔥 from real API"
     reasoning: List[str]
 
+    model_config = ConfigDict(protected_namespaces=())
+
 DEFAULT_WEIGHTS = {
-    "compute_dynamic_hot_cold_vectorized": 0.15,
-    "compute_dynamic_hot_cold_advanced": 0.2,
+    "compute_single_hot_cold_vectorized": 0.15,
+    "compute_single_hot_cold_advanced": 0.2,
     "compute_block_heatmap_vectorized": 0.1,
     "idw_vectorized": 0.1,
     "compute_global_diff_heatmap": 0.05,
@@ -157,7 +160,7 @@ def cache_board_analysis(
     Cache board analysis results.
     """
     try:
-        grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)  # 使用 int64
+        grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)
         if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
             raise ValueError(f"Invalid grid data for shape {shape}")
         logger.debug(f"Cache hit for grid shape {shape} with target {target_num}")
@@ -179,7 +182,7 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
             raise ValueError(f"Invalid grid type or shape: {type(grid)}, {grid.shape if hasattr(grid, 'shape') else 'None'}")
         if grid.dtype != np.int64:
-            grid = grid.astype(np.int64)  # 確保 int64
+            grid = grid.astype(np.int64)
             logger.info("Grid cast to int64 for consistency")
         
         empty_yx = np.argwhere(grid == -1)
@@ -233,15 +236,15 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     logger.info(f"🔍 RAW grid payload = {json.dumps(payload.grid)}")
     
-    grid = np.array(payload.grid, dtype=np.int64)  # 使用 int64
+    grid = np.array(payload.grid, dtype=np.int64)
     logger.info(f"🔍 AFTER reshape arr.shape = {grid.shape}")
     
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        raise HTTPException(422, "Grid must be a 4x4 to 20x20 2D numeric matrix")
+        raise HTTPException(status_code=422, detail="Grid must be a 4x4 to 20x20 2D numeric matrix")
     
     flat = grid[grid != -1].flatten()
     if len(flat) != len(set(flat)):
-        raise HTTPException(422, "Grid values except -1 must be unique and non-repeating")
+        raise HTTPException(status_code=422, detail="Grid values except -1 must be unique and non-repeating")
     
     target = 6 if payload.mode == "predict" and payload.target_num is None else payload.target_num
     if target is None:
