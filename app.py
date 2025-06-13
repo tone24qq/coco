@@ -33,7 +33,7 @@ import os, glob, zipfile, json, logging
 from typing import Dict, Any, List, Tuple
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR   = os.getenv("DATA_DIR") or os.path.join(BASE_DIR, "samples", "data")
+DATA_DIR   = os.getenv("DATA_DIR", "/tmp/samples/data")  # 明確設置為您的環境變數路徑
 EXTRACT_DIR = os.path.join(DATA_DIR, "temp_extract")
 os.makedirs(EXTRACT_DIR, exist_ok=True)
 log = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ class AnalysisRequest(BaseModel):
     weights: Optional[Dict[str, float]] = None
     mode: str = Field("predict", description="Analysis mode: 'predict' or 'heatmap'")
     target_num: Optional[int] = Field(None, description="Target number to predict")
-    json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
+    json_heatmap: str = Field(os.path.join(DATA_DIR, "json"), description="JSON heatmap folder")  # 使用 DATA_DIR
     model_path: str = Field("models/model.pkl", description="Trained model path")
     global_heatmap_path: Optional[str] = Field(None, description="Global heatmap JSON file path")
 
@@ -285,7 +285,7 @@ async def upload_file(
             logger.error(error_msg)
             raise HTTPException(status_code=400, detail=error_msg)
         
-        input_path = os.path.join("samples", "data", file.filename)
+        input_path = os.path.join(DATA_DIR, file.filename)  # 使用 DATA_DIR 作為上傳目錄
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
         with open(input_path, "wb") as f:
@@ -295,7 +295,7 @@ async def upload_file(
         
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
-        json_heatmap = os.path.join("samples", "data", "json")
+        json_heatmap = os.path.join(DATA_DIR, "json")  # 使用 DATA_DIR 的 json 路徑
         
         background_tasks.add_task(
             process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
@@ -331,7 +331,7 @@ async def batch_process(
         
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
-        json_heatmap = os.path.join("samples", "data", "json")
+        json_heatmap = os.path.join(DATA_DIR, "json")  # 使用 DATA_DIR 的 json 路徑
         
         background_tasks.add_task(
             process_batch, input_folder, weights, True, output_folder, None, json_heatmap
@@ -347,7 +347,7 @@ async def batch_process(
         logger.error(f"Batch processing failed: {e.detail}")
         raise
     except Exception as e:
-        logger.error(f"Batch processing failed: {str(e)}")
+        logger.error(f"Batch processing failed: {str(e})")
         raise HTTPException(status_code=500, detail=str(e))
 
 def save_results_to_file(
