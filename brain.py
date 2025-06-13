@@ -1,3 +1,4 @@
+# brain.py
 import numpy as np
 import pandas as pd
 import json
@@ -16,7 +17,6 @@ logger = logging.getLogger(__name__)
 def load_grid_from_file(filepath: str) -> List[np.ndarray]:
     grids: List[np.ndarray] = []
     ext = os.path.splitext(filepath)[1].lower()
-    logger.info(f"Loading grid from file: {filepath}")
     
     try:
         if ext == '.json':
@@ -60,7 +60,6 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                 logger.warning(f"Grid {grid.shape} contains non-unique or out-of-range numbers, skipping")
                 continue
             cleaned_grids.append(grid)
-            logger.info(f"Loaded valid grid from {filepath} with shape {grid.shape}")
         
         if not cleaned_grids:
             logger.error(f"File {filepath} contains no valid grids")
