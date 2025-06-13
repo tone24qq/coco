@@ -28,65 +28,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------- 路徑常數 & 輔助 ---------- #
-import os, glob, zipfile, json, logging
-from typing import Dict, Any, List, Tuple
-
-BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR   = os.getenv("DATA_DIR", "/tmp/samples/data")  # 明確設置為您的環境變數路徑
-EXTRACT_DIR = os.path.join(DATA_DIR, "temp_extract")
-os.makedirs(EXTRACT_DIR, exist_ok=True)
-log = logging.getLogger(__name__)
-
-def _extract_all_zips() -> None:
-    """解 DATA_DIR/*.zip → EXTRACT_DIR（重複執行不重複解）。"""
-    for zp in glob.glob(os.path.join(DATA_DIR, "*.zip")):
-        try:
-            with zipfile.ZipFile(zp, "r") as zf:
-                zf.extractall(EXTRACT_DIR)
-            log.info(f"✅ Extracted: {os.path.basename(zp)}")
-        except Exception as e:
-            log.warning(f"❌ Failed extracting {zp}: {e}")
-
-def _load_all_json() -> Dict[str, Any]:
-    """遞迴讀取 DATA_DIR 與 EXTRACT_DIR 任何層級的 .json 檔案"""
-    patterns = [
-        os.path.join(DATA_DIR, "**", "*.json"),
-        os.path.join(EXTRACT_DIR, "**", "*.json"),
-    ]
-    paths: List[str] = []
-    for p in patterns:
-        paths.extend(glob.glob(p, recursive=True))
-
-    objs: Dict[str, Any] = {}
-    for path in paths:
-        name = os.path.splitext(os.path.basename(path))[0]
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                objs[name] = json.load(f)
-            log.info(f"🟢 Loaded JSON: {name}")
-        except Exception as e:
-            log.warning(f"🔴 Bad JSON {path}: {e}")
-    return objs
-
-def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
-    """回傳 (knowledge_base, json_objs)。KB 檔不存在就給空 list。"""
-    kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    kb: List[Dict] = []
-    if os.path.exists(kb_path):
-        try:
-            with open(kb_path, "r", encoding="utf-8") as f:
-                kb = json.load(f).get("concepts", [])
-            log.info(f"🟢 KB loaded: {len(kb)} concepts")
-        except Exception as e:
-            log.warning(f"🔴 Failed loading KB: {e}")
-
-    _extract_all_zips()
-    json_objs = _load_all_json()
-    log.info(f"🧮 Total JSON files = {len(json_objs)}")
-    return kb, json_objs
-# ---------- 路徑常數 & 輔助 END ---------- #
-
 app = FastAPI(
     title="Scratch Card Analysis API",
     version="1.0.0",
@@ -94,16 +35,56 @@ app = FastAPI(
     openapi_version="3.1.0"
 )
 
-# 初始化 knowledge base 和 heatmaps
-math_algo_kb, json_objs = load_data_resources()
-heatmaps = {k: v for k, v in json_objs.items() if "heatmap" in k.lower()}
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
+    kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
+    heatmap_paths = glob.glob(os.path.join(DATA_DIR, "*_heatmap.json"))
+    
+    default_kb = [
+        {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
+        {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
+    ]
+    math_algo_kb: List[Dict] = []
+    heatmaps: Dict[str, Any] = {}
+    
+    if os.path.exists(kb_path):
+        try:
+            with open(kb_path, 'r', encoding="utf-8") as f:
+                math_algo_kb = json.load(f)["concepts"]
+            logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
+            math_algo_kb = default_kb
+            logger.warning(f"Using default knowledge base due to error: {str(e)}")
+    else:
+        math_algo_kb = default_kb
+        logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
+    
+    for heatmap_path in heatmap_paths:
+        name = os.path.splitext(os.path.basename(heatmap_path))[0]
+        try:
+            with open(heatmap_path, 'r', encoding="utf-8") as f:
+                heatmaps[name] = json.load(f)
+            logger.info(f"Successfully loaded heatmap {name} from {heatmap_path}")
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to load heatmap {name} from {heatmap_path}: {str(e)}")
+    
+    if not heatmaps:
+        logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
+    
+    return math_algo_kb, heatmaps
+
+math_algo_kb, heatmaps = load_data_resources()
 
 class AnalysisRequest(BaseModel):
     grid: List[List[float]] = Field(..., description="2D array, -1 for hidden cells")
     weights: Optional[Dict[str, float]] = None
     mode: str = Field("predict", description="Analysis mode: 'predict' or 'heatmap'")
     target_num: Optional[int] = Field(None, description="Target number to predict")
-    json_heatmap: str = Field(os.path.join(DATA_DIR, "json"), description="JSON heatmap folder")  # 使用 DATA_DIR
+    json_heatmap: str = Field("samples/data/json", description="JSON heatmap folder")
     model_path: str = Field("models/model.pkl", description="Trained model path")
     global_heatmap_path: Optional[str] = Field(None, description="Global heatmap JSON file path")
 
@@ -285,7 +266,7 @@ async def upload_file(
             logger.error(error_msg)
             raise HTTPException(status_code=400, detail=error_msg)
         
-        input_path = os.path.join(DATA_DIR, file.filename)  # 使用 DATA_DIR 作為上傳目錄
+        input_path = os.path.join("samples", "data", file.filename)
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
         
         with open(input_path, "wb") as f:
@@ -295,7 +276,7 @@ async def upload_file(
         
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
-        json_heatmap = os.path.join(DATA_DIR, "json")  # 使用 DATA_DIR 的 json 路徑
+        json_heatmap = os.path.join("samples", "data", "json")
         
         background_tasks.add_task(
             process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
@@ -331,7 +312,7 @@ async def batch_process(
         
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
-        json_heatmap = os.path.join(DATA_DIR, "json")  # 使用 DATA_DIR 的 json 路徑
+        json_heatmap = os.path.join("samples", "data", "json")
         
         background_tasks.add_task(
             process_batch, input_folder, weights, True, output_folder, None, json_heatmap
