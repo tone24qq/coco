@@ -347,7 +347,7 @@ async def batch_process(
         logger.error(f"Batch processing failed: {e.detail}")
         raise
     except Exception as e:
-        logger.error(f"Batch processing failed: {str(e})")
+        logger.error(f"Batch processing failed: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 def save_results_to_file(
