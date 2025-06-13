@@ -85,7 +85,48 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     
     return math_algo_kb, heatmaps
 
-math_algo_kb, heatmaps = load_data_resources()
+async def load_all_heatmaps(json_heatmap_dir: str) -> Dict[str, Dict]:
+    """
+    Load all JSON and ZIP files containing heatmaps from the specified directory.
+    
+    Parameters:
+        json_heatmap_dir (str): Directory containing JSON and ZIP heatmap files.
+    
+    Returns:
+        Dict[str, Dict]: Dictionary of heatmap data with filenames as keys.
+    """
+    heatmaps = {}
+    if not os.path.exists(json_heatmap_dir):
+        os.makedirs(json_heatmap_dir, exist_ok=True)
+        logger.warning(f"Directory {json_heatmap_dir} created as it did not exist")
+        return heatmaps
+    
+    import zipfile
+    for filename in os.listdir(json_heatmap_dir):
+        filepath = os.path.join(json_heatmap_dir, filename)
+        if filename.endswith('.json'):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    heatmaps[filename] = json.load(f)
+                logger.info(f"Loaded heatmap from {filename}")
+            except (OSError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load JSON heatmap from {filepath}: {e}")
+        elif filename.endswith('.zip'):
+            try:
+                with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                    for zip_info in zip_ref.infolist():
+                        if zip_info.filename.endswith('.json'):
+                            with zip_ref.open(zip_info.filename) as json_file:
+                                heatmaps[f"{filename}_{zip_info.filename}"] = json.load(json_file)
+                    logger.info(f"Loaded heatmaps from ZIP {filename}")
+            except (zipfile.BadZipFile, json.JSONDecodeError, OSError) as e:
+                logger.error(f"Failed to load ZIP heatmap from {filepath}: {e}")
+    
+    logger.info(f"Total heatmaps loaded: {len(heatmaps)}")
+    return heatmaps
+
+math_algo_kb, initial_heatmaps = load_data_resources()
+all_heatmaps = asyncio.run(load_all_heatmaps(os.path.join(DATA_DIR, "json")))
 
 class AnalysisRequest(BaseModel):
     """
@@ -190,7 +231,7 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
             raise ValueError("No hidden cells (-1) found for prediction")
 
         final_score, pred_array, top3, metrics, reasoning = analyze_board(
-            grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps, model_path
+            grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, all_heatmaps, model_path
         )
         heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
         
@@ -253,7 +294,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     try:
         final_score, predictions, top3, metrics, reasoning = analyze_board(
             grid, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap,
-            math_algo_kb, heatmaps, payload.model_path
+            math_algo_kb, all_heatmaps, payload.model_path
         )
         heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
         
