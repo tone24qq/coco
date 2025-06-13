@@ -8,6 +8,7 @@ from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
 from modules import ScratchSolver
 from joblib import Parallel, delayed
+import zipfile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -104,8 +105,23 @@ async def main() -> None:
             input_path = args.input_folder or args.input_file
             for filename in os.listdir(input_path):
                 file_path = os.path.join(input_path, filename)
-                if filename.endswith(('.json', '.zip')):
+                if filename.endswith('.json'):
                     file_paths.append(file_path)
+                    logger.info(f"Added JSON file: {file_path}")
+                elif filename.endswith('.zip'):
+                    logger.info(f"Processing ZIP file: {file_path}")
+                    try:
+                        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                            zip_ref.extractall(input_path)  # 解壓到同一目錄
+                            for zip_info in zip_ref.infolist():
+                                if zip_info.filename.endswith('.json'):
+                                    json_path = os.path.join(input_path, zip_info.filename)
+                                    file_paths.append(json_path)
+                                    logger.info(f"Added JSON from ZIP: {json_path}")
+                    except zipfile.BadZipFile as e:
+                        logger.error(f"Invalid ZIP file {file_path}: {e}")
+                    except Exception as e:
+                        logger.error(f"Failed to process ZIP file {file_path}: {e}")
             solver.compute_global_heatmap_from_files(file_paths, batch_size=1000, output_path=global_heatmap_path)
             logger.info(f"Global heatmap generated and saved to {global_heatmap_path}")
         except Exception as e:
