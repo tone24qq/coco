@@ -46,9 +46,9 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                 grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                 grids.append(grid)
             else:
-                xl = pd.read_excel(filepath, header=None)
+                xl = pd.ExcelFile(filepath)
                 for sheet_name in xl.sheet_names:
-                    df = pd.read_excel(filepath, sheet_name, header=None)
+                    df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
                     grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                     grids.append(grid)
         
@@ -66,7 +66,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             grid = np.where(np.isnan(grid) | (grid < 0), -1, grid)
             assert grid.ndim == 2, f"Grid {grid.shape} is not 2D after cleaning"
             M, N = grid.shape
-            if M < 4 or N < 20 or M > 20 or N > 20:
+            if M < 4 or N < 4 or M > 20 or N > 20:
                 logger.warning(f"Grid size {grid.shape} out of 4x4 to 20x20 bounds, skipping")
                 continue
             N_total = M * N
@@ -89,7 +89,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
 def save_results_to_file(
     scores: np.ndarray,
     predictions: np.ndarray,
-    best_pos: List[Tuple[int, int, float, Dict[str, Any]]],
+    best_pos: List[Tuple[int, int, float, Dict[str, float]]],
     output_filepath: str,
     output_format: str,
     all_predictions: Optional[List[Dict[str, Any]]] = None
@@ -166,19 +166,13 @@ async def process_single_board(
             sheet_heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json") if json_heatmap else None
             
             M, N = grid.shape
-if np.any(grid == -1):
-    logger.warning(f"Grid {idx+1} {M}x{N} contains hidden cells, processing as is")
-    scores, predictions, top3, metrics = analyze_board(
-        grid,
-        weights,
-        return_predictions,
-        True,
-        target_num,
-        sheet_heatmap_path,
-        model_path=model_path,
-        global_heatmap_path=global_heatmap_path,
-    )
-    all_predictions = None
+            all_predictions = None
+            if np.any(grid == -1):
+                logger.info(f"Grid {idx+1} {M}x{N} contains hidden cells, processing as is")
+                scores, predictions, top3, metrics, reasoning = analyze_board(
+                    grid, weights, return_predictions, target_num, sheet_heatmap_path,
+                    model_path=model_path, global_heatmap_path=global_heatmap_path
+                )
             else:
                 all_predictions = []
                 def process_cell(i, j, grid, model_path, target_num):
@@ -198,9 +192,9 @@ if np.any(grid == -1):
                             } for p in topk if p[1] < grid.shape[1]
                         ]
                     else:
-                        scores, pred_array, top3, _ = analyze_board(
+                        scores, pred_array, top3, metrics, reasoning = analyze_board(
                             masked_grid, weights, return_predictions, target_num,
-                            True, sheet_heatmap_path, model_path=None, global_heatmap_path=global_heatmap_path
+                            sheet_heatmap_path, model_path=None, global_heatmap_path=global_heatmap_path
                         )
                         return [
                             {
@@ -213,21 +207,19 @@ if np.any(grid == -1):
                         ]
                 
                 results = Parallel(n_jobs=-1)(
-                    delayed(process_cell)(i, j, grid, model_path, t)
-                    for i in range(M) for j in range(n)
+                    delayed(process_cell)(i, j, grid, model_path, target_num)
+                    for i in range(M) for j in range(N)
                 )
                 for result in results:
                     all_predictions.extend(result)
                 
-                scores, predictions, top3, metrics = analyze_board(
-                    grid, weights, return_predictions, True, target_num, t,
+                scores, predictions, top3, metrics, reasoning = analyze_board(
+                    grid, weights, return_predictions, target_num, sheet_heatmap_path,
                     model_path=None, global_heatmap_path=global_heatmap_path
                 )
             
             out_format = os.path.splitext(output_prefix)[1].lower().strip('.') or 'json'
-            if out_format in ['json', 'csv', 'xls', 'xlsx']:
-                sheet_output_prefix += f".{out_format}"
-            else:
+            if out_format not in ['json', 'csv', 'xls', 'xlsx']:
                 sheet_output_prefix += '.json'
                 out_format = 'json'
             save_results_to_file(
@@ -236,34 +228,33 @@ if np.any(grid == -1):
             
             metrics_filepath = f"{sheet_output_prefix}_metrics.json"
             with open(metrics_filepath, 'w', encoding='utf-8') as f:
-                json.dump(metrics, f)
+                json.dump(metrics, f, ensure_ascii=False, indent=2)
             
-            logger.info(f"Sheet {idx+1} processed, results saved to {filename}")
+            logger.info(f"Sheet {idx+1} processed, results saved to {sheet_output_prefix}")
             
             try:
-                response = await asyncio.get("http://localhost:8000/health", timeout=5)
+                response = requests.get("http://localhost:8000/health", timeout=5)
                 if response.status_code != 200:
                     logger.warning(f"Health check returned non-200: {response.status_code}")
             except requests.RequestException as e:
                 logger.error(f"Health check failed: {e}")
             
             await asyncio.sleep(0.1)
-            
+    
     except HTTPException as e:
         logger.error(f"HTTP error: {e.detail}")
-        raise e
+        raise
     except Exception as e:
         logger.error(f"Failed to process file {filepath}: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-async def process_batch(file_path: str,
+async def process_batch(
     input_folder: str,
     weights: Dict[str, float],
     return_predictions: bool,
     output_folder: str,
     target_num: Optional[int] = None,
-    json_heatmap: Optional[str]
-    = None,
+    json_heatmap: Optional[str] = None,
     global_heatmap_path: Optional[str] = None
 ) -> None:
     if not os.path.exists(input_folder):
@@ -295,7 +286,7 @@ async def process_batch(file_path: str,
     
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
-        response = await requests.get("http://localhost:8000/health", timeout=5)
+        response = requests.get("http://localhost:8000/health", timeout=5)
         if response.status_code != 200:
             logger.warning(f"Health check returned non-200: {response.status_code}")
     except requests.RequestException as e:
