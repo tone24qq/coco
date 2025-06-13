@@ -3,7 +3,8 @@ import json
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
 from scipy.spatial import cKDTree
-from scipy.signal import convolve2d, sliding_window_view
+from scipy.signal import convolve2d
+from numpy.lib.stride_tricks import sliding_window_view
 from joblib import Parallel, delayed
 import pandas as pd
 
