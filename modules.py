@@ -1,13 +1,18 @@
 import os
 import json
 import numpy as np
-from typing import List, Dict, Any, Tuple, Optional  # ✅ 加上 Tuple（也可順便補 Optional）
+from typing import List, Dict, Any, Tuple, Optional
+from scipy.spatial import cKDTree
+from scipy.signal import convolve2d, sliding_window_view
+from joblib import Parallel, delayed
+import pandas as pd
+
 def compute_global_heatmap_from_files(files: List[str], batch_size: int = 1000):
-    from brain import load_grid_from_file  # ✅ 移到函式內部延遲匯入
+    from brain import load_grid_from_file
 
     heatmap = initialize_heatmap()
     for i in range(0, len(files), batch_size):
-        batch = files[i:i+batch_size]
+        batch = files[i:i + batch_size]
         for path in batch:
             grid = load_grid_from_file(path)
             update_heatmap(heatmap, grid)
@@ -659,7 +664,7 @@ class ScratchSolver:
                             batch_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores
                             batch_cells += len(empty_yx)
                 except Exception as e:
-                    pass
+                    logger.error(f"Failed to process grid from {file_path}: {e}")
                 finally:
                     del grids
 
@@ -690,7 +695,7 @@ class ScratchSolver:
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
         except OSError as e:
-            pass
+            logger.error(f"Failed to save global heatmap to {output_path}: {e}")
 
         return result
 
