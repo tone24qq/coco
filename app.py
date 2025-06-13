@@ -274,9 +274,16 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     if len(flat) != len(set(flat)):
         raise HTTPException(422, "Grid values except -1 must be unique and non-repeating")
     
-    target = 6 if payload.mode == "predict" and payload.target_num is None else payload.target_num
-    if target is None:
-        logger.warning("No target_num specified, defaulting to 6")
+    # Dynamic target number selection
+    open_nums = set(grid[grid != -1])
+    remaining_nums = list(set(range(1, grid.size + 1)) - open_nums)
+    if not remaining_nums:
+        raise HTTPException(422, "No remaining numbers available for prediction")
+    
+    target = payload.target_num
+    if payload.mode == "predict" and (target is None or target in open_nums):
+        target = remaining_nums[0]
+        logger.info(f"Selected target number: {target}")
     
     try:
         final_score, predictions, top3, metrics, reasoning = analyze_board(
@@ -306,7 +313,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         )
     
     except Exception as e:
-        logger.error(f"Prediction failed: {e}")
+        logger.error(f"Prediction failed: {str(e)}")
         error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 from real API", reasoning=[])
         return JSONResponse(status_code=500, content=error_resp.dict())
 
