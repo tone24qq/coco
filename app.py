@@ -49,9 +49,9 @@ def _extract_all_zips() -> None:
             log.warning(f"❌ Failed extracting {zp}: {e}")
 
 def _load_all_json() -> Dict[str, Any]:
-    """遞迴讀 DATA_DIR 與 EXTRACT_DIR 內所有 .json 檔。"""
+    """遞迴讀取 DATA_DIR 與 EXTRACT_DIR 任何層級的 .json 檔案"""
     patterns = [
-        os.path.join(DATA_DIR, "*.json"),
+        os.path.join(DATA_DIR, "**", "*.json"),
         os.path.join(EXTRACT_DIR, "**", "*.json"),
     ]
     paths: List[str] = []
