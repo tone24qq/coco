@@ -1,4 +1,3 @@
-# brain.py
 import numpy as np
 import pandas as pd
 import json
@@ -15,18 +14,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_grid_from_file(filepath: str) -> List[np.ndarray]:
-    """
-    Loads scratch card grids from a file (JSON, CSV, Excel) and validates them.
-
-    Args:
-        filepath (str): Path to the input file.
-
-    Returns:
-        List[np.ndarray]: List of valid grid arrays.
-
-    Raises:
-        HTTPException: If file loading fails or grids are invalid.
-    """
     grids: List[np.ndarray] = []
     ext = os.path.splitext(filepath)[1].lower()
     
@@ -37,7 +24,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             if isinstance(data, list):
                 if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
                     for grid_data in data:
-                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))  # 使用 int64
+                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))
                         grids.append(grid)
                 else:
                     grid = np.atleast_2d(np.array(data, dtype=np.int64))
@@ -91,9 +78,6 @@ def save_results_to_file(
     output_format: str,
     all_predictions: Optional[List[Dict[str, Any]]] = None
 ) -> None:
-    """
-    Saves analysis results to a file, including per-cell predictions if provided.
-    """
     assert scores.ndim == 1 or scores.shape == predictions.shape, f"Scores shape {scores.shape} must match predictions shape {predictions.shape}"
     assert predictions.ndim == 2, f"Expected 2D predictions, got {predictions.ndim}D array {predictions.shape}"
     empty_yx = np.argwhere(predictions == -1)
@@ -154,11 +138,9 @@ async def process_single_board(
     output_prefix: str,
     target_num: Optional[int] = None,
     json_heatmap: Optional[str] = None,
+    global_heatmap_path: Optional[str] = None,
     model_path: str = "models/model.pkl"
 ) -> None:
-    """
-    Processes a single board file, auto-masking each cell for prediction and saving results.
-    """
     try:
         grids = load_grid_from_file(filepath)
         for idx, grid in enumerate(grids):
@@ -172,7 +154,7 @@ async def process_single_board(
                 logger.warning(f"Grid {M}x{N} contains hidden cells, processing as is")
                 scores, predictions, top3, metrics = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
-                    model_path=model_path
+                    model_path=model_path, global_heatmap_path=global_heatmap_path
                 )
                 all_predictions = None
             else:
@@ -196,7 +178,7 @@ async def process_single_board(
                     else:
                         scores, pred_array, top3, _ = analyze_board(
                             masked_grid, weights, return_predictions, target_num,
-                            sheet_heatmap_path, model_path=None
+                            sheet_heatmap_path, model_path=None, global_heatmap_path=global_heatmap_path
                         )
                         return [
                             {
@@ -217,7 +199,7 @@ async def process_single_board(
                 
                 scores, predictions, top3, metrics = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
-                    model_path=None
+                    model_path=None, global_heatmap_path=global_heatmap_path
                 )
             
             out_format = os.path.splitext(output_prefix)[1].lower().strip('.') or 'json'
@@ -256,11 +238,9 @@ async def process_batch(
     return_predictions: bool,
     output_folder: str,
     target_num: Optional[int] = None,
-    json_heatmap: Optional[str] = None
+    json_heatmap: Optional[str] = None,
+    global_heatmap_path: Optional[str] = None
 ) -> None:
-    """
-    Processes multiple board files in a folder.
-    """
     if not os.path.exists(input_folder):
         logger.error(f"Input folder {input_folder} does not exist")
         raise HTTPException(status_code=404, detail=f"Folder {input_folder} does not exist")
@@ -276,7 +256,7 @@ async def process_batch(
                 tasks.append(
                     asyncio.create_task(
                         process_single_board(
-                            input_filepath, weights, return_predictions, output_prefix, target_num, json_heatmap
+                            input_filepath, weights, return_predictions, output_prefix, target_num, json_heatmap, global_heatmap_path
                         )
                     )
                 )
@@ -297,9 +277,3 @@ async def process_batch(
         logger.error(f"Health check failed: {e}")
     
     logger.info(f"Batch processing completed, results saved to {output_folder}")
-
-# 自檢報告：
-# - 語法檢查：通過
-# - 括號配對：無遺漏
-# - 標識符定義：無未定義/拼寫錯誤
-# - 測試環境：Python 3.11
