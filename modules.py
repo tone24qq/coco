@@ -633,10 +633,11 @@ class ScratchSolver:
         return 'UNIFORM'
 
     def fuse_scores_vectorized(
-        self, mod_scores: Dict[str, np.ndarray], board_type: str, default_weights: Dict[str, float]
+        self, mod_scores: Dict[str, np.ndarray], board_type: str, default_weights: Dict[str, float],
+        heatmap_data: Optional[Dict[str, Any]] = None
     ) -> np.ndarray:
         """
-        Fuses scores from multiple modules using adaptive weights.
+        Fuses scores from multiple modules using adaptive weights and external heatmap data.
         """
         w = self.weights_for(board_type, default_weights)
         names = list(mod_scores.keys())
@@ -646,6 +647,20 @@ class ScratchSolver:
         heat_factor = np.abs(
             mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros(score_mat.shape[0])).sum()
         ) / (score_mat.shape[0] + 1e-8)
+        
+        # Integrate external heatmap data if provided
+        if heatmap_data:
+            for heatmap_name, heatmap_values in heatmap_data.items():
+                try:
+                    if isinstance(heatmap_values, dict) and 'scores' in heatmap_values:
+                        external_scores = np.array(heatmap_values['scores'], dtype=float)
+                        if external_scores.size == score_mat.shape[0]:
+                            score_mat = np.column_stack([score_mat, external_scores])
+                            weight_arr = np.append(weight_arr, 0.05)  # Default weight for external heatmap
+                            logger.info(f"Fused external heatmap {heatmap_name} with weight 0.05")
+                except (ValueError, KeyError) as e:
+                    logger.warning(f"Failed to fuse external heatmap {heatmap_name}: {e}")
+        
         final = (score_mat.dot(weight_arr) / (weight_arr.sum() + 1e-8)) * (1 + heat_factor * 0.5)
         return np.where(final < 0.1, 0.1, final)
 
