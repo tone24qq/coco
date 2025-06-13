@@ -169,7 +169,7 @@ async def process_single_board(
             if np.any(grid == -1):
                 logger.warning(f"Grid {idx+1} {M}x{N} contains hidden cells, processing as is")
                 scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, True, target_num, sheet_heatmap_path)
-                    model_path=model_path, global_heatmap_path=global_heatmap_path
+                    scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, True, target_num, sheet_heatmap_path, model_path=model_path, global_heatmap_path=global_heatmap_path)
                 )
                 all_predictions = None
             else:
