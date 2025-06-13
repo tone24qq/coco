@@ -4,7 +4,8 @@ import json
 import numpy as np
 import zipfile
 from scipy.spatial import cKDTree
-from scipy.signal import convolve2d, sliding_window_view
+from scipy.signal import convolve2d
+from numpy.lib.stride_tricks import sliding_window_view
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 from joblib import Parallel, delayed
