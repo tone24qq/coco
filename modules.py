@@ -4,11 +4,15 @@ import json
 import numpy as np
 import zipfile
 from scipy.spatial import cKDTree
-from scipy.signal import convolve2d
-from numpy.lib.stride_tricks import sliding_window_view
+from scipy.signal import convolve2d, sliding_window_view
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 from joblib import Parallel, delayed
+import sqlite3
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class ScratchSolver:
     MODULE_REGISTRY: Dict[str, Any] = {}
@@ -47,10 +51,18 @@ class ScratchSolver:
             "analyze_number_patterns": 0.05
         })
 
-    def compute_global_heatmap_from_files(self, files: List[str], batch_size: int = 1000, output_path: str = "samples/data/global_heatmap.json") -> Dict[str, Any]:
-        global_heatmap = np.zeros((20, 20), dtype=float)
-        total_cells = 0
+    def compute_global_heatmap_from_files(self, files: List[str], batch_size: int = 1000, output_path: str = None) -> Dict[str, Any]:
+        data_dir = os.getenv('DATA_DIR', 'samples/data')
+        if output_path is None:
+            output_path = os.path.join(data_dir, "global_heatmap.json")
+        
+        db_path = os.path.join(data_dir, "temp_heatmap.db")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute('''CREATE TABLE IF NOT EXISTS heatmap (row INTEGER, col INTEGER, score REAL, count INTEGER)''')
+        conn.commit()
 
+        total_cells = 0
         expanded_files = []
         for file_path in files:
             if file_path.endswith('.zip'):
@@ -59,19 +71,17 @@ class ScratchSolver:
                         if zip_info.filename.endswith('.json'):
                             with zip_ref.open(zip_info) as json_file:
                                 json_data = json.load(json_file)
-                                temp_file = f"temp_{os.path.basename(file_path)}_{zip_info.filename.replace('/', '_')}"
+                                temp_file = os.path.join(data_dir, f"temp_{os.path.basename(file_path)}_{zip_info.filename.replace('/', '_')}")
+                                os.makedirs(os.path.dirname(temp_file), exist_ok=True)
                                 with open(temp_file, 'w', encoding='utf-8') as f:
                                     json.dump(json_data, f, ensure_ascii=False)
                                 expanded_files.append(temp_file)
             elif file_path.endswith('.json'):
                 expanded_files.append(file_path)
 
-        for i in range(0, len(expanded_files), batch_size):
-            batch = expanded_files[i:i + batch_size]
-            batch_heatmap = np.zeros((20, 20), dtype=float)
+        def process_batch(batch_files):
             batch_cells = 0
-
-            for file_path in batch:
+            for file_path in batch_files:
                 try:
                     from brain import load_grid_from_file
                     grids = load_grid_from_file(file_path)
@@ -81,22 +91,31 @@ class ScratchSolver:
                         scores = self.compute_dynamic_hot_cold_vectorized(padded_grid)
                         empty_yx = np.argwhere(padded_grid == -1)
                         if len(scores) == len(empty_yx):
-                            batch_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores
+                            for (row, col), score in zip(empty_yx, scores):
+                                cursor.execute('''INSERT OR REPLACE INTO heatmap (row, col, score, count)
+                                                VALUES (?, ?, COALESCE((SELECT score FROM heatmap WHERE row=? AND col=?), 0) + ?,
+                                                        COALESCE((SELECT count FROM heatmap WHERE row=? AND col=?), 0) + 1)''',
+                                              (row, col, row, col, score, row, col))
                             batch_cells += len(empty_yx)
-                except Exception:
-                    continue
+                    conn.commit()
+                except Exception as e:
+                    logger.warning(f"Failed to process {file_path}: {e}")
                 finally:
-                    if file_path.startswith('temp_'):
+                    if file_path.startswith(os.path.join(data_dir, 'temp_')):
                         os.remove(file_path)
+            return batch_cells
 
-            if batch_cells > 0:
-                global_heatmap += batch_heatmap
-                total_cells += batch_cells
+        for i in range(0, len(expanded_files), batch_size):
+            batch = expanded_files[i:i + batch_size]
+            total_cells += process_batch(batch)
 
-        if total_cells > 0:
-            global_heatmap = np.where(global_heatmap > 0, global_heatmap / total_cells, 0.1)
-        else:
-            global_heatmap = np.full((20, 20), 0.1)
+        global_heatmap = np.full((20, 20), 0.1, dtype=float)
+        cursor.execute('SELECT row, col, score, count FROM heatmap')
+        for row, col, score, count in cursor.fetchall():
+            global_heatmap[row, col] = score / count if count > 0 else 0.1
+
+        conn.close()
+        os.remove(db_path)
 
         hot_spots = np.argwhere(global_heatmap > np.quantile(global_heatmap, 0.9))
         cold_spots = np.argwhere(global_heatmap < np.quantile(global_heatmap, 0.1))
@@ -113,12 +132,10 @@ class ScratchSolver:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.error(f"Failed to save heatmap to {output_path}: {e}")
 
         return result
-
-    # ... (rest of the ScratchSolver methods remain unchanged)
 
     def update_tree(self, grid: np.ndarray) -> None:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
@@ -185,8 +202,8 @@ class ScratchSolver:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(features_dict, f, ensure_ascii=False, indent=2)
-        except OSError:
-            pass
+        except OSError as e:
+            logger.error(f"Failed to save features to {output_path}: {e}")
 
         return features_dict
 
@@ -704,7 +721,8 @@ class ScratchSolver:
                 data = json.load(f)
             global_heatmap = np.array(data.get("global_heatmap", [[0.1] * 20] * 20), dtype=float)
             return global_heatmap
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to load heatmap from {heatmap_path}: {e}")
             return np.zeros((20, 20), dtype=float)
 
 class AdaptiveWeights:
@@ -732,7 +750,8 @@ class AdaptiveWeights:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
-        except OSError:
+        except OSError as e:
+            logger.error(f"Failed to save history to {filepath}: {e}")
             raise
     
     def load_history(self, filepath: str) -> None:
@@ -740,5 +759,6 @@ class AdaptiveWeights:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     self.history = json.load(f)
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load history from {filepath}: {e}")
                 raise
