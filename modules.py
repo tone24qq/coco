@@ -1,7 +1,7 @@
 import os
 import json
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple, Optional  # ✅ 加上 Tuple（也可順便補 Optional）
 def compute_global_heatmap_from_files(files: List[str], batch_size: int = 1000):
     from brain import load_grid_from_file  # ✅ 移到函式內部延遲匯入
 
