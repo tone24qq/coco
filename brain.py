@@ -166,12 +166,19 @@ async def process_single_board(
             sheet_heatmap_path = os.path.join(json_heatmap, f"{base_name}_sheet{idx+1}.json") if json_heatmap else None
             
             M, N = grid.shape
-            if np.any(grid == -1):
-                logger.warning(f"Grid {idx+1} {M}x{N} contains hidden cells, processing as is")
-                scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, True, target_num, sheet_heatmap_path)
-                    scores, predictions, top3, metrics = analyze_board(grid, weights, return_predictions, True, target_num, sheet_heatmap_path, model_path=model_path, global_heatmap_path=global_heatmap_path)
-                )
-                all_predictions = None
+if np.any(grid == -1):
+    logger.warning(f"Grid {idx+1} {M}x{N} contains hidden cells, processing as is")
+    scores, predictions, top3, metrics = analyze_board(
+        grid,
+        weights,
+        return_predictions,
+        True,
+        target_num,
+        sheet_heatmap_path,
+        model_path=model_path,
+        global_heatmap_path=global_heatmap_path,
+    )
+    all_predictions = None
             else:
                 all_predictions = []
                 def process_cell(i, j, grid, model_path, target_num):
