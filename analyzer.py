@@ -203,6 +203,43 @@ def predict_topk(
     
     return sorted(candidates, key=lambda x: x[3], reverse=True)[:k] if candidates else []
 
+def integrate_heatmap_data(
+    heatmap_data: Dict[str, Any], grid: np.ndarray, current_heatmap: np.ndarray
+) -> np.ndarray:
+    """
+    Integrate external heatmap data with current heatmap scores for enhanced prediction.
+
+    Parameters:
+        heatmap_data (Dict[str, Any]): Loaded heatmap data from JSON/ZIP files.
+        grid (np.ndarray): Current 2D board array.
+        current_heatmap (np.ndarray): Current computed heatmap scores.
+
+    Returns:
+        np.ndarray: Integrated heatmap scores.
+    """
+    integrated_heatmap = current_heatmap.copy()
+    M, N = grid.shape
+    empty_yx = np.argwhere(grid == -1)
+    
+    for heatmap_name, heatmap_values in heatmap_data.items():
+        try:
+            if isinstance(heatmap_values, dict) and 'scores' in heatmap_values:
+                scores = np.array(heatmap_values['scores'], dtype=float)
+                if scores.size == len(empty_yx):
+                    weights = np.ones_like(scores) * 0.1  # Default weight for external heatmaps
+                    integrated_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores * weights
+                    logger.info(f"Integrated heatmap from {heatmap_name} with weight 0.1")
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Failed to integrate heatmap {heatmap_name}: {e}")
+    
+    # Normalize integrated heatmap
+    mn, mx = integrated_heatmap.min(), integrated_heatmap.max()
+    if mx > mn:
+        integrated_heatmap = (integrated_heatmap - mn) / (mx - mn + 1e-8)
+    integrated_heatmap = np.where(integrated_heatmap < 0.1, 0.1, integrated_heatmap)
+    
+    return integrated_heatmap
+
 def analyze_board(
     grid: np.ndarray,
     weights: Dict[str, float],
@@ -214,7 +251,7 @@ def analyze_board(
     model_path: Optional[str] = None
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], Dict[str, float], List[str]]:
     """
-    Analyze a scratch card board.
+    Analyze a scratch card board with integrated heatmap data.
     """
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
     grid = grid.astype(np.int64)  # 確保 int64
@@ -239,6 +276,10 @@ def analyze_board(
             )
             heatmap[grid == -1] = 0.1
         assert heatmap.shape == grid.shape, f"heatmap shape {heatmap.shape} must match grid shape {grid.shape}"
+
+        # Integrate external heatmap data if provided
+        if heatmap_data:
+            heatmap = integrate_heatmap_data(heatmap_data, grid, heatmap)
 
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
