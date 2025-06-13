@@ -9,10 +9,12 @@ from modules import ScratchSolver
 import lightgbm as lgb
 import joblib
 from joblib import Parallel, delayed
+from functools import lru_cache
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+@lru_cache(maxsize=1000)
 def compute_all_module_scores(
     grid: np.ndarray, target_pos: Tuple[int, int], grid_shape: Tuple[int, int]
 ) -> np.ndarray:
@@ -20,7 +22,7 @@ def compute_all_module_scores(
     solver.update_tree(grid)
     features = []
     for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-        if mod_name == "analyze_number_patterns" or mod_name == "compute_global_heatmap_from_files":
+        if mod_name in ["analyze_number_patterns", "compute_global_heatmap_from_files"]:
             continue
         try:
             result = mod_func(grid)
@@ -56,8 +58,10 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     features["anti_diag_std"] = np.std(anti_diag[anti_diag != -1]) if np.any(anti_diag != -1) else 0
     
     solver = ScratchSolver()
-    heatmap = solver.compute_dynamic_hot_cold_vectorized(grid)
+    heatmap = solver.compute_dynamic_hot_cold_vectorized(grid, hot_q=0.95, cold_q=0.05)
     features["heatmap_top5_mean"] = np.mean(np.sort(heatmap)[-min(5, len(heatmap)):]) if heatmap.size else 0
+    idw_scores = solver.idw_vectorized(grid)
+    features["idw_mean"] = np.mean(idw_scores) if idw_scores.size else 0
     features["global_variance"] = np.var(open_nums) if open_nums.size else 0
     
     return features
@@ -195,7 +199,7 @@ def analyze_board(
 
         mod_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-            if mod_name == "analyze_number_patterns" or mod_name == "compute_global_heatmap_from_files":
+            if mod_name in ["analyze_number_patterns", "compute_global_heatmap_from_files"]:
                 continue
             try:
                 result = mod_func(grid)
@@ -220,7 +224,6 @@ def analyze_board(
 
         patterns = solver.analyze_number_patterns(grid)
         if not isinstance(patterns, dict):
-            logger.error(f"Expected dict from analyze_number_patterns, got {type(patterns)}")
             patterns = {}
 
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns, global_heatmap_path)
