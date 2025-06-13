@@ -210,7 +210,10 @@ DEFAULT_WEIGHTS = {
 
 @lru_cache(maxsize=1000)
 def cache_board_analysis(
-    grid_tuple: Tuple[float, ...], shape: Tuple[int, int], target_num: int, model_path: str
+    grid_tuple: Tuple[float, ...],
+    shape: Tuple[int, int],
+    target_num: int,
+    model_path: str
 ) -> Tuple[List[Dict], List[str]]:
     """
     Cache board analysis results.
@@ -218,4 +221,14 @@ def cache_board_analysis(
     try:
         grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)
         if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
-            raise Value
+            raise ValueError(
+                f"Grid shape mismatch: expect {shape[0]}×{shape[1]}, "
+                f"got {grid.shape[0]}×{grid.shape[1]}"
+            )
+        # 👉 下面照原本邏輯做分析...
+        # results, messages = analyze_board(grid, target_num, model_path)
+        # return results, messages
+
+    except Exception as e:
+        logger.error(f"cache_board_analysis failed: {e}")
+        raise
