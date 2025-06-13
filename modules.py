@@ -62,8 +62,12 @@ class ScratchSolver:
         self.known_vals = grid[grid != -1]
         if self.known_yx.size > 0:
             self.tree = cKDTree(self.known_yx)
+            logger.debug(f"KDTree initialized with {self.known_yx.size} known points")
         else:
             self.tree = None
+            self.known_yx = None
+            self.known_vals = None
+            logger.info("KDTree not initialized: no known cells (all cells are -1)")
 
     def extract_multi_angle_features(self, grid: np.ndarray, output_path: str) -> Dict[str, Any]:
         """
@@ -137,6 +141,7 @@ class ScratchSolver:
         if empty_yx.size == 0:
             return np.array([])
         if self.tree is None or self.known_yx is None or self.known_vals is None:
+            logger.debug("Returning default scores due to uninitialized KDTree")
             return np.full(empty_yx.shape[0], 0.1)
         dists, idxs = self.tree.query(empty_yx, k=min(5, self.known_yx.shape[0]))
         weights = 1.0 / (dists ** 2 + 1e-8)
@@ -320,51 +325,36 @@ class ScratchSolver:
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
         pred = np.full((M, N), -1, dtype=np.int64)
-        
-        try:
-            d1 = np.diff(grid, axis=1)
-            d2 = np.diff(grid, axis=0)
-            d1_pos = d1[d1 > 0].astype(np.int64)
-            d2_pos = d2[d2 > 0].astype(np.int64)
-            
-            max_diff = max(
-                d1_pos.max() if d1_pos.size > 0 else 0,
-                d2_pos.max() if d2_pos.size > 0 else 0,
-                1
-            )
-            minlength = max_diff + 1
-            
-            diff_freq = np.zeros(minlength, dtype=np.int64)
-            
-            if d1_pos.size > 0:
-                diff_freq[:np.bincount(d1_pos).size] += np.bincount(d1_pos)
-            if d2_pos.size > 0:
-                diff_freq[:np.bincount(d2_pos).size] += np.bincount(d2_pos)
-            
-            for i in range(M):
-                for j in range(N):
-                    if grid[i, j] == -1:
-                        if j >= 1 and grid[i, j-1] != -1:
-                            expected = grid[i, j-1] + 1
-                            if 1 <= expected <= grid.size and len(diff_freq) > 1 and diff_freq[1] > 0:
-                                scores[i, j] = diff_freq[1] / (diff_freq.sum() + 1e-8)
-                                pred[i, j] = int(expected)
-                        if i >= 1 and grid[i-1, j] != -1:
-                            expected = grid[i-1, j] + 1
-                            if 1 <= expected <= grid.size and len(diff_freq) > 1 and diff_freq[1] > 0:
-                                scores[i, j] = max(scores[i, j], diff_freq[1] / (diff_freq.sum() + 1e-8))
-                                pred[i, j] = int(expected)
-            
-            scores[grid != -1] = 0
-            mn, mx = scores.min(), scores.max()
-            if mx > mn:
-                scores = (scores - mn) / (mx - mn + 1e-8)
-            scores = np.where(scores < 0.1, 0.1, scores)
-            
-        except Exception as e:
-            logger.error(f"compute_difference_trend failed: {str(e)}")
-            return np.full(np.count_nonzero(grid == -1), 0.1), np.full(np.count_nonzero(grid == -1), -1, dtype=np.int64)
-        
+        d1 = np.diff(grid, axis=1)
+        d2 = np.diff(grid, axis=0)
+        d1_pos = d1[d1 > 0]
+        d2_pos = d2[d2 > 0]
+        d1_pos_int = np.round(d1_pos).astype(np.int64)
+        d2_pos_int = np.round(d2_pos).astype(np.int64)
+        max_val = int(np.max(grid[grid != -1])) if np.any(grid != -1) else grid.size
+        minlength = max_val + 1
+        diff_freq = np.zeros(minlength, dtype=np.int64)
+        if d1_pos_int.size > 0:
+            diff_freq += np.bincount(d1_pos_int, minlength=minlength)
+        if d2_pos_int.size > 0:
+            diff_freq += np.bincount(d2_pos_int, minlength=minlength)
+        for i in range(M):
+            for j in range(N):
+                if grid[i, j] == -1:
+                    if j >= 1 and grid[i, j-1] != -1:
+                        expected = grid[i, j-1] + 1
+                        if 1 <= expected <= grid.size and diff_freq[1] > 0:
+                            scores[i, j] = diff_freq[1] / (diff_freq.sum() + 1e-8)
+                            pred[i, j] = int(expected)
+                    if i >= 1 and grid[i-1, j] != -1:
+                        expected = grid[i-1, j] + 1
+                        if 1 <= expected <= grid.size and diff_freq[1] > 0:
+                            scores[i, j] = max(scores[i, j], diff_freq[1] / (diff_freq.sum() + 1e-8))
+                            pred[i, j] = int(expected)
+        scores[grid != -1] = 0
+        mn, mx = scores.min(), scores.max()
+        scores = (scores - mn) / (mx - mn + 1e-8) if mx > mn else scores
+        scores = np.where(scores < 0.1, 0.1, scores)
         return scores[grid == -1], pred[grid == -1]
 
     def detect_mirror_sequences(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -576,7 +566,6 @@ class ScratchSolver:
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
-        M, N = grid.shape
         predictions = np.full_like(grid, -1, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
         
@@ -624,19 +613,11 @@ class ScratchSolver:
             metrics['accuracy'] = correct.mean() if correct.size > 0 else 0.0
             metrics['value_diff'] = np.abs(prediction[mask] - true_values[mask]).mean() if correct.size > 0 else 0.0
         
-        try:
-            pred_patterns = self.analyze_number_patterns(prediction)
-            true_patterns = self.analyze_number_patterns(true_values)
-            if not (isinstance(pred_patterns, dict) and isinstance(true_patterns, dict)):
-                logger.warning("Invalid pattern types in evaluate_prediction, skipping pattern match")
-                metrics['pattern_match'] = 0.0
-            else:
-                metrics['pattern_match'] = len(
-                    set(pred_patterns.keys()) & set(true_patterns.keys())
-                ) / max(len(pred_patterns), len(true_patterns), 1)
-        except Exception as e:
-            logger.warning(f"Pattern evaluation failed: {str(e)}")
-            metrics['pattern_match'] = 0.0
+        pred_patterns = self.analyze_number_patterns(prediction)
+        true_patterns = self.analyze_number_patterns(true_values)
+        metrics['pattern_match'] = len(
+            set(pred_patterns.keys()) & set(true_patterns.keys())
+        ) / max(len(pred_patterns), len(true_patterns), 1)
         
         return metrics
 
