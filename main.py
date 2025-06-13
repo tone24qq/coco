@@ -9,6 +9,7 @@ from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
 from modules import ScratchSolver
 from joblib import Parallel, delayed
+import zipfile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="Number of parallel jobs")
     parser.add_argument("--global-heatmap", action="store_true", help="Generate global heatmap from all files")
+    parser.add_argument("--batch-size", type=int, default=5000, help="Batch size for processing")
     return parser.parse_args()
 
 def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = None) -> np.ndarray:
@@ -85,6 +87,24 @@ def balance_samples(grids: List[np.ndarray], target_nums: List[int]) -> List[Tup
                     samples.append((grid.copy(), num))
     return samples
 
+async def process_batch_files(input_path: str, batch_size: int, batch_index: int):
+    file_paths = []
+    for filename in os.listdir(input_path):
+        file_path = os.path.join(input_path, filename)
+        if filename.endswith(('.json', '.zip')):
+            if filename.endswith('.zip'):
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    zip_ref.extractall(os.path.join(input_path, os.path.splitext(filename)[0]))
+                    for json_file in zip_ref.namelist():
+                        if json_file.endswith('.json'):
+                            extracted_path = os.path.join(input_path, os.path.splitext(filename)[0], json_file)
+                            file_paths.append(extracted_path)
+            else:
+                file_paths.append(file_path)
+    start_idx = batch_index * batch_size
+    end_idx = min((batch_index + 1) * batch_size, len(file_paths))
+    return file_paths[start_idx:end_idx], len(file_paths) > end_idx
+
 async def main() -> None:
     args = parse_args()
     
@@ -97,25 +117,21 @@ async def main() -> None:
     
     global_heatmap_path = os.path.join("samples/data", "global_heatmap.json") if args.global_heatmap else None
     
-    if args.global_heatmap:
-        logger.info("Starting global heatmap generation")
-        try:
+    batch_index = 0
+    while True:
+        if args.global_heatmap:
             solver = ScratchSolver()
-            file_paths = []
             input_path = args.input_folder or args.input_file
-            for filename in os.listdir(input_path):
-                file_path = os.path.join(input_path, filename)
-                if filename.endswith(('.json', '.zip')):
-                    file_paths.append(file_path)
-            solver.compute_global_heatmap_from_files(file_paths, batch_size=1000, output_path=global_heatmap_path)
-            logger.info(f"Global heatmap generated and saved to {global_heatmap_path}")
-        except Exception as e:
-            logger.error(f"Global heatmap generation failed: {e}")
-            raise
-    
-    elif args.train:
-        logger.info("Starting training mode")
-        try:
+            batch_files, has_next = await process_batch_files(input_path, args.batch_size, batch_index)
+            if not batch_files:
+                break
+            solver.compute_global_heatmap_from_files(batch_files, batch_size=args.batch_size, output_path=global_heatmap_path)
+            if not has_next:
+                break
+            input()
+            batch_index += 1
+        
+        elif args.train:
             grids: List[np.ndarray] = []
             if not os.path.isdir(args.input_folder):
                 raise NotADirectoryError(f"Input folder {args.input_folder} is not a directory")
@@ -124,7 +140,6 @@ async def main() -> None:
                     grids.extend(load_grid_from_file(os.path.join(args.input_folder, filename)))
             
             if len(grids) < 100:
-                logger.warning(f"Only {len(grids)} grids found, generating additional grids")
                 for i in range(100 - len(grids)):
                     grids.append(generate_random_grid(8, 10, 0.5, seed=i))
             
@@ -149,36 +164,27 @@ async def main() -> None:
             os.makedirs(os.path.dirname(args.model_dir), exist_ok=True)
             feature_log = os.path.join(args.output_dir, "features_log.json")
             train_extended_model(samples, os.path.join(args.model_dir, "model.pkl"), feature_log)
-            logger.info(f"Model trained and saved to {args.model_dir}")
-        except Exception as e:
-            logger.error(f"Training failed: {e}")
-            raise
-    
-    elif args.input_file:
-        output_prefix = os.path.join(args.output_dir, os.path.splitext(os.path.basename(args.input_file))[0])
-        base_name = os.path.splitext(os.path.basename(args.input_file))[0]
-        heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
+            break
         
-        try:
+        elif args.input_file:
+            output_prefix = os.path.join(args.output_dir, os.path.splitext(os.path.basename(args.input_file))[0])
+            base_name = os.path.splitext(os.path.basename(args.input_file))[0]
+            heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
+            
             await process_single_board(
                 args.input_file, weights, return_predictions, output_prefix,
                 target_nums[0] if target_nums else None, heatmap_path, global_heatmap_path
             )
-        except Exception as e:
-            logger.error(f"Processing {args.input_file} failed: {e}")
-            raise
-    
-    else:
-        output_folder = args.output_dir
-        os.makedirs(output_folder, exist_ok=True)
-        try:
+            break
+        
+        else:
+            output_folder = args.output_dir
+            os.makedirs(output_folder, exist_ok=True)
             await process_batch(
                 args.input_folder, weights, return_predictions, output_folder,
                 target_nums[0] if target_nums else None, args.json_heatmap, global_heatmap_path
             )
-        except Exception as e:
-            logger.error(f"Batch processing failed: {e}")
-            raise
+            break
 
 if __name__ == "__main__":
     import asyncio
