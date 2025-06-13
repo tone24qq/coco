@@ -10,20 +10,16 @@ from typing import Dict, List, Optional, Tuple, Any
 from fastapi import HTTPException
 from analyzer import analyze_board, predict_topk
 from joblib import Parallel, delayed
-import zipfile
-import shutil
-import tempfile
-import glob
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_grid_from_file(filepath: str) -> List[np.ndarray]:
     """
-    Loads scratch card grids from a file (JSON, CSV, Excel, or ZIP containing JSON) and validates them.
+    Loads scratch card grids from a file (JSON, CSV, Excel) and validates them.
 
     Args:
-        filepath (str): Path to the input file (or ZIP archive).
+        filepath (str): Path to the input file.
 
     Returns:
         List[np.ndarray]: List of valid grid arrays.
@@ -33,44 +29,15 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
     """
     grids: List[np.ndarray] = []
     ext = os.path.splitext(filepath)[1].lower()
-
+    
     try:
-        if ext == '.zip':
-            # Create a temporary directory for extraction
-            temp_dir = tempfile.mkdtemp()
-            try:
-                with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                    zip_ref.extractall(temp_dir)
-                    logger.info(f"Extracted ZIP file {filepath} to {temp_dir}")
-                    # Find all JSON files in the extracted directory
-                    json_files = glob.glob(os.path.join(temp_dir, '**', '*.json'), recursive=True)
-                    for json_path in json_files:
-                        logger.info(f"Processing JSON file {json_path} from ZIP")
-                        with open(json_path, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                        if isinstance(data, list):
-                            if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
-                                for grid_data in data:
-                                    grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))
-                                    grids.append(grid)
-                            else:
-                                grid = np.atleast_2d(np.array(data, dtype=np.int64))
-                                grids.append(grid)
-                        else:
-                            logger.error(f"JSON file {json_path} has invalid format")
-                            raise ValueError(f"Invalid JSON format in {json_path}")
-            finally:
-                # Clean up temporary directory
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                logger.info(f"Cleaned up temporary directory {temp_dir}")
-
-        elif ext == '.json':
+        if ext == '.json':
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             if isinstance(data, list):
                 if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
                     for grid_data in data:
-                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))
+                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))  # 使用 int64
                         grids.append(grid)
                 else:
                     grid = np.atleast_2d(np.array(data, dtype=np.int64))
@@ -78,7 +45,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             else:
                 logger.error(f"JSON file {filepath} has invalid format")
                 raise ValueError("Invalid JSON format")
-
+        
         elif ext in ['.csv', '.xls', '.xlsx']:
             if ext == '.csv':
                 df = pd.read_csv(filepath, header=None)
@@ -90,7 +57,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                     df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
                     grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                     grids.append(grid)
-
+        
         cleaned_grids: List[np.ndarray] = []
         for grid in grids:
             grid = np.where(np.isnan(grid) | (grid < 0), -1, grid)
@@ -105,14 +72,14 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                 logger.warning(f"Grid {grid.shape} contains non-unique or out-of-range numbers, skipping")
                 continue
             cleaned_grids.append(grid)
-
+        
         if not cleaned_grids:
             logger.error(f"File {filepath} contains no valid grids")
             raise ValueError("No valid grid data")
-
+        
         return cleaned_grids
-
-    except (OSError, json.JSONDecodeError, pd.errors.ParserError, zipfile.BadZipFile) as e:
+    
+    except (OSError, json.JSONDecodeError, pd.errors.ParserError) as e:
         logger.error(f"Failed to load file {filepath}: {e}")
         raise HTTPException(status_code=400, detail=f"Unable to load grid: {str(e)}")
 
