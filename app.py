@@ -1,3 +1,4 @@
+# app.py
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Form
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -8,7 +9,6 @@ import os
 import logging
 import asyncio
 import glob
-import zipfile
 from typing import Dict, List, Optional, Tuple, Any
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
@@ -122,8 +122,8 @@ class AnalysisResponse(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 DEFAULT_WEIGHTS = {
-    "compute_dynamic_hot_cold_vectorized": 0.15,  # 修正鍵名
-    "compute_dynamic_hot_cold_advanced": 0.2,    # 修正鍵名
+    "compute_dynamic_hot_cold_vectorized": 0.15,
+    "compute_dynamic_hot_cold_advanced": 0.2,
     "compute_block_heatmap_vectorized": 0.1,
     "idw_vectorized": 0.1,
     "compute_global_diff_heatmap": 0.05,
@@ -261,7 +261,7 @@ async def upload_file(
 ) -> JSONResponse:
     logger.info(f"Received upload request for file: {file.filename}")
     try:
-        if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx', '.zip')):
+        if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
             error_msg = f"Unsupported file format: {file.filename}"
             logger.error(error_msg)
             raise HTTPException(status_code=400, detail=error_msg)
@@ -274,37 +274,17 @@ async def upload_file(
             f.write(content)
         logger.info(f"Successfully saved uploaded file to {input_path}")
         
-        file_paths = []
-        if file.filename.endswith('.zip'):
-            logger.info(f"Processing ZIP file: {input_path}")
-            try:
-                with zipfile.ZipFile(input_path, 'r') as zip_ref:
-                    zip_ref.extractall(os.path.dirname(input_path))
-                    for zip_info in zip_ref.infolist():
-                        if zip_info.filename.endswith('.json'):
-                            json_path = os.path.join(os.path.dirname(input_path), zip_info.filename)
-                            file_paths.append(json_path)
-                            logger.info(f"Extracted JSON from ZIP: {json_path}")
-                if not file_paths:
-                    raise HTTPException(status_code=400, detail="No JSON files found in ZIP")
-            except zipfile.BadZipFile as e:
-                logger.error(f"Invalid ZIP file {input_path}: {e}")
-                raise HTTPException(status_code=400, detail=f"Invalid ZIP file: {str(e)}")
-        else:
-            file_paths.append(input_path)
-        
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
         json_heatmap = os.path.join("samples", "data", "json")
         
-        for file_path in file_paths:
-            background_tasks.add_task(
-                process_single_board, file_path, weights, True, output_prefix, None, json_heatmap
-            )
-            logger.info(f"Scheduled background processing for {file_path}")
+        background_tasks.add_task(
+            process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
+        )
+        logger.info(f"Scheduled background processing for {input_path}")
         
         return JSONResponse(
-            content={"message": f"File {file.filename} uploaded, processing started for {len(file_paths)} files", "output_path": output_prefix},
+            content={"message": f"File {file.filename} uploaded, processing started", "output_path": output_prefix},
             status_code=200
         )
     
