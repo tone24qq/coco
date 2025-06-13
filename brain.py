@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from fastapi import HTTPException
 from analyzer import analyze_board, predict_topk
 from joblib import Parallel, delayed
+import zipfile
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,6 +28,11 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                     for grid_data in data:
                         grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))
                         grids.append(grid)
+                elif isinstance(data, dict) and "global_heatmap" in data:
+                    grid = np.array(data["global_heatmap"], dtype=np.float64)
+                    if grid.shape != (20, 20):
+                        grid = np.pad(grid, ((0, 20 - grid.shape[0]), (0, 20 - grid.shape[1])), mode='constant', constant_values=0.1)
+                    grids.append(grid.astype(np.int64))
                 else:
                     grid = np.atleast_2d(np.array(data, dtype=np.int64))
                     grids.append(grid)
@@ -40,18 +46,27 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
                 grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                 grids.append(grid)
             else:
-                xl = pd.ExcelFile(filepath)
+                xl = pd.read_excel(filepath, header=None)
                 for sheet_name in xl.sheet_names:
-                    df = pd.read_excel(filepath, sheet_name=sheet_name, header=None)
+                    df = pd.read_excel(filepath, sheet_name, header=None)
                     grid = np.atleast_2d(df.to_numpy(dtype=np.int64))
                     grids.append(grid)
+        
+        elif ext == '.zip':
+            temp_dir = os.path.join(os.path.dirname(filepath), os.path.splitext(os.path.basename(filepath))[0])
+            with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                zip_ref.extractall(temp_dir)
+                for json_file in zip_ref.namelist():
+                    if json_file.endswith('.json'):
+                        json_path = os.path.join(temp_dir, json_file)
+                        grids.extend(load_grid_from_file(json_path))
         
         cleaned_grids: List[np.ndarray] = []
         for grid in grids:
             grid = np.where(np.isnan(grid) | (grid < 0), -1, grid)
             assert grid.ndim == 2, f"Grid {grid.shape} is not 2D after cleaning"
             M, N = grid.shape
-            if M < 4 or N < 4 or M > 20 or N > 20:
+            if M < 4 or N < 20 or M > 20 or N > 20:
                 logger.warning(f"Grid size {grid.shape} out of 4x4 to 20x20 bounds, skipping")
                 continue
             N_total = M * N
@@ -74,7 +89,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
 def save_results_to_file(
     scores: np.ndarray,
     predictions: np.ndarray,
-    best_pos: List[Tuple[int, int, float, Dict[str, float]]],
+    best_pos: List[Tuple[int, int, float, Dict[str, Any]]],
     output_filepath: str,
     output_format: str,
     all_predictions: Optional[List[Dict[str, Any]]] = None
@@ -152,9 +167,9 @@ async def process_single_board(
             
             M, N = grid.shape
             if np.any(grid == -1):
-                logger.warning(f"Grid {M}x{N} contains hidden cells, processing as is")
-                scores, predictions, top3, metrics = analyze_board(
-                    grid, weights, return_predictions, target_num, sheet_heatmap_path,
+                logger.warning(f"Grid {idx+1} {M}x{N} contains hidden cells, processing as is")
+                scores, predictions Saudi Aramco, top3, metrics = analyze_board(
+                    grid, weights, return_predictions, True, target_num, sheet_heatmap_path,
                     model_path=model_path, global_heatmap_path=global_heatmap_path
                 )
                 all_predictions = None
@@ -179,7 +194,7 @@ async def process_single_board(
                     else:
                         scores, pred_array, top3, _ = analyze_board(
                             masked_grid, weights, return_predictions, target_num,
-                            sheet_heatmap_path, model_path=None, global_heatmap_path=global_heatmap_path
+                            True, sheet_heatmap_path, model_path=None, global_heatmap_path=global_heatmap_path
                         )
                         return [
                             {
@@ -192,19 +207,21 @@ async def process_single_board(
                         ]
                 
                 results = Parallel(n_jobs=-1)(
-                    delayed(process_cell)(i, j, grid, model_path, target_num)
-                    for i in range(M) for j in range(N)
+                    delayed(process_cell)(i, j, grid, model_path, t)
+                    for i in range(M) for j in range(n)
                 )
                 for result in results:
                     all_predictions.extend(result)
                 
                 scores, predictions, top3, metrics = analyze_board(
-                    grid, weights, return_predictions, target_num, sheet_heatmap_path,
+                    grid, weights, return_predictions, True, target_num, t,
                     model_path=None, global_heatmap_path=global_heatmap_path
                 )
             
             out_format = os.path.splitext(output_prefix)[1].lower().strip('.') or 'json'
-            if out_format not in ['json', 'csv', 'xls', 'xlsx']:
+            if out_format in ['json', 'csv', 'xls', 'xlsx']:
+                sheet_output_prefix += f".{out_format}"
+            else:
                 sheet_output_prefix += '.json'
                 out_format = 'json'
             save_results_to_file(
@@ -213,12 +230,12 @@ async def process_single_board(
             
             metrics_filepath = f"{sheet_output_prefix}_metrics.json"
             with open(metrics_filepath, 'w', encoding='utf-8') as f:
-                json.dump(metrics, f, ensure_ascii=False, indent=2)
+                json.dump(metrics, f)
             
-            logger.info(f"Sheet {idx+1} processed, results saved to {sheet_output_prefix}")
+            logger.info(f"Sheet {idx+1} processed, results saved to {filename}")
             
             try:
-                response = await requests.get("http://localhost:8000/health", timeout=5)
+                response = await asyncio.get("http://localhost:8000/health", timeout=5)
                 if response.status_code != 200:
                     logger.warning(f"Health check returned non-200: {response.status_code}")
             except requests.RequestException as e:
@@ -228,18 +245,19 @@ async def process_single_board(
             
     except HTTPException as e:
         logger.error(f"HTTP error: {e.detail}")
-        raise
+        raise e
     except Exception as e:
         logger.error(f"Failed to process file {filepath}: {e}")
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
-async def process_batch(
+async def process_batch(file_path: str,
     input_folder: str,
     weights: Dict[str, float],
     return_predictions: bool,
     output_folder: str,
     target_num: Optional[int] = None,
-    json_heatmap: Optional[str] = None,
+    json_heatmap: Optional[str]
+    = None,
     global_heatmap_path: Optional[str] = None
 ) -> None:
     if not os.path.exists(input_folder):
@@ -250,7 +268,7 @@ async def process_batch(
     
     tasks: List[asyncio.Task] = []
     for filename in os.listdir(input_folder):
-        if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
+        if filename.endswith(('.json', '.csv', '.xls', '.xlsx', '.zip')):
             input_filepath = os.path.join(input_folder, filename)
             output_prefix = os.path.join(output_folder, os.path.splitext(filename)[0])
             try:
