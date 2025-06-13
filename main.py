@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
 from joblib import Parallel, delayed
+import zipfile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -111,6 +112,45 @@ def balance_samples(grids: List[np.ndarray], target_nums: List[int]) -> List[Tup
                     samples.append((grid.copy(), num))
     return samples
 
+async def load_heatmaps_from_directory(json_heatmap_dir: str) -> Dict[str, Dict]:
+    """
+    Load all JSON and ZIP files containing heatmaps from the specified directory.
+    
+    Parameters:
+        json_heatmap_dir (str): Directory containing JSON and ZIP heatmap files.
+    
+    Returns:
+        Dict[str, Dict]: Dictionary of heatmap data with filenames as keys.
+    """
+    heatmaps = {}
+    if not os.path.exists(json_heatmap_dir):
+        os.makedirs(json_heatmap_dir, exist_ok=True)
+        logger.warning(f"Directory {json_heatmap_dir} created as it did not exist")
+        return heatmaps
+    
+    for filename in os.listdir(json_heatmap_dir):
+        filepath = os.path.join(json_heatmap_dir, filename)
+        if filename.endswith('.json'):
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    heatmaps[filename] = json.load(f)
+                logger.info(f"Loaded heatmap from {filename}")
+            except (OSError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load JSON heatmap from {filepath}: {e}")
+        elif filename.endswith('.zip'):
+            try:
+                with zipfile.ZipFile(filepath, 'r') as zip_ref:
+                    for zip_info in zip_ref.infolist():
+                        if zip_info.filename.endswith('.json'):
+                            with zip_ref.open(zip_info.filename) as json_file:
+                                heatmaps[f"{filename}_{zip_info.filename}"] = json.load(json_file)
+                    logger.info(f"Loaded heatmaps from ZIP {filename}")
+            except (zipfile.BadZipFile, json.JSONDecodeError, OSError) as e:
+                logger.error(f"Failed to load ZIP heatmap from {filepath}: {e}")
+    
+    logger.info(f"Total heatmaps loaded: {len(heatmaps)}")
+    return heatmaps
+
 async def main() -> None:
     """
     Execute scratch card analysis or model training.
@@ -120,6 +160,9 @@ async def main() -> None:
     weights: Dict[str, float] = json.loads(args.weights) if args.weights else DEFAULT_WEIGHTS
     return_predictions: bool = args.mode == "predict"
     target_nums: Optional[List[int]] = [int(x) for x in args.target_num.split(",")] if args.target_num else None
+    
+    # Load heatmaps at startup
+    heatmaps = await load_heatmaps_from_directory(args.json_heatmap)
     
     os.makedirs(args.json_heatmap, exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
