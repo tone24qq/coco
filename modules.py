@@ -2,7 +2,17 @@ import os
 import json
 import numpy as np
 from typing import List, Dict, Any
-from brain import load_grid_from_file
+def compute_global_heatmap_from_files(files: List[str], batch_size: int = 1000):
+    from brain import load_grid_from_file  # ✅ 移到函式內部延遲匯入
+
+    heatmap = initialize_heatmap()
+    for i in range(0, len(files), batch_size):
+        batch = files[i:i+batch_size]
+        for path in batch:
+            grid = load_grid_from_file(path)
+            update_heatmap(heatmap, grid)
+        del batch, grid
+    return heatmap
 
 class ScratchSolver:
     MODULE_REGISTRY: Dict[str, Any] = {}
