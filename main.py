@@ -1,4 +1,3 @@
-# main.py
 import argparse
 import json
 import os
@@ -7,6 +6,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
+from modules import ScratchSolver
 from joblib import Parallel, delayed
 
 logging.basicConfig(
@@ -32,12 +32,6 @@ DEFAULT_WEIGHTS = {
 }
 
 def parse_args() -> argparse.Namespace:
-    """
-    Parse command-line arguments for the scratch card analysis tool.
-    
-    Returns:
-        argparse.Namespace: Parsed arguments.
-    """
     parser = argparse.ArgumentParser(description="Scratch Card Analysis Tool")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--input-file", type=str, help="Single input file (JSON/CSV/Excel)")
@@ -59,42 +53,21 @@ def parse_args() -> argparse.Namespace:
         "--model-dir", default="stats/models", type=str, help="Model output folder"
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="Number of parallel jobs")
+    parser.add_argument("--global-heatmap", action="store_true", help="Generate global heatmap from all files")
     return parser.parse_args()
 
 def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = None) -> np.ndarray:
-    """
-    Generate a grid with random numbers and missing values.
-    
-    Parameters:
-        m (int): Number of rows.
-        n (int): Number of columns.
-        open_ratio (float): Fraction of cells to reveal.
-        seed (int): Random seed for reproducibility.
-        
-    Returns:
-        np.ndarray: Grid with random numbers and -1 for hidden cells.
-    """
     if seed is not None:
         np.random.seed(seed)
     total = m * n
     nums = np.random.permutation(np.arange(1, total + 1))
-    grid = np.full((m, n), -1, dtype=np.int64)  # 使用 int64
+    grid = np.full((m, n), -1, dtype=np.int64)
     open_cells = int(total * open_ratio)
     idx = np.random.choice(total, open_cells, replace=False)
     grid[np.unravel_index(idx, (m, n))] = nums[:open_cells]
     return grid
 
 def balance_samples(grids: List[np.ndarray], target_nums: List[int]) -> List[Tuple[np.ndarray, int]]:
-    """
-    Balance samples by oversampling underrepresented numbers.
-    
-    Parameters:
-        grids (List[np.ndarray]): List of input grids.
-        target_nums (List[int]): Target numbers to balance.
-        
-    Returns:
-        List[Tuple[np.ndarray, int]]: Balanced samples.
-    """
     freq = {num: 0 for num in target_nums}
     for grid in grids:
         for num in grid[grid != -1].flatten():
@@ -112,9 +85,6 @@ def balance_samples(grids: List[np.ndarray], target_nums: List[int]) -> List[Tup
     return samples
 
 async def main() -> None:
-    """
-    Execute scratch card analysis or model training.
-    """
     args = parse_args()
     
     weights: Dict[str, float] = json.loads(args.weights) if args.weights else DEFAULT_WEIGHTS
@@ -124,7 +94,25 @@ async def main() -> None:
     os.makedirs(args.json_heatmap, exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
     
-    if args.train:
+    global_heatmap_path = os.path.join("samples/data", "global_heatmap.json") if args.global_heatmap else None
+    
+    if args.global_heatmap:
+        logger.info("Starting global heatmap generation")
+        try:
+            solver = ScratchSolver()
+            file_paths = []
+            input_path = args.input_folder or args.input_file
+            for filename in os.listdir(input_path):
+                file_path = os.path.join(input_path, filename)
+                if filename.endswith(('.json', '.zip')):
+                    file_paths.append(file_path)
+            solver.compute_global_heatmap_from_files(file_paths, batch_size=1000, output_path=global_heatmap_path)
+            logger.info(f"Global heatmap generated and saved to {global_heatmap_path}")
+        except Exception as e:
+            logger.error(f"Global heatmap generation failed: {e}")
+            raise
+    
+    elif args.train:
         logger.info("Starting training mode")
         try:
             grids: List[np.ndarray] = []
@@ -173,7 +161,7 @@ async def main() -> None:
         try:
             await process_single_board(
                 args.input_file, weights, return_predictions, output_prefix,
-                target_nums[0] if target_nums else None, heatmap_path
+                target_nums[0] if target_nums else None, heatmap_path, global_heatmap_path
             )
         except Exception as e:
             logger.error(f"Processing {args.input_file} failed: {e}")
@@ -185,7 +173,7 @@ async def main() -> None:
         try:
             await process_batch(
                 args.input_folder, weights, return_predictions, output_folder,
-                target_nums[0] if target_nums else None, args.json_heatmap
+                target_nums[0] if target_nums else None, args.json_heatmap, global_heatmap_path
             )
         except Exception as e:
             logger.error(f"Batch processing failed: {e}")
@@ -194,9 +182,3 @@ async def main() -> None:
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-
-# 自檢報告：
-# - 語法檢查：通過
-# - 括號配對：無遺漏
-# - 標識符定義：無未定義/拼寫錯誤
-# - 測試環境：Python 3.11
