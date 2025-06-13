@@ -2,18 +2,13 @@
 import os
 import json
 import numpy as np
-import zipfile
-from scipy.spatial import cKDTree
-from scipy.signal import convolve2d
-from numpy.lib.stride_tricks import sliding_window_view
 from typing import List, Dict, Any, Tuple, Optional
-import pandas as pd
+from brain import load_grid_from_file
 from joblib import Parallel, delayed
-import sqlite3
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+from scipy.ndimage import convolve, sliding_window_view
+from scipy.spatial import cKDTree
+import pandas as pd
+from functools import lru_cache
 
 class ScratchSolver:
     MODULE_REGISTRY: Dict[str, Any] = {}
@@ -51,92 +46,6 @@ class ScratchSolver:
             "sequence_tail_analyzer": 0.05,
             "analyze_number_patterns": 0.05
         })
-
-    def compute_global_heatmap_from_files(self, files: List[str], batch_size: int = 1000, output_path: str = None) -> Dict[str, Any]:
-        data_dir = os.getenv('DATA_DIR', 'samples/data')
-        if output_path is None:
-            output_path = os.path.join(data_dir, "global_heatmap.json")
-        
-        db_path = os.path.join(data_dir, "temp_heatmap.db")
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute('''CREATE TABLE IF NOT EXISTS heatmap (row INTEGER, col INTEGER, score REAL, count INTEGER)''')
-        conn.commit()
-
-        total_cells = 0
-        expanded_files = []
-        for file_path in files:
-            if file_path.endswith('.zip'):
-                with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    for zip_info in zip_ref.infolist():
-                        if zip_info.filename.endswith('.json'):
-                            with zip_ref.open(zip_info) as json_file:
-                                json_data = json.load(json_file)
-                                temp_file = os.path.join(data_dir, f"temp_{os.path.basename(file_path)}_{zip_info.filename.replace('/', '_')}")
-                                os.makedirs(os.path.dirname(temp_file), exist_ok=True)
-                                with open(temp_file, 'w', encoding='utf-8') as f:
-                                    json.dump(json_data, f, ensure_ascii=False)
-                                expanded_files.append(temp_file)
-            elif file_path.endswith('.json'):
-                expanded_files.append(file_path)
-
-        def process_batch(batch_files):
-            batch_cells = 0
-            for file_path in batch_files:
-                try:
-                    from brain import load_grid_from_file
-                    grids = load_grid_from_file(file_path)
-                    for grid in grids:
-                        m, n = grid.shape
-                        padded_grid = np.pad(grid, ((0, 20 - m), (0, 20 - n)), mode='constant', constant_values=-1)
-                        scores = self.compute_dynamic_hot_cold_vectorized(padded_grid)
-                        empty_yx = np.argwhere(padded_grid == -1)
-                        if len(scores) == len(empty_yx):
-                            for (row, col), score in zip(empty_yx, scores):
-                                cursor.execute('''INSERT OR REPLACE INTO heatmap (row, col, score, count)
-                                                VALUES (?, ?, COALESCE((SELECT score FROM heatmap WHERE row=? AND col=?), 0) + ?,
-                                                        COALESCE((SELECT count FROM heatmap WHERE row=? AND col=?), 0) + 1)''',
-                                              (row, col, row, col, score, row, col))
-                            batch_cells += len(empty_yx)
-                    conn.commit()
-                except Exception as e:
-                    logger.warning(f"Failed to process {file_path}: {e}")
-                finally:
-                    if file_path.startswith(os.path.join(data_dir, 'temp_')):
-                        os.remove(file_path)
-            return batch_cells
-
-        for i in range(0, len(expanded_files), batch_size):
-            batch = expanded_files[i:i + batch_size]
-            total_cells += process_batch(batch)
-
-        global_heatmap = np.full((20, 20), 0.1, dtype=float)
-        cursor.execute('SELECT row, col, score, count FROM heatmap')
-        for row, col, score, count in cursor.fetchall():
-            global_heatmap[row, col] = score / count if count > 0 else 0.1
-
-        conn.close()
-        os.remove(db_path)
-
-        hot_spots = np.argwhere(global_heatmap > np.quantile(global_heatmap, 0.9))
-        cold_spots = np.argwhere(global_heatmap < np.quantile(global_heatmap, 0.1))
-
-        result = {
-            "global_heatmap": global_heatmap.tolist(),
-            "hot_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in hot_spots],
-            "cold_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in cold_spots],
-            "total_grids": len(files),
-            "total_cells_analyzed": total_cells
-        }
-
-        try:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-        except OSError as e:
-            logger.error(f"Failed to save heatmap to {output_path}: {e}")
-
-        return result
 
     def update_tree(self, grid: np.ndarray) -> None:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
@@ -208,6 +117,7 @@ class ScratchSolver:
 
         return features_dict
 
+    @lru_cache(maxsize=1000)
     def idw_vectorized(self, grid: np.ndarray) -> np.ndarray:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -222,7 +132,7 @@ class ScratchSolver:
         return np.where(est < 0.1, 0.1, est)
 
     def compute_dynamic_hot_cold_vectorized(
-        self, grid: np.ndarray, hot_q: float = 0.9, cold_q: float = 0.1, method: str = 'quantile'
+        self, grid: np.ndarray, hot_q: float = 0.95, cold_q: float = 0.05, method: str = 'quantile'
     ) -> np.ndarray:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -257,7 +167,7 @@ class ScratchSolver:
         return scores[grid == -1]
 
     def compute_dynamic_hot_cold_advanced(
-        self, grid: np.ndarray, hot_q: float = 0.9, cold_q: float = 0.1, method: str = 'quantile'
+        self, grid: np.ndarray, hot_q: float = 0.95, cold_q: float = 0.05, method: str = 'quantile'
     ) -> np.ndarray:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -316,7 +226,7 @@ class ScratchSolver:
         grid = grid.astype(np.int64)
         arr = np.where(grid == -1, 0, grid).astype(float)
         kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=float)
-        lap = convolve2d(arr, kernel, mode='same', boundary='symm')
+        lap = convolve(arr, kernel, mode='same')
         mn, mx = lap.min(), lap.max()
         norm = (lap - mn) / (mx - mn + 1e-8) if mx > mn else lap
         scores = norm[grid == -1]
@@ -329,8 +239,8 @@ class ScratchSolver:
         grid = grid.astype(np.int64)
         mask = (grid != -1).astype(np.int64)
         kernel = np.ones((3, 3)) / 9
-        summed = convolve2d(np.where(grid != -1, grid, 0), kernel, mode='same', boundary='symm')
-        count = convolve2d(mask, kernel, mode='same', boundary='symm')
+        summed = convolve(np.where(grid != -1, grid, 0), kernel, mode='same')
+        count = convolve(mask, kernel, mode='same')
         focus_map = summed / (count + 1e-8)
         scores = focus_map[grid == -1]
         scores = np.where(scores < 0.1, 0.1, scores)
@@ -452,8 +362,8 @@ class ScratchSolver:
         mask = (grid != -1).astype(np.uint8)
         kernel_4 = np.array([[0, 1, 0], [1, 0, 1], [0, 1, 0]])
         kernel_8 = np.ones((3, 3)) - np.eye(3)
-        conn_4 = convolve2d(mask, kernel_4, mode='same', boundary='symm')
-        conn_8 = convolve2d(mask, kernel_8, mode='same', boundary='symm')
+        conn_4 = convolve(mask, kernel_4, mode='same')
+        conn_8 = convolve(mask, kernel_8, mode='same')
         conn_map = (conn_4 + conn_8) / 2
         scores = conn_map[grid == -1]
         scores = np.where(scores < 0.1, 0.1, scores)
@@ -568,8 +478,8 @@ class ScratchSolver:
         pred = np.full_like(grid, -1, dtype=float)
         scores = np.zeros_like(grid, dtype=float)
         kernel = np.ones((3, 3)) / 8
-        neighbor_sum = convolve2d(np.where(grid != -1, grid, 0), kernel, mode='same', boundary='symm')
-        neighbor_count = convolve2d(grid != -1, kernel, mode='same', boundary='symm')
+        neighbor_sum = convolve(np.where(grid != -1, grid, 0), kernel, mode='same')
+        neighbor_count = convolve(grid != -1, kernel, mode='same')
         pred[grid == -1] = neighbor_sum[grid == -1] / (neighbor_count[grid == -1] + 1e-8)
         scores[grid == -1] = neighbor_count[grid == -1] / 8
         pred[grid == -1] = np.clip(pred[grid == -1], 1, grid.size)
@@ -723,8 +633,68 @@ class ScratchSolver:
             global_heatmap = np.array(data.get("global_heatmap", [[0.1] * 20] * 20), dtype=float)
             return global_heatmap
         except (OSError, json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to load heatmap from {heatmap_path}: {e}")
             return np.zeros((20, 20), dtype=float)
+
+    def compute_global_heatmap_from_files(self, files: List[str], batch_size: int = 5000, output_path: str = "samples/data/global_heatmap.json") -> Dict[str, Any]:
+        global_heatmap = np.zeros((20, 20), dtype=float)
+        total_cells = 0
+
+        def process_file(file_path):
+            try:
+                grids = load_grid_from_file(file_path)
+                local_heatmap = np.zeros((20, 20), dtype=float)
+                local_cells = 0
+                for grid in grids:
+                    m, n = grid.shape
+                    padded_grid = np.pad(grid, ((0, 20 - m), (0, 20 - n)), mode='constant', constant_values=-1)
+                    hot_cold_scores = self.compute_dynamic_hot_cold_vectorized(padded_grid, hot_q=0.95, cold_q=0.05)
+                    idw_scores = self.idw_vectorized(padded_grid)
+                    scores = 0.7 * hot_cold_scores + 0.3 * idw_scores
+                    empty_yx = np.argwhere(padded_grid == -1)
+                    if len(scores) == len(empty_yx):
+                        local_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores
+                        local_cells += len(empty_yx)
+                return local_heatmap, local_cells
+            except Exception:
+                return np.zeros((20, 20), dtype=float), 0
+
+        for i in range(0, len(files), batch_size):
+            batch = files[i:i + batch_size]
+            results = Parallel(n_jobs=-1)(delayed(process_file)(file_path) for file_path in batch)
+            batch_heatmap = np.zeros((20, 20), dtype=float)
+            batch_cells = 0
+            for local_heatmap, local_cells in results:
+                batch_heatmap += local_heatmap
+                batch_cells += local_cells
+            if batch_cells > 0:
+                global_heatmap += batch_heatmap
+                total_cells += batch_cells
+            del batch, batch_heatmap
+
+        if total_cells > 0:
+            global_heatmap = np.where(global_heatmap > 0, global_heatmap / total_cells, 0.1)
+        else:
+            global_heatmap = np.full((20, 20), 0.1)
+
+        hot_spots = np.argwhere(global_heatmap > np.quantile(global_heatmap, 0.95))
+        cold_spots = np.argwhere(global_heatmap < np.quantile(global_heatmap, 0.05))
+
+        result = {
+            "global_heatmap": global_heatmap.tolist(),
+            "hot_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in hot_spots],
+            "cold_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in cold_spots],
+            "total_grids": len(files),
+            "total_cells_analyzed": total_cells
+        }
+
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            pass
+
+        return result
 
 class AdaptiveWeights:
     def __init__(self, initial_weights: Dict[str, float]):
@@ -752,7 +722,6 @@ class AdaptiveWeights:
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except OSError as e:
-            logger.error(f"Failed to save history to {filepath}: {e}")
             raise
     
     def load_history(self, filepath: str) -> None:
@@ -761,5 +730,4 @@ class AdaptiveWeights:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     self.history = json.load(f)
             except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to load history from {filepath}: {e}")
                 raise
