@@ -5,81 +5,10 @@ import numpy as np
 import zipfile
 from scipy.spatial import cKDTree
 from scipy.signal import convolve2d
-from numpy.lib.stride_tricks import sliding_window_view  # ✅ sliding_window_view 在 numpy 裡面
+from numpy.lib.stride_tricks import sliding_window_view
 from typing import List, Dict, Any, Tuple, Optional
 import pandas as pd
 from joblib import Parallel, delayed
-
-def compute_global_heatmap_from_files(files: List[str], batch_size: int = 1000, output_path: str = "samples/data/global_heatmap.json") -> Dict[str, Any]:
-    global_heatmap = np.zeros((20, 20), dtype=float)
-    total_cells = 0
-
-    expanded_files = []
-    for file_path in files:
-        if file_path.endswith('.zip'):
-            with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                for zip_info in zip_ref.infolist():
-                    if zip_info.filename.endswith('.json'):
-                        with zip_ref.open(zip_info) as json_file:
-                            json_data = json.load(json_file)
-                            temp_file = f"temp_{os.path.basename(file_path)}_{zip_info.filename.replace('/', '_')}"
-                            with open(temp_file, 'w', encoding='utf-8') as f:
-                                json.dump(json_data, f, ensure_ascii=False)
-                            expanded_files.append(temp_file)
-        elif file_path.endswith('.json'):
-            expanded_files.append(file_path)
-
-    for i in range(0, len(expanded_files), batch_size):
-        batch = expanded_files[i:i + batch_size]
-        batch_heatmap = np.zeros((20, 20), dtype=float)
-        batch_cells = 0
-
-        for file_path in batch:
-            try:
-                from brain import load_grid_from_file
-                grids = load_grid_from_file(file_path)
-                for grid in grids:
-                    m, n = grid.shape
-                    padded_grid = np.pad(grid, ((0, 20 - m), (0, 20 - n)), mode='constant', constant_values=-1)
-                    scores = compute_dynamic_hot_cold_vectorized(padded_grid)
-                    empty_yx = np.argwhere(padded_grid == -1)
-                    if len(scores) == len(empty_yx):
-                        batch_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores
-                        batch_cells += len(empty_yx)
-            except Exception:
-                continue
-            finally:
-                if file_path.startswith('temp_'):
-                    os.remove(file_path)
-
-        if batch_cells > 0:
-            global_heatmap += batch_heatmap
-            total_cells += batch_cells
-
-    if total_cells > 0:
-        global_heatmap = np.where(global_heatmap > 0, global_heatmap / total_cells, 0.1)
-    else:
-        global_heatmap = np.full((20, 20), 0.1)
-
-    hot_spots = np.argwhere(global_heatmap > np.quantile(global_heatmap, 0.9))
-    cold_spots = np.argwhere(global_heatmap < np.quantile(global_heatmap, 0.1))
-
-    result = {
-        "global_heatmap": global_heatmap.tolist(),
-        "hot_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in hot_spots],
-        "cold_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in cold_spots],
-        "total_grids": len(files),
-        "total_cells_analyzed": total_cells
-    }
-
-    try:
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-    except OSError:
-        pass
-
-    return result
 
 class ScratchSolver:
     MODULE_REGISTRY: Dict[str, Any] = {}
@@ -117,6 +46,79 @@ class ScratchSolver:
             "sequence_tail_analyzer": 0.05,
             "analyze_number_patterns": 0.05
         })
+
+    def compute_global_heatmap_from_files(self, files: List[str], batch_size: int = 1000, output_path: str = "samples/data/global_heatmap.json") -> Dict[str, Any]:
+        global_heatmap = np.zeros((20, 20), dtype=float)
+        total_cells = 0
+
+        expanded_files = []
+        for file_path in files:
+            if file_path.endswith('.zip'):
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    for zip_info in zip_ref.infolist():
+                        if zip_info.filename.endswith('.json'):
+                            with zip_ref.open(zip_info) as json_file:
+                                json_data = json.load(json_file)
+                                temp_file = f"temp_{os.path.basename(file_path)}_{zip_info.filename.replace('/', '_')}"
+                                with open(temp_file, 'w', encoding='utf-8') as f:
+                                    json.dump(json_data, f, ensure_ascii=False)
+                                expanded_files.append(temp_file)
+            elif file_path.endswith('.json'):
+                expanded_files.append(file_path)
+
+        for i in range(0, len(expanded_files), batch_size):
+            batch = expanded_files[i:i + batch_size]
+            batch_heatmap = np.zeros((20, 20), dtype=float)
+            batch_cells = 0
+
+            for file_path in batch:
+                try:
+                    from brain import load_grid_from_file
+                    grids = load_grid_from_file(file_path)
+                    for grid in grids:
+                        m, n = grid.shape
+                        padded_grid = np.pad(grid, ((0, 20 - m), (0, 20 - n)), mode='constant', constant_values=-1)
+                        scores = self.compute_dynamic_hot_cold_vectorized(padded_grid)
+                        empty_yx = np.argwhere(padded_grid == -1)
+                        if len(scores) == len(empty_yx):
+                            batch_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores
+                            batch_cells += len(empty_yx)
+                except Exception:
+                    continue
+                finally:
+                    if file_path.startswith('temp_'):
+                        os.remove(file_path)
+
+            if batch_cells > 0:
+                global_heatmap += batch_heatmap
+                total_cells += batch_cells
+
+        if total_cells > 0:
+            global_heatmap = np.where(global_heatmap > 0, global_heatmap / total_cells, 0.1)
+        else:
+            global_heatmap = np.full((20, 20), 0.1)
+
+        hot_spots = np.argwhere(global_heatmap > np.quantile(global_heatmap, 0.9))
+        cold_spots = np.argwhere(global_heatmap < np.quantile(global_heatmap, 0.1))
+
+        result = {
+            "global_heatmap": global_heatmap.tolist(),
+            "hot_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in hot_spots],
+            "cold_spots": [{"row": int(r), "col": int(c), "score": float(global_heatmap[r, c])} for r, c in cold_spots],
+            "total_grids": len(files),
+            "total_cells_analyzed": total_cells
+        }
+
+        try:
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except OSError:
+            pass
+
+        return result
+
+    # ... (rest of the ScratchSolver methods remain unchanged)
 
     def update_tree(self, grid: np.ndarray) -> None:
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
