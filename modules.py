@@ -10,7 +10,11 @@ import os
 from typing import Dict, List, Tuple, Any, Optional
 from joblib import Parallel, delayed
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[logging.FileHandler("logs/modules.log"), logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
 
 class ScratchSolver:
@@ -39,7 +43,7 @@ class ScratchSolver:
         }
         self.adaptive_weights = AdaptiveWeights({
             "compute_dynamic_hot_cold_vectorized": 0.15,
-            "compute_dynamic_hot_cold_advanced": 0.2,
+            "compute_dynamic_hot_cold_advanced": 0.5,
             "compute_block_heatmap_vectorized": 0.1,
             "idw_vectorized": 0.1,
             "compute_global_diff_heatmap": 0.05,
@@ -55,6 +59,12 @@ class ScratchSolver:
     def update_tree(self, grid: np.ndarray) -> None:
         """
         Updates the KDTree with known cell coordinates and values.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -72,6 +82,17 @@ class ScratchSolver:
     def extract_multi_angle_features(self, grid: np.ndarray, output_path: str) -> Dict[str, Any]:
         """
         Extracts features from multiple angles for each number in the grid.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            output_path (str): Path to save features.
+
+        Returns:
+            Dict[str, Any]: Extracted features.
+
+        Raises:
+            AssertionError: If grid is not 2D.
+            OSError: If saving features fails.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -112,7 +133,7 @@ class ScratchSolver:
                     diffs.append(abs(grid[i, j] - grid[ni, nj]))
             return {f"{i},{j}": {"neighbors": neighbors, "diffs": diffs}}
 
-        results = Parallel(n_jobs=-1)(
+        results = Parallel(n_jobs=1)(
             delayed(process_cell)(i, j) for i in range(M) for j in range(N)
         )
         for result in results:
@@ -134,6 +155,15 @@ class ScratchSolver:
     def idw_vectorized(self, grid: np.ndarray) -> np.ndarray:
         """
         Computes inverse distance weighting scores for hidden cells.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            np.ndarray: Scores for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -153,6 +183,18 @@ class ScratchSolver:
     ) -> np.ndarray:
         """
         Computes hot/cold scores based on quantile or std thresholds.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            hot_q (float): Hot quantile threshold.
+            cold_q (float): Cold quantile threshold.
+            method (str): Method for threshold calculation ('quantile', 'std').
+
+        Returns:
+            np.ndarray: Hot/cold scores for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -191,6 +233,18 @@ class ScratchSolver:
     ) -> np.ndarray:
         """
         Advanced hot/cold scoring with position, difference, and connectivity weights.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            hot_q (float): Hot quantile threshold.
+            cold_q (float): Cold quantile threshold.
+            method (str): Method for threshold calculation ('adaptive', 'quantile').
+
+        Returns:
+            np.ndarray: Advanced hot/cold scores for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -198,11 +252,14 @@ class ScratchSolver:
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
         
+        # Position weights based on grid centrality
         position_weights = np.exp(-np.sum(np.indices(grid.shape), axis=0) / max(grid.shape))
         
+        # Difference weights based on local gradients
         diffs = np.abs(np.diff(known))
         diff_weight = np.mean(diffs) if diffs.size > 0 else 1.0
         
+        # Connectivity weights from neighboring cells
         conn_scores, _ = self.connectivity_heatmap(grid)
         
         if method == 'adaptive':
@@ -227,6 +284,7 @@ class ScratchSolver:
             )
         )
         
+        # Apply combined weights
         empty_yx = np.argwhere(grid == -1)
         for idx, (i, j) in enumerate(empty_yx):
             scores[idx] *= position_weights[i, j] * (1 + conn_scores[idx] * 0.5)
@@ -237,6 +295,16 @@ class ScratchSolver:
     def compute_block_heatmap_vectorized(self, grid: np.ndarray, block_size: int = 2) -> np.ndarray:
         """
         Computes block-based heatmap scores.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            block_size (int): Size of the block for analysis.
+
+        Returns:
+            np.ndarray: Block-based scores for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -256,6 +324,15 @@ class ScratchSolver:
     def compute_global_diff_heatmap(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Computes global difference heatmap using Laplacian kernel.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -272,6 +349,15 @@ class ScratchSolver:
     def compute_focus_score(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Computes focus scores based on neighboring cell values.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -287,6 +373,15 @@ class ScratchSolver:
     def detect_skip_patterns(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Detects arithmetic skip patterns in rows and columns.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -325,6 +420,15 @@ class ScratchSolver:
     def compute_difference_trend(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Computes difference trends based on grid gradients.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -366,6 +470,15 @@ class ScratchSolver:
     def detect_mirror_sequences(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Detects mirror symmetry patterns in the grid.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -405,6 +518,15 @@ class ScratchSolver:
     def connectivity_heatmap(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Computes connectivity heatmap based on neighboring cells.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -422,6 +544,15 @@ class ScratchSolver:
     def sequence_tail_analyzer(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Analyzes number tails for pattern prediction.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -451,7 +582,16 @@ class ScratchSolver:
 
     def analyze_number_patterns(self, grid: np.ndarray) -> Dict[Tuple[int, str], Dict[str, Any]]:
         """
-        Analyzes arithmetic patterns in rows and columns.
+        Analyzes arithmetic patterns in rows and columns with enhanced flexibility.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Dict[Tuple[int, str], Dict[str, Any]]: Detected patterns.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -464,6 +604,11 @@ class ScratchSolver:
             diffs = np.diff(arr)
             if np.all(np.abs(diffs - diffs[0]) < 1e-10):
                 return {'type': 'arithmetic', 'diff': diffs[0]}
+            # Enhanced: Check for non-uniform arithmetic patterns
+            for k in range(2, min(5, len(arr))):
+                sub_diffs = np.diff(arr[::k])
+                if len(sub_diffs) > 1 and np.all(np.abs(sub_diffs - sub_diffs[0]) < 1e-10):
+                    return {'type': 'skip_arithmetic', 'diff': sub_diffs[0], 'skip': k}
             return None
         
         def process_row(i):
@@ -482,8 +627,8 @@ class ScratchSolver:
                     return (j, 'v'), pattern
             return None
         
-        row_results = Parallel(n_jobs=-1)(delayed(process_row)(i) for i in range(M))
-        col_results = Parallel(n_jobs=-1)(delayed(process_col)(j) for j in range(N))
+        row_results = Parallel(n_jobs=1)(delayed(process_row)(i) for i in range(M))
+        col_results = Parallel(n_jobs=1)(delayed(process_col)(j) for j in range(N))
         
         for result in row_results + col_results:
             if result:
@@ -495,7 +640,17 @@ class ScratchSolver:
         self, grid: np.ndarray, patterns: Dict[Tuple[int, str], Dict[str, Any]]
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Predicts values based on detected patterns.
+        Predicts values based on detected patterns with enhanced flexibility.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            patterns (Dict[Tuple[int, str], Dict[str, Any]]): Detected patterns.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Predictions and scores for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -509,9 +664,10 @@ class ScratchSolver:
                     last_num = nums[-1]
                     diff = pattern['diff']
                     last_idx = np.where(grid[idx] != -1)[0][-1]
-                    for j in range(last_idx + 1, N):
+                    skip = pattern.get('skip', 1)
+                    for j in range(last_idx + skip, N, skip):
                         if grid[idx, j] == -1:
-                            predicted = last_num + diff * (j - last_idx)
+                            predicted = last_num + diff * ((j - last_idx) // skip)
                             if 1 <= predicted <= grid.size:
                                 pred[idx, j] = predicted
                                 scores[idx, j] = 1.0
@@ -521,9 +677,10 @@ class ScratchSolver:
                     last_num = nums[-1]
                     diff = pattern['diff']
                     last_idx = np.where(grid[:, idx] != -1)[0][-1]
-                    for i in range(last_idx + 1, M):
+                    skip = pattern.get('skip', 1)
+                    for i in range(last_idx + skip, M, skip):
                         if grid[i, idx] == -1:
-                            predicted = last_num + diff * (i - last_idx)
+                            predicted = last_num + diff * ((i - last_idx) // skip)
                             if 1 <= predicted <= grid.size:
                                 pred[i, idx] = predicted
                                 scores[i, idx] = 1.0
@@ -533,6 +690,15 @@ class ScratchSolver:
     def local_relationship_prediction(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Predicts values based on local neighbor relationships.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Predictions and scores for hidden cells.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -551,6 +717,16 @@ class ScratchSolver:
     def heatmap_based_prediction(self, grid: np.ndarray, scores: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
         Generates predictions based on heatmap scores.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            scores (np.ndarray): Heatmap scores.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Predictions and confidence scores.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -569,6 +745,17 @@ class ScratchSolver:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Integrates multiple prediction methods.
+
+        Parameters:
+            grid (np.ndarray): 2D grid array.
+            scores (np.ndarray): Heatmap scores.
+            patterns (Dict[Tuple[int, str], Dict[str, Any]]): Detected patterns.
+
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: Integrated predictions and confidence scores.
+
+        Raises:
+            AssertionError: If grid is not 2D.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -602,6 +789,17 @@ class ScratchSolver:
     ) -> Dict[str, float]:
         """
         Evaluates prediction accuracy and pattern matching.
+
+        Parameters:
+            grid (np.ndarray): Original grid.
+            prediction (np.ndarray): Predicted values.
+            true_values (np.ndarray): True values.
+
+        Returns:
+            Dict[str, float]: Evaluation metrics.
+
+        Raises:
+            AssertionError: If inputs are not 2D or shapes mismatch.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         assert prediction.ndim == 2, f"Expected 2D prediction, got {prediction.ndim}D array with shape {prediction.shape}"
@@ -630,6 +828,14 @@ class ScratchSolver:
     def classify_board_type(self, dynamic_scores: np.ndarray, hot_thresh: float = 0.5, cold_thresh: float = -0.5) -> str:
         """
         Classifies board as HOT, COLD, or UNIFORM based on scores.
+
+        Parameters:
+            dynamic_scores (np.ndarray): Dynamic scores array.
+            hot_thresh (float): Hot threshold.
+            cold_thresh (float): Cold threshold.
+
+        Returns:
+            str: Board type ('HOT', 'COLD', 'UNIFORM').
         """
         total = dynamic_scores.sum() / (np.count_nonzero(dynamic_scores != 0) + 1e-8)
         if total >= hot_thresh:
@@ -643,6 +849,14 @@ class ScratchSolver:
     ) -> np.ndarray:
         """
         Fuses scores from multiple modules using adaptive weights.
+
+        Parameters:
+            mod_scores (Dict[str, np.ndarray]): Module scores.
+            board_type (str): Type of board ('HOT', 'COLD', 'UNIFORM').
+            default_weights (Dict[str, float]): Default weights for modules.
+
+        Returns:
+            np.ndarray: Fused scores for hidden cells.
         """
         w = self.weights_for(board_type, default_weights)
         names = list(mod_scores.keys())
@@ -658,6 +872,13 @@ class ScratchSolver:
     def weights_for(self, board_type: str, default_weights: Dict[str, float]) -> Dict[str, float]:
         """
         Adjusts weights based on board type.
+
+        Parameters:
+            board_type (str): Type of board ('HOT', 'COLD', 'UNIFORM').
+            default_weights (Dict[str, float]): Default weights.
+
+        Returns:
+            Dict[str, float]: Adjusted weights.
         """
         w = default_weights.copy()
         if board_type == 'HOT':
@@ -675,6 +896,14 @@ class ScratchSolver:
     ) -> List[Tuple[int, int, float, Dict[str, float]]]:
         """
         Predicts top 3 positions for hidden numbers.
+
+        Parameters:
+            final_scores (np.ndarray): Final scores for hidden cells.
+            empty_positions (np.ndarray): Positions of hidden cells.
+            target_num (Optional[int]): Target number to predict.
+
+        Returns:
+            List[Tuple[int, int, float, Dict[str, float]]]: Top 3 predictions with details.
         """
         idxs = np.argsort(-final_scores)[:3]
         unique_idx = np.unique(idxs, return_index=True)[1]
@@ -704,6 +933,10 @@ class AdaptiveWeights:
     def update(self, success_rate: float, module_scores: Dict[str, np.ndarray]) -> None:
         """
         Updates weights based on success rate and module scores.
+
+        Parameters:
+            success_rate (float): Success rate of predictions.
+            module_scores (Dict[str, np.ndarray]): Module scores.
         """
         alpha = 0.1
         self.history.append({
@@ -722,6 +955,12 @@ class AdaptiveWeights:
     def save_history(self, filepath: str) -> None:
         """
         Saves weight history to a JSON file.
+
+        Parameters:
+            filepath (str): Path to save history.
+
+        Raises:
+            OSError: If saving fails.
         """
         try:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -734,6 +973,12 @@ class AdaptiveWeights:
     def load_history(self, filepath: str) -> None:
         """
         Loads weight history from a JSON file.
+
+        Parameters:
+            filepath (str): Path to load history from.
+
+        Raises:
+            OSError, json.JSONDecodeError: If loading fails.
         """
         if os.path.exists(filepath):
             try:
