@@ -10,8 +10,13 @@ from typing import Dict, List, Optional, Tuple, Any
 from fastapi import HTTPException
 from analyzer import analyze_board, predict_topk
 from joblib import Parallel, delayed
+import numpy.lib.stride_tricks as stride_tricks
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[logging.FileHandler("logs/brain.log"), logging.StreamHandler()]
+)
 logger = logging.getLogger(__name__)
 
 def load_grid_from_file(filepath: str) -> List[np.ndarray]:
@@ -93,6 +98,17 @@ def save_results_to_file(
 ) -> None:
     """
     Saves analysis results to a file, including per-cell predictions if provided.
+
+    Args:
+        scores (np.ndarray): Scores for hidden cells.
+        predictions (np.ndarray): Predicted values for all cells.
+        best_pos (List[Tuple[int, int, float, Dict[str, float]]]): Top predictions.
+        output_filepath (str): Path to save results.
+        output_format (str): Format of output file (json, csv, xls, xlsx).
+        all_predictions (Optional[List[Dict[str, Any]]]): All predictions, if available.
+
+    Raises:
+        HTTPException: If saving fails.
     """
     assert scores.ndim == 1 or scores.shape == predictions.shape, f"Scores shape {scores.shape} must match predictions shape {predictions.shape}"
     assert predictions.ndim == 2, f"Expected 2D predictions, got {predictions.ndim}D array {predictions.shape}"
@@ -158,6 +174,18 @@ async def process_single_board(
 ) -> None:
     """
     Processes a single board file, auto-masking each cell for prediction and saving results.
+
+    Args:
+        filepath (str): Path to input file.
+        weights (Dict[str, float]): Module weights for scoring.
+        return_predictions (bool): Whether to return predictions.
+        output_prefix (str): Prefix for output files.
+        target_num (Optional[int]): Target number to predict.
+        json_heatmap (Optional[str]): Path to save heatmap.
+        model_path (str): Path to trained model.
+
+    Raises:
+        HTTPException: If processing fails.
     """
     try:
         grids = load_grid_from_file(filepath)
@@ -169,8 +197,8 @@ async def process_single_board(
             
             M, N = grid.shape
             if np.any(grid == -1):
-                logger.warning(f"Grid {M}x{N} contains hidden cells, processing as is")
-                scores, predictions, top3, metrics, reasoning = analyze_board(
+                logger.info(f"Grid {M}x{N} contains hidden cells, processing as is")
+                scores, predictions, top3, metrics = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
                     model_path=model_path
                 )
@@ -194,7 +222,7 @@ async def process_single_board(
                             } for p in topk if p[1] < grid.shape[1]
                         ]
                     else:
-                        scores, pred_array, top3, metrics, reasoning = analyze_board(
+                        scores, pred_array, top3, _ = analyze_board(
                             masked_grid, weights, return_predictions, target_num,
                             sheet_heatmap_path, model_path=None
                         )
@@ -208,14 +236,14 @@ async def process_single_board(
                             } for t in top3 if t[1] < grid.shape[1]
                         ]
                 
-                results = Parallel(n_jobs=-1)(
+                results = Parallel(n_jobs=1)(
                     delayed(process_cell)(i, j, grid, model_path, target_num)
                     for i in range(M) for j in range(N)
                 )
                 for result in results:
                     all_predictions.extend(result)
                 
-                scores, predictions, top3, metrics, reasoning = analyze_board(
+                scores, predictions, top3, metrics = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
                     model_path=None
                 )
@@ -260,6 +288,17 @@ async def process_batch(
 ) -> None:
     """
     Processes multiple board files in a folder.
+
+    Args:
+        input_folder (str): Path to input folder.
+        weights (Dict[str, float]): Module weights for scoring.
+        return_predictions (bool): Whether to return predictions.
+        output_folder (str): Path to save results.
+        target_num (Optional[int]): Target number to predict.
+        json_heatmap (Optional[str]): Path to save heatmaps.
+
+    Raises:
+        HTTPException: If processing fails.
     """
     if not os.path.exists(input_folder):
         logger.error(f"Input folder {input_folder} does not exist")
