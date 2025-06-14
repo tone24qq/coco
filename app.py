@@ -22,10 +22,10 @@ from joblib import Parallel, delayed
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
 
-# Configure logging with DEBUG level for detailed diagnostics
+# Configure logging with DEBUG level for diagnostics
 logger = logging.getLogger("app")
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.FileHandler("logs/api.log"),
@@ -46,21 +46,24 @@ DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 logger.info(f"資料目錄：{DATA_DIR}")
 
+# Maximum heatmaps to load to prevent resource exhaustion
+MAX_HEATMAPS = 10000  # Configurable limit
+
 # Detect sample files (ZIP + JSON + JSONs in ZIPs)
 def count_json_in_zip(zip_path: str) -> int:
     """
-    Count JSON files within a ZIP archive, including nested directories.
+    Count JSON files within a ZIP archive that are likely heatmaps.
 
     Args:
         zip_path (str): Path to the ZIP file.
 
     Returns:
-        int: Number of JSON files found.
+        int: Number of heatmap JSON files found.
     """
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json'))
-        logger.debug(f"ZIP 檔案 {zip_path} 包含 {json_count} 個 JSON 檔案")
+            json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json') and 'heatmap' in name.lower())
+        logger.debug(f"ZIP 檔案 {zip_path} 包含 {json_count} 個熱力圖 JSON 檔案")
         return json_count
     except (zipfile.BadZipFile, OSError) as e:
         logger.error(f"無法計數 ZIP 檔案 {zip_path} 中的 JSON：{str(e)}")
@@ -70,24 +73,24 @@ zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
 json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
 json_in_zips = sum(count_json_in_zip(zip_path) for zip_path in zip_paths)
 total_samples = len(zip_paths) + len(json_paths) + json_in_zips
-logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，獨立 JSON 檔案數量：{len(json_paths)}，ZIP 中 JSON 數量：{json_in_zips}，樣本總數：{total_samples}")
+logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，獨立 JSON 檔案數量：{len(json_paths)}，ZIP 中熱力圖 JSON 數量：{json_in_zips}，樣本總數：{total_samples}")
 
 # Generator for ZIP and JSON paths
 def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
     """
-    Yield paths to JSON files, including those within ZIP archives.
+    Yield paths to heatmap JSON files, including those within ZIP archives.
 
     Args:
         data_dir (str): Directory to scan for JSON and ZIP files.
 
     Yields:
-        str: Path to a JSON file.
+        str: Path to a heatmap JSON file.
     """
     logger.debug(f"掃描目錄以尋找 JSON 和 ZIP 檔案：{data_dir}")
     
-    # Yield standalone JSON files
-    json_files = glob.glob(f"{data_dir}/**/*.json", recursive=True)
-    logger.info(f"找到 {len(json_files)} 個獨立 JSON 檔案在 {data_dir}")
+    # Yield standalone JSON files (only heatmaps)
+    json_files = glob.glob(f"{data_dir}/**/*heatmap*.json", recursive=True)
+    logger.info(f"找到 {len(json_files)} 個獨立熱力圖 JSON 檔案在 {data_dir}")
     for path in json_files:
         logger.debug(f"產生 JSON 檔案：{path}")
         yield path
@@ -101,13 +104,13 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
                 logger.debug(f"解壓縮 ZIP 檔案：{zip_path} 到 {temp_dir}")
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(temp_dir)
-                # Recursively find JSON files in extracted directory
+                # Recursively find heatmap JSON files
                 json_files_in_zip = []
                 for root, _, files in os.walk(temp_dir):
                     for f in files:
-                        if f.lower().endswith('.json'):
+                        if f.lower().endswith('.json') and 'heatmap' in f.lower():
                             json_files_in_zip.append(os.path.join(root, f))
-                logger.info(f"從 {zip_path} 解壓縮出 {len(json_files_in_zip)} 個 JSON 檔案")
+                logger.info(f"從 {zip_path} 解壓縮出 {len(json_files_in_zip)} 個熱力圖 JSON 檔案")
                 for json_path in json_files_in_zip:
                     logger.debug(f"從 ZIP 產生 JSON 檔案：{json_path}")
                     yield json_path
@@ -133,7 +136,19 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
     math_algo_kb: List[Dict] = []
     
     logger.info(f"準備讀取 KB 檔案：{kb_path}")
-    if os.path.exists(kb_path):
+    if not os.path.exists(kb_path):
+        logger.warning(f"找不到 KB 檔案：{kb_path}，嘗試創建預設 KB")
+        try:
+            with open(kb_path, "w", encoding="utf-8") as f:
+                json.dump({"concepts": default_kb}, f, ensure_ascii=False, indent=2)
+            logger.info(f"已創建預設 KB 檔案：{kb_path}")
+            math_algo_kb = default_kb
+            logger.info(f"預設知識庫概念數量：{len(default_kb)} 條")
+        except OSError as e:
+            logger.error(f"無法創建 KB 檔案：{str(e)}")
+            math_algo_kb = default_kb
+            logger.warning(f"使用內置預設知識庫，概念數量：{len(default_kb)} 條")
+    else:
         try:
             logger.info(f"檔案存在，開始讀取：{kb_path}")
             with open(kb_path, "r", encoding="utf-8") as f:
@@ -146,15 +161,14 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
             logger.error(f"讀取 KB 時發生錯誤：{e}", exc_info=True)
             math_algo_kb = default_kb
             logger.warning(f"使用預設知識庫，概念數量：{len(default_kb)} 條")
-    else:
-        logger.warning(f"找不到 KB 檔案：{kb_path}，使用預設知識庫")
-        math_algo_kb = default_kb
-        logger.info(f"預設知識庫概念數量：{len(default_kb)} 條")
 
     def heatmap_generator():
         heatmap_names = []
         count = 0
         for json_path in iter_data_paths(DATA_DIR):
+            if count >= MAX_HEATMAPS:
+                logger.warning(f"達到熱力圖載入上限：{MAX_HEATMAPS} 條，停止載入")
+                break
             name = os.path.splitext(os.path.basename(json_path))[0]
             try:
                 logger.debug(f"讀取熱力圖檔案：{json_path}")
