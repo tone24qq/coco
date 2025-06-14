@@ -12,6 +12,7 @@ import glob
 import zipfile
 import io
 import psutil
+import faiss
 from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
@@ -50,71 +51,194 @@ logger.info(f"資料目錄：{DATA_DIR}")
 # Configuration
 MAX_HEATMAPS = 45000  # Expected sample size
 BATCH_SIZE = 1000  # Process heatmaps in chunks
+TOP_K = 5  # Number of top similar heatmaps to retrieve
 
-# Global heatmap index
-HEATMAP_INDEX: Dict[str, str] = {}
+# Spatial index structures
+HEATMAP_PATHS_BY_SHAPE: Dict[Tuple[int, int], List[Tuple[str, str]]] = {}
+INDEX_BY_SHAPE: Dict[Tuple[int, int], faiss.Index] = {}
+ID_MAP_BY_SHAPE: Dict[Tuple[int, int], List[str]] = {}
 
 def build_heatmap_index(data_dir: str = "./samples/data") -> None:
     """
-    Build heatmap file path index:
-      1) All .json files (excluding math_algo_kb.json)
-      2) All .zip files (base name as key, zip path as value)
+    Build heatmap file path index grouped by shape.
+    Supports JSON and ZIP files, excluding math_algo_kb.json.
     """
-    global HEATMAP_INDEX
-    HEATMAP_INDEX.clear()
+    global HEATMAP_PATHS_BY_SHAPE
+    HEATMAP_PATHS_BY_SHAPE.clear()
     
     # Standalone JSON
     for path in glob.glob(os.path.join(data_dir, "*.json")):
         name = os.path.splitext(os.path.basename(path))[0]
         if name == "math_algo_kb":
             continue
-        HEATMAP_INDEX[name] = path
-        logger.debug(f"索引 JSON：{name} -> {path}")
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                hm = data
+            elif 'heatmap' in data:
+                hm = data['heatmap']
+            elif 'grid' in data:
+                hm = data['grid']
+            else:
+                logger.warning(f"{name}.json 缺少 'heatmap' 或 'grid' 鍵，跳過")
+                continue
+            shape = (len(hm), len(hm[0]))
+            HEATMAP_PATHS_BY_SHAPE.setdefault(shape, []).append((name, path))
+            logger.debug(f"索引 JSON：{name} -> {path}, shape={shape}")
+        except (OSError, json.JSONDecodeError, IndexError) as e:
+            logger.error(f"無法索引 JSON 檔 {name}.json：{e}")
+            continue
 
     # JSON in ZIP
     for zip_path in glob.glob(os.path.join(data_dir, "*.zip")):
         base = os.path.splitext(os.path.basename(zip_path))[0]
-        HEATMAP_INDEX[base] = zip_path
-        logger.debug(f"索引 ZIP：{base} -> {zip_path}")
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                members = [m for m in z.namelist() if m.lower().endswith(".json")]
+                if not members:
+                    logger.warning(f"{zip_path} 裡沒有 .json 檔，跳過")
+                    continue
+                with z.open(members[0]) as jf:
+                    data = json.load(io.TextIOWrapper(jf, 'utf-8'))
+            if isinstance(data, list):
+                hm = data
+            elif 'heatmap' in data:
+                hm = data['heatmap']
+            elif 'grid' in data:
+                hm = data['grid']
+            else:
+                logger.warning(f"{base}.zip 缺少 'heatmap' 或 'grid' 鍵，跳過")
+                continue
+            shape = (len(hm), len(hm[0]))
+            HEATMAP_PATHS_BY_SHAPE.setdefault(shape, []).append((base, zip_path))
+            logger.debug(f"索引 ZIP：{base} -> {zip_path}, shape={shape}")
+        except (zipfile.BadZipFile, OSError, json.JSONDecodeError, IndexError) as e:
+            logger.error(f"無法索引 ZIP 檔 {base}.zip：{e}")
+            continue
+
+def extract_spatial_features(hm: np.ndarray) -> np.ndarray:
+    """
+    Extract spatial features from heatmap for Faiss indexing.
+    Includes original values, horizontal/vertical gradients, and diagonals.
+    """
+    H, W = hm.shape
+    feats = []
+    # Original values
+    feats.append(hm.flatten())
+    # Horizontal gradient
+    feats.append((hm[:, 1:] - hm[:, :-1]).flatten())
+    # Vertical gradient
+    feats.append((hm[1:, :] - hm[:-1, :]).flatten())
+    # Main diagonal
+    feats.append((hm[1:, 1:] - hm[:-1, :-1]).flatten())
+    # Secondary diagonal
+    feats.append((hm[1:, :-1] - hm[:-1, 1:]).flatten())
+    # Radius-2 gradients if applicable
+    if H > 2 and W > 2:
+        feats.append((hm[:, 2:] - hm[:, :-2]).flatten())
+        feats.append((hm[2:, :] - hm[:-2, :]).flatten())
+    return np.concatenate(feats).astype('float32')
+
+def train_and_build_indices(data_dir: str = "./samples/data") -> None:
+    """
+    Build Faiss indices for each heatmap shape.
+    Extracts spatial features and trains L2 distance index.
+    """
+    global INDEX_BY_SHAPE, ID_MAP_BY_SHAPE
+    INDEX_BY_SHAPE.clear()
+    ID_MAP_BY_SHAPE.clear()
+    
+    build_heatmap_index(data_dir)
+    for shape, entries in HEATMAP_PATHS_BY_SHAPE.items():
+        try:
+            d = extract_spatial_features(np.zeros(shape, dtype='float32')).shape[0]
+            vectors = np.zeros((len(entries), d), dtype='float32')
+            names = []
+            for i, (name, path) in enumerate(entries):
+                if path.lower().endswith(".json"):
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                else:
+                    with zipfile.ZipFile(path, 'r') as z:
+                        member = next(m for m in z.namelist() if m.lower().endswith(".json"))
+                        data = json.load(io.TextIOWrapper(z.open(member), 'utf-8'))
+                if isinstance(data, list):
+                    hm = np.array(data, dtype='float32')
+                elif 'heatmap' in data:
+                    hm = np.array(data['heatmap'], dtype='float32')
+                elif 'grid' in data:
+                    hm = np.array(data['grid'], dtype='float32')
+                else:
+                    logger.warning(f"{name} 無有效 heatmap 格式，跳過")
+                    continue
+                vec = extract_spatial_features(hm)
+                vectors[i] = vec
+                names.append(name)
+            index = faiss.IndexFlatL2(d)
+            index.add(vectors)
+            INDEX_BY_SHAPE[shape] = index
+            ID_MAP_BY_SHAPE[shape] = names
+            logger.info(f"Shape {shape}: 建立 index，包含 {len(names)} 張 heatmap")
+        except Exception as e:
+            logger.error(f"建立 shape {shape} 的 Faiss index 失敗：{e}")
+            continue
+
+def find_top_k_similar(cur_grid: List[List[float]], k: int = TOP_K) -> List[Tuple[str, float]]:
+    """
+    Find top-K similar heatmaps using Faiss index.
+    Returns list of (name, distance) tuples.
+    """
+    try:
+        arr = np.array(cur_grid, dtype='float32')
+        target_shape = (arr.shape[0], arr.shape[1])
+        # Exact or nearest shape
+        if target_shape not in INDEX_BY_SHAPE:
+            available = list(INDEX_BY_SHAPE.keys())
+            if not available:
+                logger.warning("無可用 Faiss 索引，無法查詢")
+                return []
+            target_shape = min(available, key=lambda s: abs(s[0] - arr.shape[0]) + abs(s[1] - arr.shape[1]))
+            logger.warning(f"無精確尺寸索引，使用最近尺寸：{target_shape}")
+        vec = extract_spatial_features(arr)
+        d = INDEX_BY_SHAPE[target_shape].d
+        if vec.shape[0] != d:
+            vec = np.resize(vec, d)
+        vec = vec[None, :]
+        dist, idxs = INDEX_BY_SHAPE[target_shape].search(vec, k)
+        results = [(ID_MAP_BY_SHAPE[target_shape][idx], float(d)) for idx, d in zip(idxs[0], dist[0])]
+        return results
+    except (RuntimeError, IndexError) as e:
+        logger.error(f"Faiss 查詢失敗：{e}")
+        return []
 
 def load_heatmap(name: str) -> List[List[float]]:
     """
     Load heatmap for the given name on demand.
     Supports three formats: list, data['heatmap'], data['grid'].
     """
-    path = HEATMAP_INDEX.get(name)
-    if not path:
-        raise KeyError(f"找不到 heatmap 索引：{name}")
-
-    # JSON file
-    if path.lower().endswith(".json"):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"無法載入 JSON 檔 {name}.json：{e}")
-            raise
-    else:
-        # JSON in ZIP
-        try:
-            with zipfile.ZipFile(path, 'r') as z:
-                member = next((m for m in z.namelist() if m.lower().endswith(".json")), None)
-                if not member:
-                    raise FileNotFoundError(f"{path} 裡沒有 .json 檔")
-                with z.open(member) as jf:
-                    data = json.load(io.TextIOWrapper(jf, 'utf-8'))
-        except (zipfile.BadZipFile, OSError, json.JSONDecodeError) as e:
-            logger.error(f"無法解析 {path} 中的 {member or 'JSON'}：{e}")
-            raise
-
-    # Support three formats
-    if isinstance(data, list):
-        return data
-    if 'heatmap' in data:
-        return data['heatmap']
-    if 'grid' in data:
-        return data['grid']
-    raise ValueError(f"{name} 無可用 heatmap 格式")
+    for shape, entries in HEATMAP_PATHS_BY_SHAPE.items():
+        for entry_name, path in entries:
+            if entry_name == name:
+                try:
+                    if path.lower().endswith(".json"):
+                        with open(path, 'r', encoding='utf-8') as f:
+                            data = json.load(f)
+                    else:
+                        with zipfile.ZipFile(path, 'r') as z:
+                            member = next(m for m in z.namelist() if m.lower().endswith(".json"))
+                            data = json.load(io.TextIOWrapper(z.open(member), 'utf-8'))
+                    if isinstance(data, list):
+                        return data
+                    if 'heatmap' in data:
+                        return data['heatmap']
+                    if 'grid' in data:
+                        return data['grid']
+                    raise ValueError(f"{name} 無可用 heatmap 格式")
+                except (OSError, json.JSONDecodeError, FileNotFoundError) as e:
+                    logger.error(f"無法載入 heatmap {name}：{e}")
+                    raise
+    raise KeyError(f"找不到 heatmap 索引：{name}")
 
 # Abstract Heatmap Processor for generalization
 class HeatmapProcessor(ABC):
@@ -135,44 +259,12 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
     """
     def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
         """
-        Load heatmaps on demand from indexed files in data_dir.
+        Load top-K heatmaps based on Faiss similarity search.
         Yields (name, {'heatmap': heatmap_data}) for each valid heatmap.
-        Logs heatmap name and size for each valid heatmap.
         """
-        heatmap_count = 0
-        skipped_count = 0
-        
-        # Build index if not already built
-        if not HEATMAP_INDEX:
-            logger.info("建立熱力圖索引")
-            build_heatmap_index(data_dir)
-        
-        # Process each indexed heatmap
-        for name in HEATMAP_INDEX:
-            try:
-                if heatmap_count >= MAX_HEATMAPS:
-                    logger.warning(f"達到熱力圖上限：{MAX_HEATMAPS}，停止載入")
-                    break
-                hm = load_heatmap(name)
-                # Log heatmap size
-                if len(hm) > 0 and isinstance(hm[0], list):
-                    logger.info(f"{name}: heatmap size = {len(hm)} x {len(hm[0])}")
-                else:
-                    logger.warning(f"{name}: 無效熱力圖格式，非 2D 列表")
-                    skipped_count += 1
-                    continue
-                yield name, {'heatmap': hm}
-                heatmap_count += 1
-                if heatmap_count % BATCH_SIZE == 0:
-                    logger.info(f"已載入 {heatmap_count} 個熱力圖")
-            except (KeyError, FileNotFoundError, ValueError) as e:
-                logger.warning(f"載入 heatmap {name} 失敗：{e}")
-                skipped_count += 1
-            except Exception as e:
-                logger.error(f"載入 heatmap {name} 發生未知錯誤：{e}")
-                skipped_count += 1
-        
-        logger.info(f"總共掃描 {heatmap_count + skipped_count} 個熱力圖檔案，成功解析 {heatmap_count} 個，跳過 {skipped_count} 個")
+        # This method is now primarily used for compatibility; actual loading happens in perform_board_analysis
+        logger.warning("load_heatmaps 已被 Faiss 索引取代，僅用於兼容性")
+        yield from []
 
     def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
         """
@@ -196,9 +288,9 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
 # Initialize processor
 heatmap_processor = ScratchCardHeatmapProcessor()
 
-# Build heatmap index at startup
-logger.info("初始化熱力圖索引")
-build_heatmap_index(DATA_DIR)
+# Build indices at startup
+logger.info("初始化 Faiss 空間索引")
+train_and_build_indices(DATA_DIR)
 
 # Load knowledge base
 def load_knowledge_base() -> List[Dict]:
@@ -314,6 +406,8 @@ def cache_board_analysis(
 def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     M, N = grid.shape
     predictions = []
+    heatmap_count = 0
+    skipped_count = 0
     logger.info(f"分析網格，大小 {M}x{N}，目標數字 {target_num}")
     
     try:
@@ -327,12 +421,33 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         if len(empty_yx) == 0:
             raise ValueError("網格無隱藏格 (-1)")
 
-        # Aggregate scores from heatmaps on demand
+        # Find top-K similar heatmaps using Faiss
+        top_k = find_top_k_similar(grid.tolist(), k=TOP_K)
         heatmap_scores = []
-        for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
-            score = heatmap_processor.match_heatmap(grid, data, target_num)
-            if score > 0:
-                heatmap_scores.append((name, score))
+        for name, _ in top_k:
+            try:
+                hm = load_heatmap(name)
+                if len(hm) > 0 and isinstance(hm[0], list):
+                    logger.info(f"{name}: heatmap size = {len(hm)} x {len(hm[0])}")
+                else:
+                    logger.warning(f"{name}: 無效熱力圖格式，非 2D 列表")
+                    skipped_count += 1
+                    continue
+                data = {'heatmap': hm}
+                score = heatmap_processor.match_heatmap(grid, data, target_num)
+                if score > 0:
+                    heatmap_scores.append((name, score))
+                    heatmap_count += 1
+            except (KeyError, ValueError) as e:
+                logger.warning(f"載入 heatmap {name} 失敗：{e}")
+                skipped_count += 1
+                continue
+            except Exception as e:
+                logger.error(f"載入 heatmap {name} 發生未知錯誤：{e}")
+                skipped_count += 1
+                continue
+        
+        logger.info(f"總共掃描 {heatmap_count + skipped_count} 個熱力圖檔案，成功解析 {heatmap_count} 個，跳過 {skipped_count} 個")
         logger.info(f"總共匹配 {len(heatmap_scores)} 個有效熱力圖")
 
         # Select top heatmaps
@@ -340,7 +455,7 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         final_score = np.zeros_like(grid, dtype=float)
         for name, score in top_heatmaps:
             try:
-                hm = load_heatmap(name)  # Reload top heatmaps
+                hm = load_heatmap(name)
                 heatmap = np.array(hm).reshape(M, N)
                 final_score += score * heatmap
             except Exception as e:
@@ -452,8 +567,8 @@ async def upload_file(
             f.write(content)
         logger.info(f"已儲存上傳檔案：{input_path}")
         
-        # Rebuild index after new file upload
-        build_heatmap_index(DATA_DIR)
+        # Rebuild indices after new file upload
+        train_and_build_indices(DATA_DIR)
         
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
@@ -492,8 +607,8 @@ async def batch_process(
         files = get_input_files(input_folder)
         logger.info(f"找到 {len(files)} 個有效檔案：{files}")
         
-        # Rebuild index after batch input
-        build_heatmap_index(input_folder)
+        # Rebuild indices after batch input
+        train_and_build_indices(input_folder)
         
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
