@@ -70,24 +70,23 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
     Concrete implementation for scratch card heatmap processing.
     """
     def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
+        heatmap_count = 0
         for json_path in iter_data_paths(data_dir):
             name = os.path.splitext(os.path.basename(json_path))[0]
             try:
                 logger.debug(f"讀取熱力圖檔案：{json_path}")
                 with open(json_path, 'r', encoding="utf-8") as f:
-                    # Stream JSON parsing for large files
-                    heatmap_data = ijson.parse(f)
-                    data = {}
-                    for prefix, event, value in heatmap_data:
-                        if prefix == 'heatmap.item' and event == 'map_key':
-                            key = value
-                        elif prefix == 'heatmap.item' and event == 'number':
-                            data[key] = value
-                    if 'heatmap' in data:
-                        yield name, data
-            except (OSError, ValueError) as e:
+                    heatmap_data = json.load(f)
+                    if 'heatmap' in heatmap_data:
+                        heatmap_count += 1
+                        logger.debug(f"成功解析熱力圖 {name}，總計：{heatmap_count}")
+                        yield name, heatmap_data
+                    else:
+                        logger.warning(f"熱力圖 {name} 缺少 'heatmap' 鍵，跳過")
+            except (OSError, json.JSONDecodeError) as e:
                 logger.error(f"無法載入熱力圖 {name} 從 {json_path}：{str(e)}")
                 continue
+        logger.info(f"總共解析 {heatmap_count} 個熱力圖檔案")
 
     def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
         """
@@ -96,10 +95,11 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
         try:
             heatmap = np.array(heatmap_data.get('heatmap', []))
             if heatmap.shape != grid.shape:
+                logger.debug(f"熱力圖形狀 {heatmap.shape} 與網格 {grid.shape} 不匹配，相似度 0")
                 return 0.0
-            # Simple similarity: correlation coefficient for target number positions
             target_mask = (grid == target_num) | (grid == -1)
             if not np.any(target_mask):
+                logger.debug(f"無目標數字 {target_num} 或隱藏格，相似度 0")
                 return 0.0
             score = np.corrcoef(grid[target_mask].flatten(), heatmap[target_mask].flatten())[0, 1]
             return float(score) if not np.isnan(score) else 0.0
@@ -156,7 +156,7 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
             continue
 
 # Load knowledge base and heatmaps
-def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]:
+def load_data_resources() -> Tuple[List[Dict], List[Tuple[str, Dict]]]:
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     default_kb = [
         {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
@@ -187,28 +187,21 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
             math_algo_kb = default_kb
             logger.warning(f"使用預設 KB，概念數量：{len(default_kb)}")
 
-    def heatmap_generator():
-        count = 0
-        batch = []
-        for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
-            if count >= MAX_HEATMAPS:
-                logger.warning(f"達到熱力圖上限：{MAX_HEATMAPS}，停止載入")
-                break
-            batch.append((name, data))
-            count += 1
-            if len(batch) >= BATCH_SIZE:
-                logger.info(f"處理熱力圖批次，當前總數：{count}")
-                for item in batch:
-                    yield item
-                batch = []
-        if batch:
-            for item in batch:
-                yield item
-        logger.info(f"總計載入熱力圖：{count} 條")
+    heatmap_data = []
+    count = 0
+    for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
+        if count >= MAX_HEATMAPS:
+            logger.warning(f"達到熱力圖上限：{MAX_HEATMAPS}，停止載入")
+            break
+        heatmap_data.append((name, data))
+        count += 1
+        if count % BATCH_SIZE == 0:
+            logger.info(f"已載入 {count} 個熱力圖")
+    logger.info(f"總計載入熱力圖：{count} 條")
 
-    return math_algo_kb, heatmap_generator()
+    return math_algo_kb, heatmap_data
 
-math_algo_kb, heatmap_generator = load_data_resources()
+math_algo_kb, heatmap_data = load_data_resources()
 
 class AnalysisRequest(BaseModel):
     grid: List[List[float]] = Field(..., description="2D array, -1 for hidden cells")
@@ -299,21 +292,18 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
 
         # Aggregate scores from multiple heatmaps
         heatmap_scores = []
-        count = 0
-        for name, data in heatmap_generator():
+        for name, data in heatmap_data:
             score = heatmap_processor.match_heatmap(grid, data, target_num)
             if score > 0:
                 heatmap_scores.append((name, score))
-            count += 1
-            if count % BATCH_SIZE == 0:
-                logger.debug(f"已處理 {count} 個熱力圖")
         logger.info(f"總共匹配 {len(heatmap_scores)} 個有效熱力圖")
 
         # Select top heatmaps
         top_heatmaps = sorted(heatmap_scores, key=lambda x: x[1], reverse=True)[:3]
         final_score = np.zeros_like(grid, dtype=float)
         for name, score in top_heatmaps:
-            final_score += score * np.array(list(data.values())[:M*N]).reshape(M, N)
+            heatmap = np.array(data['heatmap']).reshape(M, N)
+            final_score += score * heatmap
         
         pred_array = np.zeros_like(grid, dtype=np.int64)
         top3 = [
@@ -330,7 +320,8 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         
         reasoning = [
             f"剩餘數字：{list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))}",
-            f"目標數字 {target_num} 分析了 {len(predictions)} 個候選位置"
+            f"目標數字 {target_num} 分析了 {len(predictions)} 個候選位置",
+            f"知識庫概念數量：{len(math_algo_kb)}，主要概念：{[c['concept'] for c in math_algo_kb[:2]]}"
         ]
         logger.info(f"分析完成，預測數量：{len(predictions)}")
         process = psutil.Process()
