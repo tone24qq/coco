@@ -12,6 +12,8 @@ import glob
 import zipfile
 import io
 import psutil
+import csv
+import multiprocessing
 try:
     import faiss
 except ImportError:
@@ -26,8 +28,10 @@ from functools import lru_cache
 from joblib import Parallel, delayed
 from abc import ABC, abstractmethod
 
-# Ensure logs directory exists
+# Ensure logs and index directories exist
 os.makedirs("logs", exist_ok=True)
+INDEX_DIR = os.path.join(os.path.dirname(__file__), "samples", "index")
+os.makedirs(INDEX_DIR, exist_ok=True)
 
 # Configure logging
 logger = logging.getLogger("app")
@@ -54,7 +58,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 logger.info(f"資料目錄：{DATA_DIR}")
 
 # Configuration
-MAX_HEATMAPS = 45000  # Expected sample size
+MAX_HEATMAPS = 400000  # Support up to 400,000 heatmaps
 BATCH_SIZE = 1000  # Process heatmaps in chunks
 TOP_K = 5  # Number of top similar heatmaps to retrieve
 
@@ -63,10 +67,10 @@ HEATMAP_PATHS_BY_SHAPE: Dict[Tuple[int, int], List[Tuple[str, str]]] = {}
 INDEX_BY_SHAPE: Dict[Tuple[int, int], faiss.Index] = {}
 ID_MAP_BY_SHAPE: Dict[Tuple[int, int], List[str]] = {}
 
-def validate_heatmap(data: Any, name: str) -> Optional[List[List[float]]]:
+def validate_heatmap(data: Any, name: str) -> Tuple[Optional[List[List[float]]], Optional[str]]:
     """
     Validate heatmap data format and dimensions.
-    Returns valid 2D list if successful, None otherwise.
+    Returns (heatmap, error_message) where heatmap is valid 2D list or None, and error_message explains failure.
     """
     try:
         if isinstance(data, list):
@@ -76,81 +80,120 @@ def validate_heatmap(data: Any, name: str) -> Optional[List[List[float]]]:
         elif isinstance(data, dict) and 'grid' in data:
             hm = data['grid']
         else:
-            logger.warning(f"{name} 缺少有效 heatmap 格式（list, 'heatmap', 'grid'），跳過")
-            return None
+            return None, f"{name}: 缺少有效 heatmap 格式（list, 'heatmap', 'grid'）"
         
         # Check if hm is a 2D list of numbers
         if not isinstance(hm, list) or not hm or not isinstance(hm[0], list):
-            logger.warning(f"{name} 熱力圖非 2D 列表，跳過")
-            return None
+            return None, f"{name}: 熱力圖非 2D 列表"
         
         # Verify dimensions (4x4 to 20x20)
         rows, cols = len(hm), len(hm[0])
         if not (4 <= rows <= 20 and 4 <= cols <= 20):
-            logger.warning(f"{name} 尺寸 {rows}x{cols} 超出範圍（4x4 到 20x20），跳過")
-            return None
+            return None, f"{name}: 尺寸 {rows}x{cols} 超出範圍（4x4 到 20x20）"
         
         # Verify all elements are numbers
         for row in hm:
             if not isinstance(row, list) or len(row) != cols:
-                logger.warning(f"{name} 熱力圖行尺寸不一致，跳過")
-                return None
+                return None, f"{name}: 熱力圖行尺寸不一致"
             for val in row:
                 if not isinstance(val, (int, float)):
-                    logger.warning(f"{name} 包含非數值元素（{type(val)}），跳過")
-                    return None
+                    return None, f"{name}: 包含非數值元素（{type(val)}）"
         
-        return hm
+        return hm, None
     except Exception as e:
-        logger.error(f"驗證 {name} 熱力圖失敗：{e}")
-        return None
+        return None, f"{name}: 驗證失敗：{str(e)}"
+
+def preprocess_file(args: Tuple[str, str]) -> List[Tuple[str, str, Tuple[int, int], Optional[str]]]:
+    """
+    Preprocess a single file (JSON or ZIP) to validate heatmaps.
+    Returns list of (name, path, shape, error_message) tuples.
+    """
+    path, data_dir = args
+    results = []
+    
+    try:
+        name = os.path.splitext(os.path.basename(path))[0]
+        if name == "math_algo_kb" and path.lower().endswith(".json"):
+            return results
+        
+        if path.lower().endswith(".json"):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            hm, error = validate_heatmap(data, name)
+            if hm:
+                shape = (len(hm), len(hm[0]))
+                results.append((name, path, shape, None))
+            else:
+                results.append((name, path, (0, 0), error))
+        else:  # ZIP
+            with zipfile.ZipFile(path, 'r') as z:
+                members = [m for m in z.namelist() if m.lower().endswith(".json")]
+                for member in members:
+                    member_name = f"{name}/{os.path.basename(member)}"
+                    with z.open(member) as jf:
+                        data = json.load(io.TextIOWrapper(jf, 'utf-8'))
+                    hm, error = validate_heatmap(data, member_name)
+                    if hm:
+                        shape = (len(hm), len(hm[0]))
+                        results.append((member_name, path, shape, None))
+                    else:
+                        results.append((member_name, path, (0, 0), error))
+    except Exception as e:
+        results.append((name, path, (0, 0), f"{name}: 處理失敗：{str(e)}"))
+    
+    return results
+
+def preprocess_data(data_dir: str = "./samples/data") -> None:
+    """
+    Run preprocessing pipeline to validate all files and generate bad_samples.csv.
+    """
+    bad_samples_path = os.path.join(data_dir, "bad_samples.csv")
+    files = glob.glob(os.path.join(data_dir, "*.json")) + glob.glob(os.path.join(data_dir, "*.zip"))
+    logger.info(f"開始數據預處理，掃描 {len(files)} 個檔案")
+    
+    # Parallel preprocessing
+    with multiprocessing.Pool() as pool:
+        results = pool.map(preprocess_file, [(f, data_dir) for f in files])
+    
+    # Flatten results and collect bad samples
+    bad_samples = []
+    valid_count = 0
+    for file_results in results:
+        for name, path, shape, error in file_results:
+            if error:
+                bad_samples.append({"file": path, "name": name, "error": error})
+            else:
+                valid_count += 1
+    
+    # Write bad_samples.csv
+    if bad_samples:
+        with open(bad_samples_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["file", "name", "error"])
+            writer.writeheader()
+            writer.writerows(bad_samples)
+        logger.warning(f"發現 {len(bad_samples)} 個無效檔案，詳見 {bad_samples_path}")
+    else:
+        logger.info("所有檔案有效，無需清洗")
+    
+    logger.info(f"預處理完成，有效熱力圖數：{valid_count}")
 
 def build_heatmap_index(data_dir: str = "./samples/data") -> None:
     """
     Build heatmap file path index grouped by shape.
-    Supports JSON and ZIP files, excluding math_algo_kb.json.
+    Supports all JSONs in ZIP files, excluding math_algo_kb.json.
     """
     global HEATMAP_PATHS_BY_SHAPE
     HEATMAP_PATHS_BY_SHAPE.clear()
     
-    # Standalone JSON
-    for path in glob.glob(os.path.join(data_dir, "*.json")):
-        name = os.path.splitext(os.path.basename(path))[0]
-        if name == "math_algo_kb":
-            continue
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            hm = validate_heatmap(data, name)
-            if hm is None:
-                continue
-            shape = (len(hm), len(hm[0]))
-            HEATMAP_PATHS_BY_SHAPE.setdefault(shape, []).append((name, path))
-            logger.debug(f"索引 JSON：{name} -> {path}, shape={shape}")
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"無法索引 JSON 檔 {name}.json：{e}")
-            continue
-
-    # JSON in ZIP
-    for zip_path in glob.glob(os.path.join(data_dir, "*.zip")):
-        base = os.path.splitext(os.path.basename(zip_path))[0]
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as z:
-                members = [m for m in z.namelist() if m.lower().endswith(".json")]
-                if not members:
-                    logger.warning(f"{zip_path} 裡沒有 .json 檔，跳過")
-                    continue
-                with z.open(members[0]) as jf:
-                    data = json.load(io.TextIOWrapper(jf, 'utf-8'))
-            hm = validate_heatmap(data, base)
-            if hm is None:
-                continue
-            shape = (len(hm), len(hm[0]))
-            HEATMAP_PATHS_BY_SHAPE.setdefault(shape, []).append((base, zip_path))
-            logger.debug(f"索引 ZIP：{base} -> {zip_path}, shape={shape}")
-        except (zipfile.BadZipFile, OSError, json.JSONDecodeError) as e:
-            logger.error(f"無法索引 ZIP 檔 {base}.zip：{e}")
-            continue
+    files = glob.glob(os.path.join(data_dir, "*.json")) + glob.glob(os.path.join(data_dir, "*.zip"))
+    with multiprocessing.Pool() as pool:
+        results = pool.map(preprocess_file, [(f, data_dir) for f in files])
+    
+    for file_results in results:
+        for name, path, shape, error in file_results:
+            if not error and shape != (0, 0):
+                HEATMAP_PATHS_BY_SHAPE.setdefault(shape, []).append((name, path))
+                logger.debug(f"索引：{name} -> {path}, shape={shape}")
 
 def extract_spatial_features(hm: np.ndarray) -> np.ndarray:
     """
@@ -169,55 +212,103 @@ def extract_spatial_features(hm: np.ndarray) -> np.ndarray:
         feats.append((hm[2:, :] - hm[:-2, :]).flatten())
     return np.concatenate(feats).astype('float32')
 
+def process_heatmap_for_index(args: Tuple[str, str]) -> Tuple[Optional[np.ndarray], str, Optional[str]]:
+    """
+    Process a single heatmap for Faiss index.
+    Returns (feature_vector, name, error_message).
+    """
+    name, path = args
+    try:
+        if path.lower().endswith(".json"):
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            with zipfile.ZipFile(path, 'r') as z:
+                member = name.split('/')[-1]
+                with z.open(member) as jf:
+                    data = json.load(io.TextIOWrapper(jf, 'utf-8'))
+        hm, error = validate_heatmap(data, name)
+        if hm is None:
+            return None, name, error
+        hm_array = np.array(hm, dtype='float32')
+        return extract_spatial_features(hm_array), name, None
+    except Exception as e:
+        return None, name, f"{name}: 處理失敗：{str(e)}"
+
 def train_and_build_indices(data_dir: str = "./samples/data") -> None:
     """
     Build Faiss indices for each heatmap shape.
-    Extracts spatial features and trains L2 distance index.
+    Uses multiprocessing for I/O and caches indices to disk.
     """
     global INDEX_BY_SHAPE, ID_MAP_BY_SHAPE
     INDEX_BY_SHAPE.clear()
     ID_MAP_BY_SHAPE.clear()
     
     build_heatmap_index(data_dir)
-    for shape, entries in HEATMAP_PATHS_BY_SHAPE.items():
-        try:
-            # Skip invalid shapes
-            if not (4 <= shape[0] <= 20 and 4 <= shape[1] <= 20):
-                logger.warning(f"Shape {shape} 超出範圍（4x4 到 20x20），跳過")
-                continue
-            
-            d = extract_spatial_features(np.zeros(shape, dtype='float32')).shape[0]
-            vectors = np.zeros((len(entries), d), dtype='float32')
-            names = []
-            for i, (name, path) in enumerate(entries):
-                try:
-                    if path.lower().endswith(".json"):
-                        with open(path, 'r', encoding='utf-8') as f:
-                            data = json.load(f)
-                    else:
-                        with zipfile.ZipFile(path, 'r') as z:
-                            member = next(m for m in z.namelist() if m.lower().endswith(".json"))
-                            data = json.load(io.TextIOWrapper(z.open(member), 'utf-8'))
-                    hm = validate_heatmap(data, name)
-                    if hm is None:
-                        continue
-                    hm_array = np.array(hm, dtype='float32')
-                    vectors[i] = extract_spatial_features(hm_array)
-                    names.append(name)
-                except (OSError, json.JSONDecodeError, ValueError) as e:
-                    logger.error(f"處理 {name} 熱力圖失敗：{e}")
+    with multiprocessing.Pool() as pool:
+        for shape, entries in HEATMAP_PATHS_BY_SHAPE.items():
+            try:
+                if not (4 <= shape[0] <= 20 and 4 <= shape[1] <= 20):
+                    logger.warning(f"Shape {shape} 超出範圍（4x4 到 20x20），跳過")
                     continue
-            if not names:
-                logger.warning(f"Shape {shape} 無有效熱力圖，跳過")
+                
+                d = extract_spatial_features(np.zeros(shape, dtype='float32')).shape[0]
+                results = pool.map(process_heatmap_for_index, entries)
+                
+                vectors = []
+                names = []
+                for vec, name, error in results:
+                    if vec is not None:
+                        vectors.append(vec)
+                        names.append(name)
+                    else:
+                        logger.warning(error)
+                
+                if not names:
+                    logger.warning(f"Shape {shape} 無有效熱力圖，跳過")
+                    continue
+                
+                vectors = np.array(vectors, dtype='float32')
+                index = faiss.IndexFlatL2(d)
+                index.add(vectors)
+                INDEX_BY_SHAPE[shape] = index
+                ID_MAP_BY_SHAPE[shape] = names
+                logger.info(f"Shape {shape}: 建立 index，包含 {len(names)} 張 heatmap")
+                
+                # Save index to disk
+                index_path = os.path.join(INDEX_DIR, f"index_{shape[0]}x{shape[1]}.faiss")
+                faiss.write_index(index, index_path)
+                with open(index_path + ".names", "w", encoding="utf-8") as f:
+                    json.dump(names, f)
+                logger.debug(f"保存索引：{index_path}")
+            except Exception as e:
+                logger.error(f"建立 shape {shape} 的 Faiss index 失敗：{e}")
                 continue
-            index = faiss.IndexFlatL2(d)
-            index.add(vectors[:len(names)])
-            INDEX_BY_SHAPE[shape] = index
-            ID_MAP_BY_SHAPE[shape] = names
-            logger.info(f"Shape {shape}: 建立 index，包含 {len(names)} 張 heatmap")
+
+def load_indices() -> None:
+    """
+    Load cached Faiss indices from disk.
+    """
+    global INDEX_BY_SHAPE, ID_MAP_BY_SHAPE
+    INDEX_BY_SHAPE.clear()
+    ID_MAP_BY_SHAPE.clear()
+    
+    for index_path in glob.glob(os.path.join(INDEX_DIR, "*.faiss")):
+        try:
+            shape_str = os.path.basename(index_path).replace("index_", "").replace(".faiss", "")
+            shape = tuple(map(int, shape_str.split("x")))
+            if not (4 <= shape[0] <= 20 and 4 <= shape[1] <= 20):
+                continue
+            index = faiss.read_index(index_path)
+            names_path = index_path + ".names"
+            if os.path.exists(names_path):
+                with open(names_path, "r", encoding="utf-8") as f:
+                    names = json.load(f)
+                INDEX_BY_SHAPE[shape] = index
+                ID_MAP_BY_SHAPE[shape] = names
+                logger.info(f"載入索引：{index_path}，包含 {index.ntotal} 張 heatmap")
         except Exception as e:
-            logger.error(f"建立 shape {shape} 的 Faiss index 失敗：{e}")
-            continue
+            logger.error(f"載入索引 {index_path} 失敗：{e}")
 
 def find_top_k_similar(cur_grid: List[List[float]], k: int = TOP_K) -> List[Tuple[str, float]]:
     """
@@ -227,7 +318,6 @@ def find_top_k_similar(cur_grid: List[List[float]], k: int = TOP_K) -> List[Tupl
     try:
         arr = np.array(cur_grid, dtype='float32')
         target_shape = (arr.shape[0], arr.shape[1])
-        # Exact or nearest shape
         if target_shape not in INDEX_BY_SHAPE:
             available = list(INDEX_BY_SHAPE.keys())
             if not available:
@@ -250,7 +340,7 @@ def find_top_k_similar(cur_grid: List[List[float]], k: int = TOP_K) -> List[Tupl
 def load_heatmap(name: str) -> List[List[float]]:
     """
     Load heatmap for the given name on demand.
-    Supports three formats: list, data['heatmap'], data['grid'].
+    Supports all JSONs in ZIP files.
     """
     for shape, entries in HEATMAP_PATHS_BY_SHAPE.items():
         for entry_name, path in entries:
@@ -261,11 +351,12 @@ def load_heatmap(name: str) -> List[List[float]]:
                             data = json.load(f)
                     else:
                         with zipfile.ZipFile(path, 'r') as z:
-                            member = next(m for m in z.namelist() if m.lower().endswith(".json"))
-                            data = json.load(io.TextIOWrapper(z.open(member), 'utf-8'))
-                    hm = validate_heatmap(data, name)
+                            member = name.split('/')[-1]
+                            with z.open(member) as jf:
+                                data = json.load(io.TextIOWrapper(jf, 'utf-8'))
+                    hm, error = validate_heatmap(data, name)
                     if hm is None:
-                        raise ValueError(f"{name} 無可用 heatmap 格式")
+                        raise ValueError(error)
                     return hm
                 except (OSError, json.JSONDecodeError, FileNotFoundError) as e:
                     logger.error(f"無法載入 heatmap {name}：{e}")
@@ -319,9 +410,14 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
 # Initialize processor
 heatmap_processor = ScratchCardHeatmapProcessor()
 
-# Build indices at startup
-logger.info("初始化 Faiss 空間索引")
-train_and_build_indices(DATA_DIR)
+# Preprocess data and load or build indices
+logger.info("開始數據預處理")
+preprocess_data(DATA_DIR)
+logger.info("嘗試載入 Faiss 索引")
+load_indices()
+if not INDEX_BY_SHAPE:
+    logger.info("無快取索引，開始建立新索引")
+    train_and_build_indices(DATA_DIR)
 
 # Load knowledge base
 def load_knowledge_base() -> List[Dict]:
@@ -599,6 +695,7 @@ async def upload_file(
         logger.info(f"已儲存上傳檔案：{input_path}")
         
         # Rebuild indices after new file upload
+        preprocess_data(DATA_DIR)
         train_and_build_indices(DATA_DIR)
         
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
@@ -639,6 +736,7 @@ async def batch_process(
         logger.info(f"找到 {len(files)} 個有效檔案：{files}")
         
         # Rebuild indices after batch input
+        preprocess_data(input_folder)
         train_and_build_indices(input_folder)
         
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
