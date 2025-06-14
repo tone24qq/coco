@@ -13,3 +13,4 @@ requests
 python-multipart
 psutil
 ijson
+faiss-cpu
