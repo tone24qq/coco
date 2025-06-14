@@ -198,14 +198,11 @@ class ScratchSolver:
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
         
-        # Position weights based on grid centrality
         position_weights = np.exp(-np.sum(np.indices(grid.shape), axis=0) / max(grid.shape))
         
-        # Difference weights based on local gradients
         diffs = np.abs(np.diff(known))
         diff_weight = np.mean(diffs) if diffs.size > 0 else 1.0
         
-        # Connectivity weights from neighboring cells
         conn_scores, _ = self.connectivity_heatmap(grid)
         
         if method == 'adaptive':
@@ -230,7 +227,6 @@ class ScratchSolver:
             )
         )
         
-        # Apply combined weights
         empty_yx = np.argwhere(grid == -1)
         for idx, (i, j) in enumerate(empty_yx):
             scores[idx] *= position_weights[i, j] * (1 + conn_scores[idx] * 0.5)
