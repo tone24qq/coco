@@ -1,17 +1,15 @@
-# modules.py
+# modules1.py
 
 import os
-os.makedirs("logs", exist_ok=True)
-
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import convolve2d
 from scipy.spatial import cKDTree
+from scipy.stats import skew, kurtosis
 import pandas as pd
 import logging
 import json
 from typing import Dict, List, Tuple, Any, Optional
-from joblib import Parallel, delayed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,9 +20,17 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
 class ScratchSolver:
     """
-    Solver for analyzing scratch card boards, predicting hidden numbers, and extracting multi-angle features.
+    刮刮樂分析模組，負責特徵提取與隱藏數字預測，支持任意大小網格的全盤精準偵測。
+
+    Attributes:
+        tree (Optional[cKDTree]): 用於儲存已知格子座標的 KDTree。
+        known_yx (Optional[np.ndarray]): 已知格子座標。
+        known_vals (Optional[np.ndarray]): 已知格子值。
+        MODULE_REGISTRY (Dict[str, Any]): 註冊的分析模組。
+        adaptive_weights (AdaptiveWeights): 自適應權重管理器。
     """
     MODULE_REGISTRY: Dict[str, Any] = {}
 
@@ -63,43 +69,43 @@ class ScratchSolver:
 
     def update_tree(self, grid: np.ndarray) -> None:
         """
-        Updates the KDTree with known cell coordinates and values.
+        更新 KDTree 以儲存已知格子的座標與值。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         self.known_yx = np.argwhere(grid != -1)
         self.known_vals = grid[grid != -1]
         if self.known_yx.size > 0:
             self.tree = cKDTree(self.known_yx)
-            logger.debug(f"KDTree initialized with {self.known_yx.size} known points")
+            logger.debug(f"初始化 KDTree，包含 {self.known_yx.size} 個已知點")
         else:
             self.tree = None
             self.known_yx = None
             self.known_vals = None
-            logger.info("KDTree not initialized: no known cells (all cells are -1)")
+            logger.info("未初始化 KDTree：無已知格子（全為 -1）")
 
     def extract_multi_angle_features(self, grid: np.ndarray, output_path: str) -> Dict[str, Any]:
         """
-        Extracts features from multiple angles for each number in the grid.
+        從多角度提取網格特徵並儲存，支持任意大小網格。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            output_path (str): Path to save features.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            output_path (str): 特徵儲存路徑。
 
         Returns:
-            Dict[str, Any]: Extracted features.
+            Dict[str, Any]: 提取的特徵字典。
 
         Raises:
-            AssertionError: If grid is not 2D.
-            OSError: If saving features fails.
+            AssertionError: 若網格非二維。
+            OSError: 若儲存特徵失敗。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         features_dict: Dict[str, Any] = {
@@ -124,7 +130,7 @@ class ScratchSolver:
         features_dict["diagonal_features"]["main"] = diag[diag != -1].tolist()
         features_dict["diagonal_features"]["anti"] = anti_diag[anti_diag != -1].tolist()
 
-        def process_cell(i, j):
+        def process_cell(i: int, j: int) -> Optional[Dict[str, Any]]:
             if grid[i, j] == -1:
                 return None
             window = sliding_window_view(
@@ -151,32 +157,34 @@ class ScratchSolver:
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(features_dict, f, ensure_ascii=False, indent=2)
-            logger.info(f"Features saved to {output_path}")
+            logger.info(f"特徵已儲存至 {output_path}")
         except OSError as e:
-            logger.error(f"Failed to save features to {output_path}: {e}")
+            logger.error(f"儲存特徵至 {output_path} 失敗：{e}")
+            raise
 
+        logger.info(f"已提取 1 個網格特徵，形狀 {grid.shape}")
         return features_dict
 
     def idw_vectorized(self, grid: np.ndarray) -> np.ndarray:
         """
-        Computes inverse distance weighting scores for hidden cells.
+        計算隱藏格子的逆距離加權分數。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            np.ndarray: Scores for hidden cells.
+            np.ndarray: 隱藏格子分數。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         empty_yx = np.argwhere(grid == -1)
         if empty_yx.size == 0:
             return np.array([])
         if self.tree is None or self.known_yx is None or self.known_vals is None:
-            logger.debug("Returning default scores due to uninitialized KDTree")
+            logger.debug("因未初始化 KDTree，返回預設分數")
             return np.full(empty_yx.shape[0], 0.1)
         dists, idxs = self.tree.query(empty_yx, k=min(5, self.known_yx.shape[0]))
         weights = 1.0 / (dists ** 2 + 1e-8)
@@ -187,21 +195,21 @@ class ScratchSolver:
         self, grid: np.ndarray, hot_q: float = 0.9, cold_q: float = 0.1, method: str = 'quantile'
     ) -> np.ndarray:
         """
-        Computes hot/cold scores based on quantile or std thresholds.
+        基於分位數或標準差計算熱冷分數。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            hot_q (float): Hot quantile threshold.
-            cold_q (float): Cold quantile threshold.
-            method (str): Method for threshold calculation ('quantile', 'std').
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            hot_q (float): 熱分位數閾值。
+            cold_q (float): 冷分位數閾值。
+            method (str): 閾值計算方法 ('quantile', 'std')。
 
         Returns:
-            np.ndarray: Hot/cold scores for hidden cells.
+            np.ndarray: 隱藏格子的熱冷分數。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         known = grid[grid != -1]
         if known.size == 0:
@@ -237,34 +245,31 @@ class ScratchSolver:
         self, grid: np.ndarray, hot_q: float = 0.9, cold_q: float = 0.1, method: str = 'adaptive'
     ) -> np.ndarray:
         """
-        Advanced hot/cold scoring with position, difference, and connectivity weights.
+        進階熱冷分數計算，考慮位置、差異與連通性權重。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            hot_q (float): Hot quantile threshold.
-            cold_q (float): Cold quantile threshold.
-            method (str): Method for threshold calculation ('adaptive', 'quantile').
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            hot_q (float): 熱分位數閾值。
+            cold_q (float): 冷分位數閾值。
+            method (str): 閾值計算方法 ('adaptive', 'quantile')。
 
         Returns:
-            np.ndarray: Advanced hot/cold scores for hidden cells.
+            np.ndarray: 隱藏格子的進階熱冷分數。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         known = grid[grid != -1]
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
         
-        # Position weights based on grid centrality
         position_weights = np.exp(-np.sum(np.indices(grid.shape), axis=0) / max(grid.shape))
         
-        # Difference weights based on local gradients
         diffs = np.abs(np.diff(known))
         diff_weight = np.mean(diffs) if diffs.size > 0 else 1.0
         
-        # Connectivity weights from neighboring cells
         conn_scores, _ = self.connectivity_heatmap(grid)
         
         if method == 'adaptive':
@@ -289,7 +294,6 @@ class ScratchSolver:
             )
         )
         
-        # Apply combined weights
         empty_yx = np.argwhere(grid == -1)
         for idx, (i, j) in enumerate(empty_yx):
             scores[idx] *= position_weights[i, j] * (1 + conn_scores[idx] * 0.5)
@@ -299,19 +303,19 @@ class ScratchSolver:
 
     def compute_block_heatmap_vectorized(self, grid: np.ndarray, block_size: int = 2) -> np.ndarray:
         """
-        Computes block-based heatmap scores.
+        計算基於區塊的熱圖分數。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            block_size (int): Size of the block for analysis.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            block_size (int): 分析區塊大小。
 
         Returns:
-            np.ndarray: Block-based scores for hidden cells.
+            np.ndarray: 隱藏格子的區塊分數。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         h, w = grid.shape
         bs = min(block_size, h, w)
@@ -328,18 +332,18 @@ class ScratchSolver:
 
     def compute_global_diff_heatmap(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Computes global difference heatmap using Laplacian kernel.
+        使用拉普拉斯核計算全局差異熱圖。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         arr = np.where(grid == -1, 0, grid).astype(float)
         kernel = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=float)
@@ -353,18 +357,18 @@ class ScratchSolver:
 
     def compute_focus_score(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Computes focus scores based on neighboring cell values.
+        基於鄰居格子值計算聚焦分數。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         mask = (grid != -1).astype(np.int64)
         kernel = np.ones((3, 3)) / 9
@@ -377,18 +381,18 @@ class ScratchSolver:
 
     def detect_skip_patterns(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Detects arithmetic skip patterns in rows and columns.
+        檢測行與列中的等差跳躍模式。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
@@ -424,18 +428,18 @@ class ScratchSolver:
 
     def compute_difference_trend(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Computes difference trends based on grid gradients.
+        基於網格梯度計算差異趨勢。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
@@ -474,18 +478,18 @@ class ScratchSolver:
 
     def detect_mirror_sequences(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Detects mirror symmetry patterns in the grid.
+        檢測網格中的鏡像對稱模式。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
@@ -522,18 +526,18 @@ class ScratchSolver:
 
     def connectivity_heatmap(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Computes connectivity heatmap based on neighboring cells.
+        基於鄰居格子計算連通性熱圖。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         mask = (grid != -1).astype(np.uint8)
@@ -548,18 +552,18 @@ class ScratchSolver:
 
     def sequence_tail_analyzer(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Analyzes number tails for pattern prediction.
+        分析數字尾數以預測模式。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Scores and predictions for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子分數與預測值。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         scores = np.zeros((M, N), dtype=float)
@@ -587,18 +591,18 @@ class ScratchSolver:
 
     def analyze_number_patterns(self, grid: np.ndarray) -> Dict[Tuple[int, str], Dict[str, Any]]:
         """
-        Analyzes arithmetic patterns in rows and columns with enhanced flexibility.
+        分析行與列中的等差模式。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Dict[Tuple[int, str], Dict[str, Any]]: Detected patterns.
+            Dict[Tuple[int, str], Dict[str, Any]]: 檢測到的模式。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         patterns: Dict[Tuple[int, str], Dict[str, Any]] = {}
@@ -609,14 +613,13 @@ class ScratchSolver:
             diffs = np.diff(arr)
             if np.all(np.abs(diffs - diffs[0]) < 1e-10):
                 return {'type': 'arithmetic', 'diff': diffs[0]}
-            # Enhanced: Check for non-uniform arithmetic patterns
             for k in range(2, min(5, len(arr))):
                 sub_diffs = np.diff(arr[::k])
                 if len(sub_diffs) > 1 and np.all(np.abs(sub_diffs - sub_diffs[0]) < 1e-10):
                     return {'type': 'skip_arithmetic', 'diff': sub_diffs[0], 'skip': k}
             return None
         
-        def process_row(i):
+        def process_row(i: int) -> Optional[Tuple[Tuple[int, str], Dict[str, Any]]]:
             nums = grid[i][grid[i] != -1]
             if len(nums) >= 3:
                 pattern = find_arithmetic(nums)
@@ -624,7 +627,7 @@ class ScratchSolver:
                     return (i, 'h'), pattern
             return None
         
-        def process_col(j):
+        def process_col(j: int) -> Optional[Tuple[Tuple[int, str], Dict[str, Any]]]:
             nums = grid[:, j][grid[:, j] != -1]
             if len(nums) >= 3:
                 pattern = find_arithmetic(nums)
@@ -645,19 +648,19 @@ class ScratchSolver:
         self, grid: np.ndarray, patterns: Dict[Tuple[int, str], Dict[str, Any]]
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Predicts values based on detected patterns with enhanced flexibility.
+        基於檢測到的模式進行預測。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            patterns (Dict[Tuple[int, str], Dict[str, Any]]): Detected patterns.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            patterns (Dict[Tuple[int, str], Dict[str, Any]]): 檢測到的模式。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Predictions and scores for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子預測值與分數。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         pred = np.full_like(grid, -1, dtype=float)
@@ -694,18 +697,18 @@ class ScratchSolver:
 
     def local_relationship_prediction(self, grid: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Predicts values based on local neighbor relationships.
+        基於鄰居關係進行預測。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Predictions and scores for hidden cells.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子預測值與分數。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         M, N = grid.shape
         pred = np.full_like(grid, -1, dtype=float)
@@ -721,19 +724,19 @@ class ScratchSolver:
 
     def heatmap_based_prediction(self, grid: np.ndarray, scores: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Generates predictions based on heatmap scores.
+        基於熱圖分數生成預測。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            scores (np.ndarray): Heatmap scores.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            scores (np.ndarray): 熱圖分數。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Predictions and confidence scores.
+            Tuple[np.ndarray, np.ndarray]: 隱藏格子預測值與置信度。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         pred = np.zeros_like(grid, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
@@ -749,20 +752,20 @@ class ScratchSolver:
         self, grid: np.ndarray, scores: np.ndarray, patterns: Dict[Tuple[int, str], Dict[str, Any]]
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Integrates multiple prediction methods.
+        整合多種預測方法。
 
-        Parameters:
-            grid (np.ndarray): 2D grid array.
-            scores (np.ndarray): Heatmap scores.
-            patterns (Dict[Tuple[int, str], Dict[str, Any]]): Detected patterns.
+        Args:
+            grid (np.ndarray): 二維網格陣列。
+            scores (np.ndarray): 熱圖分數。
+            patterns (Dict[Tuple[int, str], Dict[str, Any]]): 檢測到的模式。
 
         Returns:
-            Tuple[np.ndarray, np.ndarray]: Integrated predictions and confidence scores.
+            Tuple[np.ndarray, np.ndarray]: 整合預測值與置信度。
 
         Raises:
-            AssertionError: If grid is not 2D.
+            AssertionError: 若網格非二維。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         grid = grid.astype(np.int64)
         predictions = np.full_like(grid, -1, dtype=float)
         confidence = np.zeros_like(grid, dtype=float)
@@ -793,22 +796,22 @@ class ScratchSolver:
         self, grid: np.ndarray, prediction: np.ndarray, true_values: np.ndarray
     ) -> Dict[str, float]:
         """
-        Evaluates prediction accuracy and pattern matching.
+        評估預測準確度與模式匹配。
 
-        Parameters:
-            grid (np.ndarray): Original grid.
-            prediction (np.ndarray): Predicted values.
-            true_values (np.ndarray): True values.
+        Args:
+            grid (np.ndarray): 原始網格。
+            prediction (np.ndarray): 預測值。
+            true_values (np.ndarray): 真實值。
 
         Returns:
-            Dict[str, float]: Evaluation metrics.
+            Dict[str, float]: 評估指標。
 
         Raises:
-            AssertionError: If inputs are not 2D or shapes mismatch.
+            AssertionError: 若輸入非二維或形狀不匹配。
         """
-        assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
-        assert prediction.ndim == 2, f"Expected 2D prediction, got {prediction.ndim}D array with shape {prediction.shape}"
-        assert true_values.ndim == 2, f"Expected 2D true_values, got {true_values.ndim}D array with shape {true_values.shape}"
+        assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
+        assert prediction.ndim == 2, f"預期二維預測，得到 {prediction.ndim}維陣列，形狀 {prediction.shape}"
+        assert true_values.ndim == 2, f"預期二維真實值，得到 {true_values.ndim}維陣列，形狀 {true_values.shape}"
         grid = grid.astype(np.int64)
         metrics = {
             'accuracy': 0.0,
@@ -832,15 +835,15 @@ class ScratchSolver:
 
     def classify_board_type(self, dynamic_scores: np.ndarray, hot_thresh: float = 0.5, cold_thresh: float = -0.5) -> str:
         """
-        Classifies board as HOT, COLD, or UNIFORM based on scores.
+        基於分數分類網格為熱、冷或均勻。
 
-        Parameters:
-            dynamic_scores (np.ndarray): Dynamic scores array.
-            hot_thresh (float): Hot threshold.
-            cold_thresh (float): Cold threshold.
+        Args:
+            dynamic_scores (np.ndarray): 動態分數陣列。
+            hot_thresh (float): 熱閾值。
+            cold_thresh (float): 冷閾值。
 
         Returns:
-            str: Board type ('HOT', 'COLD', 'UNIFORM').
+            str: 網格類型 ('HOT', 'COLD', 'UNIFORM')。
         """
         total = dynamic_scores.sum() / (np.count_nonzero(dynamic_scores != 0) + 1e-8)
         if total >= hot_thresh:
@@ -853,15 +856,15 @@ class ScratchSolver:
         self, mod_scores: Dict[str, np.ndarray], board_type: str, default_weights: Dict[str, float]
     ) -> np.ndarray:
         """
-        Fuses scores from multiple modules using adaptive weights.
+        使用自適應權重融合多模組分數。
 
-        Parameters:
-            mod_scores (Dict[str, np.ndarray]): Module scores.
-            board_type (str): Type of board ('HOT', 'COLD', 'UNIFORM').
-            default_weights (Dict[str, float]): Default weights for modules.
+        Args:
+            mod_scores (Dict[str, np.ndarray]): 模組分數。
+            board_type (str): 網格類型 ('HOT', 'COLD', 'UNIFORM')。
+            default_weights (Dict[str, float]): 預設模組權重。
 
         Returns:
-            np.ndarray: Fused scores for hidden cells.
+            np.ndarray: 隱藏格子融合分數。
         """
         w = self.weights_for(board_type, default_weights)
         names = list(mod_scores.keys())
@@ -876,14 +879,14 @@ class ScratchSolver:
 
     def weights_for(self, board_type: str, default_weights: Dict[str, float]) -> Dict[str, float]:
         """
-        Adjusts weights based on board type.
+        根據網格類型調整權重。
 
-        Parameters:
-            board_type (str): Type of board ('HOT', 'COLD', 'UNIFORM').
-            default_weights (Dict[str, float]): Default weights.
+        Args:
+            board_type (str): 網格類型 ('HOT', 'COLD', 'UNIFORM')。
+            default_weights (Dict[str, float]): 預設權重。
 
         Returns:
-            Dict[str, float]: Adjusted weights.
+            Dict[str, float]: 調整後的權重。
         """
         w = default_weights.copy()
         if board_type == 'HOT':
@@ -900,15 +903,15 @@ class ScratchSolver:
         self, final_scores: np.ndarray, empty_positions: np.ndarray, target_num: Optional[int] = None
     ) -> List[Tuple[int, int, float, Dict[str, float]]]:
         """
-        Predicts top 3 positions for hidden numbers.
+        預測隱藏數字的前三位置。
 
-        Parameters:
-            final_scores (np.ndarray): Final scores for hidden cells.
-            empty_positions (np.ndarray): Positions of hidden cells.
-            target_num (Optional[int]): Target number to predict.
+        Args:
+            final_scores (np.ndarray): 最終分數。
+            empty_positions (np.ndarray): 隱藏格子位置。
+            target_num (Optional[int]): 目標數字。
 
         Returns:
-            List[Tuple[int, int, float, Dict[str, float]]]: Top 3 predictions with details.
+            List[Tuple[int, int, float, Dict[str, float]]]: 前三預測結果。
         """
         idxs = np.argsort(-final_scores)[:3]
         unique_idx = np.unique(idxs, return_index=True)[1]
@@ -929,7 +932,7 @@ class ScratchSolver:
 
 class AdaptiveWeights:
     """
-    Manages adaptive weights for module scoring.
+    管理模組分數的自適應權重。
     """
     def __init__(self, initial_weights: Dict[str, float]):
         self.weights = initial_weights.copy()
@@ -937,11 +940,11 @@ class AdaptiveWeights:
     
     def update(self, success_rate: float, module_scores: Dict[str, np.ndarray]) -> None:
         """
-        Updates weights based on success rate and module scores.
+        基於預測成功率與模組分數更新權重。
 
-        Parameters:
-            success_rate (float): Success rate of predictions.
-            module_scores (Dict[str, np.ndarray]): Module scores.
+        Args:
+            success_rate (float): 預測成功率。
+            module_scores (Dict[str, np.ndarray]): 模組分數。
         """
         alpha = 0.1
         self.history.append({
@@ -959,39 +962,138 @@ class AdaptiveWeights:
     
     def save_history(self, filepath: str) -> None:
         """
-        Saves weight history to a JSON file.
+        將權重歷史儲存為 JSON 檔案。
 
-        Parameters:
-            filepath (str): Path to save history.
+        Args:
+            filepath (str): 儲存路徑。
 
         Raises:
-            OSError: If saving fails.
+            OSError: 若儲存失敗。
         """
         try:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except OSError as e:
-            logger.error(f"Failed to save weight history to {filepath}: {e}")
+            logger.error(f"儲存權重歷史至 {filepath} 失敗：{e}")
             raise
     
     def load_history(self, filepath: str) -> None:
         """
-        Loads weight history from a JSON file.
+        從 JSON 檔案載入權重歷史。
 
-        Parameters:
-            filepath (str): Path to load history from.
+        Args:
+            filepath (str): 載入路徑。
 
         Raises:
-            OSError, json.JSONDecodeError: If loading fails.
+            OSError, json.JSONDecodeError: 若載入失敗。
         """
         if os.path.exists(filepath):
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     self.history = json.load(f)
             except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to load weight history from {filepath}: {e}")
+                logger.error(f"載入權重歷史從 {filepath} 失敗：{e}")
                 raise
+
+# === feature extraction for faiss ===
+def compute_global_features(heatmap: np.ndarray) -> np.ndarray:
+    """
+    計算全盤熱圖統計與梯度特徵，支持任意大小網格。
+
+    特徵包括：均值、標準差、最大值、最小值、中位數、偏度、峰度、梯度幅度均值。
+
+    Args:
+        heatmap (np.ndarray): 熱圖陣列。
+
+    Returns:
+        np.ndarray: 包含統計與梯度特徵的向量。
+
+    Raises:
+        ValueError: 若熱圖為空或無有效數據。
+    """
+    try:
+        if heatmap.size == 0:
+            raise ValueError("熱圖陣列為空")
+        
+        # 統計特徵
+        stats = [
+            float(heatmap.mean()),
+            float(heatmap.std()),
+            float(heatmap.max()),
+            float(heatmap.min()),
+            float(np.median(heatmap)),
+            float(skew(heatmap.flatten())),
+            float(kurtosis(heatmap.flatten()))
+        ]
+        
+        # 梯度特徵
+        grad_x = np.abs(np.diff(heatmap, axis=1)).mean() if heatmap.shape[1] > 1 else 0.0
+        grad_y = np.abs(np.diff(heatmap, axis=0)).mean() if heatmap.shape[0] > 1 else 0.0
+        grad_mean = float((grad_x + grad_y) / 2)
+        stats.append(grad_mean)
+        
+        return np.array(stats, dtype=np.float32)
+    except ValueError as e:
+        logger.error(f"計算全盤特徵失敗：{e}")
+        return np.zeros(8, dtype=np.float32)
+
+def compute_local_patch(heatmap: np.ndarray, pos: Tuple[int, int]) -> np.ndarray:
+    """
+    計算指定位置的局部熱圖 patch 並攤平為向量，動態適應網格大小。
+
+    窗口大小根據網格尺寸動態選擇，確保對小網格和大網格均適用。
+
+    Args:
+        heatmap (np.ndarray): 熱圖陣列。
+        pos (Tuple[int, int]): 目標格子位置 (行, 列)。
+
+    Returns:
+        np.ndarray: 攤平的局部 patch 向量。
+
+    Raises:
+        IndexError: 若位置無效。
+        ValueError: 若熱圖形狀無效。
+    """
+    try:
+        M, N = heatmap.shape
+        i, j = pos
+        if not (0 <= i < M and 0 <= j < N):
+            raise IndexError(f"無效位置 {pos}，網格形狀 {heatmap.shape}")
+        
+        # 動態選擇窗口大小
+        window = min(M, N) // 2 * 2 + 1  # 確保為奇數
+        window = max(3, min(window, min(M, N)))  # 至少 3x3，最大不超過網格尺寸
+        pad = window // 2
+        P = np.pad(heatmap, pad, mode="constant", constant_values=0)
+        patch = P[i:i+window, j:j+window]
+        return patch.flatten().astype(np.float32)
+    except (IndexError, ValueError) as e:
+        logger.error(f"計算局部 patch 失敗：{e}")
+        return np.zeros(9, dtype=np.float32)  # 預設 3x3 patch 大小
+
+def compute_features(heatmap: np.ndarray, pos: Tuple[int, int]) -> np.ndarray:
+    """
+    合併全盤統計特徵與局部 patch 特徵，支持全盤精準推理。
+
+    Args:
+        heatmap (np.ndarray): 熱圖陣列。
+        pos (Tuple[int, int]): 目標格子位置 (行, 列)。
+
+    Returns:
+        np.ndarray: 合併的全盤與局部特徵向量。
+    """
+    try:
+        g = compute_global_features(heatmap)
+        l = compute_local_patch(heatmap, pos)
+        features = np.concatenate([g, l])
+        logger.debug(f"提取特徵完成，網格形狀 {heatmap.shape}，位置 {pos}，特徵維度 {features.shape}")
+        return features
+    except Exception as e:
+        logger.error(f"合併特徵失敗：{e}")
+        return np.zeros(17, dtype=np.float32)  # 8 全盤 + 9 局部 (假設 3x3)
+
+# === end feature extraction ===
 
 # 自檢報告：
 # - 語法檢查：通過
