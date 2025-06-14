@@ -1,0 +1,121 @@
+{
+  "concepts": [
+    {
+      "id": "compute_dynamic_hot_cold_vectorized",
+      "name": "動態冷熱點向量化",
+      "module": "compute_dynamic_hot_cold_vectorized",
+      "type": "heatmap",
+      "desc": "根據量化分位數動態統計格子熱點與冷點，產生向量化得分矩陣。",
+      "params": {
+        "hot_q": 0.9,
+        "cold_q": 0.1,
+        "method": "quantile"
+      }
+    },
+    {
+      "id": "compute_dynamic_hot_cold_advanced",
+      "name": "進階冷熱點向量化",
+      "module": "compute_dynamic_hot_cold_advanced",
+      "type": "heatmap",
+      "desc": "在動態冷熱點演算法基礎上加入權重衰減及自適應參數微調，提升極值敏感度。",
+      "params": {
+        "hot_q": 0.9,
+        "cold_q": 0.1,
+        "method": "quantile"
+      }
+    },
+    {
+      "id": "idw_vectorized",
+      "name": "逆距離加權插值",
+      "module": "idw_vectorized",
+      "type": "interpolation",
+      "desc": "以逆距離加權 (IDW) 對未知格子插值，距離越近權重越高。",
+      "params": {}
+    },
+    {
+      "id": "compute_block_heatmap_vectorized",
+      "name": "分塊熱力圖向量化",
+      "module": "compute_block_heatmap_vectorized",
+      "type": "heatmap",
+      "desc": "將棋盤切分為固定大小區塊，統計區塊熱度並平滑至格子層級。",
+      "params": {
+        "block_size": 2
+      }
+    },
+    {
+      "id": "compute_global_diff_heatmap",
+      "name": "全域差分熱力圖",
+      "module": "compute_global_diff_heatmap",
+      "type": "heatmap",
+      "desc": "計算行列差分絕對值後的全域分佈，用以評估梯度突變區域。",
+      "params": {}
+    },
+    {
+      "id": "compute_focus_score",
+      "name": "聚焦得分",
+      "module": "compute_focus_score",
+      "type": "heatmap",
+      "desc": "根據未填格子到已知數字的距離集中度給分，距離越近權重越高。",
+      "params": {}
+    },
+    {
+      "id": "detect_skip_patterns",
+      "name": "跳格模式檢測",
+      "module": "detect_skip_patterns",
+      "type": "pattern",
+      "desc": "檢測規則性跳格 (如隔一填一) 模式，並對符合模式的空格提高置信度。",
+      "params": {}
+    },
+    {
+      "id": "compute_difference_trend",
+      "name": "差分趨勢檢測",
+      "module": "compute_difference_trend",
+      "type": "trend",
+      "desc": "對每行列做一階差分並分析遞增/遞減趨勢，用於趨勢外插。",
+      "params": {}
+    },
+    {
+      "id": "detect_mirror_sequences",
+      "name": "鏡像序列檢測",
+      "module": "detect_mirror_sequences",
+      "type": "pattern",
+      "desc": "比對棋盤左右或上下鏡像位置的數值對稱性，找到可能的鏡像空格。",
+      "params": {}
+    },
+    {
+      "id": "connectivity_heatmap",
+      "name": "連通性熱力圖",
+      "module": "connectivity_heatmap",
+      "type": "graph",
+      "desc": "視格子為圖節點，已知數字構建相鄰連邊，評估空格與高值區的連通性。",
+      "params": {}
+    },
+    {
+      "id": "sequence_tail_analyzer",
+      "name": "序列尾部分析",
+      "module": "sequence_tail_analyzer",
+      "type": "statistical",
+      "desc": "統計歷史序列尾數出現次數，對尾數較熱門的候選位置加權。",
+      "params": {}
+    },
+    {
+      "id": "analyze_number_patterns",
+      "name": "數字模式分析",
+      "module": "analyze_number_patterns",
+      "type": "pattern",
+      "desc": "挖掘常見的數字組合模式，並回傳匹配空格的模式分數。",
+      "params": {}
+    },
+    {
+      "id": "compute_global_heatmap_from_files",
+      "name": "檔案全域熱力圖",
+      "module": "compute_global_heatmap_from_files",
+      "type": "heatmap",
+      "desc": "批次讀取資料集更新全域熱力圖，生成大樣本統計得分。",
+      "params": {
+        "batch_size": 1000,
+        "output_path": "samples/data/global_heatmap.json"
+      }
+    }
+  ]
+}
