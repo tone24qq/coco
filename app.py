@@ -51,6 +51,71 @@ logger.info(f"資料目錄：{DATA_DIR}")
 MAX_HEATMAPS = 45000  # Expected sample size
 BATCH_SIZE = 1000  # Process heatmaps in chunks
 
+# Global heatmap index
+HEATMAP_INDEX: Dict[str, str] = {}
+
+def build_heatmap_index(data_dir: str = "./samples/data") -> None:
+    """
+    Build heatmap file path index:
+      1) All .json files (excluding math_algo_kb.json)
+      2) All .zip files (base name as key, zip path as value)
+    """
+    global HEATMAP_INDEX
+    HEATMAP_INDEX.clear()
+    
+    # Standalone JSON
+    for path in glob.glob(os.path.join(data_dir, "*.json")):
+        name = os.path.splitext(os.path.basename(path))[0]
+        if name == "math_algo_kb":
+            continue
+        HEATMAP_INDEX[name] = path
+        logger.debug(f"索引 JSON：{name} -> {path}")
+
+    # JSON in ZIP
+    for zip_path in glob.glob(os.path.join(data_dir, "*.zip")):
+        base = os.path.splitext(os.path.basename(zip_path))[0]
+        HEATMAP_INDEX[base] = zip_path
+        logger.debug(f"索引 ZIP：{base} -> {zip_path}")
+
+def load_heatmap(name: str) -> List[List[float]]:
+    """
+    Load heatmap for the given name on demand.
+    Supports three formats: list, data['heatmap'], data['grid'].
+    """
+    path = HEATMAP_INDEX.get(name)
+    if not path:
+        raise KeyError(f"找不到 heatmap 索引：{name}")
+
+    # JSON file
+    if path.lower().endswith(".json"):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.error(f"無法載入 JSON 檔 {name}.json：{e}")
+            raise
+    else:
+        # JSON in ZIP
+        try:
+            with zipfile.ZipFile(path, 'r') as z:
+                member = next((m for m in z.namelist() if m.lower().endswith(".json")), None)
+                if not member:
+                    raise FileNotFoundError(f"{path} 裡沒有 .json 檔")
+                with z.open(member) as jf:
+                    data = json.load(io.TextIOWrapper(jf, 'utf-8'))
+        except (zipfile.BadZipFile, OSError, json.JSONDecodeError) as e:
+            logger.error(f"無法解析 {path} 中的 {member or 'JSON'}：{e}")
+            raise
+
+    # Support three formats
+    if isinstance(data, list):
+        return data
+    if 'heatmap' in data:
+        return data['heatmap']
+    if 'grid' in data:
+        return data['grid']
+    raise ValueError(f"{name} 無可用 heatmap 格式")
+
 # Abstract Heatmap Processor for generalization
 class HeatmapProcessor(ABC):
     """
@@ -70,22 +135,44 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
     """
     def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
         """
-        Load heatmaps from JSON files and ZIP archives in data_dir.
+        Load heatmaps on demand from indexed files in data_dir.
         Yields (name, {'heatmap': heatmap_data}) for each valid heatmap.
+        Logs heatmap name and size for each valid heatmap.
         """
         heatmap_count = 0
         skipped_count = 0
-        heatmaps = load_data_resources(data_dir)
-        logger.info(f"掃描 {len(heatmaps) + skipped_count} 個熱力圖檔案，成功解析 {len(heatmaps)} 個，跳過 {skipped_count} 個")
         
-        for name, heatmap in heatmaps.items():
-            if heatmap_count >= MAX_HEATMAPS:
-                logger.warning(f"達到熱力圖上限：{MAX_HEATMAPS}，停止載入")
-                break
-            yield name, {'heatmap': heatmap}
-            heatmap_count += 1
-            if heatmap_count % BATCH_SIZE == 0:
-                logger.info(f"已載入 {heatmap_count} 個熱力圖")
+        # Build index if not already built
+        if not HEATMAP_INDEX:
+            logger.info("建立熱力圖索引")
+            build_heatmap_index(data_dir)
+        
+        # Process each indexed heatmap
+        for name in HEATMAP_INDEX:
+            try:
+                if heatmap_count >= MAX_HEATMAPS:
+                    logger.warning(f"達到熱力圖上限：{MAX_HEATMAPS}，停止載入")
+                    break
+                hm = load_heatmap(name)
+                # Log heatmap size
+                if len(hm) > 0 and isinstance(hm[0], list):
+                    logger.info(f"{name}: heatmap size = {len(hm)} x {len(hm[0])}")
+                else:
+                    logger.warning(f"{name}: 無效熱力圖格式，非 2D 列表")
+                    skipped_count += 1
+                    continue
+                yield name, {'heatmap': hm}
+                heatmap_count += 1
+                if heatmap_count % BATCH_SIZE == 0:
+                    logger.info(f"已載入 {heatmap_count} 個熱力圖")
+            except (KeyError, FileNotFoundError, ValueError) as e:
+                logger.warning(f"載入 heatmap {name} 失敗：{e}")
+                skipped_count += 1
+            except Exception as e:
+                logger.error(f"載入 heatmap {name} 發生未知錯誤：{e}")
+                skipped_count += 1
+        
+        logger.info(f"總共掃描 {heatmap_count + skipped_count} 個熱力圖檔案，成功解析 {heatmap_count} 個，跳過 {skipped_count} 個")
 
     def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
         """
@@ -109,107 +196,15 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
 # Initialize processor
 heatmap_processor = ScratchCardHeatmapProcessor()
 
-# Load data resources
-def load_data_resources(data_dir: str) -> Dict[str, Any]:
+# Build heatmap index at startup
+logger.info("初始化熱力圖索引")
+build_heatmap_index(DATA_DIR)
+
+# Load knowledge base
+def load_knowledge_base() -> List[Dict]:
     """
-    Load all JSON files and JSONs in ZIPs from data_dir:
-    1) All standalone .json files (excluding math_algo_kb.json)
-    2) All .json files within .zip archives (read directly, no extraction)
-    Supports data = list, data['heatmap'], data['grid'] formats.
-    Returns heatmaps[name] = heatmap_list.
+    Load math_algo_kb.json or create default if not found.
     """
-    heatmaps: Dict[str, Any] = {}
-    heatmap_count = 0
-    skipped_count = 0
-
-    # 1. Process standalone JSON
-    for path in sorted(glob.glob(os.path.join(data_dir, "*.json"))):
-        if os.path.basename(path) == "math_algo_kb.json":
-            continue
-        name = os.path.splitext(os.path.basename(path))[0]
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception as e:
-            logger.error(f"無法載入 JSON 檔 {name}.json：{e}")
-            skipped_count += 1
-            continue
-
-        if isinstance(data, list):
-            heatmaps[name] = data
-            logger.info(f"熱力圖 {name} 直接讀取 list 作為 heatmap")
-            heatmap_count += 1
-        elif "heatmap" in data:
-            heatmaps[name] = data["heatmap"]
-            heatmap_count += 1
-        elif "grid" in data:
-            heatmaps[name] = data["grid"]
-            logger.info(f"熱力圖 {name} 使用 'grid' 鍵代替 'heatmap'")
-            heatmap_count += 1
-        else:
-            logger.warning(f"{name}.json 缺少 'heatmap' 或 'grid' 鍵，跳過")
-            skipped_count += 1
-
-    # 2. Process JSON in ZIP
-    for zip_path in sorted(glob.glob(os.path.join(data_dir, "*.zip"))):
-        base = os.path.splitext(os.path.basename(zip_path))[0]
-        try:
-            with zipfile.ZipFile(zip_path, 'r') as z:
-                for member in z.namelist():
-                    if not member.lower().endswith(".json"):
-                        continue
-                    with z.open(member) as jf:
-                        text_io = io.TextIOWrapper(jf, encoding='utf-8')
-                        try:
-                            data = json.load(text_io)
-                        except Exception as e:
-                            logger.error(f"無法解析 {zip_path} 中的 {member}：{e}")
-                            skipped_count += 1
-                            continue
-
-                        if isinstance(data, list):
-                            heatmaps[base] = data
-                            logger.info(f"熱力圖 {base} 直接讀取 list 作為 heatmap")
-                            heatmap_count += 1
-                            break
-                        elif "heatmap" in data:
-                            heatmaps[base] = data["heatmap"]
-                            heatmap_count += 1
-                            break
-                        elif "grid" in data:
-                            heatmaps[base] = data["grid"]
-                            logger.info(f"熱力圖 {base} 使用 'grid' 鍵代替 'heatmap'")
-                            heatmap_count += 1
-                            break
-                else:
-                    logger.warning(f"{base}.zip 裡沒有 .json heatmap 檔，跳過")
-                    skipped_count += 1
-        except Exception as e:
-            logger.error(f"無法處理 ZIP 檔 {base}.zip：{e}")
-            skipped_count += 1
-
-    logger.info(f"總共掃描 {heatmap_count + skipped_count} 個熱力圖檔案，成功解析 {heatmap_count} 個，跳過 {skipped_count} 個")
-    return heatmaps
-
-# Detect sample files
-def count_json_in_zip(zip_path: str) -> int:
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json') and 'heatmap' in name.lower())
-        logger.debug(f"ZIP 檔案 {zip_path} 包含 {json_count} 個熱力圖 JSON")
-        return json_count
-    except (zipfile.BadZipFile, OSError) as e:
-        logger.error(f"無法計數 ZIP 檔案 {zip_path} 中的 JSON：{str(e)}")
-        return 0
-
-zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
-json_paths = glob.glob(os.path.join(DATA_DIR, "*heatmap*.json"))
-json_in_zips = sum(count_json_in_zip(zip_path) for zip_path in zip_paths)
-total_samples = len(json_paths) + json_in_zips
-logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，獨立 JSON 數量：{len(json_paths)}，ZIP 中熱力圖 JSON 數量：{json_in_zips}，樣本總數：{total_samples}")
-
-# Load knowledge base and heatmaps
-def load_data_resources_full() -> Tuple[List[Dict], List[Tuple[str, Dict]]]:
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     default_kb = [
         {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
@@ -239,19 +234,11 @@ def load_data_resources_full() -> Tuple[List[Dict], List[Tuple[str, Dict]]]:
             logger.error(f"讀取 KB 錯誤：{e}", exc_info=True)
             math_algo_kb = default_kb
             logger.warning(f"使用預設 KB，概念數量：{len(default_kb)}")
+    
+    return math_algo_kb
 
-    heatmap_data = []
-    count = 0
-    for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
-        heatmap_data.append((name, data))
-        count += 1
-        if count % BATCH_SIZE == 0:
-            logger.info(f"已載入 {count} 個熱力圖")
-    logger.info(f"總計載入熱力圖：{count} 條")
-
-    return math_algo_kb, heatmap_data
-
-math_algo_kb, heatmap_data = load_data_resources_full()
+math_algo_kb = load_knowledge_base()
+heatmap_data = []  # No longer preload heatmaps
 
 class AnalysisRequest(BaseModel):
     grid: List[List[float]] = Field(..., description="2D array, -1 for hidden cells")
@@ -340,9 +327,9 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         if len(empty_yx) == 0:
             raise ValueError("網格無隱藏格 (-1)")
 
-        # Aggregate scores from multiple heatmaps
+        # Aggregate scores from heatmaps on demand
         heatmap_scores = []
-        for name, data in heatmap_data:
+        for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
             score = heatmap_processor.match_heatmap(grid, data, target_num)
             if score > 0:
                 heatmap_scores.append((name, score))
@@ -352,8 +339,13 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         top_heatmaps = sorted(heatmap_scores, key=lambda x: x[1], reverse=True)[:3]
         final_score = np.zeros_like(grid, dtype=float)
         for name, score in top_heatmaps:
-            heatmap = np.array(data['heatmap']).reshape(M, N)
-            final_score += score * heatmap
+            try:
+                hm = load_heatmap(name)  # Reload top heatmaps
+                heatmap = np.array(hm).reshape(M, N)
+                final_score += score * heatmap
+            except Exception as e:
+                logger.error(f"重新載入 heatmap {name} 失敗：{e}")
+                continue
         
         pred_array = np.zeros_like(grid, dtype=np.int64)
         top3 = [
@@ -460,6 +452,9 @@ async def upload_file(
             f.write(content)
         logger.info(f"已儲存上傳檔案：{input_path}")
         
+        # Rebuild index after new file upload
+        build_heatmap_index(DATA_DIR)
+        
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
         json_heatmap = os.path.join("samples", "data", "json")
@@ -496,6 +491,9 @@ async def batch_process(
         from main import get_input_files
         files = get_input_files(input_folder)
         logger.info(f"找到 {len(files)} 個有效檔案：{files}")
+        
+        # Rebuild index after batch input
+        build_heatmap_index(input_folder)
         
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
