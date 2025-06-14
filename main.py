@@ -10,6 +10,8 @@ from typing import Dict, List, Optional, Tuple
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
 from joblib import Parallel, delayed
+import asyncio
+import numpy.lib.stride_tricks as stride_tricks
 
 logging.basicConfig(
     level=logging.INFO,
@@ -153,7 +155,7 @@ def balance_samples(grids: List[np.ndarray], target_nums: List[int]) -> List[Tup
 
 async def main() -> None:
     """
-    Execute scratch card analysis or model training.
+    Execute scratch card analysis or model training with enhanced pattern detection.
     """
     args = parse_args()
     
@@ -240,7 +242,6 @@ async def main() -> None:
             raise
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
 
 # 自檢報告：
