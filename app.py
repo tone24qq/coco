@@ -11,7 +11,8 @@ import asyncio
 import glob
 import zipfile
 import tempfile
-from typing import Dict, List, Optional, Tuple, Any
+import psutil
+from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
 from pydantic import BaseModel, Field, validator, ConfigDict
@@ -44,52 +45,47 @@ BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# Load knowledge base and heatmaps with default fallback
-def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
+# Generator for ZIP and JSON paths
+def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
     """
-    Load knowledge base and heatmaps from data directory with detailed logging.
-    Returns a default knowledge base if the file is not found.
+    Yield paths to JSON files, including those within ZIP archives.
+
+    Args:
+        data_dir (str): Directory to scan for JSON and ZIP files.
+
+    Yields:
+        str: Path to a JSON file.
+    """
+    # Yield standalone JSON files
+    for path in glob.glob(f"{data_dir}/**/*.json", recursive=True):
+        yield path
+    
+    # Yield JSON files from ZIP archives
+    for zip_path in glob.glob(f"{data_dir}/**/*.zip", recursive=True):
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                logger.debug(f"Extracting ZIP file: {zip_path} to {temp_dir}")
+                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                    zip_ref.extractall(temp_dir)
+                for temp_file in os.listdir(temp_dir):
+                    if temp_file.endswith('.json'):
+                        json_path = os.path.join(temp_dir, temp_file)
+                        yield json_path
+        except (zipfile.BadZipFile, OSError) as e:
+            logger.error(f"Failed to process ZIP file {zip_path}: {str(e)}")
+            continue
+
+# Load knowledge base and stream heatmaps
+def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]:
+    """
+    Load knowledge base and yield heatmaps one at a time.
+
+    Returns:
+        Tuple containing:
+        - List[Dict]: Math algorithm knowledge base.
+        - Generator[Tuple[str, Any]]: Yields (name, heatmap_data) pairs.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    heatmap_paths = [os.path.join(root, file) for root, _, files in os.walk(DATA_DIR) for file in files if file.endswith('.json')]
-    heatmaps: Dict[str, Any] = {}
-    
-    # Process ZIP files and load JSONs directly within temporary directory context
-    for root, _, files in os.walk(DATA_DIR):
-        for file in files:
-            if file.endswith('.zip'):
-                zip_path = os.path.join(root, file)
-                try:
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        logger.debug(f"Extracting ZIP file: {zip_path} to {temp_dir}")
-                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                            zip_ref.extractall(temp_dir)
-                        # Process JSON files immediately within the temp_dir context
-                        for temp_file in os.listdir(temp_dir):
-                            if temp_file.endswith('.json'):
-                                json_path = os.path.join(temp_dir, temp_file)
-                                name = os.path.splitext(temp_file)[0]
-                                try:
-                                    with open(json_path, 'r', encoding="utf-8") as f:
-                                        heatmaps[name] = json.load(f)
-                                    logger.info(f"Successfully loaded heatmap {name} from {json_path}")
-                                except (OSError, json.JSONDecodeError) as e:
-                                    logger.error(f"Failed to load heatmap {name} from {json_path}: {str(e)}")
-                except (zipfile.BadZipFile, OSError) as e:
-                    logger.error(f"Failed to process ZIP file {zip_path}: {str(e)}")
-                    continue
-    
-    # Load standalone JSON files
-    for heatmap_path in heatmap_paths:
-        name = os.path.splitext(os.path.basename(heatmap_path))[0]
-        if name not in heatmaps:  # Avoid overwriting ZIP-extracted heatmaps
-            try:
-                with open(heatmap_path, 'r', encoding="utf-8") as f:
-                    heatmaps[name] = json.load(f)
-                logger.info(f"Successfully loaded heatmap {name} from {heatmap_path}")
-            except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to load heatmap {name} from {heatmap_path}: {str(e)}")
-    
     default_kb = [
         {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
         {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
@@ -108,13 +104,25 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     else:
         math_algo_kb = default_kb
         logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
-    
-    if not heatmaps:
-        logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
-    
-    return math_algo_kb, heatmaps
 
-math_algo_kb, heatmaps = load_data_resources()
+    def heatmap_generator():
+        for json_path in iter_data_paths(DATA_DIR):
+            name = os.path.splitext(os.path.basename(json_path))[0]
+            try:
+                with open(json_path, 'r', encoding="utf-8") as f:
+                    heatmap_data = json.load(f)
+                logger.info(f"Loaded heatmap {name} from {json_path}")
+                process = psutil.Process()
+                mem_info = process.memory_info()
+                logger.debug(f"Memory usage after loading {name}: {mem_info.rss / 1024 / 1024:.2f} MiB")
+                yield name, heatmap_data
+            except (OSError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load heatmap {name} from {json_path}: {str(e)}")
+                continue
+
+    return math_algo_kb, heatmap_generator()
+
+math_algo_kb, heatmap_generator = load_data_resources()
 
 class AnalysisRequest(BaseModel):
     """
@@ -218,8 +226,15 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         if len(empty_yx) == 0:
             raise ValueError("No hidden cells (-1) found for prediction")
 
+        # Use the first relevant heatmap (or empty dict if none)
+        heatmap_data = {}
+        for name, data in heatmap_generator():
+            if 'heatmap' in data:  # Check if the JSON contains heatmap data
+                heatmap_data = {name: data}
+                break
+        
         final_score, pred_array, top3, metrics, reasoning = analyze_board(
-            grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmaps, model_path
+            grid, DEFAULT_WEIGHTS, True, target_num, None, math_algo_kb, heatmap_data, model_path
         )
         heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
         
@@ -244,6 +259,9 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         f"Target number {target_num} analyzed across {len(predictions)} candidates"
     ]
     logger.info(f"Analysis completed with {len(predictions)} predictions")
+    process = psutil.Process()
+    mem_info = process.memory_info()
+    logger.debug(f"Memory usage after analysis: {mem_info.rss / 1024 / 1024:.2f} MiB")
     return predictions, reasoning
 
 @app.get("/health")
@@ -280,9 +298,16 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         logger.warning("No target_num specified, defaulting to 6")
     
     try:
+        # Use the first relevant heatmap for prediction
+        heatmap_data = {}
+        for name, data in heatmap_generator():
+            if 'heatmap' in data:
+                heatmap_data = {name: data}
+                break
+        
         final_score, predictions, top3, metrics, reasoning = analyze_board(
             grid, payload.weights or DEFAULT_WEIGHTS, True, target, payload.json_heatmap,
-            math_algo_kb, heatmaps, payload.model_path
+            math_algo_kb, heatmap_data, payload.model_path
         )
         heatmap = final_score if final_score.ndim == 2 else np.zeros_like(grid, dtype=float)
         
@@ -301,6 +326,9 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
             source="🔥 from real API",
             reasoning=reasoning
         )
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        logger.debug(f"Memory usage after prediction: {mem_info.rss / 1024 / 1024:.2f} MiB")
         return JSONResponse(
             status_code=200,
             content=result.dict()
