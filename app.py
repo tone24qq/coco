@@ -23,6 +23,7 @@ from joblib import Parallel, delayed
 os.makedirs("logs", exist_ok=True)
 
 # Configure logging
+logger = logging.getLogger("app")  # Match load_kb_with_logging.txt
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
@@ -31,7 +32,6 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Scratch Card Analysis API",
@@ -78,7 +78,7 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
 # Load knowledge base and stream heatmaps
 def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]:
     """
-    Load knowledge base and yield heatmaps one at a time.
+    Load knowledge base and yield heatmaps one at a time, logging the number of heatmaps loaded.
 
     Returns:
         Tuple containing:
@@ -94,31 +94,43 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
     
     if os.path.exists(kb_path):
         try:
-            with open(kb_path, 'r', encoding="utf-8") as f:
-                math_algo_kb = json.load(f)["concepts"]
-            logger.info(f"Successfully loaded knowledge base from {kb_path} with {len(math_algo_kb)} concepts")
+            logger.info(f"檔案存在，開始讀取知識庫：{kb_path}")
+            with open(kb_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            math_algo_kb = payload.get("concepts", [])
+            count = len(math_algo_kb)
+            logger.info(f"已讀取知識庫概念數量：{count} 條")
+            logger.debug(f"前 5 條概念內容：{math_algo_kb[:5]!r}")
         except (OSError, json.JSONDecodeError, KeyError) as e:
-            logger.error(f"Failed to load knowledge base from {kb_path}: {str(e)}")
+            logger.error(f"讀取知識庫時發生錯誤：{e}", exc_info=True)
             math_algo_kb = default_kb
-            logger.warning(f"Using default knowledge base due to error: {str(e)}")
+            logger.warning(f"使用預設知識庫，概念數量：{len(default_kb)} 條")
     else:
+        logger.warning(f"找不到知識庫檔案：{kb_path}，使用預設知識庫")
         math_algo_kb = default_kb
-        logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
+        logger.info(f"預設知識庫概念數量：{len(default_kb)} 條")
 
     def heatmap_generator():
+        heatmap_names = []
+        count = 0
         for json_path in iter_data_paths(DATA_DIR):
             name = os.path.splitext(os.path.basename(json_path))[0]
             try:
+                logger.debug(f"讀取熱力圖檔案：{json_path}")
                 with open(json_path, 'r', encoding="utf-8") as f:
                     heatmap_data = json.load(f)
-                logger.info(f"Loaded heatmap {name} from {json_path}")
+                count += 1
+                heatmap_names.append(name)
+                logger.info(f"成功載入熱力圖：{name}，當前總數：{count} 條")
                 process = psutil.Process()
                 mem_info = process.memory_info()
-                logger.debug(f"Memory usage after loading {name}: {mem_info.rss / 1024 / 1024:.2f} MiB")
+                logger.debug(f"記憶體使用量（載入 {name} 後）：{mem_info.rss / 1024 / 1024:.2f} MiB")
                 yield name, heatmap_data
             except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to load heatmap {name} from {json_path}: {str(e)}")
+                logger.error(f"無法載入熱力圖 {name} 從 {json_path}：{str(e)}")
                 continue
+        logger.info(f"總計載入熱力圖數量：{count} 條")
+        logger.debug(f"前 5 條熱力圖名稱：{heatmap_names[:5]!r}")
 
     return math_algo_kb, heatmap_generator()
 
