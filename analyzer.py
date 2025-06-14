@@ -33,7 +33,6 @@ def compute_all_module_scores(
     features = []
     for mod_name, mod_func in solver.MODULE_REGISTRY.items():
         try:
-            # --- 跳過只回傳 dict 的模式分析模組 ---
             if mod_name == "analyze_number_patterns":
                 continue
             result = mod_func(grid)
@@ -56,7 +55,7 @@ def extract_extended_features(grid: np.ndarray) -> Dict[str, float]:
     Returns:
         Dict[str, float]: Statistical features.
     """
-    grid = grid.astype(np.int64)  # 確保 int64
+    grid = grid.astype(np.int64)
     features = {}
     M, N = grid.shape
     open_nums = grid[grid != -1]
@@ -90,7 +89,7 @@ def generate_masked_samples(
     """
     Generate masked samples with extended features for training.
     """
-    grid = grid.astype(np.int64)  # 確保 int64
+    grid = grid.astype(np.int64)
     samples = []
     M, N = grid.shape
     remaining_nums = list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))
@@ -162,7 +161,7 @@ def predict_topk(
     """
     Predict top-k positions for a target number using the trained model.
     """
-    masked_grid = masked_grid.astype(np.int64)  # 確保 int64
+    masked_grid = masked_grid.astype(np.int64)
     try:
         clf = joblib.load(model_path)
     except FileNotFoundError:
@@ -203,43 +202,6 @@ def predict_topk(
     
     return sorted(candidates, key=lambda x: x[3], reverse=True)[:k] if candidates else []
 
-def integrate_heatmap_data(
-    heatmap_data: Dict[str, Any], grid: np.ndarray, current_heatmap: np.ndarray
-) -> np.ndarray:
-    """
-    Integrate external heatmap data with current heatmap scores for enhanced prediction.
-
-    Parameters:
-        heatmap_data (Dict[str, Any]): Loaded heatmap data from JSON/ZIP files.
-        grid (np.ndarray): Current 2D board array.
-        current_heatmap (np.ndarray): Current computed heatmap scores.
-
-    Returns:
-        np.ndarray: Integrated heatmap scores.
-    """
-    integrated_heatmap = current_heatmap.copy()
-    M, N = grid.shape
-    empty_yx = np.argwhere(grid == -1)
-    
-    for heatmap_name, heatmap_values in heatmap_data.items():
-        try:
-            if isinstance(heatmap_values, dict) and 'scores' in heatmap_values:
-                scores = np.array(heatmap_values['scores'], dtype=float)
-                if scores.size == len(empty_yx):
-                    weights = np.ones_like(scores) * 0.1  # Default weight for external heatmaps
-                    integrated_heatmap[empty_yx[:, 0], empty_yx[:, 1]] += scores * weights
-                    logger.info(f"Integrated heatmap from {heatmap_name} with weight 0.1")
-        except (ValueError, KeyError) as e:
-            logger.warning(f"Failed to integrate heatmap {heatmap_name}: {e}")
-    
-    # Normalize integrated heatmap
-    mn, mx = integrated_heatmap.min(), integrated_heatmap.max()
-    if mx > mn:
-        integrated_heatmap = (integrated_heatmap - mn) / (mx - mn + 1e-8)
-    integrated_heatmap = np.where(integrated_heatmap < 0.1, 0.1, integrated_heatmap)
-    
-    return integrated_heatmap
-
 def analyze_board(
     grid: np.ndarray,
     weights: Dict[str, float],
@@ -251,10 +213,28 @@ def analyze_board(
     model_path: Optional[str] = None
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]], Dict[str, float], List[str]]:
     """
-    Analyze a scratch card board with integrated heatmap data.
+    Analyze a scratch card board with enhanced heatmap generation.
+
+    Args:
+        grid (np.ndarray): 2D board array.
+        weights (Dict[str, float]): Module weights.
+        return_predictions (bool): Whether to return predictions.
+        target_num (Optional[int]): Target number to predict.
+        json_heatmap_path (Optional[str]): Path to save heatmap.
+        knowledge_base (Optional[List[Dict[str, Any]]]): Math algorithm knowledge base.
+        heatmap_data (Optional[Dict[str, Any]]): Preloaded heatmap data.
+        model_path (Optional[str]): Path to trained model.
+
+    Returns:
+        Tuple containing:
+        - np.ndarray: Final scores for hidden cells.
+        - np.ndarray: Predicted values for all cells.
+        - List[Dict[str, Any]]: Top-3 predictions.
+        - Dict[str, float]: Evaluation metrics.
+        - List[str]: Reasoning steps.
     """
     logger.info(f"[analyze_board] grid.ndim={grid.ndim}, shape={grid.shape}")
-    grid = grid.astype(np.int64)  # 確保 int64
+    grid = grid.astype(np.int64)
     if grid.ndim != 2:
         raise ValueError(f"Expected 2D grid, got ndim={grid.ndim}")
 
@@ -263,8 +243,9 @@ def analyze_board(
         solver.update_tree(grid)
         M, N = grid.shape
 
-        heatmap_scores = solver.compute_dynamic_hot_cold_vectorized(
-            grid, weights.get("compute_dynamic_hot_cold_vectorized", 0.9)
+        # Generate full-board heatmap
+        heatmap_scores = solver.compute_dynamic_hot_cold_advanced(
+            grid, weights.get("compute_dynamic_hot_cold_advanced", 0.9)
         )
         heatmap = np.zeros_like(grid, dtype=float)
         empty_yx = np.argwhere(grid == -1)
@@ -277,13 +258,9 @@ def analyze_board(
             heatmap[grid == -1] = 0.1
         assert heatmap.shape == grid.shape, f"heatmap shape {heatmap.shape} must match grid shape {grid.shape}"
 
-        # Integrate external heatmap data if provided
-        if heatmap_data:
-            heatmap = integrate_heatmap_data(heatmap_data, grid, heatmap)
-
+        # Collect module scores
         module_scores = {}
         for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-            # --- 跳過只回傳 dict 的模式分析模組 ---
             if mod_name == "analyze_number_patterns":
                 continue
             try:
@@ -304,6 +281,7 @@ def analyze_board(
                 logger.error(f"{mod_name} failed: {e}")
                 module_scores[mod_name] = np.zeros((M, N))
 
+        # Generate per-cell predictions
         preds = [
             {
                 "row": i,
@@ -316,6 +294,7 @@ def analyze_board(
             if grid[i, j] == -1
         ]
 
+        # Validate target number
         if target_num is None:
             remaining_nums = list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))
             if not remaining_nums:
@@ -323,6 +302,7 @@ def analyze_board(
             target_num = remaining_nums[0]
             logger.warning(f"No target number specified, using {target_num}")
 
+        # Validate grid constraints
         if grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
             logger.error("Grid size out of bounds")
             return np.array([]), np.array(grid), [], {"accuracy": 0}, ["Invalid grid size"]
@@ -336,6 +316,7 @@ def analyze_board(
             logger.warning(f"Target number {target_num} already present")
             return np.array([]), np.array(grid), [], {"accuracy": 0}, [f"Target {target_num} already open"]
 
+        # Save extended features
         extended_features = extract_extended_features(grid)
         if json_heatmap_path:
             features_path = json_heatmap_path.replace(".", "_features.")
@@ -346,41 +327,21 @@ def analyze_board(
             except OSError as e:
                 logger.error(f"Failed to save features: {e}")
 
-        mod_scores = {}
-        for mod_name, mod_func in solver.MODULE_REGISTRY.items():
-            # --- 跳過只回傳 dict 的模式分析模組 ---
-            if mod_name == "analyze_number_patterns":
-                continue
-            try:
-                result = mod_func(grid)
-                if isinstance(result, tuple):
-                    result = result[0]
-                if result.ndim != 2:
-                    if result.size == M * N:
-                        result = result.reshape(M, N)
-                    elif len(result) == len(empty_yx):
-                        temp_result = np.zeros((M, N))
-                        temp_result[empty_yx[:, 0], empty_yx[:, 1]] = result
-                        result = temp_result
-                    else:
-                        result = np.zeros((M, N))
-                mod_scores[mod_name] = result
-            except Exception as e:
-                logger.error(f"{mod_name} failed: {e}")
-                mod_scores[mod_name] = np.zeros((M, N))
-
+        # Fuse module scores
         board_type = solver.classify_board_type(
-            mod_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N)))
+            module_scores.get("compute_dynamic_hot_cold_vectorized", np.zeros((M, N)))
         )
-        solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=mod_scores)
-        final_score = solver.fuse_scores_vectorized(mod_scores, board_type, solver.adaptive_weights.weights)
+        solver.adaptive_weights.update(success_rate=np.random.random(), module_scores=module_scores)
+        final_score = solver.fuse_scores_vectorized(module_scores, board_type, solver.adaptive_weights.weights)
 
+        # Integrate predictions with patterns
         patterns = solver.analyze_number_patterns(grid)
         if not isinstance(patterns, dict):
             logger.error(f"Expected dict from analyze_number_patterns, got {type(patterns)}")
             patterns = {}
         predictions, confidence = solver.integrate_predictions(grid, final_score, patterns)
 
+        # Generate top-3 predictions
         top3 = []
         reasoning_steps = [
             f"Remaining numbers: {list(set(range(1, grid.size + 1)) - set(grid[grid != -1].flatten()))}",
@@ -419,12 +380,29 @@ def analyze_board(
             ]
             reasoning_steps.append(f"Top-3 predicted using heuristic scores: {top3}")
 
+        # Evaluate predictions
         true_values = grid.copy()
         remaining_nums = list(set(range(1, grid.size + 1)) - set(open_nums))
         np.random.shuffle(remaining_nums)
         for (i, j), num in zip(np.argwhere(grid == -1), remaining_nums):
             true_values[i, j] = num
         metrics = solver.evaluate_prediction(grid, predictions, true_values)
+
+        # Save heatmap if path provided
+        if json_heatmap_path:
+            try:
+                heatmap_data = {
+                    "grid": grid.tolist(),
+                    "heatmap": heatmap.tolist(),
+                    "predictions": top3,
+                    "metrics": metrics
+                }
+                os.makedirs(os.path.dirname(json_heatmap_path), exist_ok=True)
+                with open(json_heatmap_path, "w", encoding="utf-8") as f:
+                    json.dump(heatmap_data, f, ensure_ascii=False, indent=2)
+                logger.info(f"Heatmap saved to {json_heatmap_path}")
+            except OSError as e:
+                logger.error(f"Failed to save heatmap: {e}")
 
         return final_score, predictions, top3, metrics, reasoning_steps
 
