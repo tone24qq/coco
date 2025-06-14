@@ -1,4 +1,8 @@
 # modules.py
+
+import os
+os.makedirs("logs", exist_ok=True)
+
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import convolve2d
@@ -6,17 +10,18 @@ from scipy.spatial import cKDTree
 import pandas as pd
 import logging
 import json
-import os
 from typing import Dict, List, Tuple, Any, Optional
 from joblib import Parallel, delayed
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[logging.FileHandler("logs/modules.log"), logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler("logs/modules.log"),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
-
 class ScratchSolver:
     """
     Solver for analyzing scratch card boards, predicting hidden numbers, and extracting multi-angle features.
