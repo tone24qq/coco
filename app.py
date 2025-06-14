@@ -12,7 +12,6 @@ import glob
 import zipfile
 import tempfile
 import psutil
-import ijson
 from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
@@ -71,19 +70,43 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
     """
     def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
         heatmap_count = 0
-        for json_path in iter_data_paths(data_dir):
-            name = os.path.splitext(os.path.basename(json_path))[0]
+        skipped_count = 0
+        heatmaps = {}
+        heatmap_paths = list(iter_data_paths(data_dir))
+        logger.info(f"開始處理 {len(heatmap_paths)} 個熱力圖檔案")
+        
+        for heatmap_path in heatmap_paths:
+            name = os.path.splitext(os.path.basename(heatmap_path))[0]
             try:
-                logger.debug(f"讀取熱力圖檔案：{json_path}")
-                with open(json_path, 'r', encoding="utf-8") as f:
-                    heatmap_data = json.load(f)
-                # 模擬所有 JSON 缺少 'heatmap' 鍵的情況
-                logger.warning(f"熱力圖 {name} 缺少 'heatmap' 鍵，跳過")
-                continue
+                logger.debug(f"讀取熱力圖檔案：{heatmap_path}")
+                with open(heatmap_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                # 支援三種情況：純 list、包含 'heatmap'、或是老版本的 'grid'
+                if isinstance(data, list):
+                    heatmaps[name] = data
+                    logger.info(f"熱力圖 {name} 直接讀取 list 作為 heatmap")
+                    heatmap_count += 1
+                elif 'heatmap' in data:
+                    heatmaps[name] = data['heatmap']
+                    heatmap_count += 1
+                elif 'grid' in data:
+                    heatmaps[name] = data['grid']
+                    logger.info(f"熱力圖 {name} 使用 'grid' 鍵代替 'heatmap'")
+                    heatmap_count += 1
+                else:
+                    logger.warning(f"熱力圖 {name} 缺少 'heatmap' 或 'grid' 鍵，跳過")
+                    skipped_count += 1
+                    continue
             except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"無法載入熱力圖 {name} 從 {json_path}：{str(e)}")
+                logger.error(f"無法載入熱力圖 {name} 從 {heatmap_path}：{str(e)}")
+                skipped_count += 1
                 continue
-        logger.info(f"總共解析 {heatmap_count} 個熱力圖檔案")
+        
+        logger.info(f"總共掃描 {heatmap_count + skipped_count} 個熱力圖檔案，成功解析 {heatmap_count} 個，跳過 {skipped_count} 個")
+        
+        for name, heatmap in heatmaps.items():
+            yield name, {'heatmap': heatmap}
 
     def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
         """
@@ -121,7 +144,7 @@ def count_json_in_zip(zip_path: str) -> int:
 zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
 json_paths = glob.glob(os.path.join(DATA_DIR, "*heatmap*.json"))
 json_in_zips = sum(count_json_in_zip(zip_path) for zip_path in zip_paths)
-total_samples = len(zip_paths) + len(json_paths) + json_in_zips
+total_samples = len(json_paths) + json_in_zips
 logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，獨立 JSON 數量：{len(json_paths)}，ZIP 中熱力圖 JSON 數量：{json_in_zips}，樣本總數：{total_samples}")
 
 # Generator for JSON paths
