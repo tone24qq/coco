@@ -20,6 +20,12 @@ except ImportError:
     raise ImportError(
         "Module 'faiss' not found. Please install via 'pip install faiss-cpu' and restart the application."
     )
+    if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))         # 讀取 Render 提供的埠號，預設 8000
+    uvicorn.run("app:app",                          # 改成你的 module:app
+                host="0.0.0.0",                    # 一定要綁 0.0.0.0
+                port=port,
+                log_level="info")
 from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import analyze_board
