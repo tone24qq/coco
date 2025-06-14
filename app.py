@@ -22,10 +22,10 @@ from joblib import Parallel, delayed
 # Ensure logs directory exists
 os.makedirs("logs", exist_ok=True)
 
-# Configure logging
+# Configure logging with DEBUG level for detailed diagnostics
 logger = logging.getLogger("app")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.FileHandler("logs/api.log"),
@@ -46,11 +46,31 @@ DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 logger.info(f"資料目錄：{DATA_DIR}")
 
-# Detect sample files (ZIP + JSON)
+# Detect sample files (ZIP + JSON + JSONs in ZIPs)
+def count_json_in_zip(zip_path: str) -> int:
+    """
+    Count JSON files within a ZIP archive, including nested directories.
+
+    Args:
+        zip_path (str): Path to the ZIP file.
+
+    Returns:
+        int: Number of JSON files found.
+    """
+    try:
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json'))
+        logger.debug(f"ZIP 檔案 {zip_path} 包含 {json_count} 個 JSON 檔案")
+        return json_count
+    except (zipfile.BadZipFile, OSError) as e:
+        logger.error(f"無法計數 ZIP 檔案 {zip_path} 中的 JSON：{str(e)}")
+        return 0
+
 zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
 json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
-total_samples = len(zip_paths) + len(json_paths)
-logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，JSON 檔案數量：{len(json_paths)}，樣本總數：{total_samples}")
+json_in_zips = sum(count_json_in_zip(zip_path) for zip_path in zip_paths)
+total_samples = len(zip_paths) + len(json_paths) + json_in_zips
+logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，獨立 JSON 檔案數量：{len(json_paths)}，ZIP 中 JSON 數量：{json_in_zips}，樣本總數：{total_samples}")
 
 # Generator for ZIP and JSON paths
 def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
@@ -81,9 +101,12 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
                 logger.debug(f"解壓縮 ZIP 檔案：{zip_path} 到 {temp_dir}")
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(temp_dir)
-                json_files_in_zip = [
-                    os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.endswith('.json')
-                ]
+                # Recursively find JSON files in extracted directory
+                json_files_in_zip = []
+                for root, _, files in os.walk(temp_dir):
+                    for f in files:
+                        if f.lower().endswith('.json'):
+                            json_files_in_zip.append(os.path.join(root, f))
                 logger.info(f"從 {zip_path} 解壓縮出 {len(json_files_in_zip)} 個 JSON 檔案")
                 for json_path in json_files_in_zip:
                     logger.debug(f"從 ZIP 產生 JSON 檔案：{json_path}")
