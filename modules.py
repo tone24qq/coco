@@ -187,10 +187,10 @@ class ScratchSolver:
         return scores[grid == -1]
 
     def compute_dynamic_hot_cold_advanced(
-        self, grid: np.ndarray, hot_q: float = 0.9, cold_q: float = 0.1, method: str = 'quantile'
+        self, grid: np.ndarray, hot_q: float = 0.9, cold_q: float = 0.1, method: str = 'adaptive'
     ) -> np.ndarray:
         """
-        Advanced hot/cold scoring with position and difference weights.
+        Advanced hot/cold scoring with position, difference, and connectivity weights.
         """
         assert grid.ndim == 2, f"Expected 2D grid, got {grid.ndim}D array with shape {grid.shape}"
         grid = grid.astype(np.int64)
@@ -198,9 +198,15 @@ class ScratchSolver:
         if known.size == 0:
             return np.full(np.count_nonzero(grid == -1), 0.1)
         
+        # Position weights based on grid centrality
         position_weights = np.exp(-np.sum(np.indices(grid.shape), axis=0) / max(grid.shape))
+        
+        # Difference weights based on local gradients
         diffs = np.abs(np.diff(known))
         diff_weight = np.mean(diffs) if diffs.size > 0 else 1.0
+        
+        # Connectivity weights from neighboring cells
+        conn_scores, _ = self.connectivity_heatmap(grid)
         
         if method == 'adaptive':
             hot_thr = np.percentile(known, 75) + diff_weight
@@ -224,9 +230,13 @@ class ScratchSolver:
             )
         )
         
-        scores[grid == -1] *= position_weights[grid == -1]
-        scores[grid == -1] = np.where(scores[grid == -1] < 0.1, 0.1, scores[grid == -1])
-        return scores[grid == -1]
+        # Apply combined weights
+        empty_yx = np.argwhere(grid == -1)
+        for idx, (i, j) in enumerate(empty_yx):
+            scores[idx] *= position_weights[i, j] * (1 + conn_scores[idx] * 0.5)
+        
+        scores = np.where(scores < 0.1, 0.1, scores)
+        return scores
 
     def compute_block_heatmap_vectorized(self, grid: np.ndarray, block_size: int = 2) -> np.ndarray:
         """
@@ -633,11 +643,10 @@ class ScratchSolver:
         return 'UNIFORM'
 
     def fuse_scores_vectorized(
-        self, mod_scores: Dict[str, np.ndarray], board_type: str, default_weights: Dict[str, float],
-        heatmap_data: Optional[Dict[str, Any]] = None
+        self, mod_scores: Dict[str, np.ndarray], board_type: str, default_weights: Dict[str, float]
     ) -> np.ndarray:
         """
-        Fuses scores from multiple modules using adaptive weights and external heatmap data.
+        Fuses scores from multiple modules using adaptive weights.
         """
         w = self.weights_for(board_type, default_weights)
         names = list(mod_scores.keys())
@@ -647,20 +656,6 @@ class ScratchSolver:
         heat_factor = np.abs(
             mod_scores.get('compute_dynamic_hot_cold_vectorized', np.zeros(score_mat.shape[0])).sum()
         ) / (score_mat.shape[0] + 1e-8)
-        
-        # Integrate external heatmap data if provided
-        if heatmap_data:
-            for heatmap_name, heatmap_values in heatmap_data.items():
-                try:
-                    if isinstance(heatmap_values, dict) and 'scores' in heatmap_values:
-                        external_scores = np.array(heatmap_values['scores'], dtype=float)
-                        if external_scores.size == score_mat.shape[0]:
-                            score_mat = np.column_stack([score_mat, external_scores])
-                            weight_arr = np.append(weight_arr, 0.05)  # Default weight for external heatmap
-                            logger.info(f"Fused external heatmap {heatmap_name} with weight 0.05")
-                except (ValueError, KeyError) as e:
-                    logger.warning(f"Failed to fuse external heatmap {heatmap_name}: {e}")
-        
         final = (score_mat.dot(weight_arr) / (weight_arr.sum() + 1e-8)) * (1 + heat_factor * 0.5)
         return np.where(final < 0.1, 0.1, final)
 
