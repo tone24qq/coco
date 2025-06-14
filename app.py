@@ -44,7 +44,13 @@ app = FastAPI(
 BASE_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
-logger.info(f"Data directory set to: {DATA_DIR}")
+logger.info(f"資料目錄：{DATA_DIR}")
+
+# Detect sample files (ZIP + JSON)
+zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
+json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
+total_samples = len(zip_paths) + len(json_paths)
+logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，JSON 檔案數量：{len(json_paths)}，樣本總數：{total_samples}")
 
 # Generator for ZIP and JSON paths
 def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
@@ -57,39 +63,39 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
     Yields:
         str: Path to a JSON file.
     """
-    logger.debug(f"Scanning directory for JSON and ZIP files: {data_dir}")
+    logger.debug(f"掃描目錄以尋找 JSON 和 ZIP 檔案：{data_dir}")
     
     # Yield standalone JSON files
     json_files = glob.glob(f"{data_dir}/**/*.json", recursive=True)
-    logger.info(f"Found {len(json_files)} standalone JSON files in {data_dir}")
+    logger.info(f"找到 {len(json_files)} 個獨立 JSON 檔案在 {data_dir}")
     for path in json_files:
-        logger.debug(f"Yielding JSON file: {path}")
+        logger.debug(f"產生 JSON 檔案：{path}")
         yield path
     
     # Yield JSON files from ZIP archives
     zip_files = glob.glob(f"{data_dir}/**/*.zip", recursive=True)
-    logger.info(f"Found {len(zip_files)} ZIP files in {data_dir}")
+    logger.info(f"找到 {len(zip_files)} 個 ZIP 檔案在 {data_dir}")
     for zip_path in zip_files:
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
-                logger.debug(f"Extracting ZIP file: {zip_path} to {temp_dir}")
+                logger.debug(f"解壓縮 ZIP 檔案：{zip_path} 到 {temp_dir}")
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(temp_dir)
                 json_files_in_zip = [
                     os.path.join(temp_dir, f) for f in os.listdir(temp_dir) if f.endswith('.json')
                 ]
-                logger.info(f"Extracted {len(json_files_in_zip)} JSON files from {zip_path}")
+                logger.info(f"從 {zip_path} 解壓縮出 {len(json_files_in_zip)} 個 JSON 檔案")
                 for json_path in json_files_in_zip:
-                    logger.debug(f"Yielding JSON file from ZIP: {json_path}")
+                    logger.debug(f"從 ZIP 產生 JSON 檔案：{json_path}")
                     yield json_path
         except (zipfile.BadZipFile, OSError) as e:
-            logger.error(f"Failed to process ZIP file {zip_path}: {str(e)}")
+            logger.error(f"無法處理 ZIP 檔案 {zip_path}：{str(e)}")
             continue
 
 # Load knowledge base and stream heatmaps
 def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]:
     """
-    Load knowledge base and yield heatmaps one at a time, logging the number of heatmaps loaded.
+    Load knowledge base and yield heatmaps one at a time, logging file existence and counts.
 
     Returns:
         Tuple containing:
@@ -103,21 +109,22 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
     ]
     math_algo_kb: List[Dict] = []
     
+    logger.info(f"準備讀取 KB 檔案：{kb_path}")
     if os.path.exists(kb_path):
         try:
-            logger.info(f"檔案存在，開始讀取知識庫：{kb_path}")
+            logger.info(f"檔案存在，開始讀取：{kb_path}")
             with open(kb_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             math_algo_kb = payload.get("concepts", [])
             count = len(math_algo_kb)
-            logger.info(f"已讀取知識庫概念數量：{count} 條")
+            logger.info(f"已成功讀取知識庫，概念數量：{count} 條")
             logger.debug(f"前 5 條概念內容：{math_algo_kb[:5]!r}")
         except (OSError, json.JSONDecodeError, KeyError) as e:
-            logger.error(f"讀取知識庫時發生錯誤：{e}", exc_info=True)
+            logger.error(f"讀取 KB 時發生錯誤：{e}", exc_info=True)
             math_algo_kb = default_kb
             logger.warning(f"使用預設知識庫，概念數量：{len(default_kb)} 條")
     else:
-        logger.warning(f"找不到知識庫檔案：{kb_path}，使用預設知識庫")
+        logger.warning(f"找不到 KB 檔案：{kb_path}，使用預設知識庫")
         math_algo_kb = default_kb
         logger.info(f"預設知識庫概念數量：{len(default_kb)} 條")
 
