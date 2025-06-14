@@ -51,32 +51,50 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     Returns a default knowledge base if the file is not found.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
-    heatmap_paths = []
+    heatmap_paths = [os.path.join(root, file) for root, _, files in os.walk(DATA_DIR) for file in files if file.endswith('.json')]
+    heatmaps: Dict[str, Any] = {}
+    
+    # Process ZIP files and load JSONs directly within temporary directory context
     for root, _, files in os.walk(DATA_DIR):
         for file in files:
-            if file.endswith('.json'):
-                heatmap_paths.append(os.path.join(root, file))
-            elif file.endswith('.zip'):
+            if file.endswith('.zip'):
+                zip_path = os.path.join(root, file)
                 try:
                     with tempfile.TemporaryDirectory() as temp_dir:
-                        with zipfile.ZipFile(os.path.join(root, file), 'r') as zip_ref:
+                        logger.debug(f"Extracting ZIP file: {zip_path} to {temp_dir}")
+                        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                             zip_ref.extractall(temp_dir)
-                        json_files = [
-                            os.path.join(temp_dir, f)
-                            for f in os.listdir(temp_dir)
-                            if f.endswith('.json')
-                        ]
-                        heatmap_paths.extend(json_files)
+                        # Process JSON files immediately within the temp_dir context
+                        for temp_file in os.listdir(temp_dir):
+                            if temp_file.endswith('.json'):
+                                json_path = os.path.join(temp_dir, temp_file)
+                                name = os.path.splitext(temp_file)[0]
+                                try:
+                                    with open(json_path, 'r', encoding="utf-8") as f:
+                                        heatmaps[name] = json.load(f)
+                                    logger.info(f"Successfully loaded heatmap {name} from {json_path}")
+                                except (OSError, json.JSONDecodeError) as e:
+                                    logger.error(f"Failed to load heatmap {name} from {json_path}: {str(e)}")
                 except (zipfile.BadZipFile, OSError) as e:
-                    logger.error(f"Failed to process ZIP file {file}: {e}")
+                    logger.error(f"Failed to process ZIP file {zip_path}: {str(e)}")
                     continue
+    
+    # Load standalone JSON files
+    for heatmap_path in heatmap_paths:
+        name = os.path.splitext(os.path.basename(heatmap_path))[0]
+        if name not in heatmaps:  # Avoid overwriting ZIP-extracted heatmaps
+            try:
+                with open(heatmap_path, 'r', encoding="utf-8") as f:
+                    heatmaps[name] = json.load(f)
+                logger.info(f"Successfully loaded heatmap {name} from {heatmap_path}")
+            except (OSError, json.JSONDecodeError) as e:
+                logger.error(f"Failed to load heatmap {name} from {heatmap_path}: {str(e)}")
     
     default_kb = [
         {"concept": "basic_arithmetic", "description": "Basic addition and subtraction rules", "weight": 0.5},
         {"concept": "pattern_recognition", "description": "Detecting sequences and patterns", "weight": 0.5}
     ]
     math_algo_kb: List[Dict] = []
-    heatmaps: Dict[str, Any] = {}
     
     if os.path.exists(kb_path):
         try:
@@ -90,15 +108,6 @@ def load_data_resources() -> Tuple[List[Dict], Dict[str, Any]]:
     else:
         math_algo_kb = default_kb
         logger.warning(f"Knowledge base file not found at {kb_path}, using default KB with {len(default_kb)} concepts")
-    
-    for heatmap_path in heatmap_paths:
-        name = os.path.splitext(os.path.basename(heatmap_path))[0]
-        try:
-            with open(heatmap_path, 'r', encoding="utf-8") as f:
-                heatmaps[name] = json.load(f)
-            logger.info(f"Successfully loaded heatmap {name} from {heatmap_path}")
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"Failed to load heatmap {name} from {heatmap_path}: {str(e)}")
     
     if not heatmaps:
         logger.warning("No valid heatmaps loaded, proceeding with empty heatmap data")
