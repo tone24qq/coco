@@ -170,7 +170,7 @@ async def process_single_board(
             M, N = grid.shape
             if np.any(grid == -1):
                 logger.warning(f"Grid {M}x{N} contains hidden cells, processing as is")
-                scores, predictions, top3, metrics = analyze_board(
+                scores, predictions, top3, metrics, reasoning = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
                     model_path=model_path
                 )
@@ -194,7 +194,7 @@ async def process_single_board(
                             } for p in topk if p[1] < grid.shape[1]
                         ]
                     else:
-                        scores, pred_array, top3, _ = analyze_board(
+                        scores, pred_array, top3, metrics, reasoning = analyze_board(
                             masked_grid, weights, return_predictions, target_num,
                             sheet_heatmap_path, model_path=None
                         )
@@ -215,7 +215,7 @@ async def process_single_board(
                 for result in results:
                     all_predictions.extend(result)
                 
-                scores, predictions, top3, metrics = analyze_board(
+                scores, predictions, top3, metrics, reasoning = analyze_board(
                     grid, weights, return_predictions, target_num, sheet_heatmap_path,
                     model_path=None
                 )
@@ -267,7 +267,7 @@ async def process_batch(
     
     os.makedirs(output_folder, exist_ok=True)
     
-    from main import get_input_files  # Import here to avoid circular import
+    from main import get_input_files
     input_files = get_input_files(input_folder)
     if not input_files:
         logger.error(f"No valid files found in folder {input_folder}")
