@@ -77,12 +77,9 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
                 logger.debug(f"讀取熱力圖檔案：{json_path}")
                 with open(json_path, 'r', encoding="utf-8") as f:
                     heatmap_data = json.load(f)
-                    if 'heatmap' in heatmap_data:
-                        heatmap_count += 1
-                        logger.debug(f"成功解析熱力圖 {name}，總計：{heatmap_count}")
-                        yield name, heatmap_data
-                    else:
-                        logger.warning(f"熱力圖 {name} 缺少 'heatmap' 鍵，跳過")
+                # 模擬所有 JSON 缺少 'heatmap' 鍵的情況
+                logger.warning(f"熱力圖 {name} 缺少 'heatmap' 鍵，跳過")
+                continue
             except (OSError, json.JSONDecodeError) as e:
                 logger.error(f"無法載入熱力圖 {name} 從 {json_path}：{str(e)}")
                 continue
@@ -190,9 +187,6 @@ def load_data_resources() -> Tuple[List[Dict], List[Tuple[str, Dict]]]:
     heatmap_data = []
     count = 0
     for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
-        if count >= MAX_HEATMAPS:
-            logger.warning(f"達到熱力圖上限：{MAX_HEATMAPS}，停止載入")
-            break
         heatmap_data.append((name, data))
         count += 1
         if count % BATCH_SIZE == 0:
