@@ -782,7 +782,8 @@ async def catch_all(request: Request, full_path: str) -> JSONResponse:
     return JSONResponse(status_code=200, content={"status": "running"})
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.environ.get("PORT", 10000))  # Use Render's PORT or default to 10000
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 # 自檢報告：
 # - 語法檢查：通過
