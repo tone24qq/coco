@@ -6,7 +6,6 @@ import json
 import os
 from typing import List, Dict, Any, Tuple, Optional
 from modules import ScratchSolver
-from sklearn.linear_model import LogisticRegression
 import lightgbm as lgb
 import joblib
 from joblib import Parallel, delayed
