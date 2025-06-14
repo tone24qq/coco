@@ -4,11 +4,12 @@ import json
 import os
 import logging
 import numpy as np
+import zipfile
+import tempfile
 from typing import Dict, List, Optional, Tuple
 from brain import process_single_board, process_batch, load_grid_from_file
 from analyzer import generate_masked_samples, train_extended_model
 from joblib import Parallel, delayed
-import zipfile
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +63,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-jobs", type=int, default=1, help="Number of parallel jobs")
     return parser.parse_args()
 
+def get_input_files(input_path: str) -> List[str]:
+    """
+    Retrieve all valid input files from a path, including JSON from ZIP files.
+    
+    Parameters:
+        input_path (str): Path to file or folder.
+        
+    Returns:
+        List[str]: List of file paths to process.
+    """
+    if os.path.isdir(input_path):
+        files = []
+        for root, _, filenames in os.walk(input_path):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                if filename.endswith('.zip'):
+                    try:
+                        with tempfile.TemporaryDirectory() as temp_dir:
+                            with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                                zip_ref.extractall(temp_dir)
+                            json_files = [
+                                os.path.join(temp_dir, f)
+                                for f in os.listdir(temp_dir)
+                                if f.endswith('.json')
+                            ]
+                            files.extend(json_files)
+                    except (zipfile.BadZipFile, OSError) as e:
+                        logger.error(f"Failed to process ZIP file {file_path}: {e}")
+                        continue
+                elif filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
+                    files.append(file_path)
+        return files
+    elif os.path.isfile(input_path):
+        if input_path.endswith(('.json', '.csv', '.xls', '.xlsx')):
+            return [input_path]
+        return []
+    return []
+
 def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = None) -> np.ndarray:
     """
     Generate a grid with random numbers and missing values.
@@ -79,7 +118,7 @@ def generate_random_grid(m: int, n: int, open_ratio: float = 0.5, seed: int = No
         np.random.seed(seed)
     total = m * n
     nums = np.random.permutation(np.arange(1, total + 1))
-    grid = np.full((m, n), -1, dtype=np.int64)  # 使用 int64
+    grid = np.full((m, n), -1, dtype=np.int64)
     open_cells = int(total * open_ratio)
     idx = np.random.choice(total, open_cells, replace=False)
     grid[np.unravel_index(idx, (m, n))] = nums[:open_cells]
@@ -112,45 +151,6 @@ def balance_samples(grids: List[np.ndarray], target_nums: List[int]) -> List[Tup
                     samples.append((grid.copy(), num))
     return samples
 
-async def load_heatmaps_from_directory(json_heatmap_dir: str) -> Dict[str, Dict]:
-    """
-    Load all JSON and ZIP files containing heatmaps from the specified directory.
-    
-    Parameters:
-        json_heatmap_dir (str): Directory containing JSON and ZIP heatmap files.
-    
-    Returns:
-        Dict[str, Dict]: Dictionary of heatmap data with filenames as keys.
-    """
-    heatmaps = {}
-    if not os.path.exists(json_heatmap_dir):
-        os.makedirs(json_heatmap_dir, exist_ok=True)
-        logger.warning(f"Directory {json_heatmap_dir} created as it did not exist")
-        return heatmaps
-    
-    for filename in os.listdir(json_heatmap_dir):
-        filepath = os.path.join(json_heatmap_dir, filename)
-        if filename.endswith('.json'):
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    heatmaps[filename] = json.load(f)
-                logger.info(f"Loaded heatmap from {filename}")
-            except (OSError, json.JSONDecodeError) as e:
-                logger.error(f"Failed to load JSON heatmap from {filepath}: {e}")
-        elif filename.endswith('.zip'):
-            try:
-                with zipfile.ZipFile(filepath, 'r') as zip_ref:
-                    for zip_info in zip_ref.infolist():
-                        if zip_info.filename.endswith('.json'):
-                            with zip_ref.open(zip_info.filename) as json_file:
-                                heatmaps[f"{filename}_{zip_info.filename}"] = json.load(json_file)
-                    logger.info(f"Loaded heatmaps from ZIP {filename}")
-            except (zipfile.BadZipFile, json.JSONDecodeError, OSError) as e:
-                logger.error(f"Failed to load ZIP heatmap from {filepath}: {e}")
-    
-    logger.info(f"Total heatmaps loaded: {len(heatmaps)}")
-    return heatmaps
-
 async def main() -> None:
     """
     Execute scratch card analysis or model training.
@@ -161,9 +161,6 @@ async def main() -> None:
     return_predictions: bool = args.mode == "predict"
     target_nums: Optional[List[int]] = [int(x) for x in args.target_num.split(",")] if args.target_num else None
     
-    # Load heatmaps at startup
-    heatmaps = await load_heatmaps_from_directory(args.json_heatmap)
-    
     os.makedirs(args.json_heatmap, exist_ok=True)
     os.makedirs(args.output_dir, exist_ok=True)
     
@@ -171,11 +168,11 @@ async def main() -> None:
         logger.info("Starting training mode")
         try:
             grids: List[np.ndarray] = []
-            if not os.path.isdir(args.input_folder):
-                raise NotADirectoryError(f"Input folder {args.input_folder} is not a directory")
-            for filename in os.listdir(args.input_folder):
-                if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
-                    grids.extend(load_grid_from_file(os.path.join(args.input_folder, filename)))
+            input_files = get_input_files(args.input_folder)
+            if not input_files:
+                raise ValueError(f"No valid files found in {args.input_folder}")
+            for file in input_files:
+                grids.extend(load_grid_from_file(file))
             
             if len(grids) < 100:
                 logger.warning(f"Only {len(grids)} grids found, generating additional grids")
@@ -225,11 +222,19 @@ async def main() -> None:
     else:
         output_folder = args.output_dir
         os.makedirs(output_folder, exist_ok=True)
+        input_files = get_input_files(args.input_folder)
+        if not input_files:
+            logger.error(f"No valid files found in {args.input_folder}")
+            raise ValueError("No valid files found")
         try:
-            await process_batch(
-                args.input_folder, weights, return_predictions, output_folder,
-                target_nums[0] if target_nums else None, args.json_heatmap
-            )
+            for file in input_files:
+                output_prefix = os.path.join(output_folder, os.path.splitext(os.path.basename(file))[0])
+                base_name = os.path.splitext(os.path.basename(file))[0]
+                heatmap_path = os.path.join(args.json_heatmap, f"{base_name}_sheet1.json")
+                await process_single_board(
+                    file, weights, return_predictions, output_prefix,
+                    target_nums[0] if target_nums else None, heatmap_path
+                )
         except Exception as e:
             logger.error(f"Batch processing failed: {e}")
             raise
