@@ -37,7 +37,7 @@ def load_grid_from_file(filepath: str) -> List[np.ndarray]:
             if isinstance(data, list):
                 if all(isinstance(item, list) and all(isinstance(row, list) for row in item) for item in data):
                     for grid_data in data:
-                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))  # 使用 int64
+                        grid = np.atleast_2d(np.array(grid_data, dtype=np.int64))
                         grids.append(grid)
                 else:
                     grid = np.atleast_2d(np.array(data, dtype=np.int64))
@@ -267,26 +267,26 @@ async def process_batch(
     
     os.makedirs(output_folder, exist_ok=True)
     
-    tasks: List[asyncio.Task] = []
-    for filename in os.listdir(input_folder):
-        if filename.endswith(('.json', '.csv', '.xls', '.xlsx')):
-            input_filepath = os.path.join(input_folder, filename)
-            output_prefix = os.path.join(output_folder, os.path.splitext(filename)[0])
-            try:
-                tasks.append(
-                    asyncio.create_task(
-                        process_single_board(
-                            input_filepath, weights, return_predictions, output_prefix, target_num, json_heatmap
-                        )
-                    )
-                )
-            except Exception as e:
-                logger.error(f"Failed to schedule task for {input_filepath}: {e}")
-                continue
-    
-    if not tasks:
+    from main import get_input_files  # Import here to avoid circular import
+    input_files = get_input_files(input_folder)
+    if not input_files:
         logger.error(f"No valid files found in folder {input_folder}")
         raise HTTPException(status_code=404, detail="No valid board files found")
+    
+    tasks: List[asyncio.Task] = []
+    for file in input_files:
+        output_prefix = os.path.join(output_folder, os.path.splitext(os.path.basename(file))[0])
+        try:
+            tasks.append(
+                asyncio.create_task(
+                    process_single_board(
+                        file, weights, return_predictions, output_prefix, target_num, json_heatmap
+                    )
+                )
+            )
+        except Exception as e:
+            logger.error(f"Failed to schedule task for {file}: {e}")
+            continue
     
     try:
         await asyncio.gather(*tasks, return_exceptions=True)
