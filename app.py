@@ -143,9 +143,10 @@ def preprocess_file(args: Tuple[str, str]) -> List[Tuple[str, str, Tuple[int, in
     
     return results
 
-def preprocess_data(data_dir: str = "./samples/data") -> None:
+async def preprocess_data(data_dir: str = "./samples/data") -> None:
     """
     Run preprocessing pipeline to validate all files and generate bad_samples.csv.
+    Runs in background to avoid delaying server startup.
     """
     bad_samples_path = os.path.join(data_dir, "bad_samples.csv")
     files = glob.glob(os.path.join(data_dir, "*.json")) + glob.glob(os.path.join(data_dir, "*.zip"))
@@ -235,10 +236,11 @@ def process_heatmap_for_index(args: Tuple[str, str]) -> Tuple[Optional[np.ndarra
     except Exception as e:
         return None, name, f"{name}: 處理失敗：{str(e)}"
 
-def train_and_build_indices(data_dir: str = "./samples/data") -> None:
+async def train_and_build_indices(data_dir: str = "./samples/data") -> None:
     """
     Build Faiss indices for each heatmap shape.
     Uses multiprocessing for I/O and caches indices to disk.
+    Runs in background to avoid delaying server startup.
     """
     global INDEX_BY_SHAPE, ID_MAP_BY_SHAPE
     INDEX_BY_SHAPE.clear()
@@ -410,14 +412,18 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
 # Initialize processor
 heatmap_processor = ScratchCardHeatmapProcessor()
 
-# Preprocess data and load or build indices
-logger.info("開始數據預處理")
-preprocess_data(DATA_DIR)
-logger.info("嘗試載入 Faiss 索引")
-load_indices()
-if not INDEX_BY_SHAPE:
-    logger.info("無快取索引，開始建立新索引")
-    train_and_build_indices(DATA_DIR)
+# Load indices at startup (non-blocking)
+@app.on_event("startup")
+async def startup_event():
+    """
+    Perform initialization tasks on startup.
+    """
+    logger.info("應用啟動，執行初始化任務")
+    asyncio.create_task(preprocess_data(DATA_DIR))
+    load_indices()
+    if not INDEX_BY_SHAPE:
+        logger.info("無快取索引，開始建立新索引")
+        asyncio.create_task(train_and_build_indices(DATA_DIR))
 
 # Load knowledge base
 def load_knowledge_base() -> List[Dict]:
@@ -695,8 +701,8 @@ async def upload_file(
         logger.info(f"已儲存上傳檔案：{input_path}")
         
         # Rebuild indices after new file upload
-        preprocess_data(DATA_DIR)
-        train_and_build_indices(DATA_DIR)
+        background_tasks.add_task(preprocess_data, DATA_DIR)
+        background_tasks.add_task(train_and_build_indices, DATA_DIR)
         
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
@@ -736,8 +742,8 @@ async def batch_process(
         logger.info(f"找到 {len(files)} 個有效檔案：{files}")
         
         # Rebuild indices after batch input
-        preprocess_data(input_folder)
-        train_and_build_indices(input_folder)
+        background_tasks.add_task(preprocess_data, input_folder)
+        background_tasks.add_task(train_and_build_indices, input_folder)
         
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
