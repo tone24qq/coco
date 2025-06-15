@@ -150,7 +150,12 @@ def weight_prob_by_modules(
     analyzer = BoardAnalyzerUtils()
     rows, cols = grid.shape
     blanks = np.argwhere(grid == -1)
-
+legal_all = analyzer.get_legal_values_for_placement(grid) or {0}
+    uniform_fallback = {n: 1.0 / len(legal_all) for n in legal_all}
+    for r, c in blanks:
+        if (r, c) not in prob_map or not prob_map[(r, c)]:
+            # 塞一份均勻分布當墊底，後續加權會自動調整
+            prob_map[(r, c)] = dict(uniform_fallback)
     # 1️⃣ Local resonance
     for r, c in blanks:
         window = grid[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
