@@ -218,8 +218,25 @@ def weight_prob_by_modules(
 def global_unique(prob, blanks):
     try:
         from scipy.optimize import linear_sum_assignment
-        nums = sorted({n for d in prob.values() for n in d})
-        cost = np.full((len(blanks), len(nums)), 50.0)
+        nums  = sorted({n for d in prob.values() for n in d})
+        cost  = np.full((len(blanks), len(nums)), 50.0)
+
         for i, cell in enumerate(blanks):
             for j, n in enumerate(nums):
-                cost[i,j] = -math.
+                # 這行補齊 ↓↓↓
+                cost[i, j] = -math.log(prob[cell].get(n, 1e-9))  # 取對數成本
+
+        row, col = linear_sum_assignment(cost)
+        return {blanks[r]: (nums[c], prob[blanks[r]].get(nums[c], 0.0))
+                for r, c in zip(row, col)}
+
+    except Exception:
+        # ---- Greedy 後備 ----
+        taken, assign = set(), {}
+        for cell in sorted(blanks, key=lambda p: max(prob[p].values()), reverse=True):
+            for n, p_score in sorted(prob[cell].items(), key=lambda x: x[1], reverse=True):
+                if n not in taken:
+                    taken.add(n)
+                    assign[cell] = (n, p_score)
+                    break
+        return assign
