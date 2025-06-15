@@ -4,6 +4,7 @@ import os
 import numpy as np
 import pandas as pd
 import logging
+import logging.handlers
 import json
 import joblib
 from typing import Dict, List, Tuple, Any, Optional
@@ -12,15 +13,33 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from lightgbm import LGBMClassifier
 from modules import ScratchSolver, compute_features
 from brain import load_grid_from_file
-from app import faiss_idx, feature_metas
 import numpy.lib.stride_tricks as stride_tricks
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[logging.FileHandler("logs/analyzer.log"), logging.StreamHandler()]
-)
+# 結構化日誌配置
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.msg % record.args if record.args else record.msg,
+            "request_id": getattr(record, "request_id", "N/A")
+        }
+        return json.dumps(log_entry, ensure_ascii=False)
+
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(JsonFormatter())
+
+os.makedirs("logs", exist_ok=True)
+file_handler = logging.handlers.RotatingFileHandler(
+    "logs/analyzer.log", maxBytes=10*1024*1024, backupCount=5
+)
+file_handler.setFormatter(JsonFormatter())
+
+logger.handlers = [console_handler, file_handler]
 
 def compute_all_module_scores(
     grid: np.ndarray, pos: Tuple[int, int], grid_shape: Tuple[int, int]
@@ -99,6 +118,7 @@ def generate_masked_samples(
 
     Raises:
         AssertionError: 若網格非二維。
+        ValueError: 若目標數字無效。
     """
     try:
         assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
@@ -106,6 +126,9 @@ def generate_masked_samples(
         sample_count = 0
         M, N = grid.shape
         known_yx = np.argwhere(grid != -1)
+        
+        if not target_nums:
+            raise ValueError("目標數字列表不可為空")
         
         for y, x in known_yx:
             true_val = grid[y, x]
@@ -119,6 +142,12 @@ def generate_masked_samples(
         return samples
     except AssertionError as e:
         logger.error(f"生成樣本失敗：{e}")
+        raise
+    except ValueError as e:
+        logger.error(f"目標數字無效：{e}")
+        raise
+    except Exception as e:
+        logger.error(f"生成樣本時發生未知錯誤：{e}")
         raise
 
 def train_extended_model(
@@ -184,6 +213,9 @@ def train_extended_model(
     except (ValueError, joblib.JoblibException) as e:
         logger.error(f"訓練模型失敗：{e}")
         raise
+    except Exception as e:
+        logger.error(f"訓練模型時發生未知錯誤：{e}")
+        raise
 
 def predict_topk(
     grid: np.ndarray, model_path: str, target_num: int, k: int = 3
@@ -230,6 +262,9 @@ def predict_topk(
     except (FileNotFoundError, joblib.JoblibException) as e:
         logger.error(f"預測失敗：{e}")
         raise
+    except Exception as e:
+        logger.error(f"預測時發生未知錯誤：{e}")
+        raise
 
 def analyze_board(
     grid: np.ndarray,
@@ -259,6 +294,7 @@ def analyze_board(
         ValueError: 若權重無效。
     """
     try:
+        from app import faiss_idx, feature_metas  # 延遲導入
         assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
         solver = ScratchSolver()
         solver.update_tree(grid)
@@ -333,6 +369,9 @@ def analyze_board(
     
     except (AssertionError, ValueError, faiss.FaissException) as e:
         logger.error(f"分析網格失敗：{e}")
+        raise
+    except Exception as e:
+        logger.error(f"分析網格時發生未知錯誤：{e}")
         raise
 
 # 自檢報告：
