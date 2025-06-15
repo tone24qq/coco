@@ -78,7 +78,38 @@ class BoardAnalyzerUtils:
     ) -> List[float]:
         """
         Retrieve values from cell neighborhood.
-        
+        def check_sequences(
+        self,
+        board: np.ndarray,
+        original_grid: np.ndarray,
+        min_len: int = 3,
+        allow_gaps: int = 1
+    ) -> bool:
+        """
+        檢查 `board` 是否存在至少 1 條長度 ≥ `min_len` 的
+        等差或等比序列（可容許 `allow_gaps` 個 -1 空格）。
+        若沒找到序列則回傳 False，供 `analyzer.simulate_with_formulas()` 篩掉不符規則的樣本。
+        """
+        rows, cols = board.shape
+
+        # 先掃每一列
+        for r in range(rows):
+            if self.get_arithmetic_or_geometric_sequences(board[r], min_len, allow_gaps):
+                return True
+
+        # 再掃每一行
+        for c in range(cols):
+            if self.get_arithmetic_or_geometric_sequences(board[:, c], min_len, allow_gaps):
+                return True
+
+        # 最後掃兩個對角方向
+        for offset in range(-(rows - min_len), cols - min_len + 1):
+            if self.get_arithmetic_or_geometric_sequences(np.diagonal(board, offset), min_len, allow_gaps):
+                return True
+            if self.get_arithmetic_or_geometric_sequences(np.diagonal(np.fliplr(board), offset), min_len, allow_gaps):
+                return True
+
+        return False  # 沒抓到任何序列
         Args:
             grid (np.ndarray): Input grid.
             r (int): Row index.
