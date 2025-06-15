@@ -240,3 +240,84 @@ def global_unique(prob, blanks):
                     assign[cell] = (n, p_score)
                     break
         return assign
+        # -------------------- 7. Public API --------------------
+def predict_scratch_card(
+    grid: List[List[int]],
+    target_num: Optional[int] = None,
+    quick_iter:  int = int(os.getenv("QUICK_ITER", 200_000)),
+    refine_iter: int = int(os.getenv("REFINE_ITER", 800_000)),
+    min_total_iter: int = int(os.getenv("MIN_TOTAL_ITER", 1_000_000)),
+    unique: bool = True
+) -> Dict[str, Any]:
+    """
+    - 若 `target_num` 指定：只回傳該數字在各空格的信心排序。
+    - `unique=True`：全局唯一化（Hungarian→Greedy）。
+    - 不指定 `target_num` → 回傳每格 Top-3 候選。
+    """
+    grid_np = np.array(grid, dtype=np.int64)
+    rows, cols = grid_np.shape
+    blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
+
+    # -------- Quick pass --------
+    quick_map = simulate_with_formulas(
+        grid_np.tobytes(), rows, cols,
+        n_iter=quick_iter, quick_mode=True,
+        min_iter=min_total_iter // 5
+    )
+    quick_map = weight_prob_by_modules(grid_np, quick_map)
+
+    # 熱度最高的 3 格
+    hot_cells = sorted(blanks, key=lambda p: max(quick_map[p].values()), reverse=True)[:3]
+
+    # -------- Refine pass --------
+    refine_map = simulate_with_formulas(
+        grid_np.tobytes(), rows, cols,
+        n_iter=refine_iter, quick_mode=False,
+        min_iter=min_total_iter - quick_iter
+    )
+    refine_map = weight_prob_by_modules(grid_np, refine_map)
+
+    # 合併：熱點用 refine，其餘用 quick
+    prob_map = {cell: (refine_map if cell in hot_cells else quick_map)[cell]
+                for cell in blanks}
+
+    # -------- unique assignment --------
+    if unique and target_num is None:
+        assign = global_unique(prob_map, blanks)
+        preds = [{
+            "row": r, "col": c,
+            "candidates": [n],
+            "confidences": [float(p)]
+        } for (r, c), (n, p) in assign.items()]
+        preds.sort(key=lambda x: x["confidences"][0], reverse=True)
+        return {"mode": "unique",
+                "predictions": preds,
+                "full_probabilities": prob_map}
+
+    # -------- target_num only --------
+    if target_num is not None:
+        rank = [{
+            "row": r, "col": c,
+            "candidate": target_num,
+            "confidence": prob_map[(r, c)].get(target_num, 0.0)
+        } for r, c in blanks]
+        rank.sort(key=lambda x: x["confidence"], reverse=True)
+        return {"target": target_num,
+                "rankings": rank,
+                "full_probabilities": prob_map}
+
+    # -------- default Top-3 --------
+    preds = []
+    for (r, c), dist in prob_map.items():
+        best = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
+        nums, conf = zip(*best)
+        preds.append({
+            "row": r, "col": c,
+            "candidates": list(nums),
+            "confidences": list(map(float, conf))
+        })
+    preds.sort(key=lambda x: x["confidences"][0], reverse=True)
+    return {"mode": "top3",
+            "predictions": preds,
+            "full_probabilities": prob_map}
+# ------------------  END  analyzer.py ------------------
