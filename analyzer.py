@@ -134,15 +134,15 @@ def generate_masked_samples(
 
     return samples
     Args:
-        grid (np.ndarray): 二維網格陣列。
-        target_nums (List[int]): 目標數字列表。
+        grid (np.ndarray): 。
+        target_nums (List[int]): 
 
     Returns:
         List[Tuple[np.ndarray, int, Dict[str, Any]]]: 訓練樣本列表。
 
     Raises:
-        AssertionError: 若網格非二維。
-        ValueError: 若目標數字無效。
+        AssertionError: 
+        ValueError: 
     """
     try:
         assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
