@@ -65,23 +65,23 @@ MAX_HEATMAPS = 500_000  # Heatmap limit
 BATCH_SIZE = 1_000  # Batch size for reading files
 
 # Faiss Index Loading
-def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[str]]:
+def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     """
-    Collect vectors and file paths from JSON and ZIP files in the data directory.
+    Collect feature vectors and metadata from JSON and ZIP files in the data directory.
 
     Args:
         data_dir (str): Path to the data directory.
 
     Returns:
-        Tuple[np.ndarray, List[str]]: Array of vectors and list of corresponding metadata paths.
+        Tuple[np.ndarray, List[Dict[str, Any]]]: Array of feature vectors and list of metadata.
 
     Raises:
         OSError: If directory access fails.
         json.JSONDecodeError: If JSON parsing fails.
-        ValueError: If vector data is invalid.
+        ValueError: If heatmap data is invalid.
     """
     vectors: List[np.ndarray] = []
-    metas: List[str] = []
+    metas: List[Dict[str, Any]] = []
     sample_count = 0
 
     try:
@@ -90,15 +90,20 @@ def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[str]]:
             try:
                 with open(path, encoding="utf-8") as f:
                     obj = json.load(f)
-                if "vector" not in obj:
-                    logger.warning("Skipping JSON %s: missing 'vector' field", path)
+                if "heatmap" not in obj:
+                    logger.warning("Skipping JSON %s: missing 'heatmap' field", path)
                     continue
-                vec = np.array(obj["vector"], dtype=np.float32)
+                heatmap = np.array(obj["heatmap"], dtype=np.float32)
+                if heatmap.ndim != 2 or heatmap.size == 0 or not np.isfinite(heatmap).all():
+                    logger.warning("Skipping invalid heatmap in %s", path)
+                    continue
+                # Compute feature vector using compute_features with default position (0,0)
+                vec = compute_features(heatmap, (0, 0))
                 if vec.size == 0 or not np.isfinite(vec).all():
-                    logger.warning("Skipping invalid vector in %s", path)
+                    logger.warning("Skipping invalid feature vector in %s", path)
                     continue
                 vectors.append(vec)
-                metas.append(path)
+                metas.append({"path": path, "inner": "", "heatmap": obj["heatmap"]})
                 sample_count += 1
             except (OSError, json.JSONDecodeError, ValueError) as e:
                 logger.warning("Skipping bad JSON file %s: %s", path, e)
@@ -113,15 +118,19 @@ def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[str]]:
                         with zf.open(name) as fp:
                             try:
                                 obj = json.load(fp)
-                                if "vector" not in obj:
-                                    logger.warning("Skipping JSON %s in ZIP %s: missing 'vector' field", name, zpath)
+                                if "heatmap" not in obj:
+                                    logger.warning("Skipping JSON %s in ZIP %s: missing 'heatmap' field", name, zpath)
                                     continue
-                                vec = np.array(obj["vector"], dtype=np.float32)
+                                heatmap = np.array(obj["heatmap"], dtype=np.float32)
+                                if heatmap.ndim != 2 or heatmap.size == 0 or not np.isfinite(heatmap).all():
+                                    logger.warning("Skipping invalid heatmap in %s:%s", zpath, name)
+                                    continue
+                                vec = compute_features(heatmap, (0, 0))
                                 if vec.size == 0 or not np.isfinite(vec).all():
-                                    logger.warning("Skipping invalid vector in %s:%s", zpath, name)
+                                    logger.warning("Skipping invalid feature vector in %s:%s", zpath, name)
                                     continue
                                 vectors.append(vec)
-                                metas.append(f"{zpath}:{name}")
+                                metas.append({"path": zpath, "inner": name, "heatmap": obj["heatmap"]})
                                 sample_count += 1
                             except (json.JSONDecodeError, ValueError) as e:
                                 logger.warning("Skipping bad JSON %s in ZIP %s: %s", name, zpath, e)
@@ -138,15 +147,15 @@ def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[str]]:
         logger.error("Failed to collect vectors: %s", e)
         raise
 
-def _build_faiss_index(data_dir: str) -> Tuple[faiss.IndexFlatL2, List[str]]:
+def _build_faiss_index(data_dir: str) -> Tuple[faiss.IndexFlatL2, List[Dict[str, Any]]]:
     """
-    Build a Faiss index from vectors in JSON and ZIP files.
+    Build a Faiss index from feature vectors in JSON and ZIP files.
 
     Args:
         data_dir (str): Path to the data directory.
 
     Returns:
-        Tuple[faiss.IndexFlatL2, List[str]]: Faiss index and metadata list.
+        Tuple[faiss.IndexFlatL2, List[Dict[str, Any]]]: Faiss index and metadata list.
 
     Raises:
         RuntimeError: If no valid vectors are found.
@@ -398,21 +407,24 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
     def heatmap_generator():
         count = 0
         batch = []
-        for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
-            if count >= MAX_HEATMAPS:
-                logger.warning("Reached heatmap limit: %d, stopping", MAX_HEATMAPS)
-                break
-            batch.append((name, data))
-            count += 1
-            if len(batch) >= BATCH_SIZE:
-                logger.info("Processing heatmap batch, current total: %d", count)
+        try:
+            for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
+                if count >= MAX_HEATMAPS:
+                    logger.warning("Reached heatmap limit: %d, stopping", MAX_HEATMAPS)
+                    break
+                batch.append((name, data))
+                count += 1
+                if len(batch) >= BATCH_SIZE:
+                    logger.info("Processing heatmap batch, current total: %d", count)
+                    for item in batch:
+                        yield item
+                    batch = []
+            if batch:
                 for item in batch:
                     yield item
-                batch = []
-        if batch:
-            for item in batch:
-                yield item
-        logger.info("Total loaded heatmaps: %d", count)
+            logger.info("Total loaded heatmaps: %d", count)
+        except Exception as e:
+            logger.error("Failed to iterate heatmaps: %s", e)
 
     return math_algo_kb, heatmap_generator()
 
@@ -536,13 +548,18 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         # Aggregate heatmap scores
         heatmap_scores: List[Tuple[str, float]] = []
         count = 0
-        for name, data in heatmap_generator():
-            score = heatmap_processor.match_heatmap(grid, data, target_num)
-            if score > 0:
-                heatmap_scores.append((name, score))
-            count += 1
-            if count % BATCH_SIZE == 0:
-                logger.debug("Processed %d heatmaps", count)
+        try:
+            for name, data in heatmap_generator:  # Correctly iterate generator
+                score = heatmap_processor.match_heatmap(grid, data, target_num)
+                if score > 0:
+                    heatmap_scores.append((name, score))
+                count += 1
+                if count % BATCH_SIZE == 0:
+                    logger.debug("Processed %d heatmaps", count)
+        except Exception as e:
+            logger.error("Failed to iterate heatmap generator: %s", e)
+            raise ValueError(f"Heatmap iteration failed: {str(e)}")
+
         logger.info("Matched %d valid heatmaps", len(heatmap_scores))
 
         # Select top heatmaps
@@ -796,8 +813,8 @@ async def query_similar(
         out = []
         for dist, idx in zip(D[0], I[0]):
             m = feature_metas[idx]
-            grid_data = m.get("grid", [])
-            if isinstance(grid_data, list) and any(target_num in row for row in grid_data if isinstance(row, list)):
+            heatmap_data = m.get("heatmap", [])
+            if isinstance(heatmap_data, list) and any(target_num in row for row in heatmap_data if isinstance(row, list)):
                 out.append({"path": m["path"], "inner": m["inner"], "distance": float(dist)})
         logger.info("Queried similar heatmaps, found %d candidates", len(out))
         return {"candidates": out}
