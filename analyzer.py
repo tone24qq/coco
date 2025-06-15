@@ -14,9 +14,11 @@ from sklearn.metrics import precision_score, recall_score, f1_score
 from lightgbm import LGBMClassifier
 
 from modules import ScratchSolver, compute_features
-from brain import load_grid_from_file
 import numpy.lib.stride_tricks as stride_tricks
-
+def analyze_from_file(path: str):
+    from brain import load_grid_from_file  # ✅ 延遲匯入，避免循環
+    grid = load_grid_from_file(path)
+    ...
 # 結構化日誌配置，支援 Render CLI 和 log stream
 class JsonFormatter(logging.Formatter):
     """格式化日誌為 JSON，包含時間戳、級別、名稱、訊息和請求 ID。"""
