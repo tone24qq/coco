@@ -6,7 +6,7 @@ import sys
 import argparse
 import numpy as np
 from typing import List, Dict, Any
-from app.analyzer import predict_scratch_card
+from analyzer import predict_scratch_card
 
 # Logging configuration
 logging.basicConfig(
