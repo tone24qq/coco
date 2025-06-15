@@ -289,6 +289,8 @@ def predict_scratch_card(
         min_iter=min_total_iter // 5
     )
     quick_map = weight_prob_by_modules(gp, quick_map)
+
+    # 取熱度最高 3 格再細算
     hot_cells = sorted(
         blanks,
         key=lambda p: max(quick_map[p].values()),
@@ -303,35 +305,45 @@ def predict_scratch_card(
     )
     refine_map = weight_prob_by_modules(gp, refine_map)
 
+    # 合併：熱點→refine，其餘→quick
     prob_map = {cell: (refine_map if cell in hot_cells else quick_map)[cell]
                 for cell in blanks}
+                    # ---- 轉成 Python scalar 並把 tuple key → 字串 ----
+    full_probs = {
+        f"{int(r)},{int(c)}": {int(k): float(v) for k, v in dist.items()}
+        for (r, c), dist in prob_map.items()
+    }
 
-    # ---- Unique assignment
-    if unique and target_num is None:
+    # ---- Specific number (target_num) 模式 → predictions ----
+    if target_num is not None:
+        preds = [{
+            "row": int(r),
+            "col": int(c),
+            "candidates": [int(target_num)],
+            "confidences": [float(prob_map[(r, c)].get(target_num, 0.0))]
+        } for r, c in blanks]
+
+        preds.sort(key=lambda x: x["confidences"][0], reverse=True)
+        return {
+            "predictions": preds,
+            "full_probabilities": full_probs
+        }
+            # ---- 全局唯一化 (Hungarian / Greedy) ----
+    if unique:
         assign = global_unique(prob_map, blanks)
         preds = [{
-            "row": r, "col": c,
-            "candidates": [n],
+            "row": int(r),
+            "col": int(c),
+            "candidates": [int(n)],
             "confidences": [float(p)]
         } for (r, c), (n, p) in assign.items()]
         preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-        return {"mode": "unique",
-                "predictions": preds,
-                "full_probabilities": prob_map}
+        return {
+            "predictions": preds,
+            "full_probabilities": full_probs
+        }
 
-    # ---- Specific number ranking
-    if target_num is not None:
-        rank = [{
-            "row": r, "col": c,
-            "candidate": target_num,
-            "confidence": prob_map[(r, c)].get(target_num, 0.0)
-        } for r, c in blanks]
-        rank.sort(key=lambda x: x["confidence"], reverse=True)
-        return {"target": target_num,
-                "rankings": rank,
-                "full_probabilities": prob_map}
-
-    # ---- Default Top-3 per cell
+    # ---- Default：每格 Top-3 ----
     preds = []
     for (r, c), dist in prob_map.items():
         best = sorted(dist.items(),
@@ -339,12 +351,15 @@ def predict_scratch_card(
                       reverse=True)[:3]
         nums, conf = zip(*best)
         preds.append({
-            "row": r, "col": c,
-            "candidates": list(nums),
-            "confidences": list(map(float, conf))
+            "row": int(r),
+            "col": int(c),
+            "candidates": [int(n) for n in nums],
+            "confidences": [float(x) for x in conf]
         })
+
     preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-    return {"mode": "top3",
-            "predictions": preds,
-            "full_probabilities": prob_map}
+    return {
+        "predictions": preds,
+        "full_probabilities": full_probs
+    }
 # ----------------------------- END ----------------------------------
