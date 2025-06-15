@@ -1,4 +1,4 @@
-# app/main.py
+# app.py
 
 import os
 import logging
@@ -6,8 +6,9 @@ import sys
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Union
-from app.analyzer import predict_scratch_card
+from analyzer import predict_scratch_card
 
+# Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
