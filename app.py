@@ -20,89 +20,87 @@ from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file, build_feature_index
 from analyzer import analyze_board
 from modules import compute_features
-from pydantic import BaseModel, Field, validator, ConfigDict
-from functools import lru_cache
-from joblib import Parallel, delayed
-import numpy.lib.stride_tricks as stride_tricks
 
-# Ensure log directory exists
-os.makedirs("logs", exist_ok=True)
-_log_fmt = "%(asctime)s [%(levelname)s:%(name)s] %(message)s"
-root = logging.getLogger()
-root.setLevel(logging.INFO)
-root.handlers.clear()
-root.addHandler(RotatingFileHandler("logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=5))
-root.addHandler(logging.StreamHandler())
+# --- Unified JSON/ZIP Heatmap Loader ---
+import numpy as np
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format=_log_fmt,
-    handlers=[
-        logging.FileHandler("logs/api.log"),
-        logging.StreamHandler()
-    ]
-)
+def load_records(path):
+    """
+    读取 heatmap JSON（支持单条 dict 或多条 list），
+    返回 list of (grid_array, heatmap_array)。
+    """
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        records = [data]
+    elif isinstance(data, list):
+        records = data
+    else:
+        return []
+    result = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        if 'heatmap' not in rec or 'grid' not in rec:
+            continue
+        grid = np.array(rec['grid'], dtype=np.int64)
+        heatmap = np.array(rec['heatmap'], dtype=np.float32)
+        result.append((grid, heatmap))
+    return result
 
-app = FastAPI(
-    title="Scratch Card Analysis API",
-    version="1.0.0",
-    description="Provides scratch card grid analysis services with dynamic pattern detection and feature index querying.",
-    openapi_version="3.1.0"
-)
+def iter_all_heatmaps(data_dir: str):
+    """
+    遍历目录下的所有 JSON 和 ZIP，读取 heatmap。
+    Yields: (source, grid_array, heatmap_array)
+    """
+    # standalone JSON files
+    for path in glob.glob(f'{data_dir}/**/*.json', recursive=True):
+        for grid, hm in load_records(path):
+            yield path, grid, hm
 
-BASE_DIR = os.path.dirname(__file__)
-DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
-INDEX_DIR = os.path.join(BASE_DIR, "samples", "index")
-INDEX_PATH = os.path.join(INDEX_DIR, "faiss.idx")
-META_PATH = os.path.join(INDEX_DIR, "meta_paths.json")
-
-os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(INDEX_DIR, exist_ok=True)
-logger.info("📂 Data directory: %s", DATA_DIR)
-
-MAX_HEATMAPS = 500_000  # Heatmap limit
-BATCH_SIZE = 1_000  # Batch size for reading files
-
-# Faiss Index Loading
+    # JSON files inside ZIP archives
+    for zpath in glob.glob(f'{data_dir}/**/*.zip', recursive=True):
+        try:
+            with zipfile.ZipFile(zpath) as zf:
+                for name in zf.namelist():
+                    if not name.lower().endswith('.json'):
+                        continue
 def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     """
-    Collect feature vectors and metadata from JSON and ZIP files in the data directory.
-
-    Args:
-        data_dir (str): Path to the data directory.
-
-    Returns:
-        Tuple[np.ndarray, List[Dict[str, Any]]]: Array of feature vectors and list of metadata.
-
-    Raises:
-        OSError: If directory access fails.
-        json.JSONDecodeError: If JSON parsing fails.
-        ValueError: If grid data is invalid.
+    Collect feature vectors and metadata from JSON and ZIP heatmap files.
     """
     vectors: List[np.ndarray] = []
     metas: List[Dict[str, Any]] = []
     sample_count = 0
 
-    try:
-        # Process standalone JSON files
-        for path in glob.glob(os.path.join(data_dir, "**", "*.json"), recursive=True):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    obj = json.load(f)
-                if "grid" not in obj:
-                    logger.warning("Skipping JSON %s: missing 'grid' field", path)
-                    continue
-                # Check if grid is 2D array
-                grid_2d = np.array(obj["grid"], dtype=np.float32)
-                if grid_2d.ndim != 2:
-                    logger.warning("Skipping JSON %s: 'grid' is not a 2D array", path)
-                    continue
-                # Validate grid dimensions
-                rows, cols = grid_2d.shape
-                if rows < 4 or cols < 4 or rows > 20 or cols > 20:
-                    logger.warning("Skipping JSON %s: grid dimensions %dx%d out of range 4x4 to 20x20", path, rows, cols)
-                    continue
+    for src, grid, heatmap in iter_all_heatmaps(data_dir):
+        try:
+            vec = compute_features(heatmap, (0, 0))
+            vec = np.array(vec, dtype=np.float32)
+            if vec.size == 0 or not np.isfinite(vec).all():
+                logger.warning("Skipping invalid feature vector in %s", src)
+                continue
+            vectors.append(vec)
+            # parse source into path and inner
+            if ':' in src:
+                path, inner = src.split(':', 1)
+            else:
+                path, inner = src, ''
+            metas.append({
+                'path': path,
+                'inner': inner,
+                'heatmap': heatmap.tolist()
+            })
+            sample_count += 1
+            if sample_count >= MAX_HEATMAPS:
+                logger.info("Reached heatmap limit: %d, stopping collection", MAX_HEATMAPS)
+                break
+        except Exception as e:
+            logger.warning("Skipping invalid record %s: %s", src, e)
+
+    logger.info("Collected %d vectors", sample_count)
+    return np.vstack(vectors) if vectors else np.array([]), metas
+
                 if not np.isfinite(grid_2d).all():
                     logger.warning("Skipping JSON %s: invalid grid data", path)
                     continue
