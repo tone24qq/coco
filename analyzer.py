@@ -1,11 +1,11 @@
-# app/analyzer.py
+# analyzer.py
 
 import numpy as np
 from collections import Counter
 from typing import List, Dict, Tuple, Optional
 from functools import lru_cache
-from app.modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
-from app.brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
+from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
+from brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
 
 @lru_cache(maxsize=128)
 def simulate_with_formulas(grid_bytes: bytes, rows: int, cols: int, n_iter: int = 5_000_000, weights: Dict[str, float] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
