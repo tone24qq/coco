@@ -35,7 +35,7 @@ root.setLevel(logging.INFO)
 root.handlers.clear()
 root.addHandler(RotatingFileHandler("logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=5))
 root.addHandler(logging.StreamHandler())
-logger = logging.getLogger(__name__）
+logger = logging.getLogger(__name__)
 # 配置日誌
 logger = logging.getLogger("app")
 logging.basicConfig(
