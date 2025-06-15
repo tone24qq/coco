@@ -2,7 +2,7 @@
 
 import numpy as np
 from collections import Counter
-from typing import Any, List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional
 from functools import lru_cache
 from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
 from brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
@@ -34,7 +34,7 @@ def simulate_with_formulas(grid_bytes: bytes, rows: int, cols: int, n_iter: int 
             boards[i] = FORMULA_REGISTRY[fname](rows, cols, rng).ravel()
         valid = np.all(boards[:, lin_known] == known_vals, axis=1)
         valid_boards = boards[valid].reshape(-1, rows, cols)
-        valid &= np.array([analyzer.check_sequences(b, grid, min_len=3, allow_gaps=1) for b in valid_boards])
+        valid &= np.array([len(analyzer.get_arithmetic_or_geometric_sequences(b, min_len=3, allow_gaps=1)) > 0 for b in valid_boards])
         board_scores = np.array([EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in valid_boards[valid]])
         valid &= np.array([np.corrcoef(skip_scores.ravel(), bs.ravel())[0, 1] > 0.8 for bs in board_scores])
         valid_boards = valid_boards[valid]
