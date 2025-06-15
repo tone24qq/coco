@@ -49,9 +49,11 @@ async def predict(req: GridRequest):
 
 @app.on_event("startup")
 async def warm_up():
+    import os  # Explicit import within function to resolve scope issue
     dummy_grid = [[-1 for _ in range(5)] for _ in range(4)]
     try:
-        predict_scratch_card(dummy_grid, n_iter=200_000)
+        iterations = int(os.getenv("ITER", 5_000_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 500_000  # Consistent iteration logic
+        predict_scratch_card(dummy_grid, n_iter=iterations // 25)  # Adjusted iterations for warm-up
         logging.info("Warm-up completed.")
     except Exception as e:
         logging.error(f"Warm-up failed: {e}")
