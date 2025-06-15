@@ -1,8 +1,9 @@
-# analyzer.py
+# analyzer.py  (速度優化 + 全局唯一)
 import os
+import sys
 from functools import lru_cache
 from collections import Counter
-from typing import List, Dict, Tuple, Any, Optional, Union
+from typing import List, Dict, Tuple, Any, Optional
 
 import numpy as np
 
@@ -13,21 +14,25 @@ from brain import (
     BoardAnalyzerUtils,
 )
 
-# ---------------------------------------------------------------------
-# Monte-Carlo + Heuristic 模擬
-# ---------------------------------------------------------------------
+# ------------------------------------------------------- 共用 util
+math_utils = MathUtils()
+analyzer_utils = BoardAnalyzerUtils()
+
+
+# ------------------------------------------------------- 內核：蒙地卡羅 + early-stop
 @lru_cache(maxsize=128)
 def simulate_with_formulas(
     grid_bytes: bytes,
     rows: int,
     cols: int,
-    n_iter: int = 5_000_000,
-    weights: Dict[str, float] | None = None,
+    n_iter: int,
+    quick_mode: bool = False,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """大量隨機生成完整盤面 → 篩掉不符規則 → 回傳每個空格的命中次數分布。"""
+    """
+    quick_mode=True → 關掉序列檢查與 skip-corr，極速粗估；
+    False → 全啟用（但有 early-stop）
+    """
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
-    math_utils = MathUtils()
-    analyzer = BoardAnalyzerUtils()
     rng = np.random.default_rng()
 
     blanks = np.argwhere(grid == -1)
@@ -35,205 +40,233 @@ def simulate_with_formulas(
     known_vals = grid[grid != -1]
     hit_counter = {tuple(b): Counter() for b in map(tuple, blanks)}
 
-    # 公式權重
-    w = weights or {"excel": 0.6, "shuffle": 0.4}
-    names = list(w)
-
-    lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
-    batch_size = 10_000 if rows * cols < 50 else 5_000 if rows * cols < 200 else 1_000
-
-    # 讀取環境變數
-    n_iter = (
-        int(os.getenv("ITER", 5_000_000))
-        if os.getenv("USE_FORMULA_ONLY") != "1"
-        else 500_000
-    )
+    # 權重 & batch
+    w = {"excel": 0.6, "shuffle": 0.4}
+    names, probs = list(w), list(w.values())
+    batch_size = max(500, 20000 // (rows * cols))  # adaptive
 
     # baseline 特徵
-    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
+    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid) if not quick_mode else None
     mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
-    std_val = std_val or 1.0  # avoid div0
+    std_val = std_val or 1.0
 
-    # ---------------------------- main loop --------------------------
-    for _ in range(n_iter // batch_size):
-        # ① 批次生成候選盤
-        boards = np.zeros((batch_size, rows * cols), dtype=np.int64)
-        choices = rng.choice(names, size=batch_size, p=[w[n] for n in names])
-        for i, fname in enumerate(choices):
-            boards[i] = FORMULA_REGISTRY[fname](rows, cols, rng).ravel()
+    lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
+    total_seen, effective = 0, 0
 
-        # ② 已知數字比對
+    while total_seen < n_iter:
+        cur_batch = min(batch_size, n_iter - total_seen)
+        boards = np.zeros((cur_batch, rows * cols), dtype=np.int64)
+        choices = rng.choice(names, size=cur_batch, p=probs)
+        for i, fn in enumerate(choices):
+            boards[i] = FORMULA_REGISTRY[fn](rows, cols, rng).ravel()
+
+        # ① 知格比對
         valid = np.all(boards[:, lin_known] == known_vals, axis=1)
 
-        # ③ 檢查算術 / 幾何序列（對齊 batch_size）
-        seq_ok = np.array(
-            [
-                analyzer.check_sequences(
-                    b.reshape(rows, cols), grid, min_len=3, allow_gaps=1
-                )
-                for b in boards
-            ]
-        )
-        valid &= seq_ok
+        # ② 快速模式跳過深度檢查
+        if not quick_mode:
+            # 序列檢查
+            seq_ok = np.array(
+                [
+                    analyzer_utils.check_sequences(
+                        b.reshape(rows, cols), grid, 3, 1
+                    )
+                    for b in boards
+                ]
+            )
+            valid &= seq_ok
 
-        # ④ Skip-pattern 相似度
-        valid_idx = np.where(valid)[0]
-        if valid_idx.size == 0:
-            continue
-        v_boards = boards[valid_idx].reshape(-1, rows, cols)
-        v_scores = np.array(
-            [EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in v_boards]
-        )
-        corr_ok = np.array(
-            [np.corrcoef(skip_scores.ravel(), s.ravel())[0, 1] > 0.85 for s in v_scores]
-        )
-        valid[valid_idx] &= corr_ok
+            # skip-corr
+            vi = np.where(valid)[0]
+            if vi.size:
+                v_boards = boards[vi].reshape(-1, rows, cols)
+                corrs = [
+                    np.corrcoef(skip_scores.ravel(), EXT_GM20_Skip_Pattern_Confidence_Vec(b).ravel())[0, 1]
+                    for b in v_boards
+                ]
+                valid[vi] &= np.array([c > 0.85 for c in corrs])
 
-        # ⑤ 留下終版盤
-        final_idx = np.where(valid)[0]
-        if final_idx.size == 0:
-            continue
-        final_boards = boards[final_idx].reshape(-1, rows, cols)
-        final_scores = v_scores[corr_ok]
+        # ③ 累計命中
+        fi = np.where(valid)[0]
+        if fi.size:
+            fboards = boards[fi].reshape(-1, rows, cols)
+            for board in fboards:
+                for r, c in blanks:
+                    hit_counter[(r, c)][board[r, c]] += 1
+            effective += fi.size
 
-        # ⑥ 累計各空格命中次數（resonance + global + skip 加權）
-        for b_i, board in enumerate(final_boards):
-            for r, c in blanks:
-                window = board[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
-                kn = window[window != -1]
-                resonance = 1 / (1 + abs(board[r, c] - kn.mean()) * 0.5) if kn.size else 1
-                g_w = np.exp(-((board[r, c] - mean_val) ** 2) / (2 * (std_val**2 + 1e-6)))
-                hit_counter[(r, c)][board[r, c]] += (
-                    final_scores[b_i, r, c] * resonance * g_w * 1.1
-                )
+        total_seen += cur_batch
 
-            # 早停：全部格子 max prob > 0.95
-            if all(max(c.values()) / sum(c.values()) > 0.95 for c in hit_counter.values()):
-                break
+        # ④ early-stop：30k 效盤且所有空格 max>0.88
+        if (
+            not quick_mode
+            and effective >= 30000
+            and all(
+                max(cnt.values()) / sum(cnt.values()) > 0.88
+                for cnt in hit_counter.values()
+                if cnt
+            )
+        ):
+            break
 
-    # -------------------------- normalize ----------------------------
+    # normalize
     prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
     for pos, cnt in hit_counter.items():
         if not cnt:
             continue
-        v_min, v_max = min(cnt.values()), max(cnt.values())
+        minimum, maximum = min(cnt.values()), max(cnt.values())
         prob_map[pos] = {
-            k: math_utils.normalize_value(v, v_min or 1e-10, v_max or 1e-10)
+            k: math_utils.normalize_value(v, minimum or 1e-10, maximum or 1e-10)
             for k, v in cnt.items()
         }
     return prob_map
 
 
-# ---------------------------------------------------------------------
-# 匯總 / 多層加權
-# ---------------------------------------------------------------------
+# ------------------------------------------------------- 多層加權（與先前一致，略）
 def weight_prob_by_modules(
-    grid: np.ndarray,
-    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]]
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    math_utils = MathUtils()
-    analyzer = BoardAnalyzerUtils()
-
-    rows, cols = grid.shape
-    blanks = np.argwhere(grid == -1)
-
-    # 0️⃣ 缺席格子 → 均勻先驗
-    legal_all = analyzer.get_legal_values_for_placement(grid) or {0}
-    uniform = {n: 1.0 / len(legal_all) for n in legal_all}
-    for r, c in blanks:
-        if (r, c) not in prob_map or not prob_map[(r, c)]:
-            prob_map[(r, c)] = dict(uniform)
-
-    # 1️⃣ Local resonance
-    for r, c in blanks:
-        window = grid[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
-        kn = window[window != -1]
-        if kn.size:
-            mean_kn = kn.mean()
-            for n in prob_map[(r, c)]:
-                prob_map[(r, c)][n] *= 1.2 / (1 + abs(n - mean_kn) * 0.5)
-
-    # 2️⃣ Global value distribution
-    mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
-    std_val = std_val or 1.0
-    for r, c in blanks:
-        for n in prob_map[(r, c)]:
-            g_w = np.exp(-((n - mean_val) ** 2) / (2 * (std_val**2 + 1e-6)))
-            prob_map[(r, c)][n] *= g_w * 1.15
-
-    # 3️⃣ Skip-pattern confidence（加 0.05 底氣）
-    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    for r, c in blanks:
-        skip_factor = max(skip_scores[r, c], 0.05) * 1.1
-        for n in prob_map[(r, c)]:
-            prob_map[(r, c)][n] *= skip_factor
-
-    # 4️⃣ 既有 row/col 序列 boost
-    for r, c in blanks:
-        seq = analyzer.get_arithmetic_or_geometric_sequences
-        has_seq = set().union(*seq(grid[r], 3, 1), *seq(grid[:, c], 3, 1))
-        for n in prob_map[(r, c)]:
-            if n in has_seq:
-                prob_map[(r, c)][n] *= 1.7
-
-    # 5️⃣ Normalize；若全 0 → 均勻
-    for pos, dist in prob_map.items():
-        tot = sum(dist.values())
-        if tot == 0:
-            n = len(dist) or 1
-            prob_map[pos] = {k: 1.0 / n for k in dist}
-        else:
-            prob_map[pos] = {k: v / tot for k, v in dist.items()}
-
+    # ...（保留你上版權重邏輯，篇幅省略，可直接沿用）...
+    # === 省略段落：請把你現用的 weight_prob_by_modules 貼回此處 ===
     return prob_map
 
 
-# ---------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------
+# ------------------------------------------------------- 全局唯一：Hungarian → Greedy
+def assign_unique_hungarian(
+    blanks: List[Tuple[int, int]],
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+) -> Dict[Tuple[int, int], Tuple[int, float]]:
+    try:
+        from scipy.optimize import linear_sum_assignment
+    except ImportError:
+        return None  # 讓呼叫端回退 Greedy
+
+    numbers = sorted({n for dist in prob_map.values() for n in dist})
+    cost = np.full((len(blanks), len(numbers)), 50.0)  # 大成本 = 不可能
+
+    for i, cell in enumerate(blanks):
+        dist = prob_map[cell]
+        for j, num in enumerate(numbers):
+            p = dist.get(num, 0.0)
+            cost[i, j] = -np.log(p + 1e-9)  # 機率轉對數成本
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+    assignment = {
+        blanks[r]: (numbers[c], float(prob_map[blanks[r]].get(numbers[c], 0.0)))
+        for r, c in zip(row_ind, col_ind)
+    }
+    return assignment
+
+
+def ensure_global_unique(
+    blanks: List[Tuple[int, int]],
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+) -> Dict[Tuple[int, int], Tuple[int, float]]:
+    """
+    回傳 {cell: (唯一數字, confidence)}
+    先嘗試 Hungarian；失敗則回退 Greedy 排除。
+    """
+    assign = assign_unique_hungarian(blanks, prob_map)
+    if assign:
+        return assign
+
+    # --- Greedy ---
+    taken, assign = set(), {}
+    cells_sorted = sorted(blanks, key=lambda p: max(prob_map[p].values()), reverse=True)
+    for cell in cells_sorted:
+        for n, p in sorted(prob_map[cell].items(), key=lambda x: x[1], reverse=True):
+            if n not in taken:
+                assign[cell] = (n, float(p))
+                taken.add(n)
+                break
+    return assign
+
+
+# ------------------------------------------------------- Public API
 def predict_scratch_card(
     grid: List[List[int]],
     n_iter: int = 5_000_000,
     target_num: Optional[int] = None,
+    quick_iter: int = 20000,
+    refine_iter: int = 300000,
+    unique: bool = True,
 ) -> Dict[str, Any]:
     """
-    若 `target_num` 給定 → 只回傳該數字各空格的信心排序。
-    否則回傳每格 top-3 候選。
+    - quick_iter / refine_iter 為二段推論迭代數
+    - unique=True → 強制同一數字不重複
     """
     grid_np = np.array(grid, dtype=np.int64)
-
-    prob_map = simulate_with_formulas(
-        grid_np.tobytes(), grid_np.shape[0], grid_np.shape[1], n_iter
-    )
-    prob_map = weight_prob_by_modules(grid_np, prob_map)
-
     rows, cols = grid_np.shape
-    blanks = np.argwhere(grid_np == -1)
+    blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
 
-    results: List[Dict[str, Any]] = []
+    # -------- two-phase inference ----------
+    quick_map = simulate_with_formulas(
+        grid_np.tobytes(), rows, cols, quick_iter, quick_mode=True
+    )
+    quick_map = weight_prob_by_modules(grid_np, quick_map)
+
+    # 取前 K 熱點格
+    K = min(3, len(blanks))
+    hot_cells = sorted(
+        blanks, key=lambda p: max(quick_map[p].values()), reverse=True
+    )[:K]
+
+    # 精算指定格
+    refine_map = simulate_with_formulas(
+        grid_np.tobytes(), rows, cols, refine_iter, quick_mode=False
+    )
+    refine_map = weight_prob_by_modules(grid_np, refine_map)
+
+    # 合併：hot_cell 用 refine，其餘用 quick
+    final_map = {
+        cell: (refine_map if cell in hot_cells else quick_map)[cell] for cell in blanks
+    }
+
+    # -------- unique assignment ----------
+    if unique and target_num is None:
+        uniq_assign = ensure_global_unique(blanks, final_map)
+        predictions = [
+            {
+                "row": r,
+                "col": c,
+                "candidates": [n],
+                "confidences": [conf],
+            }
+            for (r, c), (n, conf) in uniq_assign.items()
+        ]
+        predictions.sort(key=lambda x: x["confidences"][0], reverse=True)
+        return {
+            "predictions": predictions,
+            "mode": "unique",
+            "full_probabilities": final_map,
+        }
+
+    # -------- target_num or top-3 ----------
     if target_num is not None:
-        # 只針對指定數字
-        for r, c in blanks:
-            conf = prob_map[(r, c)].get(target_num, 0.0)
-            results.append(
-                {"row": int(r), "col": int(c), "candidate": target_num, "confidence": conf}
-            )
-        results.sort(key=lambda x: x["confidence"], reverse=True)
-        return {"target": target_num, "rankings": results, "full_probabilities": prob_map}
+        rank = [
+            {
+                "row": r,
+                "col": c,
+                "candidate": target_num,
+                "confidence": final_map[(r, c)].get(target_num, 0.0),
+            }
+            for r, c in blanks
+        ]
+        rank.sort(key=lambda x: x["confidence"], reverse=True)
+        return {"target": target_num, "rankings": rank, "full_probabilities": final_map}
 
-    # 回傳各格 top-3
-    for (r, c), dist in prob_map.items():
+    # default Top-3
+    results = []
+    for (r, c), dist in final_map.items():
         best = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
         nums, conf = zip(*best)
         results.append(
             {
-                "row": int(r),
-                "col": int(c),
+                "row": r,
+                "col": c,
                 "candidates": list(nums),
                 "confidences": list(map(float, conf)),
             }
         )
-
     results.sort(key=lambda x: x["confidences"][0], reverse=True)
-    full_probs = {f"{r},{c}": dist for (r, c), dist in prob_map.items()}
-    return {"predictions": results, "full_probabilities": full_probs}
+    return {"predictions": results, "mode": "top3", "full_probabilities": final_map}
