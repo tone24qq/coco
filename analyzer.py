@@ -4,6 +4,10 @@ from functools import lru_cache
 from typing import List, Dict, Tuple, Any, Optional
 
 import numpy as np
+import warnings, numpy as np
+warnings.filterwarnings("ignore",
+                        message="invalid value encountered in divide",
+                        category=RuntimeWarning)
 from scipy.stats import qmc
 from scipy.spatial.distance import cosine as _cosine
 
