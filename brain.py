@@ -128,6 +128,7 @@ class BoardAnalyzerUtils:
             List[List[int]]: Detected sequences.
         """
         sequences: List[List[int]] = []
+        line = line.flatten()  # 確保 line 為一維陣列
         n = len(line)
         for i in range(n):
             if line[i] == -1:
