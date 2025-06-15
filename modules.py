@@ -1,80 +1,77 @@
-# modules.py
-
 import numpy as np
-from typing import Dict, Callable, Tuple, Optional
+from typing import Dict, Callable, Tuple
+from collections import Counter
 import logging
+import os
 
-logger = logging.getLogger(__name__)
+# Logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
-# ── 公式註冊 ───────────────────────────────────────────
-# Monte Carlo 生成盤面的兩種公式：'shuffle'、'excel'
 FORMULA_REGISTRY: Dict[str, Callable[[int, int, np.random.Generator], np.ndarray]] = {}
 
-def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
-    """
-    隨機排列所有 1..rows*cols 的數字，並重塑成盤面。
-    """
-    card = np.arange(1, rows * cols + 1, dtype=np.int64)
-    rng.shuffle(card)
-    board = card.reshape(rows, cols)
-    logger.debug(f"gen_shuffle: generated board {rows}x{cols}")
-    return board
+def register_formula(name: str) -> Callable:
+    def _decorator(fn: Callable) -> Callable:
+        FORMULA_REGISTRY[name] = fn
+        return fn
+    return _decorator
 
+@register_formula("excel")
 def gen_excel(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """
-    模擬 Excel RAND 排序：對數字打隨機標籤後排序。
+    Generate grid using random permutation of numbers 1 to N.
     """
-    values = np.arange(1, rows * cols + 1, dtype=np.int64)
-    rand_vals = rng.random(rows * cols)
-    idx = np.argsort(rand_vals)
-    board = values[idx].reshape(rows, cols)
-    logger.debug(f"gen_excel: generated board {rows}x{cols}")
+    return rng.permutation(rows * cols).reshape(rows, cols) + 1
+
+@register_formula("shuffle")
+def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
+    """
+    Generate grid by shuffling numbers within each row.
+    """
+    nums = np.arange(1, rows * cols + 1)
+    board = nums.reshape(rows, cols).copy()
+    for r in range(rows):
+        rng.shuffle(board[r])
     return board
 
-FORMULA_REGISTRY['shuffle'] = gen_shuffle
-FORMULA_REGISTRY['excel'] = gen_excel
-
-# ── 全域特徵計算 ────────────────────────────────────────
-def compute_global_features(grid: np.ndarray) -> Tuple[float, float]:
-    """
-    回傳已知格子數值的平均與標準差，用於加權。
-    空時預設為 (0.0, 1.0)。
-    """
-    known = grid[grid != -1].astype(np.float32)
-    if known.size == 0:
-        logger.debug("compute_global_features: no known values, returning (0.0, 1.0)")
-        return 0.0, 1.0
-    mean = float(np.mean(known))
-    std  = float(np.std(known)) or 1.0
-    logger.debug(f"compute_global_features: mean={mean:.3f}, std={std:.3f}")
-    return mean, std
-
-# ── 自適應權重管理 ───────────────────────────────────────
 class AdaptiveWeights:
     """
-    管理公式混合權重，可根據回饋動態調整。
+    Manages dynamic weight adjustments for formulas based on performance.
     """
+    def __init__(self, initial_weights: Dict[str, float]):
+        self.weights = initial_weights.copy()
+        self.history: Dict[str, float] = {name: 0.0 for name in initial_weights}
+        self.total_trials = 0
 
-    def __init__(self, initial: Optional[Dict[str, float]] = None):
-        if initial:
-            self.weights = initial.copy()
-        else:
-            n = len(FORMULA_REGISTRY)
-            self.weights = {name: 1.0 / n for name in FORMULA_REGISTRY}
-        self.normalize()
-
-    def normalize(self) -> None:
-        total = sum(self.weights.values()) or 1.0
+    def update(self, success_rate: float, module_scores: Dict[str, float]) -> None:
+        self.total_trials += 1
         for name in self.weights:
-            self.weights[name] /= total
-        logger.debug(f"AdaptiveWeights.normalize -> {self.weights}")
+            score = module_scores.get(name, success_rate)
+            self.history[name] = (self.history[name] * (self.total_trials - 1) + score) / self.total_trials
+            self.weights[name] = max(0.1, min(0.9, self.history[name]))
+        total = sum(self.weights.values())
+        if total > 0:
+            for name in self.weights:
+                self.weights[name] /= total
 
-    def update(self, feedback: Dict[str, float]) -> None:
-        """
-        根據 feedback（公式名->正向分數），放大對應權重，並重新正規化。
-        """
-        for name, score in feedback.items():
-            if name in self.weights:
-                self.weights[name] *= (1 + score)
-        self.normalize()
-        logger.debug(f"AdaptiveWeights.update with feedback {feedback} -> {self.weights}")
+    def save_history(self, path: str) -> None:
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                import json
+                json.dump(self.history, f)
+        except OSError as e:
+            logging.error(f"Failed to save weights history: {e}")
+
+def compute_global_features(grid: np.ndarray) -> Tuple[float, float]:
+    """
+    Compute mean and std deviation of known values in the grid.
+    """
+    known_vals = grid[grid != -1].astype(np.float32)
+    if known_vals.size == 0:
+        return 0.0, 1.0
+    mean_val = np.mean(known_vals)
+    std_val = np.std(known_vals)
+    return mean_val, std_val if std_val > 0 else 1.0
