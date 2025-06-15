@@ -1,10 +1,18 @@
 # main.py
 """
-入口程式：
-    1. 解析網格字串或檔案
-    2. 依環境變數 / CLI 參數決定迭代次數
-    3. 呼叫 app.analyzer.predict_scratch_card 取得 Top-3 預測
-    4. 以人類可讀或純 JSON 方式輸出
+Scratch-Card Hidden-Number Predictor ── CLI 入口
+
+1. 解析網格（字串或檔案）
+2. 依環境變數 / CLI 決定迭代次數與引擎
+3. 呼叫 analyzer.predict_scratch_card() 取得 Top-3
+4. 輸出人類可讀或純 JSON
+
+環境變數
+--------
+ITER              : Monte-Carlo 迭代次數（預設 500_000）
+USE_FORMULA_ONLY  : "1"→僅跑公式，不用 BrainCore
+USE_LEGACY        : "1"→舊版 2 公式極速引擎
+LOG_LEVEL         : 預設 INFO
 """
 
 from __future__ import annotations
@@ -14,18 +22,18 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any, Dict, List
 
-import numpy as np  # noqa: F401  # 僅確保依賴存在
+# 確保專案根目錄在 sys.path
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# 確保工作目錄在 sys.path（因 Render / 手機環境常缺這一步）
-if os.getcwd() not in sys.path:
-    sys.path.insert(0, os.getcwd())
-
-from app.analyzer import predict_scratch_card  # noqa: E402
+from analyzer import predict_scratch_card
 
 # ────────────────────────────────────────────────────────────
-# 環境變數
+# 環境參數
 # ────────────────────────────────────────────────────────────
 def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
@@ -33,6 +41,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 USE_FORMULA_ONLY: bool = _env_bool("USE_FORMULA_ONLY", False)
+USE_LEGACY: bool = _env_bool("USE_LEGACY", False)
 DEFAULT_ITER: int = int(os.getenv("ITER", "500000"))
 
 # ────────────────────────────────────────────────────────────
@@ -46,12 +55,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("main")
 
-
 # ────────────────────────────────────────────────────────────
 # Utilities
 # ────────────────────────────────────────────────────────────
-def parse_grid(grid_str: str) -> List[List[int]]:
-    """將 '1,2,-1;3,-1,5' 轉為 2D int list。"""
+def _parse_grid_str(grid_str: str) -> List[List[int]]:
+    """
+    將 '1,2,-1;4,-1,6' 轉二維 int list
+    """
     try:
         rows = [
             [int(cell.strip()) for cell in row.split(",") if cell.strip()]
@@ -62,87 +72,74 @@ def parse_grid(grid_str: str) -> List[List[int]]:
 
     widths = {len(r) for r in rows}
     if len(widths) != 1:
-        raise ValueError("Grid 不是矩形：各列長度不一致")
+        raise ValueError("Grid 不是矩形，各列長度不一致")
     return rows
 
 
-def read_grid_from_file(path: str) -> List[List[int]]:
-    """支援 .json（list of list）或 .txt（與 CLI 相同語法）。"""
-    if not os.path.exists(path):
+def _read_grid(path: Path) -> List[List[int]]:
+    if not path.exists():
         raise FileNotFoundError(path)
-
-    if path.endswith(".json"):
-        with open(path, "r", encoding="utf-8") as fp:
-            data = json.load(fp)
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, list):
-            raise ValueError("JSON 格式須為 list[list[int]]")
+            raise ValueError("JSON 格式需為 list[list[int]]")
         return [[int(c) for c in row] for row in data]
-
-    with open(path, "r", encoding="utf-8") as fp:
-        return parse_grid(fp.read())
+    return _parse_grid_str(path.read_text(encoding="utf-8"))
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def _build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Scratch-card hidden-number predictor")
     p.add_argument(
         "--grid",
         required=True,
-        help="網格字串 '1,2,-1;3,4,-1' 或 .json/.txt 檔案路徑",
+        help="網格字串 '1,2,-1;...' 或 .json/.txt 檔路徑",
     )
     p.add_argument(
         "--iterations",
         type=int,
         default=None,
-        help="Monte-Carlo 迭代次數（覆寫 $ITER）",
+        help="Monte-Carlo 迭代數（覆寫 $ITER）",
     )
-    p.add_argument(
-        "--json",
-        action="store_true",
-        help="只輸出 JSON（不印美化結果）",
-    )
+    p.add_argument("--json", action="store_true", help="只輸出 JSON")
+    p.add_argument("--legacy", action="store_true", help="強制使用舊版 2 公式引擎")
     return p
 
 
 # ────────────────────────────────────────────────────────────
-# Main routine
+# Main
 # ────────────────────────────────────────────────────────────
 def main() -> Dict[str, Any]:
-    args = build_arg_parser().parse_args()
+    args = _build_argparser().parse_args()
 
-    # 解析 Grid
-    if os.path.isfile(args.grid):
-        grid = read_grid_from_file(args.grid)
+    # 讀取 / 解析網格
+    if Path(args.grid).is_file():
+        grid = _read_grid(Path(args.grid))
         logger.info("載入網格檔 %s → shape %dx%d", args.grid, len(grid), len(grid[0]))
     else:
-        grid = parse_grid(args.grid)
-        logger.info("解析網格字串 → shape %dx%d", len(grid), len(grid[0]))
+        grid = _parse_grid_str(args.grid)
+        logger.info("解析字串 → shape %dx%d", len(grid), len(grid[0]))
 
-    if not any(-1 in row for row in grid):
-        raise ValueError("Grid 內沒有 -1（空格），無需預測。")
+    n_iter = args.iterations or DEFAULT_ITER
+    engine_legacy = args.legacy or USE_LEGACY
+    logger.info(
+        "iterations=%s | USE_FORMULA_ONLY=%s | USE_LEGACY=%s",
+        f"{n_iter:,}",
+        USE_FORMULA_ONLY,
+        engine_legacy,
+    )
 
-    n_iter = args.iterations if args.iterations else DEFAULT_ITER
-    if n_iter <= 0:
-        raise ValueError("iterations 必須為正整數")
-
-    logger.info("n_iter=%s | USE_FORMULA_ONLY=%s", f"{n_iter:,}", USE_FORMULA_ONLY)
-
-    try:
-        result = predict_scratch_card(grid, n_iter=n_iter)
-    except Exception:
-        logger.exception("預測失敗")
-        sys.exit(1)
+    result = predict_scratch_card(grid, n_iter=n_iter, use_legacy=engine_legacy)
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
-        logger.info("── Top-3 預測 ──")
-        for pred in result["predictions"][:3]:
+        logger.info("── Top-3 推測 ──")
+        for pred in result["predictions"]:
             row, col = pred["row"], pred["col"]
             nums = ", ".join(map(str, pred["candidates"]))
             confs = ", ".join(f"{c:.3f}" for c in pred["confidences"])
-            logger.info("(%d, %d) → %s   conf=%s", row, col, nums, confs)
-        logger.info("完整機率分佈可加 --json 參數輸出")
-
+            logger.info("(%d, %d) → %s  conf=%s", row, col, nums, confs)
+        logger.info("完整機率分佈可加 --json 輸出")
     return result
 
 
