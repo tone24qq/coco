@@ -1,4 +1,4 @@
-# app/modules.py
+# modules.py
 
 import numpy as np
 from typing import Dict, Callable, Tuple
