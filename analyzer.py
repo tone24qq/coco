@@ -1,114 +1,126 @@
-# analyzer.py
-
-import os
-import logging
-import math
 import numpy as np
 from collections import Counter
-from typing import List, Dict, Tuple, Any
+from typing import List, Dict, Tuple, Optional, Any
 from functools import lru_cache
-from modules import FORMULA_REGISTRY, compute_global_features
+
+from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
 from brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
 
-logger = logging.getLogger(__name__)
-
 @lru_cache(maxsize=128)
-def simulate_with_formulas(
-    grid_bytes: bytes,
-    rows: int,
-    cols: int,
-    n_iter: int,
-    weights: Dict[str, float]=None
-) -> Dict[Tuple[int,int], Dict[int,float]]:
-    math_utils=MathUtils()
-    analyzer=BoardAnalyzerUtils()
-    rng=np.random.default_rng()
-    grid=np.frombuffer(grid_bytes,dtype=np.int64).reshape(rows,cols)
-    batch=10000 if rows*cols<50 else 5000 if rows*cols<200 else 1000
-    blanks=np.argwhere(grid==-1)
-    known=np.argwhere(grid!=-1)
-    known_vals=grid[grid!=-1]
-    counter={tuple(b):Counter() for b in map(tuple,blanks)}
-    w=weights or {"excel":0.6,"shuffle":0.4}
-    names=list(w)
-    lin=rows*known[:,0]+known[:,1]
-    skip0=EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    mean,std=compute_global_features(grid.astype(np.float32))
-    full=n_iter//batch; rem=n_iter%batch
+def simulate_with_formulas(grid_bytes: bytes, rows: int, cols: int,
+                           n_iter: int = 5_000_000,
+                           weights: Optional[Dict[str, float]] = None,
+                           use_formula_only: bool = False) -> Dict[Tuple[int, int], Dict[int, float]]:
 
-    for idx in range(full+(1 if rem else 0)):
-        size=batch if idx<full else rem
-        if size==0: continue
-        boards=np.zeros((size,rows*cols),dtype=np.int64)
-        choice=rng.choice(names,size=size,p=[w[n] for n in names])
-        for i,f in enumerate(choice):
-            boards[i]=FORMULA_REGISTRY[f](rows,cols,rng).ravel()
-        valid=np.all(boards[:,lin]==known_vals,axis=1)
-        if not valid.any(): continue
-        vbs=boards[valid].reshape(-1,rows,cols)
-        mask=np.array([analyzer.check_sequences(b) for b in vbs])
-        vbs=vbs[mask]
-        if vbs.size:
-            bscores=np.array([EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in vbs])
-            cmask=np.array([np.corrcoef(skip0.ravel(),b.ravel())[0,1]>0.8 for b in bscores])
-            vbs=vbs[cmask]; bscores=bscores[cmask]
-        for bi,b in enumerate(vbs):
-            for (r,c) in blanks:
-                val=int(b[r,c])
-                win=b[max(0,r-1):r+2,max(0,c-1):c+2]
-                kn=win[win!=-1]
-                res=1.0
-                if kn.size: res=1/(1+abs(val-kn.mean()))
-                gw=math.exp(-((val-mean)**2)/(2*std**2))
-                counter[(r,c)][val]+=bscores[bi,r,c]*res*gw
-        if all(cnt and max(cnt.values())/sum(cnt.values())>0.95 for cnt in counter.values()):
-            break
+    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
+    math_utils = MathUtils()
+    analyzer = BoardAnalyzerUtils()
+    rng = np.random.default_rng()
+    blanks = np.argwhere(grid == -1)
+    known_idx = np.argwhere(grid != -1)
+    known_vals = grid[grid != -1]
+    hit_counter = {tuple(b): Counter() for b in map(tuple, blanks)}
+    w = weights or {"excel": 0.6, "shuffle": 0.4}
+    if use_formula_only:
+        w = {k: 1.0 for k in w}
+    names = list(w)
+    lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
 
-    probs={}
-    for pos,cnt in counter.items():
-        tot=sum(cnt.values()) or 1.0
-        probs[pos]={num: MathUtils().normalize_value(v,0,tot) for num,v in cnt.items()}
-    return probs
+    batch_size = 10000 if rows * cols < 50 else 5000 if rows * cols < 200 else 1000
+    n_iter = 10000000 if rows * cols < 50 else 5000000 if rows * cols < 200 else 1000000
 
-def weight_prob_by_modules(grid: np.ndarray, prob: Dict[Tuple[int,int],Dict[int,float]])->Dict:
-    mu=MathUtils(); an=BoardAnalyzerUtils()
-    blanks=np.argwhere(grid==-1)
-    skip=EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    mean,std=compute_global_features(grid.astype(np.float32))
+    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
+    grid_feats = compute_global_features(grid.astype(np.float32))
+    mean_val, std_val = grid_feats[0], grid_feats[1]
 
-    for r,c in blanks:
-        win=grid[max(0,r-1):r+2,max(0,c-1):c+2]
-        kv=win[win!=-1]
-        if kv.size:
-            for num in list(prob[(r,c)].keys()):
-                prob[(r,c)][num]*=1/(1+abs(num-kv.mean()))
-    for r,c in blanks:
-        for num in list(prob[(r,c)].keys()):
-            prob[(r,c)][num]*=skip[r,c]
-    for r,c in blanks:
-        rowsq=an.get_arithmetic_or_geometric_sequences(grid[r])
-        colsq=an.get_arithmetic_or_geometric_sequences(grid[:,c])
-        for num in list(prob[(r,c)].keys()):
-            if any(num in s for s in rowsq+colsq):
-                prob[(r,c)][num]*=1.5
-    for r,c in blanks:
-        for num in list(prob[(r,c)].keys()):
-            prob[(r,c)][num]*=math.exp(-((num-mean)**2)/(2*std**2))
+    for _ in range(n_iter // batch_size):
+        boards = np.zeros((batch_size, rows * cols), dtype=np.int64)
+        choices = rng.choice(names, size=batch_size, p=[w[n] for n in names])
+        for i, fname in enumerate(choices):
+            boards[i] = FORMULA_REGISTRY[fname](rows, cols, rng).ravel()
 
-    for pos in prob:
-        tot=sum(prob[pos].values()) or 1.0
-        prob[pos]={k:mu.normalize_value(v,0,tot) for k,v in prob[pos].items()}
-    return prob
+        valid_mask = np.all(boards[:, lin_known] == known_vals, axis=1)
+        valid_boards = boards[valid_mask].reshape(-1, rows, cols)
 
-def predict_scratch_card(grid: List[List[int]], n_iter: int, formula_only: bool=False)->Dict[str,Any]:
-    grid_np=np.array(grid,dtype=np.int64)
-    pm=simulate_with_formulas(grid_np.tobytes(),grid_np.shape[0],grid_np.shape[1],n_iter)
-    if not formula_only and os.getenv("USE_FORMULA_ONLY")!="1":
-        pm=weight_prob_by_modules(grid_np,pm)
-    res=[]
-    for (r,c),d in pm.items():
-        top=sorted(d.items(),key=lambda x:x[1],reverse=True)[:3]
-        nums,confs=zip(*top) if top else ((),())
-        res.append({"row":int(r),"col":int(c),"candidates":list(nums),"confidences":[round(v,4) for v in confs]})
-    res_sorted=sorted(res,key=lambda x:x["confidences"][0] if x["confidences"] else 0,reverse=True)
-    return {"predictions":res_sorted,"full_probabilities":{f"{r},{c}":d for (r,c),d in pm.items()}}
+        check_seq_mask = np.array([analyzer.check_sequences(b, grid, min_len=3, allow_gaps=1)
+                                   for b in valid_boards], dtype=bool)
+        valid_boards = valid_boards[check_seq_mask]
+
+        board_scores = np.array([EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in valid_boards])
+        corr_mask = np.array([
+            np.corrcoef(skip_scores.ravel(), bs.ravel())[0, 1] > 0.8 for bs in board_scores
+        ])
+        valid_boards = valid_boards[corr_mask]
+        board_scores = board_scores[corr_mask]
+
+        for b_idx, board in enumerate(valid_boards):
+            for r, c in blanks:
+                window = board[max(0, r - 1):r + 2, max(0, c + 2)]
+                known_vals_window = window[window != -1]
+                resonance = 1 / (1 + abs(board[r, c] - known_vals_window.mean())) if known_vals_window.size else 1.0
+                global_weight = np.exp(-((board[r, c] - mean_val) ** 2) / (2 * std_val ** 2))
+                hit_counter[(r, c)][board[r, c]] += board_scores[b_idx, r, c] * resonance * global_weight
+            if all(max(cnt.values()) / sum(cnt.values()) > 0.95 for cnt in hit_counter.values()):
+                break
+
+    prob_map = {
+        pos: {
+            k: math_utils.normalize_value(v, min(cnt.values()), max(cnt.values()))
+            for k, v in cnt.items()
+        } for pos, cnt in hit_counter.items()
+    }
+    return prob_map
+
+def weight_prob_by_modules(grid: np.ndarray,
+                           prob_map: Dict[Tuple[int, int], Dict[int, float]]) -> Dict[Tuple[int, int], Dict[int, float]]:
+    math_utils = MathUtils()
+    analyzer = BoardAnalyzerUtils()
+    rows, cols = grid.shape
+    blanks = np.argwhere(grid == -1)
+    grid_feats = compute_global_features(grid.astype(np.float32))
+    mean_val, std_val = grid_feats
+
+    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
+
+    for r, c in blanks:
+        window = grid[max(0, r - 1):r + 2, max(0, c - 2)]
+        known_vals = window[window != -1]
+        row_seq = analyzer.get_arithmetic_or_geometric_sequences(grid[r], min_len=3)
+        col_seq = analyzer.get_arithmetic_or_geometric_sequences(grid[:, c], min_len=3)
+
+        for num in list(prob_map[(r, c)].keys()):
+            prob = prob_map[(r, c)][num]
+            if known_vals.size:
+                prob *= 1 / (1 + abs(num - known_vals.mean()))
+            prob *= np.exp(-((num - mean_val) ** 2) / (2 * std_val ** 2))
+            prob *= skip_scores[r, c]
+            if any(num in seq for seq in row_seq + col_seq):
+                prob *= 1.5
+            prob_map[(r, c)][num] = prob
+
+    for pos in prob_map:
+        total = sum(prob_map[pos].values())
+        prob_map[pos] = {k: math_utils.normalize_value(v, 0, total) for k, v in prob_map[pos].items()}
+
+    return prob_map
+
+def predict_scratch_card(grid: List[List[int]], n_iter: int, use_formula_only: bool = False) -> Dict[str, Any]:
+    grid_np = np.array(grid, dtype=np.int64)
+    prob_map = simulate_with_formulas(grid_np.tobytes(), grid_np.shape[0], grid_np.shape[1],
+                                      n_iter, use_formula_only=use_formula_only)
+    prob_map = weight_prob_by_modules(grid_np, prob_map)
+    results = []
+    for (r, c), dist in prob_map.items():
+        best = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
+        nums, conf = zip(*best)
+        results.append({
+            "row": int(r),
+            "col": int(c),
+            "candidates": list(nums),
+            "confidences": list(map(float, conf))
+        })
+    full_probs = {f"{r},{c}": dist for (r, c), dist in prob_map.items()}
+    return {
+        "predictions": sorted(results, key=lambda x: x["confidences"][0], reverse=True),
+        "full_probabilities": full_probs
+    }
