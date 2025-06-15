@@ -103,12 +103,36 @@ def compute_all_module_scores(
         logger.debug(f"計算 {len(scores)} 個模組分數，位置 {pos}")
         return scores
 
+
 def generate_masked_samples(
     grid: np.ndarray, target_nums: List[int]
 ) -> List[Tuple[np.ndarray, int, Dict[str, Any]]]:
     """
     生成訓練樣本，對每個已知格子進行掩碼並提取特徵。
+    每筆樣本包含：掩碼後的盤面、目標數字、附帶資訊。
+    """
+    samples = []
+    rows, cols = grid.shape
 
+    for r in range(rows):
+        for c in range(cols):
+            value = grid[r, c]
+            if value in target_nums:
+                # 建立一個新的盤面，將該位置 mask 成 -1
+                masked_grid = grid.copy()
+                masked_grid[r, c] = -1
+
+                # 附帶資訊（可擴充）
+                meta = {
+                    "row": r,
+                    "col": c,
+                    "original_value": value,
+                    "grid_shape": grid.shape,
+                }
+
+                samples.append((masked_grid, value, meta))
+
+    return samples
     Args:
         grid (np.ndarray): 二維網格陣列。
         target_nums (List[int]): 目標數字列表。
