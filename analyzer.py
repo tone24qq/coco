@@ -144,56 +144,84 @@ def simulate_with_formulas(
 # 後處理：本地/全局/Pattern 加權
 # ---------------------------------------------------------------------
 def weight_prob_by_modules(
-    grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]]
+    grid: np.ndarray,
+    prob_map: Dict[Tuple[int, int], Dict[int, float]]
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """
+    對 simulate_with_formulas() 產生的機率表進行：
+    1. Local resonance（鄰近均值共振）
+    2. Global distribution（全盤高斯權重）
+    3. Skip-pattern confidence（EXT_GM20）
+    4. 既有列/行序列加權
+    5. 最終每格 normalize
+    若某格在 prob_map 缺失，先填入均勻分布避免 KeyError。
+    """
     math_utils = MathUtils()
     analyzer = BoardAnalyzerUtils()
+
     rows, cols = grid.shape
     blanks = np.argwhere(grid == -1)
-legal_all = analyzer.get_legal_values_for_placement(grid) or {0}
+
+    # ---------------------------------------------------------------
+    # 0️⃣ 保底：缺席格子填均勻分布，避免 KeyError
+    # ---------------------------------------------------------------
+    legal_all = analyzer.get_legal_values_for_placement(grid) or {0}
     uniform_fallback = {n: 1.0 / len(legal_all) for n in legal_all}
+
     for r, c in blanks:
         if (r, c) not in prob_map or not prob_map[(r, c)]:
-            # 塞一份均勻分布當墊底，後續加權會自動調整
             prob_map[(r, c)] = dict(uniform_fallback)
+
+    # ---------------------------------------------------------------
     # 1️⃣ Local resonance
+    # ---------------------------------------------------------------
     for r, c in blanks:
-        window = grid[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
+        window = grid[max(0, r - 1): r + 2, max(0, c - 1): c + 2]
         kn_vals = window[window != -1]
         if kn_vals.size:
-            for num, prob in prob_map[(r, c)].items():
-                resonance = 1 / (1 + abs(num - kn_vals.mean()) * 0.5)
+            mean_kn = kn_vals.mean()
+            for num in prob_map[(r, c)]:
+                resonance = 1 / (1 + abs(num - mean_kn) * 0.5)
                 prob_map[(r, c)][num] *= resonance * 1.2
 
+    # ---------------------------------------------------------------
     # 2️⃣ Global distribution
+    # ---------------------------------------------------------------
     mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
     std_val = std_val or 1.0
     for r, c in blanks:
-        for num, prob in prob_map[(r, c)].items():
+        for num in prob_map[(r, c)]:
             g_w = np.exp(-((num - mean_val) ** 2) / (2 * (std_val**2 + 1e-6)))
             prob_map[(r, c)][num] *= g_w * 1.15
 
+    # ---------------------------------------------------------------
     # 3️⃣ Skip-pattern confidence
+    # ---------------------------------------------------------------
     skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
     for r, c in blanks:
+        skip_factor = skip_scores[r, c] * 1.1
         for num in prob_map[(r, c)]:
-            prob_map[(r, c)][num] *= skip_scores[r, c] * 1.1
+            prob_map[(r, c)][num] *= skip_factor
 
-    # 4️⃣ Existing row/col sequences boost
+    # ---------------------------------------------------------------
+    # 4️⃣ Row/col existing sequences boost
+    # ---------------------------------------------------------------
     for r, c in blanks:
         row_seq = analyzer.get_arithmetic_or_geometric_sequences(grid[r], 3, 1)
         col_seq = analyzer.get_arithmetic_or_geometric_sequences(grid[:, c], 3, 1)
+        has_seq = set().union(*row_seq, *col_seq)
         for num in prob_map[(r, c)]:
-            if any(num in seq for seq in row_seq + col_seq):
+            if num in has_seq:
                 prob_map[(r, c)][num] *= 1.7
 
-    # 5️⃣ Final normalization (per-cell)
-    for pos in prob_map:
-        total = sum(prob_map[pos].values()) or 1e-10
-        prob_map[pos] = {k: v / total for k, v in prob_map[pos].items()}
+    # ---------------------------------------------------------------
+    # 5️⃣ Per-cell normalization
+    # ---------------------------------------------------------------
+    for pos, dist in prob_map.items():
+        total = sum(dist.values()) or 1e-10
+        prob_map[pos] = {k: v / total for k, v in dist.items()}
 
     return prob_map
-
 # ---------------------------------------------------------------------
 # Public API wrapper
 # ---------------------------------------------------------------------
