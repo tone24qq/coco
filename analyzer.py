@@ -23,14 +23,25 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 # -------- 1. 全盤指紋 -----------------------------------------------
 def global_fingerprint(arr: np.ndarray) -> np.ndarray:
+    """
+    回傳長度固定 10 的特徵向量：
+      [μ, σ, diff_hist (8 bin)]
+    其中 diff_hist 針對「已揭露數字排序後的相鄰差值」做 8 等分直方圖，
+    range 固定 (1, 64) 以保證任何盤面都產生 8 維。
+    """
     flat = arr[arr != -1]
-    if flat.size == 0: return np.zeros(12)
-    mu, sigma = flat.mean(), flat.std() or 1
-    diff_hist = np.histogram(np.diff(np.sort(flat)), bins=8,
-                             range=(1, flat.max()+1))[0]
-    diff_hist = diff_hist / (diff_hist.sum() or 1)
-    return np.concatenate([[mu, sigma], diff_hist])
+    if flat.size == 0:
+        return np.zeros(10, dtype=np.float32)
 
+    mu, sigma = flat.mean(), flat.std() or 1.0
+    # 固定範圍 → 向量長度恒等
+    diff_hist, _ = np.histogram(
+        np.diff(np.sort(flat)), bins=8, range=(1, 64)
+    )
+    diff_hist = diff_hist.astype(np.float32)
+    diff_hist /= (diff_hist.sum() or 1.0)         # 歸一化，防 division-by-0
+
+    return np.concatenate([[mu, sigma], diff_hist])
 # -------- 2. 9×9 Patch Score ---------------------------------------
 def local_patch_score(p_true: np.ndarray, p_board: np.ndarray) -> float:
     mask = (p_true != -1)
