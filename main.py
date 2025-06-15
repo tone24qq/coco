@@ -15,7 +15,8 @@ logging.basicConfig(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
     parser.add_argument("--grid", type=str, required=True, help="2D grid as comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'")
-    parser.add_argument("--iterations", type=int, default=None, help="Number of Monte Carlo iterations")
+    parser.add_argument("--iterations", type=int, default=None, help="Number of Monte Carlo iterations to run")
+    parser.add_argument("--formula-only", action="store_true", help="Use only formula-based generation (disable hybrid learning weights)")
     return parser.parse_args()
 
 def parse_grid(grid_str: str) -> List[List[int]]:
@@ -34,7 +35,7 @@ def main():
     try:
         grid = parse_grid(args.grid)
         iterations = args.iterations or int(os.environ.get("ITER", "5000000"))
-        use_formula_only = os.environ.get("USE_FORMULA_ONLY", "0") == "1"
+        use_formula_only = args.formula_only or (os.environ.get("USE_FORMULA_ONLY", "0") == "1")
 
         grid_np = np.array(grid, dtype=np.int64)
         known_vals = grid_np[grid_np != -1]
@@ -51,9 +52,9 @@ def main():
             print(f"Cell ({pred['row']},{pred['col']}): {pred['candidates']} with confidences {pred['confidences']}")
         print("=== End of Results ===")
 
-        logging.info("Full probabilities available in result['full_probabilities']")
+        logging.info("Full probability distributions available under result['full_probabilities']")
         return result
-    except (ValueError, Exception) as e:
+    except Exception as e:
         logging.error(f"Error during prediction: {e}")
         sys.exit(1)
 
