@@ -1,249 +1,225 @@
-# analyzer.py  (QMC + CMS + 1M guarantee)
-import os
-import math
-import numpy as np
-import xxhash
-from scipy.stats import qmc
-from collections import Counter, defaultdict
+# --------------------------  analyzer.py  ---------------------------
+import os, math, xxhash, pathlib, csv
 from functools import lru_cache
-from typing import List, Dict, Tuple, Any, Optional
+from typing    import List, Dict, Tuple, Any, Optional
+
+import numpy as np
+from scipy.stats import qmc
+from scipy.spatial.distance import cosine as _cosine
 
 from modules import FORMULA_REGISTRY, compute_global_features
-from brain import (
+from brain   import (
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
     BoardAnalyzerUtils,
 )
 
-math_utils = MathUtils()
-analyzer_utils = BoardAnalyzerUtils()
+# -------- utils -----------------------------------------------------
+math_utils    = MathUtils()
+analyzer_util = BoardAnalyzerUtils()
 
-# ------------------------------------------------------------------ #
-#  Count-Min Sketch (64 KB 預設)
-# ------------------------------------------------------------------ #
+def cosine(a: np.ndarray, b: np.ndarray) -> float:
+    return 1 - _cosine(a, b)         # 0~1，相似越高越接近 1
+
+# -------- 1. 全盤指紋 -----------------------------------------------
+def global_fingerprint(arr: np.ndarray) -> np.ndarray:
+    flat = arr[arr != -1]
+    if flat.size == 0: return np.zeros(12)
+    mu, sigma = flat.mean(), flat.std() or 1
+    diff_hist = np.histogram(np.diff(np.sort(flat)), bins=8,
+                             range=(1, flat.max()+1))[0]
+    diff_hist = diff_hist / (diff_hist.sum() or 1)
+    return np.concatenate([[mu, sigma], diff_hist])
+
+# -------- 2. 9×9 Patch Score ---------------------------------------
+def local_patch_score(p_true: np.ndarray, p_board: np.ndarray) -> float:
+    mask = (p_true != -1)
+    if not mask.any():               # 全空 patch
+        return 0.5
+    diff = np.abs(p_true[mask] - p_board[mask])
+    mean_gap = diff.mean()
+    norm_gap = mean_gap / (p_true.max() + 1e-6)
+    return max(0.0, 1.0 - norm_gap)  # 0~1，越小差距越大
+
+def prebuild_patch_mask(rows: int, cols: int, radius: int = 4):
+    m = {}
+    for r in range(rows):
+        for c in range(cols):
+            m[(r, c)] = (
+                slice(max(0, r - radius), min(rows, r + radius + 1)),
+                slice(max(0, c - radius), min(cols, c + radius + 1)),
+            )
+    return m
+
+# -------- 3. Count-Min Sketch --------------------------------------
 class CountMinSketch:
     def __init__(self, width: int = 4096, depth: int = 4):
         self.w, self.d = width, depth
-        self.table = np.zeros((depth, width), dtype=np.uint32)
-        self.seeds = [i * 0x9e3779B1 for i in range(depth)]
+        self.tab = np.zeros((depth, width), dtype=np.uint32)
+        self.seeds = [i * 0x9E3779B1 for i in range(depth)]
 
-    def _idx(self, key: bytes, seed: int) -> int:
+    def _h(self, key: bytes, seed: int) -> int:
         return xxhash.xxh32(key, seed=seed).intdigest() % self.w
 
-    def update(self, key: bytes, value: int = 1):
-        for s in self.seeds:
-            self.table[self.seeds.index(s), self._idx(key, s)] += value
+    def update(self, key: bytes, v: float = 1):
+        for i, s in enumerate(self.seeds):
+            self.tab[i, self._h(key, s)] += v
 
     def query(self, key: bytes) -> int:
-        return min(self.table[i, self._idx(key, s)] for i, s in enumerate(self.seeds))
+        return min(self.tab[i, self._h(key, s)] for i, s in enumerate(self.seeds))
 
-# 4-byte packed key: cell_idx (hi 16) | num (lo 16)
-def pack_key(cell_idx: int, num: int) -> bytes:
-    return (cell_idx << 16 | num).to_bytes(4, "little")
+def pack_key(idx: int, num: int) -> bytes:
+    return (idx << 16 | num).to_bytes(4, "little")
 
-# ------------------------------------------------------------------ #
-#  Sobol + CMS Monte-Carlo  (min_iter 保底)
-# ------------------------------------------------------------------ #
+# ------------------- 4. Monte-Carlo with boosts --------------------
 @lru_cache(maxsize=128)
 def simulate_with_formulas(
-        grid_bytes: bytes,
-        rows: int,
-        cols: int,
-        n_iter: int,
-        quick_mode: bool = False,
-        min_iter: int = 0
+    grid_bytes: bytes,
+    rows: int,
+    cols: int,
+    n_iter: int,
+    quick_mode: bool = False,
+    min_iter: int = 0,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
-    blanks = np.argwhere(grid == -1)
-    known_idx = np.argwhere(grid != -1)
-    known_vals = grid[grid != -1]
-    lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
+    blanks  = np.argwhere(grid == -1)
+    known   = np.argwhere(grid != -1)
+    k_vals  = grid[grid != -1]
+    lin_k   = rows * known[:, 0] + known[:, 1]
 
-    # Count-Min Sketch
-    cms = CountMinSketch()
-    cell_to_idx = {tuple(b): i for i, b in enumerate(blanks)}
-    legal_all = analyzer_utils.get_legal_values_for_placement(grid)
+    cms  = CountMinSketch()
+    idx_map = {tuple(b): i for i, b in enumerate(blanks)}
+    legal   = analyzer_util.get_legal_values_for_placement(grid)
 
-    # 特徵 / baseline
-    skip_scores = None if quick_mode else EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
-    std_val = std_val or 1.0
-
-    batch_size = max(500, 20000 // (rows * cols))
-    total_seen, effective = 0, 0
+    # baseline
+    fp_true = global_fingerprint(grid)
+    patch_mask = prebuild_patch_mask(rows, cols)
+    skip_base  = None if quick_mode else EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
+    mean, std  = compute_global_features(grid.astype(np.float32))[:2]
+    std = std or 1.0
 
     # Sobol engine
-    sobol_dim = rows * cols
-    qmc_engine = qmc.Sobol(d=sobol_dim, scramble=True)
-    bits = math.ceil(math.log(batch_size, 2))
-    step_vecs = 2 ** bits  # 最接近 2^m 的點數
+    batch = max(500, 20_000 // (rows * cols))
+    sob_dim = rows * cols
+    engine  = qmc.Sobol(d=sob_dim, scramble=True)
+    step    = 2 ** math.ceil(math.log(batch, 2))
 
-    while total_seen < n_iter:
-        # 生成 Sobol 點；若不足 n_iter，最後一次可少量
-        need = min(step_vecs, n_iter - total_seen)
-        vec = qmc_engine.random_base2(int(math.log2(need)))
+    total, eff = 0, 0
+    while total < n_iter:
+        need = min(step, n_iter - total)
+        vec  = engine.random_base2(int(math.log2(need)))
         boards = (vec * (rows * cols)).astype(np.int64).reshape(-1, rows, cols)
 
-        # 已知格比對
-        valid_mask = np.all(boards.reshape(-1, rows * cols)[:, lin_known] == known_vals, axis=1)
+        # 已知格一致
+        valid = np.all(boards.reshape(-1, rows * cols)[:, lin_k] == k_vals, axis=1)
 
-        # 深檢查 (序列 + skip corr)
+        # 序列 & skip corr
         if not quick_mode:
-            # 序列
-            seq_ok = np.array([
-                analyzer_utils.check_sequences(b, grid, 3, 1) for b in boards
-            ])
-            valid_mask &= seq_ok
-            # skip corr
-            if valid_mask.any():
-                corrs = [
-                    np.corrcoef(skip_scores.ravel(),
-                                EXT_GM20_Skip_Pattern_Confidence_Vec(b).ravel())[0, 1]
-                    for b in boards[valid_mask]
-                ]
-                valid_mask[valid_mask] &= np.array([c > 0.85 for c in corrs])
+            seq_ok = np.array([analyzer_util.check_sequences(
+                                b, grid, 3, 1) for b in boards])
+            valid &= seq_ok
+            if valid.any():
+                corrs = [np.corrcoef(skip_base.ravel(),
+                                     EXT_GM20_Skip_Pattern_Confidence_Vec(b).ravel())[0,1]
+                         for b in boards[valid]]
+                valid[valid] &= np.array([c > 0.85 for c in corrs])
 
-        valid_boards = boards[valid_mask]
-        effective += len(valid_boards)
+        finals = boards[valid]
+        eff += len(finals)
 
-        # 累加進 CMS
-        for b in valid_boards:
+        # ------- 累加（boost = 全盤 × Patch） -------
+        for b in finals:
+            g_sim   = cosine(fp_true, global_fingerprint(b))
+            g_boost = 1.0 + max(g_sim - 0.90, 0) * 5  # 0.90↑ → ×1~1.5
+
             for r, c in blanks:
-                cms.update(pack_key(cell_to_idx[(r, c)], int(b[r, c])))
+                pr, pc = patch_mask[(r, c)]
+                p_true, p_b = grid[pr, pc], b[pr, pc]
+                p_score = local_patch_score(p_true, p_b)     # 0~1
+                boost   = g_boost * (0.6 + 0.4 * p_score)   # 0.6~1.5
 
-        total_seen += need
+                cms.update(pack_key(idx_map[(r, c)], int(b[r, c])), boost)
 
-        # early-stop 只有達到 min_iter 才可觸發
-        if (
-            total_seen >= max(min_iter, 30000)
-            and not quick_mode
-            and effective >= 30000
-        ):
-            # 粗估收斂：取樣少做一次掃描
-            converged = True
-            for (r, c), idx in cell_to_idx.items():
-                counts = [cms.query(pack_key(idx, n)) for n in legal_all]
-                s = sum(counts)
-                if s == 0:
-                    converged = False
-                    break
-                if max(counts) / s <= 0.88:
-                    converged = False
-                    break
-            if converged:
-                break
+        total += need
 
-    # 轉回機率表
+        # early-stop（達 min_iter 才檢查）
+        if total >= max(min_iter, 30_000) and not quick_mode and eff >= 30_000:
+            conv = all(
+                (lambda lst: max(lst) / (sum(lst) or 1) > 0.88)(
+                    [cms.query(pack_key(idx_map[p], n)) for n in legal]
+                )
+                for p in idx_map
+            )
+            if conv: break
+
+    # ---- normalize to prob_map ----
     prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
-    for (r, c), idx in cell_to_idx.items():
-        cnts = {n: cms.query(pack_key(idx, n)) for n in legal_all}
-        if not any(cnts.values()):
-            continue
-        v_min, v_max = min(cnts.values()), max(cnts.values())
-        prob_map[(r, c)] = {
-            k: math_utils.normalize_value(v, v_min or 1e-10, v_max or 1e-10)
-            for k, v in cnts.items()
-        }
+    for (r, c), i in idx_map.items():
+        cnt = {n: cms.query(pack_key(i, n)) for n in legal}
+        if not any(cnt.values()): continue
+        mn, mx = min(cnt.values()), max(cnt.values())
+        prob_map[(r, c)] = {k: math_utils.normalize_value(v, mn or 1e-10, mx or 1e-10)
+                            for k, v in cnt.items()}
     return prob_map
 
-# ------------------------------------------------------------------ #
-#  你原本的 weight_prob_by_modules() 直接貼回來即可
-# ------------------------------------------------------------------ #
-from previous_version import weight_prob_by_modules   # <—— 替換成你現有實作
+# ------------------- 5. weight_prob_by_modules (同前) ----------------
+def weight_prob_by_modules(
+    grid: np.ndarray,
+    prob: Dict[Tuple[int, int], Dict[int, float]]
+) -> Dict[Tuple[int, int], Dict[int, float]]:
+    rows, cols = grid.shape
+    blanks = np.argwhere(grid == -1)
+    legal  = analyzer_util.get_legal_values_for_placement(grid) or {0}
+    uni    = {n: 1/len(legal) for n in legal}
 
-# ------------------------------------------------------------------ #
-#  唯一化：Hungarian 有 scipy，否則 Greedy
-# ------------------------------------------------------------------ #
-def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
-                  blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
+    for r, c in blanks:
+        if (r,c) not in prob or not prob[(r,c)]:
+            prob[(r,c)] = dict(uni)
+
+    # Local resonance
+    for r, c in blanks:
+        win = grid[max(0,r-1):r+2, max(0,c-1):c+2]
+        kn  = win[win != -1]
+        if kn.size:
+            m = kn.mean()
+            for n in prob[(r,c)]:
+                prob[(r,c)][n] *= 1.2 / (1+abs(n-m)*0.5)
+
+    # Global dist
+    mean, std = compute_global_features(grid.astype(np.float32))[:2]
+    std = std or 1.0
+    for r, c in blanks:
+        for n in prob[(r,c)]:
+            g = math.exp(-((n-mean)**2)/(2*(std**2+1e-6)))
+            prob[(r,c)][n] *= g*1.15
+
+    # Skip boost
+    skip = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
+    for r, c in blanks:
+        fac = max(skip[r,c], 0.05)*1.1
+        for n in prob[(r,c)]:
+            prob[(r,c)][n] *= fac
+
+    # Row/col seq
+    for r, c in blanks:
+        seq = analyzer_util.get_arithmetic_or_geometric_sequences
+        has = set().union(*seq(grid[r], 3, 1), *seq(grid[:, c], 3, 1))
+        for n in prob[(r,c)]:
+            if n in has:
+                prob[(r,c)][n] *= 1.7
+
+    # normalize
+    for pos, dist in prob.items():
+        s = sum(dist.values()) or 1e-10
+        prob[pos] = {k: v/s for k,v in dist.items()}
+    return prob
+
+# ------------------- 6. 唯一化 (Hungarian→Greedy) ------------------
+def global_unique(prob, blanks):
     try:
         from scipy.optimize import linear_sum_assignment
-        nums = sorted({n for d in prob_map.values() for n in d})
+        nums = sorted({n for d in prob.values() for n in d})
         cost = np.full((len(blanks), len(nums)), 50.0)
         for i, cell in enumerate(blanks):
             for j, n in enumerate(nums):
-                cost[i, j] = -math.log(prob_map[cell].get(n, 1e-9))
-        row, col = linear_sum_assignment(cost)
-        return {blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0))
-                for r, c in zip(row, col)}
-    except Exception:
-        # Greedy fallback
-        assigned, res = set(), {}
-        for cell in sorted(blanks, key=lambda p: max(prob_map[p].values()), reverse=True):
-            for n, p in sorted(prob_map[cell].items(), key=lambda x: x[1], reverse=True):
-                if n not in assigned:
-                    assigned.add(n)
-                    res[cell] = (n, p)
-                    break
-        return res
-
-# ------------------------------------------------------------------ #
-#  Public API (quick + refine, 保底百萬)
-# ------------------------------------------------------------------ #
-def predict_scratch_card(
-        grid: List[List[int]],
-        target_num: Optional[int] = None,
-        quick_iter: int = int(os.getenv("QUICK_ITER", 200_000)),
-        refine_iter: int = int(os.getenv("REFINE_ITER", 800_000)),
-        min_total_iter: int = 1_000_000,
-        unique: bool = True
-) -> Dict[str, Any]:
-    grid_np = np.array(grid, dtype=np.int64)
-    rows, cols = grid_np.shape
-    blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
-
-    # -------- Quick pass --------
-    quick = simulate_with_formulas(
-        grid_np.tobytes(), rows, cols,
-        n_iter=quick_iter,
-        quick_mode=True,
-        min_iter=min_total_iter // 5
-    )
-    quick = weight_prob_by_modules(grid_np, quick)
-
-    # 熱點 3 格
-    hot = sorted(blanks, key=lambda p: max(quick[p].values()), reverse=True)[:3]
-
-    # -------- Refine pass --------
-    refine = simulate_with_formulas(
-        grid_np.tobytes(), rows, cols,
-        n_iter=refine_iter,
-        quick_mode=False,
-        min_iter=min_total_iter - quick_iter
-    )
-    refine = weight_prob_by_modules(grid_np, refine)
-
-    # 合併：熱點用 refine，其餘用 quick
-    final_map = {cell: (refine if cell in hot else quick)[cell] for cell in blanks}
-
-    # -------- 唯一化 or Top-3 --------
-    if unique and target_num is None:
-        assign = global_unique(final_map, blanks)
-        preds = [{
-            "row": r, "col": c,
-            "candidates": [n], "confidences": [float(p)]
-        } for (r, c), (n, p) in assign.items()]
-        preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-        return {"mode": "unique", "predictions": preds, "full_probabilities": final_map}
-
-    if target_num is not None:
-        rank = [{
-            "row": r, "col": c,
-            "candidate": target_num,
-            "confidence": final_map[(r, c)].get(target_num, 0.0)
-        } for r, c in blanks]
-        rank.sort(key=lambda x: x["confidence"], reverse=True)
-        return {"target": target_num, "rankings": rank, "full_probabilities": final_map}
-
-    # default Top-3
-    preds = []
-    for (r, c), dist in final_map.items():
-        top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
-        nums, conf = zip(*top3)
-        preds.append({
-            "row": r, "col": c,
-            "candidates": list(nums),
-            "confidences": list(map(float, conf))
-        })
-    preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-    return {"mode": "top3", "predictions": preds, "full_probabilities": final_map}
+                cost[i,j] = -math.
