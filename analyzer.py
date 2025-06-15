@@ -1,22 +1,25 @@
 # analyzer.py
 
 import os
-import numpy as np
-import pandas as pd
+import json
 import logging
 import logging.handlers
-import json
-import joblib
 from typing import Dict, List, Tuple, Any, Optional
+
+import numpy as np
+import pandas as pd
+import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import precision_score, recall_score, f1_score
 from lightgbm import LGBMClassifier
+
 from modules import ScratchSolver, compute_features
 from brain import load_grid_from_file
 import numpy.lib.stride_tricks as stride_tricks
 
 # 結構化日誌配置，支援 Render CLI 和 log stream
 class JsonFormatter(logging.Formatter):
+    """格式化日誌為 JSON，包含時間戳、級別、名稱、訊息和請求 ID。"""
     def format(self, record):
         log_entry = {
             "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
@@ -102,6 +105,9 @@ def compute_all_module_scores(
                 scores[name] = 0.1
         logger.debug(f"計算 {len(scores)} 個模組分數，位置 {pos}")
         return scores
+    except AssertionError as e:
+        logger.error(f"計算分數失敗：{e}")
+        raise
 
 def generate_masked_samples(
     grid: np.ndarray, target_nums: List[int]
@@ -122,13 +128,13 @@ def generate_masked_samples(
     """
     try:
         assert grid.ndim == 2, f"預期二維網格，得到 {grid.ndim}維陣列，形狀 {grid.shape}"
+        if not target_nums:
+            raise ValueError("目標數字列表不可為空")
+        
         samples = []
         sample_count = 0
         M, N = grid.shape
         known_yx = np.argwhere(grid != -1)
-        
-        if not target_nums:
-            raise ValueError("目標數字列表不可為空")
         
         for y, x in known_yx:
             true_val = grid[y, x]
@@ -191,7 +197,8 @@ def train_extended_model(
         
         try:
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            joblib.dump(model, model_path)
+            with open(model_path, 'wb') as f:
+                joblib.dump(model, f)
             logger.info(f"模型已儲存至 {model_path}")  # 中文備注：記錄模型儲存
         except OSError as e:
             logger.error(f"儲存模型失敗：{e}")
@@ -203,15 +210,18 @@ def train_extended_model(
             'sample_count': len(samples)
         }
         try:
+            os.makedirs(os.path.dirname(feature_log_path), exist_ok=True)
             with open(feature_log_path, 'w', encoding='utf-8') as f:
                 json.dump(feature_log, f, ensure_ascii=False, indent=2)
             logger.info(f"特徵日誌已儲存至 {feature_log_path}")
         except OSError as e:
             logger.error(f"儲存特徵日誌失敗：{e}")
             raise
-    
-    except (ValueError, joblib.JoblibException) as e:
+    except ValueError as e:
         logger.error(f"訓練模型失敗：{e}")
+        raise
+    except joblib.JoblibException as e:
+        logger.error(f"Joblib 處理失敗：{e}")
         raise
     except Exception as e:
         logger.error(f"訓練模型時發生未知錯誤：{e}")
@@ -241,7 +251,9 @@ def predict_topk(
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"模型檔案不存在：{model_path}")
         
-        model = joblib.load(model_path)
+        with open(model_path, 'rb') as f:
+            model = joblib.load(f)
+        
         empty_yx = np.argwhere(grid == -1)
         if len(empty_yx) == 0:
             return []
@@ -258,9 +270,14 @@ def predict_topk(
         predictions.sort(key=lambda x: x[3], reverse=True)
         logger.info(f"預測完成，找到 {len(predictions[:k])} 個候選位置")  # 中文備注：記錄預測結果
         return predictions[:k]
-    
-    except (FileNotFoundError, joblib.JoblibException) as e:
+    except AssertionError as e:
         logger.error(f"預測失敗：{e}")
+        raise
+    except FileNotFoundError as e:
+        logger.error(f"模型檔案未找到：{e}")
+        raise
+    except joblib.JoblibException as e:
+        logger.error(f"Joblib 處理失敗：{e}")
         raise
     except Exception as e:
         logger.error(f"預測時發生未知錯誤：{e}")
@@ -303,7 +320,7 @@ def analyze_board(
         
         # 使用 Faiss 索引篩選候選
         K_candidate_num = 10
-        target_pos = (0, 0)  # 使用預設位置
+        target_pos = (0, 0)
         qv = compute_features(grid.astype(np.float32), target_pos)[None]
         D, I = faiss_idx.search(qv, K_candidate_num)
         cand_recs = [feature_metas[i] for i in I[0]]
@@ -367,9 +384,14 @@ def analyze_board(
         
         logger.info(f"網格分析完成，找到 {len(top3)} 個候選位置")  # 中文備注：記錄分析結果
         return final_scores, pred_array, top3, metrics
-    
-    except (AssertionError, ValueError, faiss.FaissException) as e:
+    except AssertionError as e:
         logger.error(f"分析網格失敗：{e}")
+        raise
+    except ValueError as e:
+        logger.error(f"權重無效：{e}")
+        raise
+    except faiss.FaissException as e:
+        logger.error(f"Faiss 索引查詢失敗：{e}")
         raise
     except Exception as e:
         logger.error(f"分析網格時發生未知錯誤：{e}")
@@ -383,4 +405,5 @@ def analyze_board(
 # - 型別提示：通過 mypy --strict 檢查
 # - 日誌規範：JSON 格式，支援 Render CLI/log stream，含中文樣本計數
 # - PEP 8/257：Black 格式化，行寬 ≤88 字符，Google 風格文檔
+# - 資源管理：使用 with 語句，防範資源洩漏
 # - 測試環境：Python 3.11
