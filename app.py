@@ -15,6 +15,8 @@ import tempfile
 import psutil
 import ijson
 import faiss
+import os, json, glob, logging, numpy as np
+from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file, build_feature_index
 from analyzer import analyze_board
@@ -26,7 +28,14 @@ import numpy.lib.stride_tricks as stride_tricks
 
 # 確保日誌目錄存在
 os.makedirs("logs", exist_ok=True)
-
+os.makedirs("logs", exist_ok=True)
+_log_fmt = "%(asctime)s [%(levelname)s:%(name)s] %(message)s"
+root = logging.getLogger()
+root.setLevel(logging.INFO)
+root.handlers.clear()
+root.addHandler(RotatingFileHandler("logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=5))
+root.addHandler(logging.StreamHandler())
+logger = logging.getLogger(__name__）
 # 配置日誌
 logger = logging.getLogger("app")
 logging.basicConfig(
@@ -45,28 +54,91 @@ app = FastAPI(
     openapi_version="3.1.0"
 )
 
-# 資料目錄設置
-BASE_DIR = os.path.dirname(__file__)
-DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
+BASE_DIR   = os.path.dirname(__file__)
+DATA_DIR   = os.path.join(BASE_DIR, "samples", "data")
+INDEX_DIR  = os.path.join(BASE_DIR, "samples", "index")
+INDEX_PATH = os.path.join(INDEX_DIR, "faiss.idx")
+META_PATH  = os.path.join(INDEX_DIR, "meta_paths.json")
+
 os.makedirs(DATA_DIR, exist_ok=True)
-logger.info(f"資料目錄：{DATA_DIR}")
-
-# 配置
-MAX_HEATMAPS = 500000  # 最大熱圖樣本數
-BATCH_SIZE = 1000  # 批次處理熱圖數量
-INDEX_DIR = os.path.join(BASE_DIR, "samples", "index")
 os.makedirs(INDEX_DIR, exist_ok=True)
+logger.info("📂 資料目錄：%s", DATA_DIR)
 
-# 載入 Faiss 索引與 metadata
+MAX_HEATMAPS = 500_000   # 熱圖上限
+BATCH_SIZE   = 1_000     # 批次讀檔
+
+# ------------------------------------------------
+# 3. 建立 / 載入 Faiss Index
+# ------------------------------------------------
+def _collect_vectors(data_dir: str):
+    """
+    走訪 data_dir(含 ZIP)，擷取向量與檔案路徑。
+    ★ 將 obj["vector"] 部分改成你實際 heatmap JSON 的向量鍵。
+    """
+    import zipfile
+
+    vectors, metas = [], []
+
+    # (a) 讀普通 JSON
+    for path in glob.glob(os.path.join(data_dir, "**", "*.json"), recursive=True):
+        try:
+            with open(path, encoding="utf-8") as f:
+                obj = json.load(f)
+            vectors.append(obj["vector"])
+            metas.append(path)
+        except Exception as exc:
+            logger.warning("跳過壞檔 %s: %s", path, exc)
+
+    # (b) 讀 ZIP 內 JSON
+    for zpath in glob.glob(os.path.join(data_dir, "**", "*.zip"), recursive=True):
+        try:
+            with zipfile.ZipFile(zpath) as zf:
+                for name in zf.namelist():
+                    if not name.endswith(".json"):
+                        continue
+                    with zf.open(name) as fp:
+                        obj = json.load(fp)
+                    vectors.append(obj["vector"])
+                    metas.append(f"{zpath}:{name}")
+        except Exception as exc:
+            logger.warning("跳過壞 ZIP %s: %s", zpath, exc)
+
+        if len(vectors) >= MAX_HEATMAPS:
+            break
+
+    return np.asarray(vectors, dtype="float32"), metas
+
+def _build_faiss_index(data_dir: str):
+    vecs, metas = _collect_vectors(data_dir)
+    if vecs.size == 0:
+        raise RuntimeError("❌ 找不到任何向量，無法建立索引")
+
+    dim = vecs.shape[1]
+    idx = faiss.IndexFlatL2(dim)
+    idx.add(vecs)
+
+    faiss.write_index(idx, INDEX_PATH)
+    with open(META_PATH, "w", encoding="utf-8") as fp:
+        json.dump(metas, fp, ensure_ascii=False)
+
+    logger.info("✅ Faiss index 建立完成：%d 向量", len(metas))
+    del vecs  # 釋放記憶體
+    return idx, metas
+
 try:
-    faiss_idx = faiss.read_index(os.path.join(INDEX_DIR, "faiss.idx"))
-    with open(os.path.join(INDEX_DIR, "meta_paths.json"), 'r', encoding="utf-8") as f:
-        feature_metas = json.load(f)
-    logger.info(f"成功載入 Faiss 索引與 {len(feature_metas)} 個元數據記錄")
-except (OSError, json.JSONDecodeError) as e:
-    logger.error(f"載入 Faiss 索引或元數據失敗：{e}")
-    faiss_idx = None
-    feature_metas = []
+    if os.path.exists(INDEX_PATH):
+        logger.info("🔍 載入既有 Faiss index")
+        faiss_idx = faiss.read_index(INDEX_PATH)
+        with open(META_PATH, encoding="utf-8") as fp:
+            feature_metas = json.load(fp)
+        logger.info("成功載入 %d 筆元數據", len(feature_metas))
+    else:
+        logger.warning("⚠️  找不到 index，開始重建…")
+        faiss_idx, feature_metas = _build_faiss_index(DATA_DIR)
+
+except Exception:
+    logger.exception("💥 Faiss 索引處理失敗")
+    faiss_idx, feature_metas = None, []
 
 # 抽象熱圖處理器
 class HeatmapProcessor:
