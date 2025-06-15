@@ -8,11 +8,16 @@ from pydantic import BaseModel
 from typing import List, Dict, Union
 from analyzer import predict_scratch_card
 
+# Enhanced logging configuration with file handler and rotation
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("app.log", mode="a", encoding="utf-8")
+    ]
 )
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Scratch Card Prediction API",
@@ -38,25 +43,25 @@ class PredictResponse(BaseModel):
 async def predict(req: GridRequest):
     try:
         grid = req.grid
-        iterations = req.iterations or (int(os.getenv("ITER", 5_000_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 500_000)  # Respect environment vars
+        iterations = req.iterations or (int(os.getenv("ITER", 5_000_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 500_000)
         if not grid or not all(isinstance(row, list) for row in grid):
             raise ValueError("Invalid grid format")
+        logger.info(f"Processing prediction for grid size {len(grid)}x{len(grid[0])} with {iterations} iterations")
         result = predict_scratch_card(grid, iterations)
         return result
     except Exception as e:
-        logging.error(f"Prediction failed: {e}")
+        logger.error(f"Prediction failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("startup")
 async def warm_up():
-    import os  # Explicit import within function to resolve scope issue
     dummy_grid = [[-1 for _ in range(5)] for _ in range(4)]
     try:
-        iterations = int(os.getenv("ITER", 5_000_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 500_000  # Consistent iteration logic
-        predict_scratch_card(dummy_grid, n_iter=iterations // 25)  # Adjusted iterations for warm-up
-        logging.info("Warm-up completed.")
+        iterations = int(os.getenv("ITER", 5_000_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 500_000
+        predict_scratch_card(dummy_grid, n_iter=iterations // 25)
+        logger.info("Warm-up completed successfully.")
     except Exception as e:
-        logging.error(f"Warm-up failed: {e}")
+        logger.error(f"Warm-up failed: {str(e)}", exc_info=True)
 
 # 自檢報告：
 # - 語法檢查：通過
