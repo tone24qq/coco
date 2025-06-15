@@ -1,11 +1,12 @@
 # analyzer.py
 import os
-import numpy as np
-from collections import Counter
-from typing import List, Dict, Tuple, Optional, Any
 from functools import lru_cache
+from collections import Counter
+from typing import List, Dict, Tuple, Any, Optional, Union
 
-from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
+import numpy as np
+
+from modules import FORMULA_REGISTRY, compute_global_features
 from brain import (
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
@@ -23,6 +24,7 @@ def simulate_with_formulas(
     n_iter: int = 5_000_000,
     weights: Dict[str, float] | None = None,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """大量隨機生成完整盤面 → 篩掉不符規則 → 回傳每個空格的命中次數分布。"""
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
     math_utils = MathUtils()
     analyzer = BoardAnalyzerUtils()
@@ -33,98 +35,80 @@ def simulate_with_formulas(
     known_vals = grid[grid != -1]
     hit_counter = {tuple(b): Counter() for b in map(tuple, blanks)}
 
-    # formula weights
+    # 公式權重
     w = weights or {"excel": 0.6, "shuffle": 0.4}
     names = list(w)
 
     lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
     batch_size = 10_000 if rows * cols < 50 else 5_000 if rows * cols < 200 else 1_000
 
-    # 環境變數覆寫
+    # 讀取環境變數
     n_iter = (
         int(os.getenv("ITER", 5_000_000))
         if os.getenv("USE_FORMULA_ONLY") != "1"
         else 500_000
     )
 
-    # 全盤特徵 & skip-pattern baseline
+    # baseline 特徵
     skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    grid_feats = compute_global_features(grid.astype(np.float32))
-    mean_val, std_val = grid_feats[0], grid_feats[1] or 1.0  # avoid div0
+    mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
+    std_val = std_val or 1.0  # avoid div0
 
     # ---------------------------- main loop --------------------------
     for _ in range(n_iter // batch_size):
-        # 1. 生成候選盤
+        # ① 批次生成候選盤
         boards = np.zeros((batch_size, rows * cols), dtype=np.int64)
         choices = rng.choice(names, size=batch_size, p=[w[n] for n in names])
         for i, fname in enumerate(choices):
             boards[i] = FORMULA_REGISTRY[fname](rows, cols, rng).ravel()
 
-        # 2. 先比對已知數字
+        # ② 已知數字比對
         valid = np.all(boards[:, lin_known] == known_vals, axis=1)
 
-        # 3. 檢查算術/幾何序列（**修正：對齊 batch_size**）
+        # ③ 檢查算術 / 幾何序列（對齊 batch_size）
         seq_ok = np.array(
             [
                 analyzer.check_sequences(
                     b.reshape(rows, cols), grid, min_len=3, allow_gaps=1
                 )
                 for b in boards
-            ],
-            dtype=bool,
+            ]
         )
         valid &= seq_ok
 
-        # 4. 篩出符合前兩條規則的盤，計算 skip-pattern 相似度
-        valid_indices = np.where(valid)[0]
-        if valid_indices.size == 0:
+        # ④ Skip-pattern 相似度
+        valid_idx = np.where(valid)[0]
+        if valid_idx.size == 0:
             continue
-        valid_boards = boards[valid_indices].reshape(-1, rows, cols)
-
-        board_scores = np.array(
-            [EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in valid_boards]
+        v_boards = boards[valid_idx].reshape(-1, rows, cols)
+        v_scores = np.array(
+            [EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in v_boards]
         )
         corr_ok = np.array(
-            [
-                np.corrcoef(skip_scores.ravel(), bs.ravel())[0, 1] > 0.85
-                for bs in board_scores
-            ],
-            dtype=bool,
+            [np.corrcoef(skip_scores.ravel(), s.ravel())[0, 1] > 0.85 for s in v_scores]
         )
-        # 把結果刷回 master mask
-        valid[valid_indices] &= corr_ok
+        valid[valid_idx] &= corr_ok
 
-        # 5. 最終保留盤
-        final_indices = np.where(valid)[0]
-        if final_indices.size == 0:
+        # ⑤ 留下終版盤
+        final_idx = np.where(valid)[0]
+        if final_idx.size == 0:
             continue
-        final_boards = boards[final_indices].reshape(-1, rows, cols)
-        final_scores = board_scores[corr_ok]
+        final_boards = boards[final_idx].reshape(-1, rows, cols)
+        final_scores = v_scores[corr_ok]
 
-        # 6. 累計各空格候選命中次數 (含 resonance / global / skip 加權)
-        for b_idx, board in enumerate(final_boards):
+        # ⑥ 累計各空格命中次數（resonance + global + skip 加權）
+        for b_i, board in enumerate(final_boards):
             for r, c in blanks:
                 window = board[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
-                kn_vals = window[window != -1]
-                resonance = (
-                    1 / (1 + abs(board[r, c] - kn_vals.mean()) * 0.5)
-                    if kn_vals.size
-                    else 1.0
-                )
-                global_weight = np.exp(
-                    -((board[r, c] - mean_val) ** 2) / (2 * (std_val**2 + 1e-6))
-                )
+                kn = window[window != -1]
+                resonance = 1 / (1 + abs(board[r, c] - kn.mean()) * 0.5) if kn.size else 1
+                g_w = np.exp(-((board[r, c] - mean_val) ** 2) / (2 * (std_val**2 + 1e-6)))
                 hit_counter[(r, c)][board[r, c]] += (
-                    final_scores[b_idx, r, c]
-                    * resonance
-                    * global_weight
-                    * 1.1  # boost
+                    final_scores[b_i, r, c] * resonance * g_w * 1.1
                 )
 
-            # 早停：若所有空格的最大機率已 >95%
-            if all(
-                max(cnt.values()) / sum(cnt.values()) > 0.95 for cnt in hit_counter.values()
-            ):
+            # 早停：全部格子 max prob > 0.95
+            if all(max(c.values()) / sum(c.values()) > 0.95 for c in hit_counter.values()):
                 break
 
     # -------------------------- normalize ----------------------------
@@ -137,97 +121,85 @@ def simulate_with_formulas(
             k: math_utils.normalize_value(v, v_min or 1e-10, v_max or 1e-10)
             for k, v in cnt.items()
         }
-
     return prob_map
 
+
 # ---------------------------------------------------------------------
-# 後處理：本地/全局/Pattern 加權
+# 匯總 / 多層加權
 # ---------------------------------------------------------------------
 def weight_prob_by_modules(
     grid: np.ndarray,
-    prob_map: Dict[Tuple[int, int], Dict[int, float]]
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """
-    對 simulate_with_formulas() 產生的機率表進行：
-    1. Local resonance（鄰近均值共振）
-    2. Global distribution（全盤高斯權重）
-    3. Skip-pattern confidence（EXT_GM20）
-    4. 既有列/行序列加權
-    5. 最終每格 normalize
-    若某格在 prob_map 缺失，先填入均勻分布避免 KeyError。
-    """
     math_utils = MathUtils()
     analyzer = BoardAnalyzerUtils()
 
     rows, cols = grid.shape
     blanks = np.argwhere(grid == -1)
 
-    # ---------------------------------------------------------------
-    # 0️⃣ 保底：缺席格子填均勻分布，避免 KeyError
-    # ---------------------------------------------------------------
+    # 0️⃣ 缺席格子 → 均勻先驗
     legal_all = analyzer.get_legal_values_for_placement(grid) or {0}
-    uniform_fallback = {n: 1.0 / len(legal_all) for n in legal_all}
-
+    uniform = {n: 1.0 / len(legal_all) for n in legal_all}
     for r, c in blanks:
         if (r, c) not in prob_map or not prob_map[(r, c)]:
-            prob_map[(r, c)] = dict(uniform_fallback)
+            prob_map[(r, c)] = dict(uniform)
 
-    # ---------------------------------------------------------------
     # 1️⃣ Local resonance
-    # ---------------------------------------------------------------
     for r, c in blanks:
-        window = grid[max(0, r - 1): r + 2, max(0, c - 1): c + 2]
-        kn_vals = window[window != -1]
-        if kn_vals.size:
-            mean_kn = kn_vals.mean()
-            for num in prob_map[(r, c)]:
-                resonance = 1 / (1 + abs(num - mean_kn) * 0.5)
-                prob_map[(r, c)][num] *= resonance * 1.2
+        window = grid[max(0, r - 1) : r + 2, max(0, c - 1) : c + 2]
+        kn = window[window != -1]
+        if kn.size:
+            mean_kn = kn.mean()
+            for n in prob_map[(r, c)]:
+                prob_map[(r, c)][n] *= 1.2 / (1 + abs(n - mean_kn) * 0.5)
 
-    # ---------------------------------------------------------------
-    # 2️⃣ Global distribution
-    # ---------------------------------------------------------------
+    # 2️⃣ Global value distribution
     mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
     std_val = std_val or 1.0
     for r, c in blanks:
-        for num in prob_map[(r, c)]:
-            g_w = np.exp(-((num - mean_val) ** 2) / (2 * (std_val**2 + 1e-6)))
-            prob_map[(r, c)][num] *= g_w * 1.15
+        for n in prob_map[(r, c)]:
+            g_w = np.exp(-((n - mean_val) ** 2) / (2 * (std_val**2 + 1e-6)))
+            prob_map[(r, c)][n] *= g_w * 1.15
 
-    # ---------------------------------------------------------------
-    # 3️⃣ Skip-pattern confidence
-    # ---------------------------------------------------------------
+    # 3️⃣ Skip-pattern confidence（加 0.05 底氣）
     skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
     for r, c in blanks:
-        skip_factor = skip_scores[r, c] * 1.1
-        for num in prob_map[(r, c)]:
-            prob_map[(r, c)][num] *= skip_factor
+        skip_factor = max(skip_scores[r, c], 0.05) * 1.1
+        for n in prob_map[(r, c)]:
+            prob_map[(r, c)][n] *= skip_factor
 
-    # ---------------------------------------------------------------
-    # 4️⃣ Row/col existing sequences boost
-    # ---------------------------------------------------------------
+    # 4️⃣ 既有 row/col 序列 boost
     for r, c in blanks:
-        row_seq = analyzer.get_arithmetic_or_geometric_sequences(grid[r], 3, 1)
-        col_seq = analyzer.get_arithmetic_or_geometric_sequences(grid[:, c], 3, 1)
-        has_seq = set().union(*row_seq, *col_seq)
-        for num in prob_map[(r, c)]:
-            if num in has_seq:
-                prob_map[(r, c)][num] *= 1.7
+        seq = analyzer.get_arithmetic_or_geometric_sequences
+        has_seq = set().union(*seq(grid[r], 3, 1), *seq(grid[:, c], 3, 1))
+        for n in prob_map[(r, c)]:
+            if n in has_seq:
+                prob_map[(r, c)][n] *= 1.7
 
-    # ---------------------------------------------------------------
-    # 5️⃣ Per-cell normalization
-    # ---------------------------------------------------------------
+    # 5️⃣ Normalize；若全 0 → 均勻
     for pos, dist in prob_map.items():
-        total = sum(dist.values()) or 1e-10
-        prob_map[pos] = {k: v / total for k, v in dist.items()}
+        tot = sum(dist.values())
+        if tot == 0:
+            n = len(dist) or 1
+            prob_map[pos] = {k: 1.0 / n for k in dist}
+        else:
+            prob_map[pos] = {k: v / tot for k, v in dist.items()}
 
     return prob_map
+
+
 # ---------------------------------------------------------------------
-# Public API wrapper
+# Public API
 # ---------------------------------------------------------------------
 def predict_scratch_card(
-    grid: List[List[int]], n_iter: int
+    grid: List[List[int]],
+    n_iter: int = 5_000_000,
+    target_num: Optional[int] = None,
 ) -> Dict[str, Any]:
+    """
+    若 `target_num` 給定 → 只回傳該數字各空格的信心排序。
+    否則回傳每格 top-3 候選。
+    """
     grid_np = np.array(grid, dtype=np.int64)
 
     prob_map = simulate_with_formulas(
@@ -235,8 +207,21 @@ def predict_scratch_card(
     )
     prob_map = weight_prob_by_modules(grid_np, prob_map)
 
-    # Pack result
+    rows, cols = grid_np.shape
+    blanks = np.argwhere(grid_np == -1)
+
     results: List[Dict[str, Any]] = []
+    if target_num is not None:
+        # 只針對指定數字
+        for r, c in blanks:
+            conf = prob_map[(r, c)].get(target_num, 0.0)
+            results.append(
+                {"row": int(r), "col": int(c), "candidate": target_num, "confidence": conf}
+            )
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+        return {"target": target_num, "rankings": results, "full_probabilities": prob_map}
+
+    # 回傳各格 top-3
     for (r, c), dist in prob_map.items():
         best = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
         nums, conf = zip(*best)
@@ -249,15 +234,6 @@ def predict_scratch_card(
             }
         )
 
+    results.sort(key=lambda x: x["confidences"][0], reverse=True)
     full_probs = {f"{r},{c}": dist for (r, c), dist in prob_map.items()}
-    return {
-        "predictions": sorted(results, key=lambda x: x["confidences"][0], reverse=True),
-        "full_probabilities": full_probs,
-    }
-
-# ---------------------------------------------------------------------
-# 自檢報告
-# ---------------------------------------------------------------------
-# - 語法 / type check：通過
-# - 主要修正：seq_ok / corr_ok 與 valid shape 對齊，避免 broadcast error
-# - 其它核心演算法、權重、加權機制「零刪減」
+    return {"predictions": results, "full_probabilities": full_probs}
