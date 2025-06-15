@@ -65,6 +65,8 @@ def iter_all_heatmaps(data_dir: str):
                 for name in zf.namelist():
                     if not name.lower().endswith('.json'):
                         continue
+        except (zipfile.BadZipFile, OSError) as e:
+            logger.warning("Skipping bad ZIP %s: %s", zpath, e)
 def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     """
     Collect feature vectors and metadata from JSON and ZIP heatmap files.
