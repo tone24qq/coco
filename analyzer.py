@@ -133,9 +133,11 @@ def generate_masked_samples(
                 samples.append((masked_grid, value, meta))
 
     return samples
-    Args:
-        grid (np.ndarray): 。
-        target_nums (List[int]): 
+    """
+Args:
+    grid (np.ndarray): 二維網格，包含已知與未知數字的盤面。
+    target_nums (List[int]): 欲進行掩碼的目標數字清單，例如 [5, 9]。
+"""
 
     Returns:
         List[Tuple[np.ndarray, int, Dict[str, Any]]]: 訓練樣本列表。
