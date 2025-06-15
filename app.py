@@ -15,7 +15,6 @@ import tempfile
 import psutil
 import ijson
 import faiss
-import os, json, glob, logging, numpy as np
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Optional, Tuple, Any, Generator
 from brain import process_single_board, process_batch, load_grid_from_file, build_feature_index
@@ -26,8 +25,7 @@ from functools import lru_cache
 from joblib import Parallel, delayed
 import numpy.lib.stride_tricks as stride_tricks
 
-# 確保日誌目錄存在
-os.makedirs("logs", exist_ok=True)
+# Ensure log directory exists
 os.makedirs("logs", exist_ok=True)
 _log_fmt = "%(asctime)s [%(levelname)s:%(name)s] %(message)s"
 root = logging.getLogger()
@@ -35,12 +33,11 @@ root.setLevel(logging.INFO)
 root.handlers.clear()
 root.addHandler(RotatingFileHandler("logs/app.log", maxBytes=10 * 1024 * 1024, backupCount=5))
 root.addHandler(logging.StreamHandler())
+
 logger = logging.getLogger(__name__)
-# 配置日誌
-logger = logging.getLogger("app")
 logging.basicConfig(
     level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    format=_log_fmt,
     handlers=[
         logging.FileHandler("logs/api.log"),
         logging.StreamHandler()
@@ -48,102 +45,158 @@ logging.basicConfig(
 )
 
 app = FastAPI(
-    title="刮刮樂分析 API",
+    title="Scratch Card Analysis API",
     version="1.0.0",
-    description="提供刮刮樂網格分析服務，支援動態模式檢測與特徵索引查詢。",
+    description="Provides scratch card grid analysis services with dynamic pattern detection and feature index querying.",
     openapi_version="3.1.0"
 )
 
-BASE_DIR   = os.path.dirname(__file__)
-DATA_DIR   = os.path.join(BASE_DIR, "samples", "data")
-INDEX_DIR  = os.path.join(BASE_DIR, "samples", "index")
+BASE_DIR = os.path.dirname(__file__)
+DATA_DIR = os.path.join(BASE_DIR, "samples", "data")
+INDEX_DIR = os.path.join(BASE_DIR, "samples", "index")
 INDEX_PATH = os.path.join(INDEX_DIR, "faiss.idx")
-META_PATH  = os.path.join(INDEX_DIR, "meta_paths.json")
+META_PATH = os.path.join(INDEX_DIR, "meta_paths.json")
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(INDEX_DIR, exist_ok=True)
-logger.info("📂 資料目錄：%s", DATA_DIR)
+logger.info("📂 Data directory: %s", DATA_DIR)
 
-MAX_HEATMAPS = 500_000   # 熱圖上限
-BATCH_SIZE   = 1_000     # 批次讀檔
+MAX_HEATMAPS = 500_000  # Heatmap limit
+BATCH_SIZE = 1_000  # Batch size for reading files
 
-# ------------------------------------------------
-# 3. 建立 / 載入 Faiss Index
-# ------------------------------------------------
-def _collect_vectors(data_dir: str):
+# Faiss Index Loading
+def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[str]]:
     """
-    走訪 data_dir(含 ZIP)，擷取向量與檔案路徑。
-    ★ 將 obj["vector"] 部分改成你實際 heatmap JSON 的向量鍵。
+    Collect vectors and file paths from JSON and ZIP files in the data directory.
+
+    Args:
+        data_dir (str): Path to the data directory.
+
+    Returns:
+        Tuple[np.ndarray, List[str]]: Array of vectors and list of corresponding metadata paths.
+
+    Raises:
+        OSError: If directory access fails.
+        json.JSONDecodeError: If JSON parsing fails.
+        ValueError: If vector data is invalid.
     """
-    import zipfile
+    vectors: List[np.ndarray] = []
+    metas: List[str] = []
+    sample_count = 0
 
-    vectors, metas = [], []
+    try:
+        # Process standalone JSON files
+        for path in glob.glob(os.path.join(data_dir, "**", "*.json"), recursive=True):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    obj = json.load(f)
+                if "vector" not in obj:
+                    logger.warning("Skipping JSON %s: missing 'vector' field", path)
+                    continue
+                vec = np.array(obj["vector"], dtype=np.float32)
+                if vec.size == 0 or not np.isfinite(vec).all():
+                    logger.warning("Skipping invalid vector in %s", path)
+                    continue
+                vectors.append(vec)
+                metas.append(path)
+                sample_count += 1
+            except (OSError, json.JSONDecodeError, ValueError) as e:
+                logger.warning("Skipping bad JSON file %s: %s", path, e)
 
-    # (a) 讀普通 JSON
-    for path in glob.glob(os.path.join(data_dir, "**", "*.json"), recursive=True):
+        # Process JSON files in ZIP archives
+        for zpath in glob.glob(os.path.join(data_dir, "**", "*.zip"), recursive=True):
+            try:
+                with zipfile.ZipFile(zpath) as zf:
+                    for name in zf.namelist():
+                        if not name.endswith(".json"):
+                            continue
+                        with zf.open(name) as fp:
+                            try:
+                                obj = json.load(fp)
+                                if "vector" not in obj:
+                                    logger.warning("Skipping JSON %s in ZIP %s: missing 'vector' field", name, zpath)
+                                    continue
+                                vec = np.array(obj["vector"], dtype=np.float32)
+                                if vec.size == 0 or not np.isfinite(vec).all():
+                                    logger.warning("Skipping invalid vector in %s:%s", zpath, name)
+                                    continue
+                                vectors.append(vec)
+                                metas.append(f"{zpath}:{name}")
+                                sample_count += 1
+                            except (json.JSONDecodeError, ValueError) as e:
+                                logger.warning("Skipping bad JSON %s in ZIP %s: %s", name, zpath, e)
+            except (zipfile.BadZipFile, OSError) as e:
+                logger.warning("Skipping bad ZIP %s: %s", zpath, e)
+
+            if sample_count >= MAX_HEATMAPS:
+                logger.info("Reached heatmap limit: %d, stopping collection", MAX_HEATMAPS)
+                break
+
+        logger.info("Collected %d vectors", sample_count)
+        return np.vstack(vectors) if vectors else np.array([]), metas
+    except OSError as e:
+        logger.error("Failed to collect vectors: %s", e)
+        raise
+
+def _build_faiss_index(data_dir: str) -> Tuple[faiss.IndexFlatL2, List[str]]:
+    """
+    Build a Faiss index from vectors in JSON and ZIP files.
+
+    Args:
+        data_dir (str): Path to the data directory.
+
+    Returns:
+        Tuple[faiss.IndexFlatL2, List[str]]: Faiss index and metadata list.
+
+    Raises:
+        RuntimeError: If no valid vectors are found.
+        OSError: If file operations fail.
+        faiss.FaissException: If index creation fails.
+    """
+    try:
+        vecs, metas = _collect_vectors(data_dir)
+        if vecs.size == 0:
+            logger.error("No valid vectors found for indexing")
+            raise RuntimeError("No valid vectors found, cannot build index")
+
+        dim = vecs.shape[1]
+        idx = faiss.IndexFlatL2(dim)
+        idx.add(vecs)
+
         try:
-            with open(path, encoding="utf-8") as f:
-                obj = json.load(f)
-            vectors.append(obj["vector"])
-            metas.append(path)
-        except Exception as exc:
-            logger.warning("跳過壞檔 %s: %s", path, exc)
+            os.makedirs(os.path.dirname(INDEX_PATH), exist_ok=True)
+            faiss.write_index(idx, INDEX_PATH)
+            with open(META_PATH, "w", encoding="utf-8") as fp:
+                json.dump(metas, fp, ensure_ascii=False, indent=2)
+            logger.info("✅ Faiss index built: %d vectors", len(metas))
+        except OSError as e:
+            logger.error("Failed to save Faiss index or metadata: %s", e)
+            raise
 
-    # (b) 讀 ZIP 內 JSON
-    for zpath in glob.glob(os.path.join(data_dir, "**", "*.zip"), recursive=True):
-        try:
-            with zipfile.ZipFile(zpath) as zf:
-                for name in zf.namelist():
-                    if not name.endswith(".json"):
-                        continue
-                    with zf.open(name) as fp:
-                        obj = json.load(fp)
-                    vectors.append(obj["vector"])
-                    metas.append(f"{zpath}:{name}")
-        except Exception as exc:
-            logger.warning("跳過壞 ZIP %s: %s", zpath, exc)
-
-        if len(vectors) >= MAX_HEATMAPS:
-            break
-
-    return np.asarray(vectors, dtype="float32"), metas
-
-def _build_faiss_index(data_dir: str):
-    vecs, metas = _collect_vectors(data_dir)
-    if vecs.size == 0:
-        raise RuntimeError("❌ 找不到任何向量，無法建立索引")
-
-    dim = vecs.shape[1]
-    idx = faiss.IndexFlatL2(dim)
-    idx.add(vecs)
-
-    faiss.write_index(idx, INDEX_PATH)
-    with open(META_PATH, "w", encoding="utf-8") as fp:
-        json.dump(metas, fp, ensure_ascii=False)
-
-    logger.info("✅ Faiss index 建立完成：%d 向量", len(metas))
-    del vecs  # 釋放記憶體
-    return idx, metas
+        del vecs  # Free memory
+        return idx, metas
+    except (RuntimeError, OSError, faiss.FaissException) as e:
+        logger.error("Failed to build Faiss index: %s", e)
+        raise
 
 try:
     if os.path.exists(INDEX_PATH):
-        logger.info("🔍 載入既有 Faiss index")
+        logger.info("🔍 Loading existing Faiss index")
         faiss_idx = faiss.read_index(INDEX_PATH)
         with open(META_PATH, encoding="utf-8") as fp:
             feature_metas = json.load(fp)
-        logger.info("成功載入 %d 筆元數據", len(feature_metas))
+        logger.info("Successfully loaded %d metadata entries", len(feature_metas))
     else:
-        logger.warning("⚠️  找不到 index，開始重建…")
+        logger.warning("⚠️ Index not found, rebuilding...")
         faiss_idx, feature_metas = _build_faiss_index(DATA_DIR)
-
-except Exception:
-    logger.exception("💥 Faiss 索引處理失敗")
+except Exception as e:
+    logger.exception("💥 Faiss index processing failed: %s", e)
     faiss_idx, feature_metas = None, []
 
-# 抽象熱圖處理器
+# Abstract Heatmap Processor
 class HeatmapProcessor:
     """
-    熱圖數據處理的抽象基類。
+    Abstract base class for heatmap data processing.
     """
     def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
         raise NotImplementedError
@@ -153,15 +206,27 @@ class HeatmapProcessor:
 
 class ScratchCardHeatmapProcessor(HeatmapProcessor):
     """
-    刮刮樂熱圖處理的具體實現。
+    Concrete implementation for scratch card heatmap processing.
     """
     def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
+        """
+        Load heatmaps from JSON files in the data directory.
+
+        Args:
+            data_dir (str): Directory to scan for heatmap JSON files.
+
+        Yields:
+            Tuple[str, Any]: Heatmap name and data.
+
+        Raises:
+            OSError: If directory access fails.
+        """
         sample_count = 0
         try:
             for json_path in iter_data_paths(data_dir):
                 name = os.path.splitext(os.path.basename(json_path))[0]
                 try:
-                    logger.debug(f"讀取熱圖檔案：{json_path}")
+                    logger.debug("Reading heatmap file: %s", json_path)
                     with open(json_path, 'r', encoding="utf-8") as f:
                         heatmap_data = ijson.parse(f)
                         data = {}
@@ -174,92 +239,106 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
                             yield name, data
                             sample_count += 1
                             if sample_count % BATCH_SIZE == 0:
-                                logger.info(f"已載入 {sample_count} 個熱圖樣本")
+                                logger.info("Loaded %d heatmap samples", sample_count)
                 except (OSError, ValueError) as e:
-                    logger.error(f"無法載入熱圖 {name} 從 {json_path}：{e}")
+                    logger.error("Failed to load heatmap %s from %s: %s", name, json_path, e)
                     continue
-            logger.info(f"總計載入 {sample_count} 個熱圖樣本")
-        except Exception as e:
-            logger.error(f"載入熱圖失敗：{e}")
+            logger.info("Total loaded %d heatmap samples", sample_count)
+        except OSError as e:
+            logger.error("Failed to load heatmaps: %s", e)
             raise
 
     def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
         """
-        計算網格與熱圖在目標數字上的相似度分數。
+        Compute similarity score between grid and heatmap for the target number.
 
         Args:
-            grid (np.ndarray): 輸入網格。
-            heatmap_data (Dict[str, Any]): 熱圖數據。
-            target_num (int): 目標數字。
+            grid (np.ndarray): Input grid.
+            heatmap_data (Dict[str, Any]): Heatmap data.
+            target_num (int): Target number.
 
         Returns:
-            float: 相似度分數。
+            float: Similarity score.
+
+        Raises:
+            ValueError: If grid or heatmap data is invalid.
         """
         try:
             heatmap = np.array(heatmap_data.get('heatmap', []))
             if heatmap.shape != grid.shape:
+                logger.debug("Heatmap shape mismatch: %s vs %s", heatmap.shape, grid.shape)
                 return 0.0
             target_mask = (grid == target_num) | (grid == -1)
             if not np.any(target_mask):
                 return 0.0
             score = np.corrcoef(grid[target_mask].flatten(), heatmap[target_mask].flatten())[0, 1]
             return float(score) if not np.isnan(score) else 0.0
-        except Exception as e:
-            logger.error(f"熱圖匹配失敗：{e}")
+        except (ValueError, TypeError) as e:
+            logger.error("Heatmap matching failed: %s", e)
             return 0.0
 
-# 初始化處理器
+# Initialize processor
 heatmap_processor = ScratchCardHeatmapProcessor()
 
-# 檢測樣本檔案
+# Detect sample files
 def count_json_in_zip(zip_path: str) -> int:
     """
-    計算 ZIP 檔案中的 JSON 檔案數量。
+    Count JSON files in a ZIP archive.
 
     Args:
-        zip_path (str): ZIP 檔案路徑。
+        zip_path (str): Path to the ZIP file.
 
     Returns:
-        int: JSON 檔案數量。
+        int: Number of JSON files.
+
+    Raises:
+        zipfile.BadZipFile: If ZIP file is invalid.
+        OSError: If file access fails.
     """
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json') and 'heatmap' in name.lower())
-        logger.debug(f"ZIP 檔案 {zip_path} 包含 {json_count} 個熱圖 JSON")
+        logger.debug("ZIP file %s contains %d heatmap JSONs", zip_path, json_count)
         return json_count
     except (zipfile.BadZipFile, OSError) as e:
-        logger.error(f"無法計數 ZIP 檔案 {zip_path} 中的 JSON：{e}")
+        logger.error("Failed to count JSONs in ZIP %s: %s", zip_path, e)
         return 0
 
 zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
 json_paths = glob.glob(os.path.join(DATA_DIR, "*heatmap*.json"))
 json_in_zips = sum(count_json_in_zip(zip_path) for zip_path in zip_paths)
 total_samples = len(zip_paths) + len(json_paths) + json_in_zips
-logger.info(f"偵測到 ZIP 檔案數量：{len(zip_paths)}，獨立 JSON 數量：{len(json_paths)}，ZIP 中熱圖 JSON 數量：{json_in_zips}，樣本總數：{total_samples}")
+logger.info(
+    "Detected %d ZIP files, %d standalone JSONs, %d JSONs in ZIPs, total samples: %d",
+    len(zip_paths), len(json_paths), json_in_zips, total_samples
+)
 
-# JSON 路徑生成器
+# JSON path generator
 def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
     """
-    生成熱圖 JSON 檔案路徑，包括 ZIP 檔案中的路徑。
+    Generate paths to heatmap JSON files, including those in ZIP archives.
 
     Args:
-        data_dir (str): 掃描目錄。
+        data_dir (str): Directory to scan.
 
     Yields:
-        str: JSON 檔案路徑。
+        str: Path to JSON file.
+
+    Raises:
+        OSError: If directory access fails.
     """
-    logger.debug(f"掃描目錄：{data_dir}")
+    logger.debug("Scanning directory: %s", data_dir)
     json_files = glob.glob(f"{data_dir}/**/*heatmap*.json", recursive=True)
-    logger.info(f"找到 {len(json_files)} 個獨立熱圖 JSON")
+    logger.info("Found %d standalone heatmap JSONs", len(json_files))
     for path in json_files:
         yield path
-    
+
     zip_files = glob.glob(f"{data_dir}/**/*.zip", recursive=True)
-    logger.info(f"找到 {len(zip_files)} 個 ZIP 檔案")
+    logger.info("Found %d ZIP files", len(zip_files))
     for zip_path in zip_files:
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
-                logger.debug(f"解壓縮 ZIP：{zip_path} 到 {temp_dir}")
+                logger.debug("Extracting ZIP: %s to %s", zip_path, temp_dir)
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(temp_dir)
                 json_files_in_zip = []
@@ -267,81 +346,85 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
                     for f in files:
                         if f.lower().endswith('.json') and 'heatmap' in f.lower():
                             json_files_in_zip.append(os.path.join(root, f))
-                logger.info(f"從 {zip_path} 解壓縮出 {len(json_files_in_zip)} 個熱圖 JSON")
+                logger.info("Extracted %d heatmap JSONs from %s", len(json_files_in_zip), zip_path)
                 for json_path in json_files_in_zip:
                     yield json_path
         except (zipfile.BadZipFile, OSError) as e:
-            logger.error(f"無法處理 ZIP {zip_path}：{e}")
+            logger.error("Failed to process ZIP %s: %s", zip_path, e)
             continue
 
-# 載入知識庫與熱圖
+# Load knowledge base and heatmaps
 def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]:
     """
-    載入數學演算法知識庫與熱圖數據。
+    Load mathematical algorithm knowledge base and heatmap data.
 
     Returns:
-        Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]: 知識庫與熱圖生成器。
+        Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]: Knowledge base and heatmap generator.
+
+    Raises:
+        OSError: If file access fails.
+        json.JSONDecodeError: If JSON parsing fails.
     """
     kb_path = os.path.join(DATA_DIR, "math_algo_kb.json")
     default_kb = [
-        {"concept": "basic_arithmetic", "description": "基本加減法則", "weight": 0.5},
-        {"concept": "pattern_recognition", "description": "序列與模式檢測", "weight": 0.5}
+        {"concept": "basic_arithmetic", "description": "Basic addition and subtraction", "weight": 0.5},
+        {"concept": "pattern_recognition", "description": "Sequence and pattern detection", "weight": 0.5}
     ]
     math_algo_kb: List[Dict] = []
-    
-    logger.info(f"準備讀取知識庫：{kb_path}")
+
+    logger.info("Preparing to load knowledge base: %s", kb_path)
     if not os.path.exists(kb_path):
-        logger.warning(f"找不到知識庫：{kb_path}，創建預設知識庫")
+        logger.warning("Knowledge base not found: %s, creating default", kb_path)
         try:
             with open(kb_path, "w", encoding="utf-8") as f:
                 json.dump({"concepts": default_kb}, f, ensure_ascii=False, indent=2)
-            logger.info(f"已創建知識庫：{kb_path}")
+            logger.info("Created knowledge base: %s", kb_path)
             math_algo_kb = default_kb
         except OSError as e:
-            logger.error(f"無法創建知識庫：{e}")
+            logger.error("Failed to create knowledge base: %s", e)
             math_algo_kb = default_kb
     else:
         try:
             with open(kb_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
             math_algo_kb = payload.get("concepts", [])
-            logger.info(f"已讀取知識庫，概念數量：{len(math_algo_kb)} 條")
-            logger.debug(f"前 5 條概念：{math_algo_kb[:5]!r}")
+            logger.info("Loaded knowledge base with %d concepts", len(math_algo_kb))
+            logger.debug("First 5 concepts: %r", math_algo_kb[:5])
         except (OSError, json.JSONDecodeError) as e:
-            logger.error(f"讀取知識庫錯誤：{e}")
+            logger.error("Failed to load knowledge base: %s", e)
             math_algo_kb = default_kb
-            logger.warning(f"使用預設知識庫，概念數量：{len(default_kb)}")
+            logger.warning("Using default knowledge base with %d concepts", len(default_kb))
 
     def heatmap_generator():
         count = 0
         batch = []
         for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
             if count >= MAX_HEATMAPS:
-                logger.warning(f"達到熱圖上限：{MAX_HEATMAPS}，停止載入")
+                logger.warning("Reached heatmap limit: %d, stopping", MAX_HEATMAPS)
                 break
             batch.append((name, data))
             count += 1
             if len(batch) >= BATCH_SIZE:
-                logger.info(f"處理熱圖批次，當前總數：{count}")
+                logger.info("Processing heatmap batch, current total: %d", count)
                 for item in batch:
                     yield item
                 batch = []
         if batch:
             for item in batch:
                 yield item
-        logger.info(f"總計載入熱圖：{count} 條")
+        logger.info("Total loaded heatmaps: %d", count)
 
     return math_algo_kb, heatmap_generator()
 
 math_algo_kb, heatmap_generator = load_data_resources()
 
 class AnalysisRequest(BaseModel):
-    grid: List[List[float]] = Field(..., description="二維陣列，-1 表示隱藏格子")
+    grid: List[List[float]] = Field(..., description="2D array, -1 indicates hidden cells")
     weights: Optional[Dict[str, float]] = None
-    mode: str = Field("predict", description="分析模式：'predict' 或 'heatmap'")
-    target_num: Optional[int] = Field(None, description="目標數字")
-    json_heatmap: str = Field(os.path.join(DATA_DIR, "json"), description="JSON 熱圖資料夾")
-    model_path: str = Field(os.path.join(BASE_DIR, "models", "model.pkl"), description="訓練模型路徑")
+    mode: str = Field("predict", description="Analysis mode: 'predict' or 'heatmap'")
+    target_num: Optional[int] = Field(None, description="Target number")
+    json_heatmap: str = Field(os.path.join(DATA_DIR, "json"), description="JSON heatmap folder")
+    model_path: str = Field(os.path.join(BASE_DIR, "models", "model.pkl"), description="Trained model path")
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -350,12 +433,12 @@ class AnalysisRequest(BaseModel):
         grid_array = np.atleast_2d(np.array(grid, dtype=np.int64))
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
-            raise ValueError("網格尺寸必須為 4x4 至 20x20")
+            raise ValueError("Grid must be 4x4 to 20x20")
         if not np.any(grid_array == -1):
-            raise ValueError("網格必須至少包含一個隱藏格子 (-1)")
+            raise ValueError("Grid must contain at least one hidden cell (-1)")
         open_nums = grid_array[grid_array != -1]
         if len(open_nums) > 0 and (len(set(open_nums)) != len(open_nums) or max(open_nums) > grid_array.size or min(open_nums) < 1):
-            raise ValueError(f"網格值必須唯一且範圍在 1 至 {grid_array.size} 或 -1")
+            raise ValueError(f"Grid values must be unique and in range 1 to {grid_array.size} or -1")
         return grid_array.tolist()
 
 class Prediction(BaseModel):
@@ -371,7 +454,7 @@ class Prediction(BaseModel):
 class AnalysisResponse(BaseModel):
     predictions: List[Prediction]
     error: Optional[str]
-    source: str = "🔥 來自真實 API"
+    source: str = "🔥 From real API"
     reasoning: List[str]
 
     model_config = ConfigDict(protected_namespaces=())
@@ -396,57 +479,62 @@ def cache_board_analysis(
     grid_tuple: Tuple[float, ...], shape: Tuple[int, int], target_num: int, model_path: str
 ) -> Tuple[List[Dict], List[str]]:
     """
-    快取網格分析結果以提升性能。
+    Cache board analysis results to improve performance.
 
     Args:
-        grid_tuple (Tuple[float, ...]): 展平的網格值。
-        shape (Tuple[int, int]): 網格形狀。
-        target_num (int): 目標數字。
-        model_path (str): 訓練模型路徑。
+        grid_tuple (Tuple[float, ...]): Flattened grid values.
+        shape (Tuple[int, int]): Grid shape.
+        target_num (int): Target number.
+        model_path (str): Path to trained model.
 
     Returns:
-        Tuple[List[Dict], List[str]]: 預測結果與推理步驟。
+        Tuple[List[Dict], List[str]]: Prediction results and reasoning steps.
+
+    Raises:
+        ValueError: If grid shape or data is invalid.
     """
     try:
         grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)
         if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
-            raise ValueError(f"無效網格形狀：{shape}")
-        logger.debug(f"快取命中，網格形狀 {shape}，目標數字 {target_num}")
+            raise ValueError(f"Invalid grid shape: {shape}")
+        logger.debug("Cache hit, grid shape %s, target number %d", shape, target_num)
         predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
         return predictions, reasoning
-    except Exception as e:
-        logger.error(f"快取分析失敗：{e}")
-        return [], []
+    except ValueError as e:
+        logger.error("Cached analysis failed: %s", e)
+        raise
 
 def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
-    執行網格分析，支援增強模式檢測。
+    Perform board analysis with enhanced pattern detection.
 
     Args:
-        grid (np.ndarray): 輸入網格。
-        target_num (int): 目標數字。
-        model_path (str): 訓練模型路徑。
+        grid (np.ndarray): Input grid.
+        target_num (int): Target number.
+        model_path (str): Path to trained model.
 
     Returns:
-        Tuple[List[Dict], List[str]]: 預測結果與推理步驟。
+        Tuple[List[Dict], List[str]]: Prediction results and reasoning steps.
+
+    Raises:
+        ValueError: If grid is invalid or has no hidden cells.
     """
-    M, N = grid.shape
-    predictions = []
-    logger.info(f"分析網格，大小 {M}x{N}，目標數字 {target_num}")
-    
     try:
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
-            raise ValueError(f"無效網格類型或形狀：{type(grid)}")
+            raise ValueError(f"Invalid grid type or shape: {type(grid)}")
         if grid.dtype != np.int64:
             grid = grid.astype(np.int64)
-            logger.info("網格轉為 int64")
-        
+            logger.info("Grid converted to int64")
+
+        M, N = grid.shape
         empty_yx = np.argwhere(grid == -1)
         if len(empty_yx) == 0:
-            raise ValueError("網格無隱藏格子 (-1)")
+            raise ValueError("Grid has no hidden cells (-1)")
 
-        # 聚合多個熱圖分數
-        heatmap_scores = []
+        logger.info("Analyzing grid, size %dx%d, target number %d", M, N, target_num)
+
+        # Aggregate heatmap scores
+        heatmap_scores: List[Tuple[str, float]] = []
         count = 0
         for name, data in heatmap_generator():
             score = heatmap_processor.match_heatmap(grid, data, target_num)
@@ -454,16 +542,16 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
                 heatmap_scores.append((name, score))
             count += 1
             if count % BATCH_SIZE == 0:
-                logger.debug(f"已處理 {count} 個熱圖")
-        logger.info(f"總共匹配 {len(heatmap_scores)} 個有效熱圖")
+                logger.debug("Processed %d heatmaps", count)
+        logger.info("Matched %d valid heatmaps", len(heatmap_scores))
 
-        # 選擇前幾熱圖
+        # Select top heatmaps
         top_heatmaps = sorted(heatmap_scores, key=lambda x: x[1], reverse=True)[:3]
         final_score = np.zeros_like(grid, dtype=float)
         for name, score in top_heatmaps:
             heatmap_data = np.array(list(data.values())[:M*N]).reshape(M, N)
             final_score += score * heatmap_data
-        
+
         pred_array = np.zeros_like(grid, dtype=np.int64)
         top3 = [
             {
@@ -475,31 +563,33 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
             }
             for yx in empty_yx[:3]
         ]
-        predictions.extend(top3)
-        
+        predictions = top3
+
         reasoning = [
-            f"剩餘數字：{list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))}",
-            f"目標數字 {target_num} 分析了 {len(predictions)} 個候選位置"
+            f"Remaining numbers: {list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))}",
+            f"Target number {target_num} analyzed {len(predictions)} candidate positions"
         ]
-        logger.info(f"分析完成，預測數量：{len(predictions)}")
+        logger.info("Analysis completed, predictions: %d", len(predictions))
         process = psutil.Process()
         mem_info = process.memory_info()
-        logger.debug(f"分析後記憶體使用量：{mem_info.rss / 1024 / 1024:.2f} MiB")
+        logger.debug("Memory usage after analysis: %.2f MiB", mem_info.rss / 1024 / 1024)
         return predictions, reasoning
-    
+    except ValueError as e:
+        logger.error("Board analysis failed: %s", e)
+        raise
     except Exception as e:
-        logger.error(f"網格分析失敗：{e}")
+        logger.error("Unexpected error in board analysis: %s", e)
         raise
 
 @app.get("/health")
 async def health_check() -> Dict[str, str]:
     """
-    健康檢查端點。
+    Health check endpoint.
 
     Returns:
-        Dict[str, str]: 服務狀態。
+        Dict[str, str]: Service status.
     """
-    logger.info("健康檢查請求")
+    logger.info("Health check request")
     return {"status": "ok"}
 
 @app.post(
@@ -509,30 +599,33 @@ async def health_check() -> Dict[str, str]:
 )
 async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
-    預測網格中目標數字的位置。
+    Predict positions of target numbers in the grid.
 
     Args:
-        payload (AnalysisRequest): 包含網格與參數的請求。
+        payload (AnalysisRequest): Request containing grid and parameters.
 
     Returns:
-        JSONResponse: 分析結果或錯誤訊息。
+        JSONResponse: Analysis results or error message.
+
+    Raises:
+        HTTPException: If input is invalid or prediction fails.
     """
-    logger.info(f"🔍 原始網格：{json.dumps(payload.grid)}")
-    
+    logger.info("🔍 Original grid: %s", json.dumps(payload.grid))
+
     grid = np.array(payload.grid, dtype=np.int64)
-    logger.info(f"🔍 重塑後形狀：{grid.shape}")
-    
+    logger.info("🔍 Reshaped grid shape: %s", grid.shape)
+
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
-        raise HTTPException(status_code=422, detail="網格必須為 4x4 到 20x20")
-    
+        raise HTTPException(status_code=422, detail="Grid must be 4x4 to 20x20")
+
     flat = grid[grid != -1].flatten()
     if len(flat) != len(set(flat)):
-        raise HTTPException(status_code=422, detail="網格值（除 -1）必須唯一")
-    
+        raise HTTPException(status_code=422, detail="Grid values (excluding -1) must be unique")
+
     target = payload.target_num if payload.target_num is not None else 6
     if payload.mode == "predict" and payload.target_num is None:
-        logger.warning("未指定目標數字，預設為 6")
-    
+        logger.warning("No target number specified, defaulting to 6")
+
     try:
         predictions, reasoning = cache_board_analysis(
             tuple(grid.flatten()), grid.shape, target, payload.model_path
@@ -549,20 +642,19 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
                 for p in predictions
             ],
             error=None,
-            source="🔥 來自真實 API",
+            source="🔥 From real API",
             reasoning=reasoning
         )
         process = psutil.Process()
         mem_info = process.memory_info()
-        logger.debug(f"預測後記憶體使用量：{mem_info.rss / 1024 / 1024:.2f} MiB")
+        logger.debug("Memory usage after prediction: %.2f MiB", mem_info.rss / 1024 / 1024)
         return JSONResponse(
             status_code=200,
             content=result.dict()
         )
-    
     except Exception as e:
-        logger.error(f"預測失敗：{e}")
-        error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 來自真實 API", reasoning=[])
+        logger.error("Prediction failed: %s", e)
+        error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 From real API", reasoning=[])
         return JSONResponse(status_code=500, content=error_resp.dict())
 
 @app.post("/upload")
@@ -571,49 +663,51 @@ async def upload_file(
     background_tasks: BackgroundTasks = BackgroundTasks()
 ) -> JSONResponse:
     """
-    上傳檔案進行刮刮樂分析。
+    Upload a file for scratch card analysis.
 
     Args:
-        file (UploadFile): 要上傳的檔案。
-        background_tasks (BackgroundTasks): FastAPI 背景任務。
+        file (UploadFile): File to upload.
+        background_tasks (BackgroundTasks): FastAPI background tasks.
 
     Returns:
-        JSONResponse: 上傳狀態與輸出路徑。
+        JSONResponse: Upload status and output path.
+
+    Raises:
+        HTTPException: If file format is unsupported or upload fails.
     """
-    logger.info(f"上傳請求，檔案：{file.filename}")
+    logger.info("Upload request, file: %s", file.filename)
     try:
         if not file.filename.endswith(('.json', '.csv', '.xls', '.xlsx', '.zip')):
-            error_msg = f"不支援的檔案格式：{file.filename}"
+            error_msg = f"Unsupported file format: {file.filename}"
             logger.error(error_msg)
             raise HTTPException(status_code=400, detail=error_msg)
-        
+
         input_path = os.path.join("samples", "data", file.filename)
         os.makedirs(os.path.dirname(input_path), exist_ok=True)
-        
+
         with open(input_path, "wb") as f:
             content = await file.read()
             f.write(content)
-        logger.info(f"已儲存上傳檔案：{input_path}")
-        
+        logger.info("Saved uploaded file: %s", input_path)
+
         output_prefix = os.path.join("samples", "output", os.path.splitext(file.filename)[0])
         weights = DEFAULT_WEIGHTS
         json_heatmap = os.path.join("samples", "data", "json")
-        
+
         background_tasks.add_task(
             process_single_board, input_path, weights, True, output_prefix, None, json_heatmap
         )
-        logger.info(f"已排程後台處理：{input_path}")
-        
+        logger.info("Scheduled background processing: %s", input_path)
+
         return JSONResponse(
-            content={"message": f"檔案 {file.filename} 上傳，處理開始", "output_path": output_prefix},
+            content={"message": f"File {file.filename} uploaded, processing started", "output_path": output_prefix},
             status_code=200
         )
-    
     except HTTPException as e:
-        logger.error(f"上傳失敗：{e.detail}")
+        logger.error("Upload failed: %s", e.detail)
         raise
     except Exception as e:
-        logger.error(f"上傳失敗：{e}")
+        logger.error("Upload failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/batch")
@@ -622,45 +716,47 @@ async def batch_process(
     background_tasks: BackgroundTasks = BackgroundTasks()
 ) -> JSONResponse:
     """
-    批次處理資料夾中的多個檔案。
+    Batch process multiple files in a folder.
 
     Args:
-        input_folder (str): 輸入資料夾路徑。
-        background_tasks (BackgroundTasks): FastAPI 背景任務。
+        input_folder (str): Input folder path.
+        background_tasks (BackgroundTasks): FastAPI background tasks.
 
     Returns:
-        JSONResponse: 批次處理狀態。
+        JSONResponse: Batch processing status.
+
+    Raises:
+        HTTPException: If folder does not exist or processing fails.
     """
-    logger.info(f"批次處理請求，資料夾：{input_folder}")
+    logger.info("Batch processing request, folder: %s", input_folder)
     try:
         if not os.path.exists(input_folder):
-            error_msg = f"資料夾 {input_folder} 不存在"
+            error_msg = f"Folder {input_folder} does not exist"
             logger.error(error_msg)
             raise HTTPException(status_code=404, detail=error_msg)
-        
+
         from main import get_input_files
         files = get_input_files(input_folder)
-        logger.info(f"找到 {len(files)} 個有效檔案")
-        
+        logger.info("Found %d valid files", len(files))
+
         output_folder = os.path.join("samples", "output", f"batch_{os.path.basename(input_folder)}")
         weights = DEFAULT_WEIGHTS
         json_heatmap = os.path.join("samples", "data", "json")
-        
+
         background_tasks.add_task(
             process_batch, input_folder, weights, True, output_folder, None, json_heatmap
         )
-        logger.info(f"已排程批次處理，結果儲存至 {output_folder}")
-        
+        logger.info("Scheduled batch processing, results to %s", output_folder)
+
         return JSONResponse(
-            content={"message": f"批次處理開始，{len(files)} 個檔案，結果儲存至 {output_folder}"},
+            content={"message": f"Batch processing started, {len(files)} files, results to {output_folder}"},
             status_code=200
         )
-    
     except HTTPException as e:
-        logger.error(f"批次處理失敗：{e.detail}")
+        logger.error("Batch processing failed: %s", e.detail)
         raise
     except Exception as e:
-        logger.error(f"批次處理失敗：{e}")
+        logger.error("Batch processing failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/query_similar")
@@ -671,34 +767,43 @@ async def query_similar(
     topk: int = 10
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
-    查詢與指定網格和位置最相似的熱圖候選。
+    Query the most similar heatmap candidates for a given grid and position.
 
     Args:
-        grid (List[List[float]]): 輸入網格。
-        target_pos (Tuple[int, int]): 目標格子位置 (行, 列)。
-        target_num (int): 目標數字。
-        topk (int): 返回前 K 個候選，預設為 10。
+        grid (List[List[float]]): Input grid.
+        target_pos (Tuple[int, int]): Target cell position (row, column).
+        target_num (int): Target number.
+        topk (int): Number of top candidates to return, default is 10.
 
     Returns:
-        Dict[str, List[Dict[str, Any]]]: 候選熱圖列表。
+        Dict[str, List[Dict[str, Any]]]: List of candidate heatmaps.
+
+    Raises:
+        HTTPException: If Faiss index is not loaded or query fails.
     """
     try:
         if faiss_idx is None or not feature_metas:
-            raise HTTPException(status_code=500, detail="Faiss 索引未載入")
-        
+            logger.error("Faiss index or metadata not loaded")
+            raise HTTPException(status_code=500, detail="Faiss index not loaded")
+
         hm = np.array(grid, dtype=np.float32)
+        if hm.ndim != 2 or not (0 <= target_pos[0] < hm.shape[0] and 0 <= target_pos[1] < hm.shape[1]):
+            logger.error("Invalid grid or target position: %s, %s", hm.shape, target_pos)
+            raise HTTPException(status_code=422, detail="Invalid grid or target position")
+
         qv = compute_features(hm, target_pos)[None]
         D, I = faiss_idx.search(qv, topk)
         out = []
         for dist, idx in zip(D[0], I[0]):
             m = feature_metas[idx]
-            if target_num in sum(m["grid"], []):
+            grid_data = m.get("grid", [])
+            if isinstance(grid_data, list) and any(target_num in row for row in grid_data if isinstance(row, list)):
                 out.append({"path": m["path"], "inner": m["inner"], "distance": float(dist)})
-        logger.info(f"查詢相似熱圖完成，找到 {len(out)} 個候選")
+        logger.info("Queried similar heatmaps, found %d candidates", len(out))
         return {"candidates": out}
     except (faiss.FaissException, IndexError, ValueError) as e:
-        logger.error(f"查詢相似熱圖失敗：{e}")
-        raise HTTPException(status_code=500, detail=f"查詢失敗：{e}")
+        logger.error("Failed to query similar heatmaps: %s", e)
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 def save_results_to_file(
     scores: np.ndarray,
@@ -708,47 +813,41 @@ def save_results_to_file(
     output_format: str
 ) -> None:
     """
-    將分析結果儲存至檔案。
+    Save analysis results to a file.
 
     Args:
-        scores (np.ndarray): 隱藏格子分數。
-        predictions (np.ndarray): 全網格預測值。
-        best_pos (List[Tuple[int, int, float, Dict[str, float]]]): 前幾名預測。
-        output_filepath (str): 儲存路徑。
-        output_format (str): 輸出格式 (json, csv, xls, xlsx)。
+        scores (np.ndarray): Scores for hidden cells.
+        predictions (np.ndarray): Full grid predictions.
+        best_pos (List[Tuple[int, int, float, Dict[str, float]]]): Top predicted positions.
+        output_filepath (str): Path to save results.
+        output_format (str): Output format ('json', 'csv', 'xls', 'xlsx').
 
     Raises:
-        Exception: 若儲存失敗。
+        OSError: If file saving fails.
     """
     from brain import save_results_to_file as brain_save
-    logger.info(f"儲存結果至 {output_filepath}，格式 {output_format}")
+    logger.info("Saving results to %s, format %s", output_filepath, output_format)
     try:
         brain_save(scores, predictions, best_pos, output_filepath, output_format)
-        logger.info(f"已儲存結果：{output_filepath}")
-    except Exception as e:
-        logger.error(f"儲存結果失敗：{e}")
+        logger.info("Results saved: %s", output_filepath)
+    except OSError as e:
+        logger.error("Failed to save results: %s", e)
         raise
 
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def catch_all(request: Request, full_path: str) -> JSONResponse:
     """
-    捕獲所有未定義端點的路由。
+    Catch-all route for undefined endpoints.
 
     Args:
-        request (Request): FastAPI 請求物件。
-        full_path (str): 請求路徑。
+        request (Request): FastAPI request object.
+        full_path (str): Requested path.
 
     Returns:
-        JSONResponse: 服務狀態。
+        JSONResponse: Service status.
     """
-    logger.debug(f"未定義路由：{request.method} {full_path}")
+    logger.debug("Undefined route: %s %s", request.method, full_path)
     return JSONResponse(status_code=200, content={"status": "running"})
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# 自檢報告：
-# - 語法檢查：通過
-# - 括號配對：無遺漏
-# - 標識符定義：無未定義/拼寫錯誤
-# - 測試環境：Python 3.11
