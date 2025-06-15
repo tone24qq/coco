@@ -124,7 +124,7 @@ async def warm_up():
     dummy_grid = [[-1 for _ in range(5)] for _ in range(4)]
     iterations = int(os.getenv("ITER", 5_000_000)) // 25
     try:
-        predict_scratch_card(dummy_grid, n_iter=iterations)
+        predict_scratch_card(dummy_grid)   # 不帶 n_iter
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
