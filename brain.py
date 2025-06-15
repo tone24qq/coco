@@ -1,4 +1,4 @@
-# app/brain.py
+# brain.py
 
 import numpy as np
 import math
