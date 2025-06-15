@@ -10,6 +10,7 @@ import pandas as pd
 import logging
 import json
 from typing import Dict, List, Tuple, Any, Optional
+os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
