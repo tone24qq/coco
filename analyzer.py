@@ -2,7 +2,7 @@
 
 import numpy as np
 from collections import Counter
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from functools import lru_cache
 from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
 from brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
