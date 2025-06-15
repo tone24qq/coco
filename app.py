@@ -78,7 +78,7 @@ def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
     Raises:
         OSError: If directory access fails.
         json.JSONDecodeError: If JSON parsing fails.
-        ValueError: If heatmap data is invalid.
+        ValueError: If grid data is invalid.
     """
     vectors: List[np.ndarray] = []
     metas: List[Dict[str, Any]] = []
@@ -90,20 +90,29 @@ def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
             try:
                 with open(path, encoding="utf-8") as f:
                     obj = json.load(f)
-                if "heatmap" not in obj:
-                    logger.warning("Skipping JSON %s: missing 'heatmap' field", path)
+                if "grid" not in obj:
+                    logger.warning("Skipping JSON %s: missing 'grid' field", path)
                     continue
-                heatmap = np.array(obj["heatmap"], dtype=np.float32)
-                if heatmap.ndim != 2 or heatmap.size == 0 or not np.isfinite(heatmap).all():
-                    logger.warning("Skipping invalid heatmap in %s", path)
+                # Check if grid is 2D array
+                grid_2d = np.array(obj["grid"], dtype=np.float32)
+                if grid_2d.ndim != 2:
+                    logger.warning("Skipping JSON %s: 'grid' is not a 2D array", path)
                     continue
-                # Compute feature vector using compute_features with default position (0,0)
-                vec = compute_features(heatmap, (0, 0))
+                # Validate grid dimensions
+                rows, cols = grid_2d.shape
+                if rows < 4 or cols < 4 or rows > 20 or cols > 20:
+                    logger.warning("Skipping JSON %s: grid dimensions %dx%d out of range 4x4 to 20x20", path, rows, cols)
+                    continue
+                if not np.isfinite(grid_2d).all():
+                    logger.warning("Skipping JSON %s: invalid grid data", path)
+                    continue
+                # Use grid_2d as heatmap for feature computation
+                vec = compute_features(grid_2d, (0, 0))
                 if vec.size == 0 or not np.isfinite(vec).all():
                     logger.warning("Skipping invalid feature vector in %s", path)
                     continue
+                metas.append({"path": path, "inner": "", "grid": grid_2d.tolist(), "mode": obj.get("mode", "predict")})
                 vectors.append(vec)
-                metas.append({"path": path, "inner": "", "heatmap": obj["heatmap"]})
                 sample_count += 1
             except (OSError, json.JSONDecodeError, ValueError) as e:
                 logger.warning("Skipping bad JSON file %s: %s", path, e)
@@ -118,19 +127,29 @@ def _collect_vectors(data_dir: str) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
                         with zf.open(name) as fp:
                             try:
                                 obj = json.load(fp)
-                                if "heatmap" not in obj:
-                                    logger.warning("Skipping JSON %s in ZIP %s: missing 'heatmap' field", name, zpath)
+                                if "grid" not in obj:
+                                    logger.warning("Skipping JSON %s in ZIP %s: missing 'grid' field", name, zpath)
                                     continue
-                                heatmap = np.array(obj["heatmap"], dtype=np.float32)
-                                if heatmap.ndim != 2 or heatmap.size == 0 or not np.isfinite(heatmap).all():
-                                    logger.warning("Skipping invalid heatmap in %s:%s", zpath, name)
+                                # Check if grid is 2D array
+                                grid_2d = np.array(obj["grid"], dtype=np.float32)
+                                if grid_2d.ndim != 2:
+                                    logger.warning("Skipping JSON %s in ZIP %s: 'grid' is not a 2D array", name, zpath)
                                     continue
-                                vec = compute_features(heatmap, (0, 0))
+                                # Validate grid dimensions
+                                rows, cols = grid_2d.shape
+                                if rows < 4 or cols < 4 or rows > 20 or cols > 20:
+                                    logger.warning("Skipping JSON %s in ZIP %s: grid dimensions %dx%d out of range 4x4 to 20x20", name, zpath, rows, cols)
+                                    continue
+                                if not np.isfinite(grid_2d).all():
+                                    logger.warning("Skipping JSON %s in ZIP %s: invalid grid data", name, zpath)
+                                    continue
+                                # Use grid_2d as heatmap for feature computation
+                                vec = compute_features(grid_2d, (0, 0))
                                 if vec.size == 0 or not np.isfinite(vec).all():
                                     logger.warning("Skipping invalid feature vector in %s:%s", zpath, name)
                                     continue
+                                metas.append({"path": zpath, "inner": name, "grid": grid_2d.tolist(), "mode": obj.get("mode", "predict")})
                                 vectors.append(vec)
-                                metas.append({"path": zpath, "inner": name, "heatmap": obj["heatmap"]})
                                 sample_count += 1
                             except (json.JSONDecodeError, ValueError) as e:
                                 logger.warning("Skipping bad JSON %s in ZIP %s: %s", name, zpath, e)
@@ -202,30 +221,30 @@ except Exception as e:
     logger.exception("💥 Faiss index processing failed: %s", e)
     faiss_idx, feature_metas = None, []
 
-# Abstract Heatmap Processor
-class HeatmapProcessor:
+# Abstract Data Processor
+class DataProcessor:
     """
-    Abstract base class for heatmap data processing.
+    Abstract base class for data processing.
     """
-    def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
+    def load_data(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
         raise NotImplementedError
 
-    def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
+    def match_data(self, grid: np.ndarray, data: Dict[str, Any], target_num: int) -> float:
         raise NotImplementedError
 
-class ScratchCardHeatmapProcessor(HeatmapProcessor):
+class ScratchCardDataProcessor(DataProcessor):
     """
-    Concrete implementation for scratch card heatmap processing.
+    Concrete implementation for scratch card data processing.
     """
-    def load_heatmaps(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
+    def load_data(self, data_dir: str) -> Generator[Tuple[str, Any], None, None]:
         """
-        Load heatmaps from JSON files in the data directory.
+        Load JSON data from files in the data directory.
 
         Args:
-            data_dir (str): Directory to scan for heatmap JSON files.
+            data_dir (str): Directory to scan for JSON files.
 
         Yields:
-            Tuple[str, Any]: Heatmap name and data.
+            Tuple[str, Any]: JSON name and data.
 
         Raises:
             OSError: If directory access fails.
@@ -235,59 +254,55 @@ class ScratchCardHeatmapProcessor(HeatmapProcessor):
             for json_path in iter_data_paths(data_dir):
                 name = os.path.splitext(os.path.basename(json_path))[0]
                 try:
-                    logger.debug("Reading heatmap file: %s", json_path)
+                    logger.debug("Reading JSON file: %s", json_path)
                     with open(json_path, 'r', encoding="utf-8") as f:
-                        heatmap_data = ijson.parse(f)
-                        data = {}
-                        for prefix, event, value in heatmap_data:
-                            if prefix == 'heatmap.item' and event == 'map_key':
-                                key = value
-                            elif prefix == 'heatmap.item' and event == 'number':
-                                data[key] = value
-                        if 'heatmap' in data:
-                            yield name, data
-                            sample_count += 1
-                            if sample_count % BATCH_SIZE == 0:
-                                logger.info("Loaded %d heatmap samples", sample_count)
-                except (OSError, ValueError) as e:
-                    logger.error("Failed to load heatmap %s from %s: %s", name, json_path, e)
+                        data = json.load(f)
+                        if 'grid' not in data:
+                            logger.warning("Skipping JSON %s: missing 'grid' field", json_path)
+                            continue
+                        yield name, data
+                        sample_count += 1
+                        if sample_count % BATCH_SIZE == 0:
+                            logger.info("Loaded %d JSON samples", sample_count)
+                except (OSError, json.JSONDecodeError, ValueError) as e:
+                    logger.error("Failed to load JSON %s from %s: %s", name, json_path, e)
                     continue
-            logger.info("Total loaded %d heatmap samples", sample_count)
+            logger.info("Total loaded %d JSON samples", sample_count)
         except OSError as e:
-            logger.error("Failed to load heatmaps: %s", e)
+            logger.error("Failed to load JSONs: %s", e)
             raise
 
-    def match_heatmap(self, grid: np.ndarray, heatmap_data: Dict[str, Any], target_num: int) -> float:
+    def match_data(self, grid: np.ndarray, data: Dict[str, Any], target_num: int) -> float:
         """
-        Compute similarity score between grid and heatmap for the target number.
+        Compute similarity score between grid and reference grid for the target number.
 
         Args:
             grid (np.ndarray): Input grid.
-            heatmap_data (Dict[str, Any]): Heatmap data.
+            data (Dict[str, Any]): Reference data.
             target_num (int): Target number.
 
         Returns:
             float: Similarity score.
 
         Raises:
-            ValueError: If grid or heatmap data is invalid.
+            ValueError: If grid or data is invalid.
         """
         try:
-            heatmap = np.array(heatmap_data.get('heatmap', []))
-            if heatmap.shape != grid.shape:
-                logger.debug("Heatmap shape mismatch: %s vs %s", heatmap.shape, grid.shape)
+            ref_grid = np.array(data.get('grid', []))
+            if ref_grid.shape != grid.shape:
+                logger.debug("Grid shape mismatch: %s vs %s", ref_grid.shape, grid.shape)
                 return 0.0
             target_mask = (grid == target_num) | (grid == -1)
             if not np.any(target_mask):
                 return 0.0
-            score = np.corrcoef(grid[target_mask].flatten(), heatmap[target_mask].flatten())[0, 1]
+            score = np.corrcoef(grid[target_mask].flatten(), ref_grid[target_mask].flatten())[0, 1]
             return float(score) if not np.isnan(score) else 0.0
         except (ValueError, TypeError) as e:
-            logger.error("Heatmap matching failed: %s", e)
+            logger.error("Grid matching failed: %s", e)
             return 0.0
 
 # Initialize processor
-heatmap_processor = ScratchCardHeatmapProcessor()
+data_processor = ScratchCardDataProcessor()
 
 # Detect sample files
 def count_json_in_zip(zip_path: str) -> int:
@@ -306,15 +321,15 @@ def count_json_in_zip(zip_path: str) -> int:
     """
     try:
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json') and 'heatmap' in name.lower())
-        logger.debug("ZIP file %s contains %d heatmap JSONs", zip_path, json_count)
+            json_count = sum(1 for name in zip_ref.namelist() if name.lower().endswith('.json'))
+        logger.debug("ZIP file %s contains %d JSONs", zip_path, json_count)
         return json_count
     except (zipfile.BadZipFile, OSError) as e:
         logger.error("Failed to count JSONs in ZIP %s: %s", zip_path, e)
         return 0
 
 zip_paths = glob.glob(os.path.join(DATA_DIR, "*.zip"))
-json_paths = glob.glob(os.path.join(DATA_DIR, "*heatmap*.json"))
+json_paths = glob.glob(os.path.join(DATA_DIR, "*.json"))
 json_in_zips = sum(count_json_in_zip(zip_path) for zip_path in zip_paths)
 total_samples = len(zip_paths) + len(json_paths) + json_in_zips
 logger.info(
@@ -325,7 +340,7 @@ logger.info(
 # JSON path generator
 def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
     """
-    Generate paths to heatmap JSON files, including those in ZIP archives.
+    Generate paths to JSON files, including those in ZIP archives.
 
     Args:
         data_dir (str): Directory to scan.
@@ -337,8 +352,8 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
         OSError: If directory access fails.
     """
     logger.debug("Scanning directory: %s", data_dir)
-    json_files = glob.glob(f"{data_dir}/**/*heatmap*.json", recursive=True)
-    logger.info("Found %d standalone heatmap JSONs", len(json_files))
+    json_files = glob.glob(f"{data_dir}/**/*.json", recursive=True)
+    logger.info("Found %d standalone JSONs", len(json_files))
     for path in json_files:
         yield path
 
@@ -353,22 +368,22 @@ def iter_data_paths(data_dir: str) -> Generator[str, None, None]:
                 json_files_in_zip = []
                 for root, _, files in os.walk(temp_dir):
                     for f in files:
-                        if f.lower().endswith('.json') and 'heatmap' in f.lower():
+                        if f.lower().endswith('.json'):
                             json_files_in_zip.append(os.path.join(root, f))
-                logger.info("Extracted %d heatmap JSONs from %s", len(json_files_in_zip), zip_path)
+                logger.info("Extracted %d JSONs from %s", len(json_files_in_zip), zip_path)
                 for json_path in json_files_in_zip:
                     yield json_path
         except (zipfile.BadZipFile, OSError) as e:
             logger.error("Failed to process ZIP %s: %s", zip_path, e)
             continue
 
-# Load knowledge base and heatmaps
+# Load knowledge base and JSON data
 def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]:
     """
-    Load mathematical algorithm knowledge base and heatmap data.
+    Load mathematical algorithm knowledge base and JSON data.
 
     Returns:
-        Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]: Knowledge base and heatmap generator.
+        Tuple[List[Dict], Generator[Tuple[str, Any], None, None]]: Knowledge base and JSON generator.
 
     Raises:
         OSError: If file access fails.
@@ -404,45 +419,45 @@ def load_data_resources() -> Tuple[List[Dict], Generator[Tuple[str, Any], None, 
             math_algo_kb = default_kb
             logger.warning("Using default knowledge base with %d concepts", len(default_kb))
 
-    def heatmap_generator():
+    def json_generator():
         count = 0
         batch = []
         try:
-            for name, data in heatmap_processor.load_heatmaps(DATA_DIR):
+            for name, data in data_processor.load_data(DATA_DIR):
                 if count >= MAX_HEATMAPS:
-                    logger.warning("Reached heatmap limit: %d, stopping", MAX_HEATMAPS)
+                    logger.warning("Reached JSON limit: %d, stopping", MAX_HEATMAPS)
                     break
                 batch.append((name, data))
                 count += 1
                 if len(batch) >= BATCH_SIZE:
-                    logger.info("Processing heatmap batch, current total: %d", count)
+                    logger.info("Processing JSON batch, current total: %d", count)
                     for item in batch:
                         yield item
                     batch = []
             if batch:
                 for item in batch:
                     yield item
-            logger.info("Total loaded heatmaps: %d", count)
+            logger.info("Total loaded JSONs: %d", count)
         except Exception as e:
-            logger.error("Failed to iterate heatmaps: %s", e)
+            logger.error("Failed to iterate JSONs: %s", e)
 
-    return math_algo_kb, heatmap_generator()
+    return math_algo_kb, json_generator()
 
-math_algo_kb, heatmap_generator = load_data_resources()
+math_algo_kb, json_generator = load_data_resources()
 
 class AnalysisRequest(BaseModel):
     grid: List[List[float]] = Field(..., description="2D array, -1 indicates hidden cells")
-    weights: Optional[Dict[str, float]] = None
     mode: str = Field("predict", description="Analysis mode: 'predict' or 'heatmap'")
+    weights: Optional[Dict[str, float]] = None
     target_num: Optional[int] = Field(None, description="Target number")
-    json_heatmap: str = Field(os.path.join(DATA_DIR, "json"), description="JSON heatmap folder")
+    json_heatmap: str = Field(os.path.join(DATA_DIR, "json"), description="JSON data folder")
     model_path: str = Field(os.path.join(BASE_DIR, "models", "model.pkl"), description="Trained model path")
 
     model_config = ConfigDict(protected_namespaces=())
 
     @validator("grid")
     def validate_grid(cls, grid):
-        grid_array = np.atleast_2d(np.array(grid, dtype=np.int64))
+        grid_array = np.atleast_2d(np.array(grid, dtype=np.float32))
         if grid_array.ndim != 2 or grid_array.shape[0] < 4 or grid_array.shape[1] < 4 or \
            grid_array.shape[0] > 20 or grid_array.shape[1] > 20:
             raise ValueError("Grid must be 4x4 to 20x20")
@@ -464,6 +479,8 @@ class Prediction(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 class AnalysisResponse(BaseModel):
+    grid: List[List[float]] = Field(..., description="Original 2D grid with predictions")
+    mode: str = Field(..., description="Analysis mode used")
     predictions: List[Prediction]
     error: Optional[str]
     source: str = "🔥 From real API"
@@ -488,7 +505,7 @@ DEFAULT_WEIGHTS = {
 
 @lru_cache(maxsize=100)
 def cache_board_analysis(
-    grid_tuple: Tuple[float, ...], shape: Tuple[int, int], target_num: int, model_path: str
+    grid_tuple: Tuple[float, ...], shape: Tuple[int, int], mode: str, target_num: int, model_path: str
 ) -> Tuple[List[Dict], List[str]]:
     """
     Cache board analysis results to improve performance.
@@ -496,6 +513,7 @@ def cache_board_analysis(
     Args:
         grid_tuple (Tuple[float, ...]): Flattened grid values.
         shape (Tuple[int, int]): Grid shape.
+        mode (str): Analysis mode ('predict' or 'heatmap').
         target_num (int): Target number.
         model_path (str): Path to trained model.
 
@@ -506,22 +524,23 @@ def cache_board_analysis(
         ValueError: If grid shape or data is invalid.
     """
     try:
-        grid = np.array(grid_tuple, dtype=np.int64).reshape(shape)
+        grid = np.array(grid_tuple, dtype=np.float32).reshape(shape)
         if grid.ndim != 2 or grid.size != shape[0] * shape[1]:
             raise ValueError(f"Invalid grid shape: {shape}")
-        logger.debug("Cache hit, grid shape %s, target number %d", shape, target_num)
-        predictions, reasoning = perform_board_analysis(grid, target_num, model_path)
+        logger.debug("Cache hit, grid shape %s, mode %s, target number %d", shape, mode, target_num)
+        predictions, reasoning = perform_board_analysis(grid, mode, target_num, model_path)
         return predictions, reasoning
     except ValueError as e:
         logger.error("Cached analysis failed: %s", e)
         raise
 
-def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
+def perform_board_analysis(grid: np.ndarray, mode: str, target_num: int, model_path: str) -> Tuple[List[Dict], List[str]]:
     """
-    Perform board analysis with enhanced pattern detection.
+    Perform board analysis based on the specified mode.
 
     Args:
         grid (np.ndarray): Input grid.
+        mode (str): Analysis mode ('predict' or 'heatmap').
         target_num (int): Target number.
         model_path (str): Path to trained model.
 
@@ -529,63 +548,78 @@ def perform_board_analysis(grid: np.ndarray, target_num: int, model_path: str) -
         Tuple[List[Dict], List[str]]: Prediction results and reasoning steps.
 
     Raises:
-        ValueError: If grid is invalid or has no hidden cells.
+        ValueError: If grid is invalid or mode is unsupported.
     """
     try:
         if not isinstance(grid, np.ndarray) or grid.ndim != 2:
             raise ValueError(f"Invalid grid type or shape: {type(grid)}")
-        if grid.dtype != np.int64:
-            grid = grid.astype(np.int64)
-            logger.info("Grid converted to int64")
+        if grid.dtype != np.float32:
+            grid = grid.astype(np.float32)
+            logger.info("Grid converted to float32")
 
         M, N = grid.shape
         empty_yx = np.argwhere(grid == -1)
         if len(empty_yx) == 0:
             raise ValueError("Grid has no hidden cells (-1)")
 
-        logger.info("Analyzing grid, size %dx%d, target number %d", M, N, target_num)
+        logger.info("Analyzing grid, size %dx%d, mode %s, target number %d", M, N, mode, target_num)
 
-        # Aggregate heatmap scores
-        heatmap_scores: List[Tuple[str, float]] = []
+        # Aggregate similarity scores
+        similarity_scores: List[Tuple[str, float]] = []
         count = 0
         try:
-            for name, data in heatmap_generator:  # Correctly iterate generator
-                score = heatmap_processor.match_heatmap(grid, data, target_num)
+            for name, data in json_generator:
+                score = data_processor.match_data(grid, data, target_num)
                 if score > 0:
-                    heatmap_scores.append((name, score))
+                    similarity_scores.append((name, score))
                 count += 1
                 if count % BATCH_SIZE == 0:
-                    logger.debug("Processed %d heatmaps", count)
+                    logger.debug("Processed %d JSONs", count)
         except Exception as e:
-            logger.error("Failed to iterate heatmap generator: %s", e)
-            raise ValueError(f"Heatmap iteration failed: {str(e)}")
+            logger.error("Failed to iterate JSON generator: %s", e)
+            raise ValueError(f"JSON iteration failed: {str(e)}")
 
-        logger.info("Matched %d valid heatmaps", len(heatmap_scores))
+        logger.info("Matched %d valid JSONs", len(similarity_scores))
 
-        # Select top heatmaps
-        top_heatmaps = sorted(heatmap_scores, key=lambda x: x[1], reverse=True)[:3]
-        final_score = np.zeros_like(grid, dtype=float)
-        for name, score in top_heatmaps:
-            heatmap_data = np.array(list(data.values())[:M*N]).reshape(M, N)
-            final_score += score * heatmap_data
+        # Mode-specific processing
+        predictions = []
+        reasoning = []
+        if mode == "predict":
+            # Use similarity scores to enhance prediction
+            top_similar = sorted(similarity_scores, key=lambda x: x[1], reverse=True)[:3]
+            final_score = np.zeros_like(grid, dtype=float)
+            for name, score in top_similar:
+                ref_grid = np.array(next((d for n, d in json_generator if n == name), {}).get('grid', []))
+                if ref_grid.shape == grid.shape:
+                    final_score += score * ref_grid
 
-        pred_array = np.zeros_like(grid, dtype=np.int64)
-        top3 = [
-            {
-                "row": int(yx[0]),
-                "col": int(yx[1]),
-                "predicted_digit": target_num,
-                "confidence": float(final_score[yx[0], yx[1]]),
-                "module_scores": {"heatmap": float(final_score[yx[0], yx[1]])}
-            }
-            for yx in empty_yx[:3]
-        ]
-        predictions = top3
+            top3 = [
+                {
+                    "row": int(yx[0]),
+                    "col": int(yx[1]),
+                    "predicted_digit": int(final_score[yx[0], yx[1]]) if final_score[yx[0], yx[1]] > 0 else target_num,
+                    "confidence": float(final_score[yx[0], yx[1]]) if final_score[yx[0], yx[1]] > 0 else 0.5,
+                    "module_scores": {"similarity": float(final_score[yx[0], yx[1]])}
+                }
+                for yx in empty_yx[:3]
+            ]
+            predictions = top3
+            reasoning = [
+                f"Remaining numbers: {list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))}",
+                f"Target number {target_num} predicted {len(predictions)} positions"
+            ]
+        elif mode == "heatmap":
+            # Generate heatmap based on similarity
+            final_score = np.zeros_like(grid, dtype=float)
+            for name, score in similarity_scores:
+                ref_grid = np.array(next((d for n, d in json_generator if n == name), {}).get('grid', []))
+                if ref_grid.shape == grid.shape:
+                    final_score += score * ref_grid
+            predictions = [{"heatmap": final_score.tolist()}]
+            reasoning = [f"Heatmap generated for {M}x{N} grid"]
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
 
-        reasoning = [
-            f"Remaining numbers: {list(set(range(1, M * N + 1)) - set(grid[grid != -1].flatten()))}",
-            f"Target number {target_num} analyzed {len(predictions)} candidate positions"
-        ]
         logger.info("Analysis completed, predictions: %d", len(predictions))
         process = psutil.Process()
         mem_info = process.memory_info()
@@ -629,7 +663,7 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
     """
     logger.info("🔍 Original grid: %s", json.dumps(payload.grid))
 
-    grid = np.array(payload.grid, dtype=np.int64)
+    grid = np.array(payload.grid, dtype=np.float32)
     logger.info("🔍 Reshaped grid shape: %s", grid.shape)
 
     if grid.ndim != 2 or grid.shape[0] < 4 or grid.shape[1] < 4 or grid.shape[0] > 20 or grid.shape[1] > 20:
@@ -645,9 +679,11 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
 
     try:
         predictions, reasoning = cache_board_analysis(
-            tuple(grid.flatten()), grid.shape, target, payload.model_path
+            tuple(grid.flatten()), grid.shape, payload.mode, target, payload.model_path
         )
         result = AnalysisResponse(
+            grid=payload.grid,  # Return original grid
+            mode=payload.mode,
             predictions=[
                 Prediction(
                     row=p["row"],
@@ -656,10 +692,9 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
                     confidence=p["confidence"],
                     module_scores=p["module_scores"]
                 )
-                for p in predictions
+                for p in predictions if isinstance(p, dict) and "row" in p
             ],
             error=None,
-            source="🔥 From real API",
             reasoning=reasoning
         )
         process = psutil.Process()
@@ -671,7 +706,14 @@ async def predict(payload: AnalysisRequest) -> JSONResponse:
         )
     except Exception as e:
         logger.error("Prediction failed: %s", e)
-        error_resp = AnalysisResponse(predictions=[], error=str(e), source="🔥 From real API", reasoning=[])
+        error_resp = AnalysisResponse(
+            grid=payload.grid,
+            mode=payload.mode,
+            predictions=[],
+            error=str(e),
+            source="🔥 From real API",
+            reasoning=[]
+        )
         return JSONResponse(status_code=500, content=error_resp.dict())
 
 @app.post("/upload")
@@ -784,7 +826,7 @@ async def query_similar(
     topk: int = 10
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Query the most similar heatmap candidates for a given grid and position.
+    Query the most similar grid candidates for a given grid and position.
 
     Args:
         grid (List[List[float]]): Input grid.
@@ -793,7 +835,7 @@ async def query_similar(
         topk (int): Number of top candidates to return, default is 10.
 
     Returns:
-        Dict[str, List[Dict[str, Any]]]: List of candidate heatmaps.
+        Dict[str, List[Dict[str, Any]]]: List of candidate grids.
 
     Raises:
         HTTPException: If Faiss index is not loaded or query fails.
@@ -813,13 +855,13 @@ async def query_similar(
         out = []
         for dist, idx in zip(D[0], I[0]):
             m = feature_metas[idx]
-            heatmap_data = m.get("heatmap", [])
-            if isinstance(heatmap_data, list) and any(target_num in row for row in heatmap_data if isinstance(row, list)):
+            grid_data = m.get("grid", [])
+            if isinstance(grid_data, list) and any(target_num in row for row in grid_data if isinstance(row, list)):
                 out.append({"path": m["path"], "inner": m["inner"], "distance": float(dist)})
-        logger.info("Queried similar heatmaps, found %d candidates", len(out))
+        logger.info("Queried similar grids, found %d candidates", len(out))
         return {"candidates": out}
     except (faiss.FaissException, IndexError, ValueError) as e:
-        logger.error("Failed to query similar heatmaps: %s", e)
+        logger.error("Failed to query similar grids: %s", e)
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
 def save_results_to_file(
