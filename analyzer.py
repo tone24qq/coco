@@ -1,11 +1,11 @@
 # analyzer.py
 
-import numpy as np
-from collections import Counter
-from typing import Any, List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 from functools import lru_cache
 from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
 from brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
+import numpy as np
+from collections import Counter
 
 @lru_cache(maxsize=128)
 def simulate_with_formulas(grid_bytes: bytes, rows: int, cols: int, n_iter: int = 5_000_000, weights: Dict[str, float] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
@@ -36,7 +36,7 @@ def simulate_with_formulas(grid_bytes: bytes, rows: int, cols: int, n_iter: int 
         valid_boards = boards[valid].reshape(-1, rows, cols)
         valid &= np.array([len(analyzer.get_arithmetic_or_geometric_sequences(b, min_len=3, allow_gaps=1)) > 0 for b in valid_boards])
         board_scores = np.array([EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in valid_boards[valid]])
-        valid &= np.array([np.corrcoef(skip_scores.ravel(), bs.ravel())[0, 1] > 0.8 for bs in board_scores])
+        valid &= np.array([np.corrcoef(skip_scores.ravel(), bs.ravel())[0, 1] > 0.8 for bs, v in zip(board_scores, valid) if v])
         valid_boards = valid_boards[valid]
         board_scores = board_scores[valid]
         for b_idx, board in enumerate(valid_boards):
