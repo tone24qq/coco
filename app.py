@@ -1,7 +1,5 @@
 # app.py  ✅ 可直接覆蓋
 import os
-port = int(os.getenv("PORT", "10000"))
-uvicorn.run(app, host="0.0.0.0", port=port)
 import sys
 import logging
 from datetime import datetime
