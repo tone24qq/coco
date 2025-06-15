@@ -1,119 +1,336 @@
-# analyzer.py
+"""
+analyzer.py
+===========
 
-from typing import List, Dict, Tuple, Optional, Any
-from functools import lru_cache
-from modules import FORMULA_REGISTRY, compute_global_features, AdaptiveWeights
-from brain import EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils, BoardAnalyzerUtils
+核心職責
+--------
+1. Monte-Carlo / 公式混合方式，推測 -1 位置的可能數字分佈。
+2. 回傳 Top-3 推測結果與完整機率分佈。
+3. 提供 check_sequences 等工具函式，供其他模組交互使用。
+
+外部依賴
+--------
+* new_module.score_full_board(board) : 回傳浮點分數（越高越好）
+* modules.FORMULA_REGISTRY          : Dict[str, Callable[..., float]]，自定義評分函式
+* BrainCore (brain.py)              : 提供 rank_candidates 等進階比對
+"""
+
+from __future__ import annotations
+
+import itertools
+import logging
+import math
+import os
+import random
+from collections import defaultdict
+from typing import Any, Dict, List, Tuple
+
 import numpy as np
-from collections import Counter
 
-@lru_cache(maxsize=128)
-def simulate_with_formulas(grid_bytes: bytes, rows: int, cols: int, n_iter: int = 5_000_000, weights: Dict[str, float] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
-    math_utils = MathUtils()
-    analyzer = BoardAnalyzerUtils()
-    rng = np.random.default_rng()
-    blanks = np.argwhere(grid == -1)
-    known_idx = np.argwhere(grid != -1)
-    known_vals = grid[grid != -1]
-    hit_counter = {tuple(b): Counter() for b in map(tuple, blanks)}
-    w = weights or {"excel": 0.6, "shuffle": 0.4}
-    names = list(w)
-    lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
-    batch_size = 10000 if rows * cols < 50 else 5000 if rows * cols < 200 else 1000
-    n_iter = 10000000 if rows * cols < 50 else 5000000 if rows * cols < 200 else 1000000
+# ────────────────────────────────────────────────────────────
+# 動態匯入外部依賴（若不存在則降級處理）
+# ────────────────────────────────────────────────────────────
+try:
+    from new_module import score_full_board  # type: ignore
+except ImportError:  # Fallback
+    def score_full_board(board: np.ndarray) -> float:  # noqa: D401
+        """Fallback: 無權重時每盤分數 = 1.0"""
+        return 1.0
 
-    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    grid_feats = compute_global_features(grid.astype(np.float32))
-    mean_val, std_val = grid_feats[0], grid_feats[1]
 
-    for _ in range(n_iter // batch_size):
-        boards = np.zeros((batch_size, rows * cols), dtype=np.int64)
-        choices = rng.choice(names, size=batch_size, p=[w[n] for n in names])
-        for i, fname in enumerate(choices):
-            boards[i] = FORMULA_REGISTRY[fname](rows, cols, rng).ravel()
-        valid = np.all(boards[:, lin_known] == known_vals, axis=1)
-        valid_boards = boards[valid].reshape(-1, rows, cols)
-        valid &= np.array([len(analyzer.get_arithmetic_or_geometric_sequences(b, min_len=3, allow_gaps=1)) > 0 for b in valid_boards])
-        board_scores = np.array([EXT_GM20_Skip_Pattern_Confidence_Vec(b) for b in valid_boards[valid]])
-        valid &= np.array([np.corrcoef(skip_scores.ravel(), bs.ravel())[0, 1] > 0.8 for bs, v in zip(board_scores, valid) if v])
-        valid_boards = valid_boards[valid]
-        board_scores = board_scores[valid]
-        for b_idx, board in enumerate(valid_boards):
-            for r, c in blanks:
-                window = board[max(0, r-1):r+2, max(0, c-1):c+2]
-                known_vals = window[window != -1]
-                resonance = 1 / (1 + abs(board[r, c] - known_vals.mean())) if len(known_vals) > 0 else 1.0
-                global_weight = np.exp(-((board[r, c] - mean_val)**2) / (2 * std_val**2))
-                hit_counter[(r, c)][board[r, c]] += board_scores[b_idx, r, c] * resonance * global_weight
-            if all(max(cnt.values()) / sum(cnt.values()) > 0.95 for cnt in hit_counter.values()):
-                break
-    prob_map = {pos: {k: math_utils.normalize_value(v, min(cnt.values()), max(cnt.values())) for k, v in cnt.items()} for pos, cnt in hit_counter.items()}
-    return prob_map
+try:
+    from modules import FORMULA_REGISTRY  # type: ignore
+except ImportError:
+    FORMULA_REGISTRY: Dict[str, Any] = {}
 
-def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]]) -> Dict[Tuple[int, int], Dict[int, float]]:
-    math_utils = MathUtils()
-    analyzer = BoardAnalyzerUtils()
-    rows, cols = grid.shape
-    blanks = np.argwhere(grid == -1)
-    
-    local_scores = np.zeros((rows, cols), dtype=float)
-    for r, c in blanks:
-        window = grid[max(0, r-1):r+2, max(0, c-1):c+2]
-        known_vals = window[window != -1]
-        if len(known_vals) > 0:
-            for num, prob in prob_map[(r, c)].items():
-                resonance = 1 / (1 + abs(num - known_vals.mean()))
-                prob_map[(r, c)][num] *= resonance
-            local_scores[r, c] = sum(prob_map[(r, c)].values())
-    
-    grid_feats = compute_global_features(grid.astype(np.float32))
-    mean_val, std_val = grid_feats[0], grid_feats[1]
-    for r, c in blanks:
-        for num, prob in prob_map[(r, c)].items():
-            global_weight = np.exp(-((num - mean_val)**2) / (2 * std_val**2))
-            prob_map[(r, c)][num] *= global_weight
-    
-    skip_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
-    for r, c in blanks:
-        for num, prob in prob_map[(r, c)].items():
-            prob_map[(r, c)][num] *= skip_scores[r, c]
-    
-    for r, c in blanks:
-        row_seqs = analyzer.get_arithmetic_or_geometric_sequences(grid[r], min_len=3, allow_gaps=1)
-        col_seqs = analyzer.get_arithmetic_or_geometric_sequences(grid[:, c], min_len=3, allow_gaps=1)
-        for num, prob in prob_map[(r, c)].items():
-            if any(num in seq for seq in row_seqs + col_seqs):
-                prob_map[(r, c)][num] *= 1.5
-    
-    for pos in prob_map:
-        total = sum(prob_map[pos].values())
-        prob_map[pos] = {k: math_utils.normalize_value(v, 0, total) for k, v in prob_map[pos].items()}
-    
-    return prob_map
+try:
+    # 與 brain.py 同層目錄
+    from app.brain import create_brain_from_env  # type: ignore
+except ImportError:
+    # 若專案結構不同，改從根目錄嘗試
+    try:
+        from brain import create_brain_from_env  # type: ignore
+    except ImportError:
+        create_brain_from_env = None  # type: ignore
 
-def predict_scratch_card(grid: List[List[int]], n_iter: int) -> Dict[str, Any]:
-    grid_np = np.array(grid, dtype=np.int64)
-    prob_map = simulate_with_formulas(grid_np.tobytes(), grid_np.shape[0], grid_np.shape[1], n_iter)
-    prob_map = weight_prob_by_modules(grid_np, prob_map)
-    results = []
-    for (r, c), dist in prob_map.items():
-        best = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
-        nums, conf = zip(*best)
-        results.append({
-            "row": int(r),
-            "col": int(c),
-            "candidates": list(nums),
-            "confidences": list(map(float, conf))
-        })
-    full_probs = {f"{r},{c}": dist for (r, c), dist in prob_map.items()}
-    return {
-        "predictions": sorted(results, key=lambda x: x["confidences"][0], reverse=True),
-        "full_probabilities": full_probs
+# ────────────────────────────────────────────────────────────
+# 環境變數
+# ────────────────────────────────────────────────────────────
+USE_FORMULA_ONLY = os.getenv("USE_FORMULA_ONLY", "0") == "1"
+DEFAULT_ITER = int(os.getenv("ITER", "500000"))
+TOP_K_CAND_NUM = 3        # 每格回傳多少候選數字
+GLOBAL_TOP_POS = 3        # 挑出信心最高的多少格回傳
+
+# ────────────────────────────────────────────────────────────
+# Logging
+# ────────────────────────────────────────────────────────────
+logger = logging.getLogger("analyzer")
+if not logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    )
+
+
+# ────────────────────────────────────────────────────────────
+# 公開函式
+# ────────────────────────────────────────────────────────────
+def predict_scratch_card(
+    grid: List[List[int]],
+    *,
+    n_iter: int | None = None,
+    top_pos: int = GLOBAL_TOP_POS,
+    top_num: int = TOP_K_CAND_NUM,
+) -> Dict[str, Any]:
+    """
+    高階 API：直接輸入 2D list[int]，輸出 Top-k 推測。
+
+    Returns
+    -------
+    {
+        "iterations": 100000,
+        "predictions": [
+            {
+                "row": 1, "col": 2,
+                "candidates": [13, 9, 7],
+                "confidences": [0.62, 0.21, 0.17]
+            },
+            ...
+        ],
+        "distribution": {
+            "(0,1)": { "5": 0.33, "6": 0.67, ... },
+            ...
+        }
     }
+    """
+    _validate_grid(grid)
+    n_iter = n_iter or DEFAULT_ITER
+    h, w = len(grid), len(grid[0])
 
-# 自檢報告：
-# - 語法檢查：通過
-# - 括號配對：無遺漏
-# - 標識符定義：無未定義/拼寫錯誤
-# - 測試環境：Python 3.11
+    # 先計算共用資源
+    empty_pos = [(r, c) for r in range(h) for c in range(w) if grid[r][c] == -1]
+    if not empty_pos:
+        raise ValueError("Grid 內無 -1，無需預測。")
+
+    all_nums = set(range(1, h * w + 1))
+    used_nums = {grid[r][c] for r in range(h) for c in range(w) if grid[r][c] != -1}
+    remaining_nums = list(all_nums - used_nums)
+    if len(remaining_nums) < len(empty_pos):
+        raise ValueError("已用數字 + 空格數量 > 最大可用數字範圍，資料不合法。")
+
+    logger.info(
+        "Analyze %dx%d board | blank=%d | iter=%s | USE_FORMULA_ONLY=%s",
+        h,
+        w,
+        len(empty_pos),
+        f"{n_iter:,}",
+        USE_FORMULA_ONLY,
+    )
+
+    # 蒙地卡羅模擬
+    counts: Dict[Tuple[int, int], Dict[int, float]] = defaultdict(lambda: defaultdict(float))
+
+    rng = random.Random(0xC0FFEE)  # 固定種子 ⇒ 可重現
+    grid_arr = np.array(grid, dtype=np.int64)
+
+    # 盡量向量化：一次產生 batch permutations
+    batch_size = 256
+    iter_left = n_iter
+    while iter_left > 0:
+        cur_batch = min(batch_size, iter_left)
+        iter_left -= cur_batch
+
+        # 每次隨機抽樣 cur_batch 個排列
+        perms = _sample_permutations(remaining_nums, len(empty_pos), cur_batch, rng)
+
+        for perm in perms:
+            # 填入 -1 位置
+            board = grid_arr.copy()
+            for (r, c), v in zip(empty_pos, perm):
+                board[r, c] = v
+
+            # 計算分數
+            score = _board_score(board)
+            if math.isinf(score) or math.isnan(score):
+                score = 0.0
+
+            # 更新 counts
+            for (r, c), v in zip(empty_pos, perm):
+                counts[(r, c)][v] += score
+
+    # 機率化
+    distribution: Dict[str, Dict[int, float]] = {}
+    for pos, num_dict in counts.items():
+        total = sum(num_dict.values())
+        if total == 0:  # guard
+            total = 1e-9
+        distribution[str(pos)] = {n: v / total for n, v in num_dict.items()}
+
+    # 產生 predictions list
+    preds: List[Dict[str, Any]] = []
+    for (r, c), num_dict in counts.items():
+        sorted_items = sorted(num_dict.items(), key=lambda kv: kv[1], reverse=True)
+        top_items = sorted_items[:top_num]
+        cand_nums, cand_scores = zip(*top_items)
+        total = sum(num_dict.values()) or 1e-9
+        probs = [s / total for s in cand_scores]
+        preds.append(
+            {
+                "row": r,
+                "col": c,
+                "candidates": list(cand_nums),
+                "confidences": probs,
+            }
+        )
+
+    # 依第一候選之置信度排序，取前 top_pos
+    preds.sort(key=lambda x: x["confidences"][0], reverse=True)
+    output = {
+        "iterations": n_iter,
+        "predictions": preds[:top_pos],
+        "distribution": distribution,
+    }
+    return output
+
+
+def analyze_board(grid: List[List[int]], **kwargs: Any) -> Dict[str, Any]:
+    """向後相容 alias。"""
+    return predict_scratch_card(grid, **kwargs)
+
+
+# ────────────────────────────────────────────────────────────
+# check_sequences —— 提供外部模組呼叫的序列偵測工具
+# ────────────────────────────────────────────────────────────
+def check_sequences(
+    board: np.ndarray,
+    ref_board: np.ndarray,
+    *,
+    min_len: int = 3,
+    allow_gaps: int = 1,
+) -> bool:
+    """
+    判斷 `board` 與 `ref_board` 是否在任一 row/col/diag 有
+    「相同數字且連續（可容許 gaps）」長度 >= min_len。
+
+    Parameters
+    ----------
+    board :
+        已完整填入的盤。
+    ref_board :
+        原始盤，通常含 -1。
+    min_len :
+        判定序列長度下限。
+    allow_gaps :
+        允許多少個非相等值當作「空隙」仍視為連續。
+    """
+    if board.shape != ref_board.shape:
+        raise ValueError("board / ref_board shape 不一致")
+
+    h, w = board.shape
+
+    def _iter_lines() -> List[np.ndarray]:
+        # rows
+        for r in range(h):
+            yield board[r, :]
+        # cols
+        for c in range(w):
+            yield board[:, c]
+        # 主對角線
+        yield board.diagonal()
+        # 副對角線
+        yield np.fliplr(board).diagonal()
+
+    for line in _iter_lines():
+        streak = gap = 0
+        for idx, val in enumerate(line):
+            ref_val = ref_board.flatten()[idx]
+            if ref_val == -1 or val == ref_val:
+                streak += 1
+                gap = 0
+            else:
+                gap += 1
+                if gap > allow_gaps:
+                    streak = 0
+                    gap = 0
+            if streak >= min_len:
+                return True
+    return False
+
+
+# ────────────────────────────────────────────────────────────
+# 內部工具
+# ────────────────────────────────────────────────────────────
+def _validate_grid(grid: List[List[int]]) -> None:
+    if not grid or not grid[0]:
+        raise ValueError("Grid 為空")
+    widths = {len(r) for r in grid}
+    if len(widths) != 1:
+        raise ValueError("Grid 各列長度不一致 (非矩形)")
+
+
+def _sample_permutations(
+    pool: List[int],
+    k: int,
+    count: int,
+    rng: random.Random,
+) -> List[Tuple[int, ...]]:
+    """
+    從 pool 中不重複隨機抽 k 個，重複 count 次，回傳 permutations list。
+    隨機性夠即可，無需涵蓋全部排列（計算複雜度太高）。
+    """
+    perms: List[Tuple[int, ...]] = []
+    for _ in range(count):
+        if k == 0:
+            perms.append(tuple())
+            continue
+        sample = rng.sample(pool, k)
+        rng.shuffle(sample)
+        perms.append(tuple(sample))
+    return perms
+
+
+def _board_score(board: np.ndarray) -> float:
+    """
+    綜合分數：
+        base = score_full_board()
+        + 其他 FORMULA_REGISTRY
+    若 `USE_FORMULA_ONLY`=1 則僅使用數學公式；否則可加權 LLM / BrainCore 之評估。
+    """
+    base = score_full_board(board)
+
+    # 套用自定義公式
+    formula_score = 0.0
+    for name, fn in FORMULA_REGISTRY.items():
+        try:
+            formula_score += fn(board)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("公式 %s 失敗：%s", name, exc)
+
+    total_score = base + formula_score
+
+    if not USE_FORMULA_ONLY and create_brain_from_env is not None:
+        # 以 board.ravel() 作為向量交給 BrainCore 做一次相似度評分
+        brain = create_brain_from_env()
+        # 假設 unified baseline 向量 = 升序 1..N
+        h, w = board.shape
+        baseline = np.arange(1, h * w + 1, dtype=np.float64)
+        total_score_vec = brain.rank_candidates(baseline, [board.ravel()], top_k=1)[0][1]
+        total_score += total_score_vec
+
+    return total_score
+
+
+# ────────────────────────────────────────────────────────────
+# 模組自測
+# ────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    # 小型單元測試示範（不影響外部 import）
+    demo_grid = [
+        [1, 2, -1],
+        [4, -1, 6],
+        [-1, 8, 9],
+    ]
+    result = predict_scratch_card(demo_grid, n_iter=2000, top_pos=3, top_num=2)
+    from pprint import pprint
+
+    pprint(result["predictions"])
