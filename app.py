@@ -93,7 +93,12 @@ async def predict(req: GridRequest):
 
 @app.on_event("startup")
 async def warm_up():
-    dummy_grid = [[-1 for _ in range(5)] for _ in range(4)]
+    dummy_grid = [
+        [1, 2, -1, 4, 5],
+        [-1, 7, 8, -1, 10],
+        [11, -1, 13, 14, -1],
+        [-1, 17, 18, -1, 20]
+    ]
     iterations = int(os.getenv("ITER", 5_000)) // 25
     try:
         predict_scratch_card(
@@ -105,6 +110,7 @@ async def warm_up():
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
+        logger.warning("Continuing startup despite warm-up failure.")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
