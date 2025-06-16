@@ -1,7 +1,8 @@
-fastapi>=0.95.0
-uvicorn[standard]>=0.22.0
-pydantic>=2.0
-numpy>=1.24.0
-scipy>=1.10.0      # 提供 Sobol + assignment
-xxhash>=3.4.1      # Count-Min Sketch 用的雜湊
-python-dotenv>=1.0.0
+numpy>=1.21.0
+scipy>=1.7.0
+joblib>=1.1.0
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+xxhash>=3.4.0
+python-multipart>=0.0.9
