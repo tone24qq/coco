@@ -224,10 +224,10 @@ def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") 
             if grid[r, c] != -1:
                 continue
             neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
-            if not neighbors:
+            if len(neighbors) < 2:  # Avoid zero variance
                 continue
             mean_val = np.mean(neighbors)
-            std_val = np.std(neighbors) or 1.0
+            std_val = np.std(neighbors, ddof=1) or 1.0  # Use ddof=1 for sample std
             row_seq = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
             col_seq = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
             legal_values = utils.get_legal_values_for_placement(grid)
