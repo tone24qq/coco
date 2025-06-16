@@ -45,7 +45,6 @@ app.add_middleware(
 # Pydantic schema
 class GridRequest(BaseModel):
     grid: List[List[int]]
-    # Remove iterations parameter, handled dynamically
 
 class Prediction(BaseModel):
     row: int
@@ -55,7 +54,7 @@ class Prediction(BaseModel):
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[int, float]]
+    full_probabilities: Dict[str, Dict[str, float]]  # Updated to match string keys
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -79,6 +78,31 @@ async def predict(req: GridRequest):
             len(req.grid[0]),
         )
         result = predict_scratch_card(req.grid)
+        
+        # Serializable Fix: Convert full_probabilities keys to strings
+        if "full_probabilities" in result and isinstance(result["full_probabilities"], dict):
+            raw_fp = result["full_probabilities"]
+            clean_fp = {}
+            for loc_key, prob_map in raw_fp.items():
+                # Handle outer key (e.g., (np.int64, np.int64) or tuple)
+                try:
+                    r, c = loc_key
+                    key_str = f"{int(r)},{int(c)}"  # Format as "r,c"
+                except (TypeError, ValueError):
+                    key_str = str(loc_key)  # Fallback for unexpected types
+
+                # Handle inner map (convert numeric keys to strings)
+                inner_clean = {}
+                for num, p in prob_map.items():
+                    try:
+                        num_key = str(int(float(num)))  # Convert to int string, handle float
+                    except (ValueError, TypeError):
+                        num_key = str(num)  # Fallback for non-numeric keys
+                    inner_clean[num_key] = float(p)  # Ensure probability is float
+                clean_fp[key_str] = inner_clean
+
+            result["full_probabilities"] = clean_fp
+
         return result
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
