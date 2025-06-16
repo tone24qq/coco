@@ -1,6 +1,6 @@
 import math
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 from typing import List, Tuple, Callable, Optional, Dict, Any
 
 import numpy as np
@@ -163,6 +163,26 @@ class BoardAnalyzerUtils:
         used = set(int(v) for v in grid.flatten() if v != -1 and v > 0)
         return all_vals - used
 
+# Module registry
+REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, Optional[str]], np.ndarray]] = {}
+
+def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray:
+    """Retrieve and execute a specific scoring module from the registry."""
+    effective_request_id = kwargs.get("request_id", "N/A")
+    if module_name not in REGISTERED_MODULES_BRAIN:
+        logger.error(f"Module {module_name} not found in REGISTERED_MODULES_BRAIN.", extra={"request_id": effective_request_id})
+        rows, cols = grid.shape
+        return np.zeros((rows, cols), dtype=float)
+    module_func = REGISTERED_MODULES_BRAIN[module_name]
+    logger.info(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
+    try:
+        score_grid = module_func(grid, **kwargs)
+        return score_grid
+    except Exception as e:
+        logger.error(f"Error executing module {module_name}: {e}", exc_info=True, extra={"request_id": effective_request_id})
+        rows, cols = grid.shape
+        return np.zeros((rows, cols), dtype=float)
+
 # Scoring modules
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
@@ -233,12 +253,17 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
                 continue
             row_block = grid[max(0, r-2):min(rows, r+3)]
             col_block = grid[:, max(0, c-2):min(cols, c+3)]
-            row_seqs = utils.get_arithmetic_or_geometric_sequences(row_block[r % 5])
-            col_seqs = utils.get_arithmetic_or_geometric_sequences(col_block[:, c % 5])
+            row_seqs = []
+            for i in range(row_block.shape[0]):
+                row_seqs.extend(utils.get_arithmetic_or_geometric_sequences(row_block[i]))
+            col_seqs = []
+            for i in range(col_block.shape[1]):
+                col_seqs.extend(utils.get_arithmetic_or_geometric_sequences(col_block[:, i]))
             diag_seqs = []
-            for offset in [-2, -1, 0, 1, 2]:
-                diag = np.diagonal(grid[max(0, r-2):min(rows, r+3), max(0, c-2):min(cols, c+3)], offset)
-                diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(diag))
+            sub_grid = grid[max(0, r-2):min(rows, r+3), max(0, c-2):min(cols, c+3)]
+            for offset in range(-min(sub_grid.shape), min(sub_grid.shape)):
+                diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(np.diagonal(sub_grid, offset)))
+                diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(np.diagonal(np.fliplr(sub_grid), offset)))
             legal_values = utils.get_legal_values_for_placement(grid)
             max_score = 0.0
             for val in legal_values:
@@ -296,7 +321,7 @@ def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
                 base_score = 0.5
                 if row_seq or col_seq:
                     base_score += 0.3
-                if symmetry and val in [grid[rows-1-r, cols-1-c] if 0 <= rows-1-r < rows and 0 <= cols-1-c < cols else -1]:
+                if symmetry and (0 <= rows-1-r < rows and 0 <= cols-1-c < cols) and grid[rows-1-r, cols-1-c] == val:
                     base_score += 0.2
                 score = MathUtils().normalize_value(base_score, 0, 1.0)
                 max_score = max(max_score, score)
@@ -368,12 +393,33 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[
             scores[r, c] = math_utils.normalize_value(best_conf, 0, 1.0)
     return scores
 
-# Module registry
-REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, Optional[str]], np.ndarray]] = {
+# Register modules
+REGISTERED_MODULES_BRAIN.update({
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
     "EXT_R3_Error_Correction_Vec": EXT_R3_Error_Correction_Vec,
     "EXT_F7_Strong_Pattern_Vec": EXT_F7_Strong_Pattern_Vec,
     "EXT_GM20_Skip_Pattern_Confidence_Vec": EXT_GM20_Skip_Pattern_Confidence_Vec,
-}
+})
+
+# Verification
+if __name__ == "__main__":
+    print("Verifying brain.py structure...")
+    dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
+    print(f"Created dummy grid:\n{dummy_grid}")
+    module_to_test = "EXT_M1_Tail_Pattern_Vec"
+    print(f"Testing get_module_score with '{module_to_test}'...")
+    try:
+        scores = get_module_score(module_to_test, dummy_grid)
+        print(f"Successfully called {module_to_test}. Output:\n{scores}")
+        assert isinstance(scores, np.ndarray), "Return type is not np.ndarray"
+        assert scores.shape == dummy_grid.shape, "Return shape does not match grid shape"
+        assert scores.dtype == float, "Return dtype is not float"
+    except ValueError as e:
+        print(f"Error: {e}")
+    print("Listing all registered modules:")
+    for i, name in enumerate(REGISTERED_MODULES_BRAIN.keys()):
+        print(f" {i+1}. {name}")
+    print(f"Total modules registered: {len(REGISTERED_MODULES_BRAIN)}")
+    print("brain.py verification complete.")
