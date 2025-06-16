@@ -1,5 +1,3 @@
-# main.py
-
 import os
 import logging
 import sys
@@ -16,30 +14,14 @@ logging.basicConfig(
 )
 
 def parse_args() -> argparse.Namespace:
-    """
-    Parse command-line arguments for grid input and iterations.
-    
-    Returns:
-        argparse.Namespace: Parsed arguments.
-    """
+    """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
     parser.add_argument("--grid", type=str, required=True, help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'")
     parser.add_argument("--iterations", type=int, default=None, help="Number of Monte Carlo iterations")
     return parser.parse_args()
 
 def parse_grid(grid_str: str) -> List[List[int]]:
-    """
-    Parse string input into 2D grid.
-    
-    Args:
-        grid_str (str): Grid as comma-separated string.
-    
-    Returns:
-        List[List[int]]: Parsed grid.
-    
-    Raises:
-        ValueError: If grid format is invalid.
-    """
+    """Parse string input into 2D grid."""
     try:
         rows = grid_str.strip().split(';')
         grid = [[int(x) for x in row.split(',')] for row in rows]
@@ -55,7 +37,7 @@ def main():
     args = parse_args()
     try:
         grid = parse_grid(args.grid)
-        iterations = args.iterations or (int(os.getenv("ITER", 5_000_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 500_000)  # Respect environment vars
+        iterations = args.iterations or (int(os.getenv("ITER", 10_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 5_000)  # Dynamic iteration
         grid_np = np.array(grid, dtype=np.int64)
         
         # Validate grid
@@ -77,9 +59,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# 自檢報告：
-# - 語法檢查：通過
-# - 括號配對：無遺漏
-# - 標識符定義：無未定義/拼寫錯誤
-# - 測試環境：Python 3.11
