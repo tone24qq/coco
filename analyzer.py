@@ -107,13 +107,15 @@ def simulate_with_formulas(
 
     sobol_dim = rows * cols
     qmc_engine = qmc.Sobol(d=sobol_dim, scramble=True)
-    bits = math.ceil(math.log(batch_size, 2))
+    bits = math.ceil(math.log2(batch_size))
     step_vecs = 2 ** bits
 
     while total_seen < n_iter:
         need = min(step_vecs, n_iter - total_seen)
-        vec = qmc_engine.random_base2(int(math.log2(need)))
-        boards = (vec * (rows * cols)).astype(np.int64).reshape(-1, rows, cols)
+        # Adjust need to nearest power of 2 or use random if needed
+        need_power2 = 2 ** math.ceil(math.log2(need)) if need > 0 else 1
+        vec = qmc_engine.random(need_power2) if need_power2 != step_vecs else qmc_engine.random_base2(int(math.log2(need_power2)))
+        boards = (vec[:need] * (rows * cols)).astype(np.int64).reshape(-1, rows, cols)
 
         valid_mask = np.all(boards.reshape(-1, rows * cols)[:, lin_known] == known_vals, axis=1)
         if valid_mask.any():
@@ -200,17 +202,25 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: Lis
 def predict_scratch_card(
     grid: List[List[int]],
     target_num: Optional[int] = None,
-    quick_iter: int = int(os.getenv("QUICK_ITER", 5_000)),
-    refine_iter: int = int(os.getenv("REFINE_ITER", 10_000)),
-    min_total_iter: int = 10_000,
+    quick_iter: Optional[int] = None,
+    refine_iter: Optional[int] = None,
+    min_total_iter: Optional[int] = None,
     unique: bool = True
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
+    h, w = rows, cols
     blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
 
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
+
+    # Dynamic iteration based on grid size
+    base_iter = int(os.getenv("BASE_ITER", 50000))
+    total_iter = int(base_iter * max(h * w / 40, 1))
+    quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
+    refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
+    min_total_iter = min_total_iter if min_total_iter is not None else max(10000, total_iter // 5)
 
     quick = simulate_with_formulas(
         grid_np.tobytes(), rows, cols,
