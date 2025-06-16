@@ -1,15 +1,12 @@
-# brain.py
 import math
 import logging
 from collections import Counter
 from typing import List, Tuple, Callable, Optional, Dict, Any
 
 import numpy as np
-from scipy.stats import entropy  # 目前未直接用到，但保留以便後續統計需求
+import random
 
-# ---------------------------------------------------------------------
 # Logging configuration
-# ---------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -17,23 +14,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------
 # Math helpers
-# ---------------------------------------------------------------------
 class MathUtils:
     """Utility functions for common mathematical operations."""
-
     def sigmoid(self, x: float, k: float = 1.0) -> float:
-        """Clamped sigmoid to避免 overflow."""
+        """Clamped sigmoid to avoid overflow."""
         try:
             clamped_x = max(-700.0, min(700.0, -k * x))
             return 1 / (1 + math.exp(clamped_x))
         except OverflowError:
             return 0.0 if -k * x > 0 else 1.0
 
-    def normalize_value(
-        self, value: float, min_val: float, max_val: float, clamp: bool = True
-    ) -> float:
+    def normalize_value(self, value: float, min_val: float, max_val: float, clamp: bool = True) -> float:
         """Normalize value to [0, 1]."""
         if math.isclose(max_val, min_val, rel_tol=1e-9):
             return 0.5 if math.isclose(value, min_val, rel_tol=1e-9) else (
@@ -46,35 +38,27 @@ class MathUtils:
         """Compute Manhattan distance between two (row, col) points."""
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
-# ---------------------------------------------------------------------
 # Board analysis helpers
-# ---------------------------------------------------------------------
 class BoardAnalyzerUtils:
     """Utility collection for scratch-card grid analysis."""
-
-    # ---------------------------- neighborhood -----------------------
     def get_neighborhood_values(
         self,
         grid: np.ndarray,
         r: int,
         c: int,
-        radius: int = 1,
+        radius: int = 2,
         eight_connectivity: bool = True,
         val_func: Callable[[int], Optional[float]] = lambda x: float(x) if x != -1 else None,
         include_center: bool = False,
     ) -> List[float]:
-        """
-        Collect values surrounding grid[r, c] in a square radius.
-
-        Returns a list of `val_func`-processed neighbor values (skips None).
-        """
+        """Collect values surrounding grid[r, c] in a square radius."""
         neighbors: List[float] = []
         rows, cols = grid.shape
         for dr in range(-radius, radius + 1):
             for dc in range(-radius, radius + 1):
                 if not include_center and dr == 0 and dc == 0:
                     continue
-                if not eight_connectivity and abs(dr) + abs(dc) != 1:
+                if not eight_connectivity and abs(dr) + abs(dc) > radius:
                     continue
                 nr, nc = r + dr, c + dc
                 if 0 <= nr < rows and 0 <= nc < cols:
@@ -83,7 +67,6 @@ class BoardAnalyzerUtils:
                         neighbors.append(processed_val)
         return neighbors
 
-    # ---------------------------- sequence check ---------------------
     def check_sequences(
         self,
         board: np.ndarray,
@@ -91,54 +74,35 @@ class BoardAnalyzerUtils:
         min_len: int = 3,
         allow_gaps: int = 1,
     ) -> bool:
-        """
-        Return True if `board` contains at least one arithmetic/geometric
-        sequence (len ≥ `min_len`) in any row/col/diag, tolerating
-        up to `allow_gaps` masked cells (-1).
-        """
+        """Return True if board contains arithmetic/geometric sequence."""
         rows, cols = board.shape
-
-        # rows
         for r in range(rows):
             if self.get_arithmetic_or_geometric_sequences(board[r], min_len, allow_gaps):
                 return True
-        # cols
         for c in range(cols):
             if self.get_arithmetic_or_geometric_sequences(board[:, c], min_len, allow_gaps):
                 return True
-        # diagonals (both directions)
         for offset in range(-(rows - min_len), cols - min_len + 1):
-            if self.get_arithmetic_or_geometric_sequences(
-                np.diagonal(board, offset), min_len, allow_gaps
-            ):
+            if self.get_arithmetic_or_geometric_sequences(np.diagonal(board, offset), min_len, allow_gaps):
                 return True
-            if self.get_arithmetic_or_geometric_sequences(
-                np.diagonal(np.fliplr(board), offset), min_len, allow_gaps
-            ):
+            if self.get_arithmetic_or_geometric_sequences(np.diagonal(np.fliplr(board), offset), min_len, allow_gaps):
                 return True
         return False
 
-    # ---------------------------- sequence finder --------------------
     def get_arithmetic_or_geometric_sequences(
         self,
         line: np.ndarray,
         min_len: int = 3,
         allow_gaps: int = 1,
     ) -> List[List[int]]:
-        """
-        Detect arithmetic/geometric subsequences in a 1-D array `line`.
-
-        Returns list of subsequences (as value lists).
-        """
+        """Detect arithmetic/geometric subsequences in a 1-D array."""
         sequences: List[List[int]] = []
         n = len(line)
-
         for i in range(n):
             if line[i] == -1:
                 continue
             for j in range(i + 1, n):
                 if line[j] == -1:
-                    # handle gaps before second value
                     temp_gap = 0
                     for k in range(j, n):
                         if line[k] == -1:
@@ -146,7 +110,7 @@ class BoardAnalyzerUtils:
                         else:
                             if temp_gap <= allow_gaps:
                                 diff = line[k] - line[i]
-                                if diff == 0:  # 排除常數序列
+                                if diff == 0:
                                     break
                                 seq_vals = [line[i], line[k]]
                                 gap_cnt = temp_gap
@@ -185,10 +149,8 @@ class BoardAnalyzerUtils:
                             break
                     if len(seq_vals) >= min_len:
                         sequences.append(seq_vals)
-
         return sequences
 
-    # ---------------------------- misc helpers -----------------------
     def get_card_max_value_from_gridDimensions(self, grid_shape: Tuple[int, int]) -> int:
         """Return rows×cols (max possible face value)."""
         rows, cols = grid_shape
@@ -201,20 +163,151 @@ class BoardAnalyzerUtils:
         used = set(int(v) for v in grid.flatten() if v != -1 and v > 0)
         return all_vals - used
 
-# ---------------------------------------------------------------------
-# EXT_GM20 – skip-pattern confidence heuristic
-# ---------------------------------------------------------------------
-def EXT_GM20_Skip_Pattern_Confidence_Vec(
-    grid: np.ndarray, request_id: Optional[str] = "N/A"
-) -> np.ndarray:
-    """
-    Produce a confidence map based on dominant skip vectors of revealed numbers.
-    """
+# Scoring modules
+def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on tail number patterns in 5x5 neighborhood."""
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
+    utils = BoardAnalyzerUtils()
+    radius = min(2, min(rows, cols) // 2 - 1)
 
-    # collect revealed cells
-    revealed: List[Dict[str, int]] = [
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
+            if not neighbors:
+                continue
+            tail_counts = Counter(int(v % 10) for v in neighbors if v > 0)
+            total_tails = sum(tail_counts.values()) or 1e-10
+            legal_values = utils.get_legal_values_for_placement(grid)
+            max_score = 0.0
+            mean_val = np.mean([v for v in grid[grid != -1] if v > 0]) or 1.0
+            for val in legal_values:
+                tail = val % 10
+                base_score = tail_counts.get(tail, 0) / total_tails
+                distance_factor = 1.0 - (abs(val - mean_val) % 10) * 0.05
+                score = base_score * distance_factor + random.uniform(0, 0.1)
+                max_score = max(max_score, MathUtils().normalize_value(score, 0, 1.0))
+            scores[r, c] = max_score
+    return scores
+
+def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on 5x5 neighborhood mean and variance."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    utils = BoardAnalyzerUtils()
+    radius = min(2, min(rows, cols) // 2 - 1)
+
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
+            if not neighbors:
+                continue
+            mean_val = np.mean(neighbors)
+            std_val = np.std(neighbors) or 1.0
+            row_seq = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
+            col_seq = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
+            legal_values = utils.get_legal_values_for_placement(grid)
+            max_score = 0.0
+            for val in legal_values:
+                deviation = abs(val - mean_val) / std_val
+                seq_bonus = 0.3 if (row_seq or col_seq) and abs(val - mean_val) > std_val else 0.0
+                score = MathUtils().normalize_value(deviation + seq_bonus, 0, max(1.0, std_val + 0.3))
+                max_score = max(max_score, score)
+            scores[r, c] = max_score
+    return scores
+
+def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on sequence blocks in 5x5 neighborhood."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    utils = BoardAnalyzerUtils()
+    radius = min(2, min(rows, cols) // 2 - 1)
+
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            row_block = grid[max(0, r-2):min(rows, r+3)]
+            col_block = grid[:, max(0, c-2):min(cols, c+3)]
+            row_seqs = utils.get_arithmetic_or_geometric_sequences(row_block[r % 5])
+            col_seqs = utils.get_arithmetic_or_geometric_sequences(col_block[:, c % 5])
+            diag_seqs = []
+            for offset in [-2, -1, 0, 1, 2]:
+                diag = np.diagonal(grid[max(0, r-2):min(rows, r+3), max(0, c-2):min(cols, c+3)], offset)
+                diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(diag))
+            legal_values = utils.get_legal_values_for_placement(grid)
+            max_score = 0.0
+            for val in legal_values:
+                row_fit = any(val in seq for seq in row_seqs)
+                col_fit = any(val in seq for seq in col_seqs)
+                diag_fit = any(val in seq for seq in diag_seqs)
+                score = (row_fit + col_fit + diag_fit) / 3.0
+                max_score = max(max_score, MathUtils().normalize_value(score, 0, 1.0))
+            scores[r, c] = max_score
+    return scores
+
+error_memory = defaultdict(Counter)
+
+def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on historical error correction in 5x5 neighborhood."""
+    global error_memory
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    utils = BoardAnalyzerUtils()
+    legal_values = utils.get_legal_values_for_placement(grid)
+    radius = min(2, min(rows, cols) // 2 - 1)
+
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
+            base_score = 0.5
+            for val in legal_values:
+                error_count = error_memory[(r, c)][val]
+                for nr, nc in [(r+dr, c+dc) for dr in range(-radius, radius+1) for dc in range(-radius, radius+1) if 0 <= r+dr < rows and 0 <= c+dc < cols]:
+                    error_count += error_memory[(nr, nc)][val] * 0.1
+                penalty = min(0.3, error_count * 0.05)
+                score = MathUtils().normalize_value(base_score - penalty, 0, 1.0)
+                if score > scores[r, c]:
+                    scores[r, c] = score
+    return scores
+
+def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on strong arithmetic or symmetry patterns."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    utils = BoardAnalyzerUtils()
+
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            row_seq = utils.check_sequences(grid[r:r+1], grid, min_len=3, allow_gaps=1)
+            col_seq = utils.check_sequences(grid[:, c:c+1].T, grid, min_len=3, allow_gaps=1)
+            symmetry = (r == cols - 1 - c or c == rows - 1 - r)
+            legal_values = utils.get_legal_values_for_placement(grid)
+            max_score = 0.0
+            for val in legal_values:
+                base_score = 0.5
+                if row_seq or col_seq:
+                    base_score += 0.3
+                if symmetry and val in [grid[rows-1-r, cols-1-c] if 0 <= rows-1-r < rows and 0 <= cols-1-c < cols else -1]:
+                    base_score += 0.2
+                score = MathUtils().normalize_value(base_score, 0, 1.0)
+                max_score = max(max_score, score)
+            scores[r, c] = max_score
+    return scores
+
+def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on skip pattern confidence."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    revealed = [
         {"value": int(grid[r, c]), "r": r, "c": c}
         for r in range(rows)
         for c in range(cols)
@@ -225,11 +318,8 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(
 
     utils = BoardAnalyzerUtils()
     math_utils = MathUtils()
-
     max_val = utils.get_card_max_value_from_gridDimensions((rows, cols))
     base_pos = {k: ((k - 1) // cols, (k - 1) % cols) for k in range(1, max_val + 1)}
-
-    # compute skip vectors
     skip_vecs = {
         info["value"]: (
             info["r"] - base_pos[info["value"]][0],
@@ -243,7 +333,6 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(
 
     counts = Counter(skip_vecs.values())
     min_occ = max(1, int(len(skip_vecs) * 0.05))
-
     dominant_patterns: List[Dict[str, Any]] = []
     for vec, cnt in counts.most_common():
         if cnt < min_occ:
@@ -256,7 +345,6 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(
         return scores
 
     legal_nums = utils.get_legal_values_for_placement(grid)
-
     for r in range(rows):
         for c in range(cols):
             if grid[r, c] != -1:
@@ -278,19 +366,14 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(
                                 enh += 0.15
                         best_conf = max(best_conf, pat["strength"] * enh)
             scores[r, c] = math_utils.normalize_value(best_conf, 0, 1.0)
-
     return scores
 
-# ---------------------------------------------------------------------
-# (optional) quick self-test
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
-    test_grid = np.array([
-        [13,  2, -1, 18,  9],
-        [ 3, 15,  6, -1,  8],
-        [ 4,  5, 10, 14,  7],
-        [20,  1, 11, -1, 16],
-    ])
-    utils = BoardAnalyzerUtils()
-    print("Legal:", utils.get_legal_values_for_placement(test_grid))
-    print("Skip-pattern confidence:\n", EXT_GM20_Skip_Pattern_Confidence_Vec(test_grid))
+# Module registry
+REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, Optional[str]], np.ndarray]] = {
+    "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
+    "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
+    "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
+    "EXT_R3_Error_Correction_Vec": EXT_R3_Error_Correction_Vec,
+    "EXT_F7_Strong_Pattern_Vec": EXT_F7_Strong_Pattern_Vec,
+    "EXT_GM20_Skip_Pattern_Confidence_Vec": EXT_GM20_Skip_Pattern_Confidence_Vec,
+}
