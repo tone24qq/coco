@@ -63,10 +63,14 @@ def simulate_batch(grid_bytes: bytes, rows: int, cols: int, batch_vec: np.ndarra
     valid_boards = batch_vec
 
     if not quick_mode and skip_scores is not None:
-        corrs = [
-            np.corrcoef(skip_scores.ravel(), EXT_GM20_Skip_Pattern_Confidence_Vec(b).ravel())[0, 1]
-            for b in valid_boards
-        ]
+        corrs = []
+        for b in valid_boards:
+            b_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(b)
+            if np.any(np.isnan(b_scores)) or np.any(np.isnan(skip_scores)):
+                corrs.append(0.0)
+            else:
+                corr = np.corrcoef(skip_scores.ravel(), b_scores.ravel())[0, 1]
+                corrs.append(corr if not np.isnan(corr) else 0.0)
         valid_mask = np.array(corrs) > 0.85
         valid_boards = valid_boards[valid_mask]
 
@@ -137,12 +141,16 @@ def simulate_with_formulas(
                 break
 
     prob_map = {}
-    for (r, c), idx in cell_to_idx.items():
+    for (r, c) in [tuple(b) for b in blanks]:
+        idx = cell_to_idx[(r, c)]
         cnts = {n: cms.query(pack_key(idx, n)) for n in legal_all}
-        if any(cnts.values()):
+        if not any(cnts.values()):
+            # Default uniform distribution for missing cells
+            probs = {n: 1.0 / len(legal_all) for n in legal_all}
+        else:
             v_min, v_max = min(cnts.values()), max(cnts.values())
             probs = {k: math_utils.normalize_value(v, v_min or 1e-10, v_max or 1e-10) for k, v in cnts.items()}
-            prob_map[(r, c)] = probs
+        prob_map[(r, c)] = probs
     return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]]) -> Dict[Tuple[int, int], Dict[int, float]]:
@@ -201,6 +209,9 @@ def predict_scratch_card(
     rows, cols = grid_np.shape
     blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
 
+    if not blanks:
+        return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
+
     quick = simulate_with_formulas(
         grid_np.tobytes(), rows, cols,
         n_iter=quick_iter,
@@ -209,7 +220,7 @@ def predict_scratch_card(
     )
     quick = weight_prob_by_modules(grid_np, quick)
 
-    hot = sorted(blanks, key=lambda p: max(quick[p].values()), reverse=True)[:3]
+    hot = sorted(blanks, key=lambda p: max(quick[p].values()), reverse=True)[:min(3, len(blanks))]
 
     refine = simulate_with_formulas(
         grid_np.tobytes(), rows, cols,
@@ -219,7 +230,15 @@ def predict_scratch_card(
     )
     refine = weight_prob_by_modules(grid_np, refine)
 
-    final_map = {cell: (refine if cell in hot else quick)[cell] for cell in blanks}
+    final_map = {}
+    for cell in blanks:
+        if cell in hot and cell in refine:
+            final_map[cell] = refine[cell]
+        elif cell in quick:
+            final_map[cell] = quick[cell]
+        else:
+            legal_all = analyzer_utils.get_legal_values_for_placement(grid_np)
+            final_map[cell] = {n: 1.0 / len(legal_all) for n in legal_all}
 
     if unique and target_num is None:
         assign = global_unique(final_map, blanks)
