@@ -261,9 +261,13 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
                 col_seqs.extend(utils.get_arithmetic_or_geometric_sequences(col_block[:, i]))
             diag_seqs = []
             sub_grid = grid[max(0, r-2):min(rows, r+3), max(0, c-2):min(cols, c+3)]
-            for offset in range(-min(sub_grid.shape), min(sub_grid.shape)):
-                diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(np.diagonal(sub_grid, offset)))
-                diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(np.diagonal(np.fliplr(sub_grid), offset)))
+            for offset in range(-min(sub_grid.shape[0], sub_grid.shape[1]), min(sub_grid.shape[0], sub_grid.shape[1])):
+                diag = np.diagonal(sub_grid, offset)
+                if len(diag) >= min(3, len(diag)):
+                    diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(diag))
+                diag_flipped = np.diagonal(np.fliplr(sub_grid), offset)
+                if len(diag_flipped) >= min(3, len(diag_flipped)):
+                    diag_seqs.extend(utils.get_arithmetic_or_geometric_sequences(diag_flipped))
             legal_values = utils.get_legal_values_for_placement(grid)
             max_score = 0.0
             for val in legal_values:
@@ -408,16 +412,16 @@ if __name__ == "__main__":
     print("Verifying brain.py structure...")
     dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
     print(f"Created dummy grid:\n{dummy_grid}")
-    module_to_test = "EXT_M1_Tail_Pattern_Vec"
-    print(f"Testing get_module_score with '{module_to_test}'...")
-    try:
-        scores = get_module_score(module_to_test, dummy_grid)
-        print(f"Successfully called {module_to_test}. Output:\n{scores}")
-        assert isinstance(scores, np.ndarray), "Return type is not np.ndarray"
-        assert scores.shape == dummy_grid.shape, "Return shape does not match grid shape"
-        assert scores.dtype == float, "Return dtype is not float"
-    except ValueError as e:
-        print(f"Error: {e}")
+    for module_to_test in ["EXT_M1_Tail_Pattern_Vec", "EXT_M3_Local_Focus_Vec", "EXT_M10_Sequence_Block_Vec"]:
+        print(f"Testing get_module_score with '{module_to_test}'...")
+        try:
+            scores = get_module_score(module_to_test, dummy_grid)
+            print(f"Successfully called {module_to_test}. Output:\n{scores}")
+            assert isinstance(scores, np.ndarray), "Return type is not np.ndarray"
+            assert scores.shape == dummy_grid.shape, "Return shape does not match grid shape"
+            assert scores.dtype == float, "Return dtype is not float"
+        except ValueError as e:
+            print(f"Error: {e}")
     print("Listing all registered modules:")
     for i, name in enumerate(REGISTERED_MODULES_BRAIN.keys()):
         print(f" {i+1}. {name}")
