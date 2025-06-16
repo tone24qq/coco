@@ -80,7 +80,12 @@ async def predict(req: GridRequest):
             len(req.grid[0]),
             iterations,
         )
-        result = predict_scratch_card(req.grid, iterations)
+        result = predict_scratch_card(
+            req.grid,
+            quick_iter=iterations // 2,
+            refine_iter=iterations // 2,
+            min_total_iter=iterations
+        )
         return result
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
@@ -91,7 +96,12 @@ async def warm_up():
     dummy_grid = [[-1 for _ in range(5)] for _ in range(4)]
     iterations = int(os.getenv("ITER", 5_000)) // 25
     try:
-        predict_scratch_card(dummy_grid, n_iter=iterations)
+        predict_scratch_card(
+            dummy_grid,
+            quick_iter=iterations // 2,
+            refine_iter=iterations // 2,
+            min_total_iter=iterations
+        )
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
