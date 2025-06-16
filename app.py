@@ -45,7 +45,7 @@ app.add_middleware(
 # Pydantic schema
 class GridRequest(BaseModel):
     grid: List[List[int]]
-    iterations: int | None = None
+    # Remove iterations parameter, handled dynamically
 
 class Prediction(BaseModel):
     row: int
@@ -73,19 +73,12 @@ async def predict(req: GridRequest):
     try:
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
-        iterations = req.iterations or int(os.getenv("ITER", 10_000))
         logger.info(
-            "Predict API called | size=%dx%d | iter=%d",
+            "Predict API called | size=%dx%d",
             len(req.grid),
             len(req.grid[0]),
-            iterations,
         )
-        result = predict_scratch_card(
-            req.grid,
-            quick_iter=iterations // 2,
-            refine_iter=iterations // 2,
-            min_total_iter=iterations
-        )
+        result = predict_scratch_card(req.grid)
         return result
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
@@ -99,14 +92,9 @@ async def warm_up():
         [11, -1, 13, 14, -1],
         [-1, 17, 18, -1, 20]
     ]
-    iterations = int(os.getenv("ITER", 5_000)) // 25
+    base_iter = int(os.getenv("BASE_ITER", 5000)) // 25
     try:
-        predict_scratch_card(
-            dummy_grid,
-            quick_iter=iterations // 2,
-            refine_iter=iterations // 2,
-            min_total_iter=iterations
-        )
+        predict_scratch_card(dummy_grid)
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
