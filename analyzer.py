@@ -251,12 +251,13 @@ def predict_scratch_card(
     rows, cols = grid_np.shape
     h, w = rows, cols
     blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
+    known_positions = [(r, c) for r in range(rows) for c in range(cols) if grid_np[r, c] != -1]
 
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
 
     # Dynamic iteration based on grid size
-    base_iter = int(os.getenv("BASE_ITER", 100000))  # 升級至 100,000
+    base_iter = int(os.getenv("BASE_ITERATIONS", 100000))
     total_iter = int(base_iter * max(h * w / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
@@ -290,9 +291,29 @@ def predict_scratch_card(
             legal_all = analyzer_utils.get_legal_values_for_placement(grid_np)
             final_map[cell] = {n: 1.0 / len(legal_all) for n in legal_all}
 
+    if target_num is not None:
+        # 模擬所有空位放入 target_num 並打分
+        scores = {}
+        for r, c in blanks:
+            if (r, c) not in known_positions:  # 排除已知數字位置
+                temp_grid = grid_np.copy()
+                temp_grid[r, c] = target_num
+                sim_result = simulate_with_formulas(temp_grid.tobytes(), rows, cols, n_iter=500, quick_mode=True)
+                score = np.mean([get_module_score(mod, temp_grid)[r, c] for mod in REGISTERED_MODULES_BRAIN])
+                scores[(r, c)] = score
+
+        # 選出 Top 3
+        top3 = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:3]
+        rank = [{
+            "row": r, "col": c,
+            "candidate": target_num,
+            "confidence": float(score)
+        } for (r, c), score in top3]
+        return {"target": target_num, "rankings": rank, "full_probabilities": final_map}
+
     if unique and target_num is None:
         assign = global_unique(final_map, blanks)
-        best_grid = mcts(np.array(grid, dtype=np.int64), iterations=1000)  # MCTS 智慧選盤
+        best_grid = mcts(np.array(grid, dtype=np.int64), iterations=1000)
         old_conf = max([p["confidences"][0] for p in [{
             "row": r, "col": c,
             "candidates": [n], "confidences": [float(p)]
@@ -306,15 +327,6 @@ def predict_scratch_card(
         return {"mode": "mcts_unique" if new_conf > old_conf * 0.95 else "unique",
                 "predictions": preds,
                 "full_probabilities": final_map}
-
-    if target_num is not None:
-        rank = [{
-            "row": r, "col": c,
-            "candidate": target_num,
-            "confidence": final_map[(r, c)].get(target_num, 0.0)
-        } for r, c in blanks]
-        rank.sort(key=lambda x: x["confidence"], reverse=True)
-        return {"target": target_num, "rankings": rank, "full_probabilities": final_map}
 
     preds = []
     for (r, c), dist in final_map.items():
