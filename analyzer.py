@@ -31,8 +31,9 @@ logging.basicConfig(
 # Count-Min Sketch (optimized for low memory)
 class CountMinSketch:
     def __init__(self, width: int = 1024, depth: int = 1):
-        self.w, self.d = width, depth
-        self.table = np.zeros((depth, width), dtype=np.uint32)
+        self.w = max(1024, min(2048, int(8e9 / (depth * 4))))  # 8 GB RAM 動態調整
+        self.d = depth
+        self.table = np.zeros((depth, self.w), dtype=np.uint32)
         self.seeds = [i * 0x9e3779B1 for i in range(depth)]
 
     def _idx(self, key: bytes, seed: int) -> int:
@@ -48,7 +49,7 @@ class CountMinSketch:
 def pack_key(cell_idx: int, num: int) -> bytes:
     return (cell_idx << 16 | num).to_bytes(4, "little")
 
-# Precompute skip scores
+# Precompute skip scores with LRU cache
 @lru_cache(maxsize=1024)
 def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarray:
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
@@ -71,7 +72,8 @@ def simulate_batch(grid_bytes: bytes, rows: int, cols: int, batch_vec: np.ndarra
             else:
                 corr = np.corrcoef(skip_scores.ravel(), b_scores.ravel())[0, 1]
                 corrs.append(corr if not np.isnan(corr) else 0.0)
-        valid_mask = np.array(corrs) > 0.85
+        threshold_corr = max(0.7, 1 - (len(blanks) / (rows * cols)))  # 動態閾值
+        valid_mask = np.array(corrs) > threshold_corr
         valid_boards = valid_boards[valid_mask]
 
     for b in valid_boards:
@@ -84,7 +86,7 @@ def simulate_with_formulas(
     grid_bytes: bytes,
     rows: int,
     cols: int,
-    n_iter: int,
+    n_iter: int = 100000,  # 升級至 100,000 迭代
     quick_mode: bool = False,
     min_iter: int = 0
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
@@ -102,7 +104,7 @@ def simulate_with_formulas(
     mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
     std_val = std_val or 1.0
 
-    batch_size = max(500, 10000 // (rows * cols))
+    batch_size = max(500, min(4000, int(6e9 / (rows * cols * 8))))  # 8 GB RAM 調整
     total_seen, effective = 0, 0
 
     sobol_dim = rows * cols
@@ -112,13 +114,13 @@ def simulate_with_formulas(
 
     while total_seen < n_iter:
         need = min(step_vecs, n_iter - total_seen)
-        vec = qmc_engine.random(need)  # Use random() to handle non-power-of-2
+        vec = qmc_engine.random(need)
         boards = (vec * (rows * cols)).astype(np.int64).reshape(-1, rows, cols)
 
         valid_mask = np.all(boards.reshape(-1, rows * cols)[:, lin_known] == known_vals, axis=1)
         if valid_mask.any():
             valid_boards = boards[valid_mask]
-            results = Parallel(n_jobs=-1)(
+            results = Parallel(n_jobs=4)(
                 delayed(simulate_batch)(grid_bytes, rows, cols, valid_boards[i:i+batch_size//4], quick_mode, skip_scores)
                 for i in range(0, len(valid_boards), batch_size//4)
             )
@@ -130,11 +132,12 @@ def simulate_with_formulas(
         effective += valid_mask.sum()
 
         if total_seen >= max(min_iter, 3000) and not quick_mode and effective >= 3000:
+            threshold_conv = max(0.8, 1 - (len(known_vals) / (rows * cols)))  # 動態閾值
             converged = True
             for (r, c), idx in cell_to_idx.items():
                 counts = [cms.query(pack_key(idx, n)) for n in legal_all]
                 s = sum(counts)
-                if s == 0 or max(counts) / s <= 0.88:
+                if s == 0 or max(counts) / s <= threshold_conv:
                     converged = False
                     break
             if converged:
@@ -145,7 +148,6 @@ def simulate_with_formulas(
         idx = cell_to_idx[(r, c)]
         cnts = {n: cms.query(pack_key(idx, n)) for n in legal_all}
         if not any(cnts.values()):
-            # Default uniform distribution for missing cells
             probs = {n: 1.0 / len(legal_all) for n in legal_all}
         else:
             v_min, v_max = min(cnts.values()), max(cnts.values())
@@ -163,16 +165,15 @@ def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dic
         "EXT_F7_Strong_Pattern_Vec",
         "EXT_GM20_Skip_Pattern_Confidence_Vec"
     ]
+    module_scores = Parallel(n_jobs=4)(delayed(get_module_score)(mod, grid) for mod in modules)
+    module_scores = np.array(module_scores)
+
     for (r, c), probs in result.items():
         if (r, c) not in prob_map:
             continue
-        module_scores = np.zeros(len(modules))
-        for i, mod in enumerate(modules):
-            score_grid = get_module_score(mod, grid)
-            module_scores[i] = score_grid[r, c] if score_grid.shape == grid.shape else 0.0
-        weight = np.mean(module_scores) / (np.max(module_scores) or 1e-10)
+        mean_score = np.mean(module_scores[:, r, c]) / (np.max(module_scores[:, r, c]) or 1e-10)
         for val, prob in probs.items():
-            probs[val] *= weight
+            probs[val] *= mean_score
         total = sum(probs.values()) or 1e-10
         result[(r, c)] = {k: v / total for k, v in probs.items()}
     return result
@@ -197,6 +198,47 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: Lis
                     break
         return res
 
+class MCTSNode:
+    def __init__(self, grid, parent=None, parent_action=None):
+        self.grid = grid.copy()
+        self.parent = parent
+        self.parent_action = parent_action
+        self.children = []
+        self.visits = 0
+        self.value = 0.0
+        self.untried_actions = [(r, c, v) for r, c in np.argwhere(grid == -1)
+                              for v in analyzer_utils.get_legal_values_for_placement(grid)]
+
+    def uct_select(self, c_param=1.4):
+        return max(self.children, key=lambda c: c.value / c.visits + c_param * np.sqrt(2 * np.log(self.visits) / c.visits))
+
+def mcts(grid: np.ndarray, iterations: int = 1000):
+    rows, cols = grid.shape
+    root = MCTSNode(grid)
+
+    def simulate(node):
+        current = node
+        while current.untried_actions and current.children:
+            current = current.uct_select()
+        if current.untried_actions:
+            r, c, v = current.untried_actions.pop()
+            new_grid = current.grid.copy()
+            new_grid[r, c] = v
+            child = MCTSNode(new_grid, current, (r, c, v))
+            current.children.append(child)
+            current = child
+        sim_result = simulate_with_formulas(current.grid.tobytes(), rows, cols, 500, quick_mode=True)
+        reward = np.sum([max(weight_prob_by_modules(current.grid, sim_result[(r, c)].values())) for r, c in np.argwhere(grid == -1)])
+        while current is not None:
+            current.visits += 1
+            current.value += reward
+            current = current.parent
+        return reward
+
+    Parallel(n_jobs=4)(delayed(simulate)(root) for _ in range(iterations // 4))
+    best_child = max(root.children, key=lambda c: c.value / c.visits)
+    return best_child.grid
+
 def predict_scratch_card(
     grid: List[List[int]],
     target_num: Optional[int] = None,
@@ -214,7 +256,7 @@ def predict_scratch_card(
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
 
     # Dynamic iteration based on grid size
-    base_iter = int(os.getenv("BASE_ITER", 50000))
+    base_iter = int(os.getenv("BASE_ITER", 100000))  # 升級至 100,000
     total_iter = int(base_iter * max(h * w / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
@@ -250,12 +292,20 @@ def predict_scratch_card(
 
     if unique and target_num is None:
         assign = global_unique(final_map, blanks)
+        best_grid = mcts(np.array(grid, dtype=np.int64), iterations=1000)  # MCTS 智慧選盤
+        old_conf = max([p["confidences"][0] for p in [{
+            "row": r, "col": c,
+            "candidates": [n], "confidences": [float(p)]
+        } for (r, c), (n, p) in assign.items()]])
+        new_conf = max([max(weight_prob_by_modules(best_grid, final_map[(r, c)].values())) for r, c in np.argwhere(grid_np == -1)])
         preds = [{
             "row": r, "col": c,
             "candidates": [n], "confidences": [float(p)]
-        } for (r, c), (n, p) in assign.items()]
+        } for (r, c), (n, p) in (assign.items() if new_conf <= old_conf * 0.95 else process_grid(best_grid))]
         preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-        return {"mode": "unique", "predictions": preds, "full_probabilities": final_map}
+        return {"mode": "mcts_unique" if new_conf > old_conf * 0.95 else "unique",
+                "predictions": preds,
+                "full_probabilities": final_map}
 
     if target_num is not None:
         rank = [{
@@ -277,3 +327,16 @@ def predict_scratch_card(
         })
     preds.sort(key=lambda x: x["confidences"][0], reverse=True)
     return {"mode": "top3", "predictions": preds, "full_probabilities": final_map}
+
+def process_grid(grid):
+    blanks = np.argwhere(grid == -1)
+    preds = []
+    for r, c in blanks:
+        legal_vals = analyzer_utils.get_legal_values_for_placement(grid)
+        max_prob = max([grid[r, c] if grid[r, c] != -1 else v for v in legal_vals])
+        preds.append({
+            "row": r, "col": c,
+            "candidates": [max_prob],
+            "confidences": [1.0 if grid[r, c] != -1 else 0.5]
+        })
+    return preds
