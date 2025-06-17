@@ -156,7 +156,7 @@ def simulate_with_formulas(
     return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]]) -> Dict[Tuple[int, int], Dict[int, float]]:
-    result = prob_map.copy()
+    result = prob_map.copy()  # 確保使用字典副本，避免 dict_values 錯誤
     modules = [
         "EXT_M1_Tail_Pattern_Vec",
         "EXT_M3_Local_Focus_Vec",
@@ -172,7 +172,8 @@ def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dic
         if (r, c) not in prob_map:
             continue
         mean_score = np.mean(module_scores[:, r, c]) / (np.max(module_scores[:, r, c]) or 1e-10)
-        for val, prob in probs.items():
+        probs_copy = probs.copy()  # 明確使用字典副本
+        for val, prob in probs_copy.items():
             probs[val] *= mean_score
         total = sum(probs.values()) or 1e-10
         result[(r, c)] = {k: v / total for k, v in probs.items()}
@@ -245,7 +246,7 @@ def predict_scratch_card(
     quick_iter: Optional[int] = None,
     refine_iter: Optional[int] = None,
     min_total_iter: Optional[int] = None,
-    iterations: Optional[int] = None,  # 新增 iterations 參數
+    iterations: Optional[int] = None,  # 新增 iterations 參數以解決 TypeError
     unique: bool = True
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
