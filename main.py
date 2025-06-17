@@ -37,7 +37,7 @@ def main():
     args = parse_args()
     try:
         grid = parse_grid(args.grid)
-        iterations = args.iterations or (int(os.getenv("ITER", 100000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 5000)  # 升級至 100,000 迭代
+        iterations = args.iterations or (int(os.getenv("ITER", 10_000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 5_000)  # Dynamic iteration
         grid_np = np.array(grid, dtype=np.int64)
         
         # Validate grid
@@ -47,7 +47,7 @@ def main():
         if any(v < 1 or v > grid_np.size for v in known_vals):
             raise ValueError("Numbers must be between 1 and N")
         
-        result = predict_scratch_card(grid, iterations=iterations)
+        result = predict_scratch_card(grid, iterations)
         logging.info("Prediction results:")
         for pred in result["predictions"]:
             logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with confidences {pred['confidences']}")
