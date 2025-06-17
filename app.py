@@ -55,7 +55,7 @@ class Prediction(BaseModel):
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[str, float]]  # Updated to match string keys
+    full_probabilities: Dict[str, Dict[str, float]]
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -78,9 +78,8 @@ async def predict(req: GridRequest):
             len(req.grid),
             len(req.grid[0]),
         )
-        result = predict_scratch_card(req.grid, iterations=100000)  # 升級迭代
+        result = predict_scratch_card(req.grid, iterations=100000)
         
-        # Serializable Fix: Convert full_probabilities keys to strings
         if "full_probabilities" in result and isinstance(result["full_probabilities"], dict):
             raw_fp = result["full_probabilities"]
             clean_fp = {}
@@ -125,18 +124,6 @@ async def warm_up():
 async def shutdown():
     logger.info("API shutting down to save resources.")
 
-def run_api():
-    """Run API with on-demand activation."""
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
-    server = uvicorn.Server(config)
-    logger.info("API in sleep mode, will wake on request...")
-    while True:
-        try:
-            server.run()  # 啟動時休眠，呼叫時醒來
-            logger.info("API woken up and working...")
-        except KeyboardInterrupt:
-            server.should_exit = True
-            break
-
 if __name__ == "__main__":
-    run_api()
+    # 移除 run_api 無限循環，交由 Render 觸發
+    logger.info("API ready, waiting for Render to handle requests...")
