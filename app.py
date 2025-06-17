@@ -8,7 +8,6 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import uvicorn
 
 from analyzer import predict_scratch_card
 
@@ -18,7 +17,7 @@ from logging.handlers import RotatingFileHandler
 log_handlers = [
     logging.StreamHandler(sys.stdout),
     RotatingFileHandler(
-        "app.log", mode="a", encoding="utf-8", maxBytes=5_000_000, backupCount=3
+        "app.log", mode="a", encoding="utf-8", maxBytes=2_000_000, backupCount=3
     ),
 ]
 logging.basicConfig(
@@ -78,26 +77,30 @@ async def predict(req: GridRequest):
             len(req.grid),
             len(req.grid[0]),
         )
-        result = predict_scratch_card(req.grid, iterations=100000)  # 升級迭代
+        result = predict_scratch_card(req.grid)
         
         # Serializable Fix: Convert full_probabilities keys to strings
         if "full_probabilities" in result and isinstance(result["full_probabilities"], dict):
             raw_fp = result["full_probabilities"]
             clean_fp = {}
             for loc_key, prob_map in raw_fp.items():
+                # Handle outer key (e.g., (np.int64, np.int64) or tuple)
                 try:
                     r, c = loc_key
-                    key_str = f"{int(r)},{int(c)}"
+                    key_str = f"{int(r)},{int(c)}"  # Format as "r,c"
                 except (TypeError, ValueError):
-                    key_str = str(loc_key)
+                    key_str = str(loc_key)  # Fallback for unexpected types
+
+                # Handle inner map (convert numeric keys to strings)
                 inner_clean = {}
                 for num, p in prob_map.items():
                     try:
-                        num_key = str(int(float(num)))
+                        num_key = str(int(float(num)))  # Convert to int string, handle float
                     except (ValueError, TypeError):
-                        num_key = str(num)
-                    inner_clean[num_key] = float(p)
+                        num_key = str(num)  # Fallback for non-numeric keys
+                    inner_clean[num_key] = float(p)  # Ensure probability is float
                 clean_fp[key_str] = inner_clean
+
             result["full_probabilities"] = clean_fp
 
         return result
@@ -113,30 +116,18 @@ async def warm_up():
         [11, -1, 13, 14, -1],
         [-1, 17, 18, -1, 20]
     ]
-    base_iter = int(os.getenv("BASE_ITER", 100000)) // 25
+    base_iter = int(os.getenv("BASE_ITER", 5000)) // 25
     try:
-        predict_scratch_card(dummy_grid, iterations=base_iter)
+        predict_scratch_card(dummy_grid)
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
         logger.warning("Continuing startup despite warm-up failure.")
 
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info("API shutting down to save resources.")
-
-def run_api():
-    """Run API with on-demand activation."""
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
-    server = uvicorn.Server(config)
-    logger.info("API in sleep mode, will wake on request...")
-    while True:
-        try:
-            server.run()  # 啟動時休眠，呼叫時醒來
-            logger.info("API woken up and working...")
-        except KeyboardInterrupt:
-            server.should_exit = True
-            break
-
-if __name__ == "__main__":
-    run_api()
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception: %s", exc, exc_info=True)
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": str(exc)},
+    )
