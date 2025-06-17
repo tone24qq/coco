@@ -74,27 +74,19 @@ class BoardAnalyzerUtils:
         min_len: int = 3,
         allow_gaps: int = 1,
     ) -> bool:
-        """Return True if board contains arithmetic/geometric sequence in various shapes."""
+        """Return True if board contains arithmetic/geometric sequence."""
         rows, cols = board.shape
-        shapes = [
-            lambda r, c: [(r+i, c) for i in range(min_len)],  # 行
-            lambda r, c: [(r, c+i) for i in range(min_len)],  # 列
-            lambda r, c: [(r+i, c+i) for i in range(min_len)],  # 主對角線
-            lambda r, c: [(r+i, c-i) for i in range(min_len)],  # 副對角線
-            lambda r, c: [(r, c), (r+1, c+2), (r+2, c+1)],  # Z 型
-            lambda r, c: [(r+i, c) for i in range(2)] + [(r+2, c+2)],  # L 型
-        ]
-
         for r in range(rows):
-            for c in range(cols):
-                if board[r, c] == -1:
-                    continue
-                for shape_gen in shapes:
-                    points = [(rr, cc) for rr, cc in shape_gen(r, c) if 0 <= rr < rows and 0 <= cc < cols]
-                    if len(points) >= min_len:
-                        values = [board[rr, cc] for rr, cc in points if board[rr, cc] != -1]
-                        if len(values) >= min_len and self.get_arithmetic_or_geometric_sequences(np.array(values), min_len, allow_gaps):
-                            return True
+            if self.get_arithmetic_or_geometric_sequences(board[r], min_len, allow_gaps):
+                return True
+        for c in range(cols):
+            if self.get_arithmetic_or_geometric_sequences(board[:, c], min_len, allow_gaps):
+                return True
+        for offset in range(-(rows - min_len), cols - min_len + 1):
+            if self.get_arithmetic_or_geometric_sequences(np.diagonal(board, offset), min_len, allow_gaps):
+                return True
+            if self.get_arithmetic_or_geometric_sequences(np.diagonal(np.fliplr(board), offset), min_len, allow_gaps):
+                return True
         return False
 
     def get_arithmetic_or_geometric_sequences(
@@ -232,10 +224,10 @@ def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") 
             if grid[r, c] != -1:
                 continue
             neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
-            if len(neighbors) < 2:
+            if len(neighbors) < 2:  # Avoid zero variance
                 continue
             mean_val = np.mean(neighbors)
-            std_val = np.std(neighbors, ddof=1) or 1.0
+            std_val = np.std(neighbors, ddof=1) or 1.0  # Use ddof=1 for sample std
             row_seq = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
             col_seq = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
             legal_values = utils.get_legal_values_for_placement(grid)
