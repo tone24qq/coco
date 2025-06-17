@@ -245,6 +245,7 @@ def predict_scratch_card(
     quick_iter: Optional[int] = None,
     refine_iter: Optional[int] = None,
     min_total_iter: Optional[int] = None,
+    iterations: Optional[int] = None,  # 新增 iterations 參數
     unique: bool = True
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
@@ -256,9 +257,9 @@ def predict_scratch_card(
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
 
-    # Dynamic iteration based on grid size
+    # Dynamic iteration based on grid size or provided iterations
     base_iter = int(os.getenv("BASE_ITERATIONS", 100000))
-    total_iter = int(base_iter * max(h * w / 40, 1))
+    total_iter = iterations if iterations is not None else int(base_iter * max(h * w / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
     min_total_iter = min_total_iter if min_total_iter is not None else max(10000, total_iter // 5)
