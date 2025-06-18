@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Callable, Tuple
+from typing import Dict, Callable, Tuple, Optional
 from collections import Counter
 import logging
 import os
@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 
 # Formula registry for Monte Carlo simulation
-FORMULA_REGISTRY: Dict[str, Callable[[int, int, np.random.Generator], np.ndarray]] = {}
+FORMULA_REGISTRY: Dict[str, Callable[[int, int, np.random.Generator, Optional[np.ndarray]], np.ndarray]] = {}
 
 def register_formula(name: str) -> Callable:
     """Decorator to register formula functions for generating scratch card grids."""
@@ -24,13 +24,13 @@ def register_formula(name: str) -> Callable:
     return _decorator
 
 @register_formula("excel")
-def gen_excel(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
+def gen_excel(rows: int, cols: int, rng: np.random.Generator, base_grid: Optional[np.ndarray] = None) -> np.ndarray:
     """Generate grid using random permutation of numbers 1 to N."""
     nums = rng.permutation(rows * cols) + 1
     return nums.reshape(rows, cols)
 
 @register_formula("shuffle")
-def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
+def gen_shuffle(rows: int, cols: int, rng: np.random.Generator, base_grid: Optional[np.ndarray] = None) -> np.ndarray:
     """Generate grid by shuffling numbers within each row."""
     nums = np.arange(1, rows * cols + 1)
     board = nums.reshape(rows, cols)
@@ -39,14 +39,48 @@ def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     return board
 
 @register_formula("random_entropy")
-def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
-    """Generate grid with entropy-based random dispersion."""
-    grid = np.zeros((rows, cols), dtype=np.int64)
+def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator, base_grid: Optional[np.ndarray] = None) -> np.ndarray:
+    """Generate grid with entropy-based random dispersion, respecting base_grid if provided."""
+    grid = np.zeros((rows, cols), dtype=np.int64) if base_grid is None else base_grid.copy()
     legal = list(range(1, rows * cols + 1))
     rng.shuffle(legal)
+    
+    if base_grid is not None:
+        known_mask = base_grid != -1
+        grid[known_mask] = base_grid[known_mask]
+        legal = [x for x in legal if x not in base_grid[base_grid != -1]]
+    
+    mean_val, std_val = 0.0, 1.0
+    if base_grid is not None:
+        mean_val, std_val = compute_global_features(base_grid)
+    
     for i in range(rows * cols):
+        if grid.flat[i] != 0:
+            continue
         r, c = divmod(i, cols)
-        grid[r, c] = legal[i]
+        base_num = int(max(1, min(rows * cols, mean_val + rng.normal(0, std_val))))
+        candidate = base_num if base_num in legal else rng.choice(legal)
+        grid[r, c] = candidate
+        legal.remove(candidate)
+    
+    return grid
+
+@register_formula("tail_cluster")
+def gen_tail_cluster(rows: int, cols: int, rng: np.random.Generator, base_grid: Optional[np.ndarray] = None) -> np.ndarray:
+    """Generate grid with numbers clustered by tail digits."""
+    nums = rng.permutation(rows * cols) + 1
+    order = np.argsort(nums % 10, kind="stable")
+    grid = nums[order].reshape(rows, cols)
+    
+    if base_grid is not None:
+        known_mask = base_grid != -1
+        grid[known_mask] = base_grid[known_mask]
+        legal = set(range(1, rows * cols + 1)) - set(grid[grid != -1])
+        for r, c in np.argwhere(base_grid == -1):
+            if legal:
+                grid[r, c] = rng.choice(list(legal))
+                legal.remove(grid[r, c])
+    
     return grid
 
 class AdaptiveWeights:
