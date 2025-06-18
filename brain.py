@@ -151,7 +151,7 @@ class BoardAnalyzerUtils:
                             continue
                         expected = seq_vals[-1] + diff
                         if math.isclose(line[k], expected, rel_tol=1e-9):
-                            seq_vals.append(line[k])
+                            seq_vals.append(line[l])
                             gap_cnt = 0
                         else:
                             break
