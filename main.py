@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 from typing import List, Dict, Any
 from analyzer import predict_scratch_card
+import time
 
 # Logging configuration
 logging.basicConfig(
@@ -17,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
     parser.add_argument("--grid", type=str, required=True, help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'")
-    parser.add_argument("--iterations", type=int, default=1000, help="Number of Monte Carlo iterations")
+    parser.add_argument("--iterations", type=int, default=6000, help="Number of Monte Carlo iterations")
     parser.add_argument("--target", type=int, default=None, help="Target number to predict")
     return parser.parse_args()
 
@@ -35,6 +36,7 @@ def parse_grid(grid_str: str) -> List[List[int]]:
 
 def main():
     """Main function to run scratch card prediction."""
+    start_time = time.time()
     args = parse_args()
     try:
         grid = parse_grid(args.grid)
@@ -55,6 +57,7 @@ def main():
         for pred in result["predictions"]:
             logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%")
         logging.info("Full probabilities available in result['full_probabilities']")
+        logging.info(f"Prediction completed in {time.time() - start_time:.3f} seconds")
         return result
     except (ValueError, Exception) as e:
         logging.error(f"Error during prediction: {e}")
