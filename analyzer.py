@@ -55,107 +55,98 @@ def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarra
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
-def simulate_batch(grid_bytes: bytes, rows: int, cols: int, batch_vec: np.ndarray, quick_mode: bool, skip_scores: Optional[np.ndarray]) -> np.ndarray:
+def simulate_batch(grid_bytes: bytes, rows: int, cols: int, batch_vec: np.ndarray, target_num: Optional[int] = None) -> Dict[Tuple[int, int], int]:
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
     blanks = np.argwhere(grid == -1)
-    legal_all = analyzer_utils.get_legal_values_for_placement(grid)
-    cms = CountMinSketch()
     cell_to_idx = {tuple(b): i for i, b in enumerate(blanks)}
-    valid_boards = batch_vec
-
-    if not quick_mode and skip_scores is not None:
-        corrs = []
-        for b in valid_boards:
-            b_scores = EXT_GM20_Skip_Pattern_Confidence_Vec(b)
-            if np.any(np.isnan(b_scores)) or np.any(np.isnan(skip_scores)):
-                corrs.append(0.0)
-            else:
-                corr = np.corrcoef(skip_scores.ravel(), b_scores.ravel())[0, 1]
-                corrs.append(corr if not np.isnan(corr) else 0.0)
-        threshold_corr = max(0.7, 1 - (len(blanks) / (rows * cols)))  # 動態閾值
-        valid_mask = np.array(corrs) > threshold_corr
-        valid_boards = valid_boards[valid_mask]
-
-    for b in valid_boards:
-        for r, c in blanks:
-            cms.update(pack_key(cell_to_idx[(r, c)], int(b[r, c])))
-    return cms.table
+    counts = defaultdict(int)
+    
+    for b in batch_vec:
+        if target_num is not None:
+            for r, c in blanks:
+                if b[r, c] == target_num:
+                    counts[(r, c)] += 1
+    return counts
 
 @lru_cache(maxsize=128)
 def simulate_with_formulas(
     grid_bytes: bytes,
     rows: int,
     cols: int,
-    n_iter: int = 100000,  # 升級至 100,000 迭代
-    quick_mode: bool = False,
+    n_iter: int = 1000,
+    target_num: Optional[int] = None,
     min_iter: int = 0
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
     blanks = np.argwhere(grid == -1)
     known_idx = np.argwhere(grid != -1)
     known_vals = grid[grid != -1]
-    lin_known = rows * known_idx[:, 0] + known_idx[:, 1]
-
-    cms = CountMinSketch()
-    cell_to_idx = {tuple(b): i for i, b in enumerate(blanks)}
     legal_all = analyzer_utils.get_legal_values_for_placement(grid)
+    
+    # Validate grid size and numbers
+    if rows < 4 or rows > 20 or cols < 4 or cols > 20:
+        raise ValueError("Grid must be 4x4 to 20x20")
+    max_val = rows * cols
+    if any(v < 1 or v > max_val for v in known_vals):
+        raise ValueError(f"Numbers must be between 1 and {max_val}")
+    if len(np.unique(known_vals)) != len(known_vals):
+        raise ValueError("Grid contains duplicate numbers")
 
-    skip_scores = precompute_skip_scores(grid_bytes, rows, cols) if not quick_mode else None
-    mean_val, std_val = compute_global_features(grid.astype(np.float32))[:2]
-    std_val = std_val or 1.0
-
-    batch_size = max(500, min(4000, int(6e9 / (rows * cols * 8))))  # 8 GB RAM 調整
+    # Initialize counters
+    counts = defaultdict(lambda: defaultdict(int))
+    rng = np.random.default_rng()
     total_seen, effective = 0, 0
+    batch_size = max(500, min(4000, int(8e9 / (rows * cols * 8))))  # 8 GB RAM 調整
 
-    sobol_dim = rows * cols
-    qmc_engine = qmc.Sobol(d=sobol_dim, scramble=True)
-    bits = math.ceil(math.log2(batch_size))
-    step_vecs = 2 ** bits
+    # Use gen_random_entropy for whole-board shuffling
+    formula = FORMULA_REGISTRY["random_entropy"]
 
     while total_seen < n_iter:
-        need = min(step_vecs, n_iter - total_seen)
-        vec = qmc_engine.random(need)
-        boards = (vec * (rows * cols)).astype(np.int64).reshape(-1, rows, cols)
-
-        valid_mask = np.all(boards.reshape(-1, rows * cols)[:, lin_known] == known_vals, axis=1)
-        if valid_mask.any():
-            valid_boards = boards[valid_mask]
-            results = Parallel(n_jobs=4)(
-                delayed(simulate_batch)(grid_bytes, rows, cols, valid_boards[i:i+batch_size//4], quick_mode, skip_scores)
-                for i in range(0, len(valid_boards), batch_size//4)
-            )
-            for table in results:
-                for i in range(cms.d):
-                    cms.table[i] += table[i]
-
+        need = min(batch_size, n_iter - total_seen)
+        boards = np.zeros((need, rows, cols), dtype=np.int64)
+        
+        # Generate boards
+        for i in range(need):
+            board = formula(rows, cols, rng)
+            # Enforce known values
+            for (r, c), val in zip(known_idx, known_vals):
+                if board[r, c] != val:
+                    # Find and swap
+                    target_pos = np.argwhere(board == val)[0]
+                    board[target_pos[0], target_pos[1]], board[r, c] = board[r, c], board[target_pos[0], target_pos[1]]
+            boards[i] = board
+        
+        # Count target_num occurrences
+        results = Parallel(n_jobs=4)(
+            delayed(simulate_batch)(grid_bytes, rows, cols, boards[i:i+batch_size//4], target_num)
+            for i in range(0, need, batch_size//4)
+        )
+        
+        # Aggregate counts
+        for batch_counts in results:
+            for (r, c), count in batch_counts.items():
+                counts[(r, c)][target_num] += count
+        
         total_seen += need
-        effective += valid_mask.sum()
+        effective += need
+        
+        # Early stopping
+        if total_seen >= max(min_iter, 1000) and effective >= 1000:
+            break
 
-        if total_seen >= max(min_iter, 3000) and not quick_mode and effective >= 3000:
-            threshold_conv = max(0.8, 1 - (len(known_vals) / (rows * cols)))  # 動態閾值
-            converged = True
-            for (r, c), idx in cell_to_idx.items():
-                counts = [cms.query(pack_key(idx, n)) for n in legal_all]
-                s = sum(counts)
-                if s == 0 or max(counts) / s <= threshold_conv:
-                    converged = False
-                    break
-            if converged:
-                break
-
+    # Convert counts to probabilities
     prob_map = {}
     for (r, c) in [tuple(b) for b in blanks]:
-        idx = cell_to_idx[(r, c)]
-        cnts = {n: cms.query(pack_key(idx, n)) for n in legal_all}
-        if not any(cnts.values()):
-            probs = {n: 1.0 / len(legal_all) for n in legal_all}
-        else:
-            v_min, v_max = min(cnts.values()), max(cnts.values())
-            probs = {k: math_utils.normalize_value(v, v_min or 1e-10, v_max or 1e-10) for k, v in cnts.items()}
+        total = sum(counts[(r, c)].values()) or 1e-10
+        probs = {n: (counts[(r, c)][n] / total) for n in legal_all}
         prob_map[(r, c)] = probs
+    
+    # Apply module weighting
+    prob_map = weight_prob_by_modules(grid, prob_map, target_num)
+    
     return prob_map
 
-def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]]) -> Dict[Tuple[int, int], Dict[int, float]]:
+def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]], target_num: Optional[int] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
     result = prob_map.copy()
     modules = [
         "EXT_M1_Tail_Pattern_Vec",
@@ -171,11 +162,23 @@ def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dic
     for (r, c), probs in result.items():
         if (r, c) not in prob_map:
             continue
-        mean_score = np.mean(module_scores[:, r, c]) / (np.max(module_scores[:, r, c]) or 1e-10)
-        for val, prob in probs.items():
-            probs[val] *= mean_score
-        total = sum(probs.values()) or 1e-10
-        result[(r, c)] = {k: v / total for k, v in probs.items()}
+        # Compute consensus score
+        scores = module_scores[:, r, c]
+        if np.any(np.isnan(scores)):
+            scores = np.nan_to_num(scores, nan=0.0)
+        softmax_scores = np.exp(scores / 0.5) / (np.sum(np.exp(scores / 0.5)) + 1e-10)  # Temperature = 0.5
+        mean_score = np.mean(softmax_scores)
+        
+        if target_num is not None:
+            probs[target_num] *= mean_score
+            total = probs[target_num] or 1e-10
+            result[(r, c)] = {target_num: probs[target_num] / total}
+        else:
+            for val in probs:
+                probs[val] *= mean_score
+            total = sum(probs.values()) or 1e-10
+            result[(r, c)] = {k: v / total for k, v in probs.items()}
+    
     return result
 
 def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
@@ -227,8 +230,8 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             child = MCTSNode(new_grid, current, (r, c, v))
             current.children.append(child)
             current = child
-        sim_result = simulate_with_formulas(current.grid.tobytes(), rows, cols, 500, quick_mode=True)
-        reward = np.sum([max(weight_prob_by_modules(current.grid, sim_result[(r, c)].values())) for r, c in np.argwhere(grid == -1)])
+        sim_result = simulate_with_formulas(current.grid.tobytes(), rows, cols, 500, None, 100)
+        reward = np.sum([max(weight_prob_by_modules(current.grid, sim_result[(r, c)]).values()) for r, c in np.argwhere(grid == -1)])
         while current is not None:
             current.visits += 1
             current.value += reward
@@ -242,6 +245,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
 def predict_scratch_card(
     grid: List[List[int]],
     target_num: Optional[int] = None,
+    iterations: Optional[int] = None,
     quick_iter: Optional[int] = None,
     refine_iter: Optional[int] = None,
     min_total_iter: Optional[int] = None,
@@ -249,84 +253,122 @@ def predict_scratch_card(
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
-    h, w = rows, cols
     blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
 
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
 
     # Dynamic iteration based on grid size
-    base_iter = int(os.getenv("BASE_ITER", 100000))  # 升級至 100,000
-    total_iter = int(base_iter * max(h * w / 40, 1))
+    base_iter = iterations if iterations is not None else int(os.getenv("BASE_ITER", 1000))
+    total_iter = int(base_iter * max(rows * cols / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
-    min_total_iter = min_total_iter if min_total_iter is not None else max(10000, total_iter // 5)
+    min_total_iter = min_total_iter if min_total_iter is not None else max(1000, total_iter // 5)
 
-    quick = simulate_with_formulas(
+    # Single simulation phase
+    prob_map = simulate_with_formulas(
         grid_np.tobytes(), rows, cols,
-        n_iter=quick_iter,
-        quick_mode=True,
-        min_iter=min_total_iter // 5
+        n_iter=total_iter,
+        target_num=target_num,
+        min_iter=min_total_iter
     )
-    quick = weight_prob_by_modules(grid_np, quick)
-
-    hot = sorted(blanks, key=lambda p: max(quick[p].values()), reverse=True)[:min(3, len(blanks))]
-
-    refine = simulate_with_formulas(
-        grid_np.tobytes(), rows, cols,
-        n_iter=refine_iter,
-        quick_mode=False,
-        min_iter=min_total_iter - quick_iter
-    )
-    refine = weight_prob_by_modules(grid_np, refine)
-
-    final_map = {}
-    for cell in blanks:
-        if cell in hot and cell in refine:
-            final_map[cell] = refine[cell]
-        elif cell in quick:
-            final_map[cell] = quick[cell]
-        else:
-            legal_all = analyzer_utils.get_legal_values_for_placement(grid_np)
-            final_map[cell] = {n: 1.0 / len(legal_all) for n in legal_all}
-
-    if unique and target_num is None:
-        assign = global_unique(final_map, blanks)
-        best_grid = mcts(np.array(grid, dtype=np.int64), iterations=1000)  # MCTS 智慧選盤
-        old_conf = max([p["confidences"][0] for p in [{
-            "row": r, "col": c,
-            "candidates": [n], "confidences": [float(p)]
-        } for (r, c), (n, p) in assign.items()]])
-        new_conf = max([max(weight_prob_by_modules(best_grid, final_map[(r, c)].values())) for r, c in np.argwhere(grid_np == -1)])
-        preds = [{
-            "row": r, "col": c,
-            "candidates": [n], "confidences": [float(p)]
-        } for (r, c), (n, p) in (assign.items() if new_conf <= old_conf * 0.95 else process_grid(best_grid))]
-        preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-        return {"mode": "mcts_unique" if new_conf > old_conf * 0.95 else "unique",
-                "predictions": preds,
-                "full_probabilities": final_map}
 
     if target_num is not None:
+        # Rank cells for target number
         rank = [{
-            "row": r, "col": c,
-            "candidate": target_num,
-            "confidence": final_map[(r, c)].get(target_num, 0.0)
+            "row": r,
+            "col": c,
+            "candidates": [target_num],
+            "probability": prob_map[(r, c)].get(target_num, 0.0) * 100  # Convert to percentage
         } for r, c in blanks]
-        rank.sort(key=lambda x: x["confidence"], reverse=True)
-        return {"target": target_num, "rankings": rank, "full_probabilities": final_map}
+        rank.sort(key=lambda x: x["probability"], reverse=True)
+        
+        # Add reasons for Top-3
+        modules = [
+            ("EXT_M1_Tail_Pattern_Vec", "Tail number pattern match"),
+            ("EXT_M3_Local_Focus_Vec", "Neighborhood mean/variance alignment"),
+            ("EXT_M10_Sequence_Block_Vec", "Sequence block continuity"),
+            ("EXT_R3_Error_Correction_Vec", "Historical error correction"),
+            ("EXT_F7_Strong_Pattern_Vec", "Arithmetic/symmetry pattern"),
+            ("EXT_GM20_Skip_Pattern_Confidence_Vec", "Skip pattern confidence")
+        ]
+        module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+        
+        for pred in rank[:3]:
+            reasons = []
+            scores = [(mod, module_scores[mod][pred['row'], pred['col']], desc) for mod, desc in modules]
+            top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
+            for mod, score, desc in top_modules:
+                if score > 0.5:  # Threshold for significant contribution
+                    reasons.append(f"{desc} (score: {score:.2f})")
+            pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+        
+        return {
+            "mode": "target",
+            "target": target_num,
+            "predictions": rank[:3],
+            "full_probabilities": prob_map
+        }
+
+    # General case (no target number)
+    if unique:
+        assign = global_unique(prob_map, blanks)
+        best_grid = mcts(grid_np, iterations=1000)
+        old_conf = max([p for (_, _), (_, p) in assign.items()])
+        new_conf = max([max(weight_prob_by_modules(best_grid, prob_map[(r, c)]).values()) for r, c in blanks])
+        preds = [{
+            "row": r,
+            "col": c,
+            "candidates": [n],
+            "probability": float(p) * 100  # Convert to percentage
+        } for (r, c), (n, p) in (assign.items() if new_conf <= old_conf * 0.95 else process_grid(best_grid))]
+        preds.sort(key=lambda x: x["probability"], reverse=True)
+        
+        # Add reasons
+        module_scores = {mod: get_module_score(mod, grid_np) for mod, desc in modules}
+        for pred in preds[:3]:
+            reasons = []
+            scores = [(mod, module_scores[mod][pred['row'], pred['col']], desc) for mod, desc in modules]
+            top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
+            for mod, score, desc in top_modules:
+                if score > 0.5:
+                    reasons.append(f"{desc} (score: {score:.2f})")
+            pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+        
+        return {
+            "mode": "mcts_unique" if new_conf > old_conf * 0.95 else "unique",
+            "predictions": preds[:3],
+            "full_probabilities": prob_map
+        }
 
     preds = []
-    for (r, c), dist in final_map.items():
+    for (r, c), dist in prob_map.items():
         top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
-        nums, conf = zip(*top3)
+        nums, probs = zip(*top3)
         preds.append({
-            "row": r, "col": c,
+            "row": r,
+            "col": c,
             "candidates": list(nums),
-            "confidences": list(map(float, conf))
+            "probability": list(map(lambda x: x * 100, probs))  # Convert to percentage
         })
-    preds.sort(key=lambda x: x["confidences"][0], reverse=True)
-    return {"mode": "top3", "predictions": preds, "full_probabilities": final_map}
+    
+    # Add reasons
+    module_scores = {mod: get_module_score(mod, grid_np) for mod, desc in modules}
+    for pred in preds[:3]:
+        reasons = []
+        scores = [(mod, module_scores[mod][pred['row'], pred['col']], desc) for mod, desc in modules]
+        top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
+        for mod, score, desc in top_modules:
+            if score > 0.5:
+                reasons.append(f"{desc} (score: {score:.2f})")
+        pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+    
+    preds.sort(key=lambda x: x["probability"][0], reverse=True)
+    return {
+        "mode": "top3",
+        "predictions": preds[:3],
+        "full_probabilities": prob_map
+    }
 
 def process_grid(grid):
     blanks = np.argwhere(grid == -1)
@@ -335,8 +377,9 @@ def process_grid(grid):
         legal_vals = analyzer_utils.get_legal_values_for_placement(grid)
         max_prob = max([grid[r, c] if grid[r, c] != -1 else v for v in legal_vals])
         preds.append({
-            "row": r, "col": c,
+            "row": r,
+            "col": c,
             "candidates": [max_prob],
-            "confidences": [1.0 if grid[r, c] != -1 else 0.5]
+            "probability": 100.0 if grid[r, c] != -1 else 50.0  # Convert to percentage
         })
     return preds
