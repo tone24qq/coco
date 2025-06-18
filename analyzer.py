@@ -174,9 +174,12 @@ def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dic
         mean_score = np.mean(softmax_scores)
         
         if target_num is not None:
-            probs[target_num] *= mean_score
-            total = probs[target_num] or 1e-10
-            result[(r, c)] = {target_num: probs[target_num] / total}
+            if target_num in probs:
+                probs[target_num] *= mean_score
+                total = probs[target_num] or 1e-10
+                result[(r, c)] = {target_num: probs[target_num] / total}
+            else:
+                result[(r, c)] = {target_num: 0.0}
         else:
             for val in probs:
                 probs[val] *= mean_score
@@ -195,14 +198,17 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: Lis
                 cost[i, j] = -math.log(prob_map[cell].get(n, 1e-9))
         row, col = linear_sum_assignment(cost)
         return {blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0)) for r, c in zip(row, col)}
-    except Exception:
+    except Exception as e:
+        logger.error(f"Global unique assignment failed: {e}")
         assigned, res = set(), {}
-        for cell in sorted(blanks, key=lambda p: max(prob_map[p].values()), reverse=True):
+        for cell in sorted(blanks, key=lambda p: max(prob_map[p].values() or [0]), reverse=True):
             for n, p in sorted(prob_map[cell].items(), key=lambda x: x[1], reverse=True):
                 if n not in assigned:
                     assigned.add(n)
                     res[cell] = (n, p)
                     break
+            if cell not in res:  # Fallback if no valid assignment
+                res[cell] = (list(prob_map[cell].keys())[0], 0.0) if prob_map[cell] else (1, 0.0)
         return res
 
 class MCTSNode:
@@ -242,7 +248,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
         for r, c in np.argwhere(grid == -1):
             if (r, c) in sim_result:
                 weighted_probs = weight_prob_by_modules(current.grid, {k: v for k, v in sim_result.items() if k == (r, c)})
-                if weighted_probs and (r, c) in weighted_probs:
+                if weighted_probs and (r, c) in weighted_probs and weighted_probs[(r, c)]:
                     reward += max(weighted_probs[(r, c)].values())
         while current is not None:
             current.visits += 1
@@ -251,7 +257,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
         return reward
 
     Parallel(n_jobs=4)(delayed(simulate)(root) for _ in range(iterations // 4))
-    best_child = max(root.children, key=lambda c: c.value / c.visits)
+    best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
     return best_child.grid
 
 def predict_scratch_card(
@@ -326,8 +332,8 @@ def predict_scratch_card(
     if unique:
         assign = global_unique(prob_map, blanks)
         best_grid = mcts(grid_np, iterations=1000)
-        old_conf = max([p for (_, _), (_, p) in assign.items()])
-        new_conf = max([max(weight_prob_by_modules(best_grid, prob_map[(r, c)]).values()) for r, c in blanks])
+        old_conf = max([p for (_, _), (_, p) in assign.items()] or [0])
+        new_conf = max([max(weight_prob_by_modules(best_grid, prob_map[(r, c)]).values() or [0]) for r, c in blanks])
         preds = [{
             "row": r,
             "col": c,
@@ -356,7 +362,7 @@ def predict_scratch_card(
     preds = []
     for (r, c), dist in prob_map.items():
         top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
-        nums, probs = zip(*top3)
+        nums, probs = zip(*top3) if top3 else ([], [])
         preds.append({
             "row": r,
             "col": c,
@@ -375,7 +381,7 @@ def predict_scratch_card(
                 reasons.append(f"{desc} (score: {score:.2f})")
         pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
     
-    preds.sort(key=lambda x: x["probability"][0], reverse=True)
+    preds.sort(key=lambda x: x["probability"][0] if x["probability"] else 0, reverse=True)
     return {
         "mode": "top3",
         "predictions": preds[:3],
@@ -387,7 +393,7 @@ def process_grid(grid):
     preds = []
     for r, c in blanks:
         legal_vals = analyzer_utils.get_legal_values_for_placement(grid)
-        max_prob = max([grid[r, c] if grid[r, c] != -1 else v for v in legal_vals])
+        max_prob = max(legal_vals) if legal_vals else 1  # Fallback to 1 if empty
         preds.append({
             "row": r,
             "col": c,
