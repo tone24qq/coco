@@ -46,16 +46,19 @@ app.add_middleware(
 # Pydantic schema
 class GridRequest(BaseModel):
     grid: List[List[int]]
+    target_num: Optional[int] = None
+    iterations: Optional[int] = 1000
 
 class Prediction(BaseModel):
     row: int
     col: int
     candidates: List[int]
-    confidences: List[float]
+    probability: float  # Changed to percentage
+    reasons: List[str]  # Added for module contribution reasons
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[str, float]]
+    full_probabilities: Dict[str, Dict[str, float]]  # String keys for serialization
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -73,13 +76,23 @@ async def predict(req: GridRequest):
     try:
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
-        logger.info(
-            "Predict API called | size=%dx%d",
-            len(req.grid),
-            len(req.grid[0]),
-        )
-        result = predict_scratch_card(req.grid, iterations=100000)
+        rows, cols = len(req.grid), len(req.grid[0])
+        if rows < 4 or rows > 20 or cols < 4 or cols > 20:
+            raise ValueError("Grid must be 4x4 to 20x20")
+        max_val = rows * cols
+        known_vals = [v for row in req.grid for v in row if v != -1]
+        if len(known_vals) != len(set(known_vals)):
+            raise ValueError("Grid contains duplicate numbers")
+        if any(v < 1 or v > max_val for v in known_vals):
+            raise ValueError(f"Numbers must be between 1 and {max_val}")
         
+        logger.info(
+            "Predict API called | size=%dx%d | target=%s | iterations=%d",
+            len(req.grid), len(req.grid[0]), str(req.target_num), req.iterations
+        )
+        result = predict_scratch_card(req.grid, target_num=req.target_num, iterations=req.iterations)
+        
+        # Serializable Fix: Convert full_probabilities keys to strings
         if "full_probabilities" in result and isinstance(result["full_probabilities"], dict):
             raw_fp = result["full_probabilities"]
             clean_fp = {}
@@ -95,10 +108,10 @@ async def predict(req: GridRequest):
                         num_key = str(int(float(num)))
                     except (ValueError, TypeError):
                         num_key = str(num)
-                    inner_clean[num_key] = float(p)
+                    inner_clean[num_key] = float(p) * 100  # Convert to percentage
                 clean_fp[key_str] = inner_clean
             result["full_probabilities"] = clean_fp
-
+        
         return result
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
@@ -112,7 +125,7 @@ async def warm_up():
         [11, -1, 13, 14, -1],
         [-1, 17, 18, -1, 20]
     ]
-    base_iter = int(os.getenv("BASE_ITER", 100000)) // 25
+    base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
     try:
         predict_scratch_card(dummy_grid, iterations=base_iter)
         logger.info("Warm-up completed successfully.")
@@ -124,6 +137,18 @@ async def warm_up():
 async def shutdown():
     logger.info("API shutting down to save resources.")
 
+def run_api():
+    """Run API with on-demand activation."""
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+    logger.info("API in sleep mode, will wake on request...")
+    while True:
+        try:
+            server.run()  # 啟動時休眠，呼叫時醒來
+            logger.info("API woken up and working...")
+        except KeyboardInterrupt:
+            server.should_exit = True
+            break
+
 if __name__ == "__main__":
-    # 移除 run_api 無限循環，交由 Render 觸發
-    logger.info("API ready, waiting for Render to handle requests...")
+    run_api()
