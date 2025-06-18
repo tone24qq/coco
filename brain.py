@@ -415,24 +415,23 @@ def EXT_F10_Magnetic_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str
 
     for r in range(rows):
         for c in range(cols):
-        if grid[r, c] != -1:
-            continue
-        neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
-        if not neighbors:
-            continue
-        tail_counts = Counter(int(v % 10) for v in neighbors if v > 0)
-        total_tails = sum(tail_counts.values()) or 1e-10
-        legal_values = utils.get_legal_values_for_placement(grid)
-        max_score = 0.0
-        mean_val = np.mean(neighbors) or 1.0
-        for val in legal_values:
-            tail = val % 10
-            base_score = tail_counts.get(tail, 0) / total_tails
-            # Magnetic effect based on proximity to mean
-            magnetic_factor = 1.0 + 0.2 * math_utils.sigmoid(abs(val - mean_val) / 5.0)
-            score = base_score * magnetic_factor
-            max_score = max(max_score, math_utils.normalize_value(score, 0, 1.5))
-        scores[r, c] = max_score
+            if grid[r, c] != -1:
+                continue
+            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
+            if not neighbors:
+                continue
+            tail_counts = Counter(int(v % 10) for v in neighbors if v > 0)
+            total_tails = sum(tail_counts.values()) or 1e-10
+            legal_values = utils.get_legal_values_for_placement(grid)
+            max_score = 0.0
+            mean_val = np.mean(neighbors) or 1.0
+            for val in legal_values:
+                tail = val % 10
+                base_score = tail_counts.get(tail, 0) / total_tails
+                magnetic_factor = 1.0 + 0.2 * math_utils.sigmoid(abs(val - mean_val) / 5.0)
+                score = base_score * magnetic_factor
+                max_score = max(max_score, math_utils.normalize_value(score, 0, 1.5))
+            scores[r, c] = max_score
     return scores
 
 # Register modules
