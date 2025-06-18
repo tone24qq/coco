@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional  # Added Optional import
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
