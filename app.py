@@ -90,7 +90,11 @@ async def predict(req: GridRequest):
             "Predict API called | size=%dx%d | target=%s | iterations=%d",
             len(req.grid), len(req.grid[0]), str(req.target_num), req.iterations
         )
-        result = predict_scratch_card(req.grid, target_num=req.target_num, iterations=req.iterations)
+        result = predict_scratch_card(
+            grid=req.grid,
+            target_num=req.target_num,
+            iterations=req.iterations
+        )
         
         # Serializable Fix: Convert full_probabilities keys to strings
         if "full_probabilities" in result and isinstance(result["full_probabilities"], dict):
@@ -127,7 +131,10 @@ async def warm_up():
     ]
     base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
     try:
-        predict_scratch_card(dummy_grid, iterations=base_iter)
+        predict_scratch_card(
+            grid=dummy_grid,
+            iterations=base_iter
+        )
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
