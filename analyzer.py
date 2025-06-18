@@ -64,7 +64,7 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
         boards[i] = FORMULA_REGISTRY[f](rows, cols, rng).ravel()
     return boards.reshape(batch, rows, cols)
 
-def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], float]:
+def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards and count target_num hits with broadcast filtering."""
     if rng is None:
         rng = np.random.default_rng()
@@ -74,10 +74,11 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     blanks = np.argwhere(g == -1)
     known = np.argwhere(g != -1)
     known_vals = g[g != -1]
+    legal_all = analyzer_utils.get_legal_values_for_placement(g)
 
     formulas = ("random_entropy", "shuffle", "tail_cluster")
     remain = n_iter
-    counts = np.zeros((rows, cols), dtype=np.int32)
+    counts = defaultdict(lambda: defaultdict(int))
 
     while remain > 0:
         batch = min(4000, remain)
@@ -87,17 +88,28 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
             mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
             boards = boards[mask]
             if len(boards) == 0:
-                batch = min(batch * 2, 8000)  # Retry with larger batch
+                batch = min(batch * 2, 8000)
                 boards = generate_full_boards(rows, cols, batch, rng, formulas)
                 mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
                 boards = boards[mask]
 
-        if len(boards) > 0 and target_num is not None:
-            counts += (boards == target_num).sum(axis=0).astype(np.int32)
+        if len(boards) > 0:
+            for board in boards:
+                for r, c in blanks:
+                    num = board[r, c]
+                    counts[(r, c)][num] += 1
+                    if target_num is not None and num == target_num:
+                        counts[(r, c)][target_num] += 1
         remain -= batch
 
-    total = counts.sum() or 1e-10
-    return {tuple(idx): (cnt / total) for idx, cnt in np.ndenumerate(counts) if g[idx] == -1}
+    # Build probability map
+    prob_map = {}
+    for (r, c) in [tuple(b) for b in blanks]:
+        total = sum(counts[(r, c)].values()) or 1e-10
+        probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
+        prob_map[(r, c)] = probs
+
+    return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray,
                            prob_map: Dict[Tuple[int, int], Dict[int, float]],
@@ -154,12 +166,12 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
                   blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
     try:
         from scipy.optimize import linear_sum_assignment
-        nums = sorted({n for d in prob_map.values() for n in d})
+        nums = sorted({n for d in prob_map.values() for n in d.keys()})
         cost = np.full((len(blanks), len(nums)), 50.0)
 
         for i, cell in enumerate(blanks):
             for j, n in enumerate(nums):
-                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)
+                prob = prob_map[cell].get(n, 1e-10)
                 cost[i, j] = -math.log(prob)
 
         row, col = linear_sum_assignment(cost)
@@ -168,7 +180,7 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
     except Exception as e:
         logger.error(f"Global unique assignment failed: {e}")
         assigned, res = set(), {}
-        for cell in sorted(blanks, key=lambda p: max(prob_map[p].values() or [0]), reverse=True):
+        for cell in sorted(blanks, key=lambda p: max(prob_map[p].get(p[0], 0.0), 0), reverse=True):
             for n, p in sorted(prob_map[cell].items(), key=lambda x: x[1], reverse=True):
                 if n not in assigned:
                     assigned.add(n)
@@ -272,7 +284,7 @@ def predict_scratch_card(
             "row": r,
             "col": c,
             "candidates": [target_num],
-            "probability": prob_map.get((r, c), 0.0) * 100,
+            "probability": prob_map.get((r, c), {}).get(target_num, 0.0) * 100,
             "reasons": []
         } for r, c in blanks]
         rank.sort(key=lambda x: x["probability"], reverse=True)
