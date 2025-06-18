@@ -5,7 +5,6 @@ import argparse
 import numpy as np
 from typing import List, Dict, Any
 from analyzer import predict_scratch_card
-import time
 
 # Logging configuration
 logging.basicConfig(
@@ -18,8 +17,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
     parser.add_argument("--grid", type=str, required=True, help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'")
-    parser.add_argument("--iterations", type=int, default=6000, help="Number of Monte Carlo iterations")
-    parser.add_argument("--target", type=int, default=None, help="Target number to predict")
+    parser.add_argument("--iterations", type=int, default=None, help="Number of Monte Carlo iterations")
     return parser.parse_args()
 
 def parse_grid(grid_str: str) -> List[List[int]]:
@@ -27,8 +25,8 @@ def parse_grid(grid_str: str) -> List[List[int]]:
     try:
         rows = grid_str.strip().split(';')
         grid = [[int(x) for x in row.split(',')] for row in rows]
-        if not all(len(row) == len(grid[0]) for row in grid) or len(grid) < 4 or len(grid) > 20 or len(grid[0]) < 4 or len(grid[0]) > 20:
-            raise ValueError("Grid must be 4x4 to 20x20 with consistent row length")
+        if not all(len(row) == len(grid[0]) for row in grid):
+            raise ValueError("All rows must have the same length")
         return grid
     except ValueError as e:
         logging.error(f"Invalid grid format: {e}")
@@ -36,28 +34,24 @@ def parse_grid(grid_str: str) -> List[List[int]]:
 
 def main():
     """Main function to run scratch card prediction."""
-    start_time = time.time()
     args = parse_args()
     try:
         grid = parse_grid(args.grid)
-        iterations = args.iterations
+        iterations = args.iterations or (int(os.getenv("ITER", 100000)) if os.getenv("USE_FORMULA_ONLY") != "1" else 5000)  # 升級至 100,000 迭代
         grid_np = np.array(grid, dtype=np.int64)
         
         # Validate grid
         known_vals = grid_np[grid_np != -1]
-        rows, cols = grid_np.shape
-        max_val = rows * cols
         if len(known_vals) != len(np.unique(known_vals)):
             raise ValueError("Grid contains duplicate numbers")
-        if any(v < 1 or v > max_val for v in known_vals):
-            raise ValueError(f"Numbers must be between 1 and {max_val}")
+        if any(v < 1 or v > grid_np.size for v in known_vals):
+            raise ValueError("Numbers must be between 1 and N")
         
-        result = predict_scratch_card(grid, target_num=args.target, iterations=iterations)
+        result = predict_scratch_card(grid, iterations=iterations)
         logging.info("Prediction results:")
         for pred in result["predictions"]:
-            logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%")
+            logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with confidences {pred['confidences']}")
         logging.info("Full probabilities available in result['full_probabilities']")
-        logging.info(f"Prediction completed in {time.time() - start_time:.3f} seconds")
         return result
     except (ValueError, Exception) as e:
         logging.error(f"Error during prediction: {e}")
