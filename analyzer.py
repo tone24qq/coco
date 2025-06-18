@@ -147,6 +147,10 @@ def simulate_with_formulas(
     return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dict[int, float]], target_num: Optional[int] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
+    if not isinstance(prob_map, dict):
+        logger.error(f"Invalid prob_map type: {type(prob_map)}")
+        return {}
+    
     result = prob_map.copy()
     modules = [
         "EXT_M1_Tail_Pattern_Vec",
@@ -231,7 +235,15 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             current.children.append(child)
             current = child
         sim_result = simulate_with_formulas(current.grid.tobytes(), rows, cols, 500, None, 100)
-        reward = np.sum([max(weight_prob_by_modules(current.grid, sim_result[(r, c)]).values()) for r, c in np.argwhere(grid == -1)])
+        if not isinstance(sim_result, dict):
+            logger.error(f"Invalid sim_result type: {type(sim_result)}")
+            return 0.0
+        reward = 0.0
+        for r, c in np.argwhere(grid == -1):
+            if (r, c) in sim_result:
+                weighted_probs = weight_prob_by_modules(current.grid, {k: v for k, v in sim_result.items() if k == (r, c)})
+                if weighted_probs and (r, c) in weighted_probs:
+                    reward += max(weighted_probs[(r, c)].values())
         while current is not None:
             current.visits += 1
             current.value += reward
