@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional  # Added Optional import
+from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -47,18 +47,18 @@ app.add_middleware(
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
-    iterations: Optional[int] = 1000
+    iterations: Optional[int] = 6000
 
 class Prediction(BaseModel):
     row: int
     col: int
     candidates: List[int]
-    probability: float  # Changed to percentage
-    reasons: List[str]  # Added for module contribution reasons
+    probability: float
+    reasons: List[str]
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[str, float]]  # String keys for serialization
+    full_probabilities: Dict[str, Dict[str, float]]
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -112,7 +112,7 @@ async def predict(req: GridRequest):
                         num_key = str(int(float(num)))
                     except (ValueError, TypeError):
                         num_key = str(num)
-                    inner_clean[num_key] = float(p) * 100  # Convert to percentage
+                    inner_clean[num_key] = float(p) * 100
                 clean_fp[key_str] = inner_clean
             result["full_probabilities"] = clean_fp
         
@@ -129,7 +129,7 @@ async def warm_up():
         [11, -1, 13, 14, -1],
         [-1, 17, 18, -1, 20]
     ]
-    base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
+    base_iter = int(os.getenv("ITER", 6000)) // 25
     try:
         predict_scratch_card(
             grid=dummy_grid,
@@ -151,7 +151,7 @@ def run_api():
     logger.info("API in sleep mode, will wake on request...")
     while True:
         try:
-            server.run()  # 啟動時休眠，呼叫時醒來
+            server.run()
             logger.info("API woken up and working...")
         except KeyboardInterrupt:
             server.should_exit = True
