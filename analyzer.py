@@ -9,6 +9,9 @@ from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
 
+# Logger configuration
+logger = logging.getLogger(__name__)
+
 from modules import FORMULA_REGISTRY, compute_global_features
 from brain import (
     EXT_GM20_Skip_Pattern_Confidence_Vec,
@@ -138,7 +141,7 @@ def simulate_with_formulas(
     prob_map = {}
     for (r, c) in [tuple(b) for b in blanks]:
         total = sum(counts[(r, c)].values()) or 1e-10
-        probs = {n: (counts[(r, c)][n] / total) for n in legal_all}
+        probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}  # Ensure positive probability
         prob_map[(r, c)] = probs
     
     # Apply module weighting
@@ -175,14 +178,14 @@ def weight_prob_by_modules(grid: np.ndarray, prob_map: Dict[Tuple[int, int], Dic
         
         if target_num is not None:
             if target_num in probs:
-                probs[target_num] *= mean_score
+                probs[target_num] = max(probs[target_num] * mean_score, 1e-10)  # Ensure positive
                 total = probs[target_num] or 1e-10
                 result[(r, c)] = {target_num: probs[target_num] / total}
             else:
                 result[(r, c)] = {target_num: 0.0}
         else:
             for val in probs:
-                probs[val] *= mean_score
+                probs[val] = max(probs[val] * mean_score, 1e-10)  # Ensure positive
             total = sum(probs.values()) or 1e-10
             result[(r, c)] = {k: v / total for k, v in probs.items()}
     
@@ -195,7 +198,8 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: Lis
         cost = np.full((len(blanks), len(nums)), 50.0)
         for i, cell in enumerate(blanks):
             for j, n in enumerate(nums):
-                cost[i, j] = -math.log(prob_map[cell].get(n, 1e-9))
+                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)  # Ensure positive probability
+                cost[i, j] = -math.log(prob)
         row, col = linear_sum_assignment(cost)
         return {blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0)) for r, c in zip(row, col)}
     except Exception as e:
