@@ -9,9 +9,7 @@ from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
 
-# ───────────────────────────────────────────────────────────
 # Logger configuration
-# ───────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -19,7 +17,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ───────────────────────────────────────────────────────────
 from modules import FORMULA_REGISTRY, compute_global_features
 from brain import (
     EXT_GM20_Skip_Pattern_Confidence_Vec,
@@ -59,78 +56,62 @@ def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarra
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
-def simulate_batch(grid_bytes: bytes, rows: int, cols: int,
-                   batch_vec: np.ndarray, target_num: Optional[int] = None) -> Dict[Tuple[int, int], int]:
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
-    blanks = np.argwhere(grid == -1)
-    counts = defaultdict(int)
+def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
+    """Generate batch of complete boards using weighted formulas with importance sampling."""
+    n = rows * cols
+    choices = rng.choice(formulas, size=batch, p=weights)
+    boards = np.empty((batch, n), dtype=np.int16)
+    for i, f in enumerate(choices):
+        boards[i] = FORMULA_REGISTRY[f](rows, cols, rng).ravel()
+    return boards.reshape(batch, rows, cols)
 
-    for b in batch_vec:
-        if target_num is not None:
-            for r, c in blanks:
-                if b[r, c] == target_num:
-                    counts[(r, c)] += 1
-    return counts
+def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """Simulate full boards with importance sampling and count target_num hits."""
+    if rng is None:
+        rng = np.random.default_rng()
 
-@lru_cache(maxsize=128)
-def simulate_with_formulas(
-    grid_bytes: bytes,
-    rows: int,
-    cols: int,
-    n_iter: int = 1000,
-    target_num: Optional[int] = None,
-    min_iter: int = 0
-) -> Dict[Tuple[int, int], Dict[int, float]]:
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
-    blanks = np.argwhere(grid == -1)
-    known_idx = np.argwhere(grid != -1)
-    known_vals = grid[grid != -1]
-    legal_all = analyzer_utils.get_legal_values_for_placement(grid)
+    g = np.asarray(grid, dtype=np.int16)
+    rows, cols = g.shape
+    blanks = np.argwhere(g == -1)
+    known = np.argwhere(g != -1)
+    known_vals = g[g != -1]
+    legal_all = analyzer_utils.get_legal_values_for_placement(g)
 
-    # Basic validations
-    if rows < 4 or rows > 20 or cols < 4 or cols > 20:
-        raise ValueError("Grid must be 4x4 to 20x20")
-    max_val = rows * cols
-    if any(v < 1 or v > max_val for v in known_vals):
-        raise ValueError(f"Numbers must be between 1 and {max_val}")
-    if len(np.unique(known_vals)) != len(known_vals):
-        raise ValueError("Grid contains duplicate numbers")
+    # Precompute module scores for importance sampling
+    modules = ["EXT_F10_Magnetic_Tail_Pattern_Vec", "EXT_GM20_Skip_Pattern_Confidence_Vec"]
+    module_scores = np.mean([get_module_score(mod, g) for mod in modules], axis=0)
+    importance_weights = np.where(g == -1, module_scores, 0).flatten()
+    importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
-    # Simulation
+    formulas = ("random_entropy", "shuffle", "tail_cluster")
+    weights = np.array([0.4, 0.3, 0.3])  # Base weights
+    remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
-    rng = np.random.default_rng()
-    total_seen, effective = 0, 0
-    batch_size = max(500, min(4000, int(8e9 / (rows * cols * 8))))  # 8 GB RAM
 
-    formula = FORMULA_REGISTRY["random_entropy"]
+    while remain > 0:
+        batch = min(4000, remain)
+        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
 
-    while total_seen < n_iter:
-        need = min(batch_size, n_iter - total_seen)
-        boards = np.zeros((need, rows, cols), dtype=np.int64)
+        if known.size:
+            mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+            boards = boards[mask]
+            if len(boards) == 0:
+                batch = min(batch * 2, 8000)
+                boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+                mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+                boards = boards[mask]
 
-        for i in range(need):
-            board = formula(rows, cols, rng)
-            # Enforce known values
-            for (r, c), val in zip(known_idx, known_vals):
-                if board[r, c] != val:
-                    target_pos = np.argwhere(board == val)[0]
-                    board[target_pos[0], target_pos[1]], board[r, c] = board[r, c], board[target_pos[0], target_pos[1]]
-            boards[i] = board
-
-        results = Parallel(n_jobs=4)(
-            delayed(simulate_batch)(grid_bytes, rows, cols,
-                                    boards[i:i + batch_size // 4], target_num)
-            for i in range(0, need, batch_size // 4)
-        )
-
-        for batch_counts in results:
-            for (r, c), count in batch_counts.items():
-                counts[(r, c)][target_num] += count
-
-        total_seen += need
-        effective += need
-        if total_seen >= max(min_iter, 1000) and effective >= 1000:
-            break
+        if len(boards) > 0:
+            for i, board in enumerate(boards):
+                # Apply importance sampling based on precomputed weights
+                for r, c in blanks:
+                    idx = r * cols + c
+                    if rng.random() < importance_weights[idx]:
+                        num = board[r, c]
+                        counts[(r, c)][num] += 1
+                        if target_num is not None and num == target_num:
+                            counts[(r, c)][target_num] += 2  # Boost target_num
+        remain -= batch
 
     # Build probability map
     prob_map = {}
@@ -139,7 +120,6 @@ def simulate_with_formulas(
         probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
         prob_map[(r, c)] = probs
 
-    prob_map = weight_prob_by_modules(grid, prob_map, target_num)
     return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray,
@@ -201,7 +181,6 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
         row, col = linear_sum_assignment(cost)
         return {blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0))
                 for r, c in zip(row, col)}
-
     except Exception as e:
         logger.error(f"Global unique assignment failed: {e}")
         assigned, res = set(), {}
@@ -226,14 +205,15 @@ class MCTSNode:
         self.children = []
         self.visits = 0
         self.value = 0.0
+        self.virtual_loss = 0  # Add virtual loss
         self.untried_actions = [(r, c, v)
                                 for r, c in np.argwhere(grid == -1)
                                 for v in analyzer_utils.get_legal_values_for_placement(grid)]
 
     def uct_select(self, c_param=1.4):
         return max(self.children,
-                   key=lambda c: c.value / c.visits +
-                   c_param * np.sqrt(2 * np.log(self.visits) / c.visits))
+                   key=lambda c: (c.value / (c.visits + c.virtual_loss)) +
+                   c_param * np.sqrt(2 * np.log(self.visits + 1e-10) / (c.visits + c.virtual_loss + 1e-10)))
 
 def mcts(grid: np.ndarray, iterations: int = 1000):
     rows, cols = grid.shape
@@ -243,6 +223,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
         current = node
         while current.untried_actions and current.children:
             current = current.uct_select()
+            current.virtual_loss += 1  # Apply virtual loss
         if current.untried_actions:
             r, c, v = current.untried_actions.pop()
             new_grid = current.grid.copy()
@@ -267,6 +248,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
         while current is not None:
             current.visits += 1
             current.value += reward
+            current.virtual_loss -= 1  # Remove virtual loss
             current = current.parent
         return reward
 
@@ -275,9 +257,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
                      default=root)
     return best_child.grid
 
-# ───────────────────────────────────────────────────────────
 # Main prediction entry point
-# ───────────────────────────────────────────────────────────
 def predict_scratch_card(
     grid: List[List[int]],
     target_num: Optional[int] = None,
@@ -294,7 +274,6 @@ def predict_scratch_card(
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
 
-    # 共用模組說明
     modules = [
         ("EXT_M1_Tail_Pattern_Vec", "Tail number pattern match"),
         ("EXT_M3_Local_Focus_Vec", "Neighborhood mean/variance alignment"),
@@ -304,8 +283,7 @@ def predict_scratch_card(
         ("EXT_GM20_Skip_Pattern_Confidence_Vec", "Skip pattern confidence")
     ]
 
-    # Dynamic iteration
-    base_iter = iterations if iterations is not None else int(os.getenv("BASE_ITER", 1000))
+    base_iter = iterations if iterations is not None else int(os.getenv("ITER", 6000))
     total_iter = int(base_iter * max(rows * cols / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
@@ -318,7 +296,6 @@ def predict_scratch_card(
         min_iter=min_total_iter
     )
 
-    # ───── Target number mode ─────
     if target_num is not None:
         rank = [{
             "row": r,
@@ -346,7 +323,6 @@ def predict_scratch_card(
             "full_probabilities": prob_map
         }
 
-    # ───── Unique / MCTS mode ─────
     if unique:
         assign = global_unique(prob_map, blanks)
         best_grid = mcts(grid_np, iterations=1000)
@@ -369,7 +345,6 @@ def predict_scratch_card(
             preds = process_grid(best_grid)
             mode = "mcts_unique"
 
-        # 加入原因
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
         for pred in preds[:3]:
             reasons = []
@@ -388,7 +363,6 @@ def predict_scratch_card(
             "full_probabilities": prob_map
         }
 
-    # ───── General top-3 mode ─────
     preds = []
     for (r, c), dist in prob_map.items():
         top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
