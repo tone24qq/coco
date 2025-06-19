@@ -171,16 +171,16 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
         # Variance-driven iteration allocation
         variance = np.var(module_scores[module_scores > 0]) if np.any(module_scores > 0) else 1.0
-        adjusted_iter = int(n_iter * min(1.5, max(0.5, variance / 0.1)))  # Adjust iterations based on variance
+        adjusted_iter = int(n_iter * min(1.5, max(0.5, variance / 0.1)))
 
         formulas = ("random_entropy", "shuffle", "tail_cluster")
         remain = adjusted_iter
         counts = defaultdict(lambda: defaultdict(int))
 
         while remain > 0:
-            batch = min(1000, remain)  # Adjusted for memory
+            batch = min(1000, remain)
             if psutil.virtual_memory().percent > 75:
-                batch = max(100, batch // 2)  # Safemode
+                batch = max(100, batch // 2)
             boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
 
             if known.size:
@@ -200,7 +200,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
                             num = board[r, c]
                             counts[(r, c)][num] += 1
                             if target_num is not None and num == target_num:
-                                counts[(r, c)][target_num] += 2  # Boost target_num
+                                counts[(r, c)][num] += 2
             remain -= batch
 
         prob_map = {}
