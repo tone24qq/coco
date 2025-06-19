@@ -74,21 +74,24 @@ async def root() -> Dict[str, Any]:
 async def root_head() -> str:
     return ""
 
+async def async_predict_task(req: GridRequest):
+    if not req.grid or not all(isinstance(row, list) for row in req.grid):
+        raise ValueError("Invalid grid format: expected List[List[int]].")
+    rows, cols = len(req.grid), len(req.grid[0])
+    if rows < 4 or rows > 20 or cols < 4 or cols > 20:
+        raise ValueError("Grid must be 4x4 to 20x20")
+    max_val = rows * cols
+    known_vals = [v for row in req.grid for v in row if v != -1]
+    if len(known_vals) != len(set(known_vals)):
+        raise ValueError("Grid contains duplicate numbers")
+    if any(v < 1 or v > max_val for v in known_vals):
+        raise ValueError(f"Numbers must be between 1 and {max_val}")
+    # 實際分析流程（請補上你原本的分析邏輯）
+    return {"result": "ok"}  # 這行只是範例
+
 @ray.remote
-async def predict_task(req: GridRequest):
-    try:
-        if not req.grid or not all(isinstance(row, list) for row in req.grid):
-            raise ValueError("Invalid grid format: expected List[List[int]].")
-        rows, cols = len(req.grid), len(req.grid[0])
-        if rows < 4 or rows > 20 or cols < 4 or cols > 20:
-            raise ValueError("Grid must be 4x4 to 20x20")
-        max_val = rows * cols
-        known_vals = [v for row in req.grid for v in row if v != -1]
-        if len(known_vals) != len(set(known_vals)):
-            raise ValueError("Grid contains duplicate numbers")
-        if any(v < 1 or v > max_val for v in known_vals):
-            raise ValueError(f"Numbers must be between 1 and {max_val}")
-        
+def predict_task(req: GridRequest):
+    return asyncio.run(async_predict_task(req))       
         logger.info(
             "Predict API called | size=%dx%d | target=%s | iterations=%d",
             len(req.grid), len(req.grid[0]), str(req.target_num), req.iterations
