@@ -2,7 +2,10 @@ import os
 import sys
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional  # Added Optional import
+from typing import List, Dict, Any, Optional
+import asyncio
+import psutil
+import ray
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -71,8 +74,8 @@ async def root() -> Dict[str, Any]:
 async def root_head() -> str:
     return ""
 
-@app.post("/predict", response_model=PredictResponse)
-async def predict(req: GridRequest):
+@ray.remote
+async def predict_task(req: GridRequest):
     try:
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
@@ -121,8 +124,18 @@ async def predict(req: GridRequest):
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+@app.post("/predict", response_model=PredictResponse)
+async def predict(req: GridRequest):
+    if psutil.virtual_memory().percent > 75 or psutil.cpu_percent() > 90:
+        logger.warning("Entering Safemode due to high resource usage")
+        req.iterations = max(100, req.iterations // 2)
+    
+    result = await predict_task.remote(req)
+    return await result
+
 @app.on_event("startup")
 async def warm_up():
+    ray.init(num_cpus=4)
     dummy_grid = [
         [1, 2, -1, 4, 5],
         [-1, 7, 8, -1, 10],
@@ -142,6 +155,7 @@ async def warm_up():
 
 @app.on_event("shutdown")
 async def shutdown():
+    ray.shutdown()
     logger.info("API shutting down to save resources.")
 
 def run_api():
@@ -151,7 +165,7 @@ def run_api():
     logger.info("API in sleep mode, will wake on request...")
     while True:
         try:
-            server.run()  # 啟動時休眠，呼叫時醒來
+            server.run()
             logger.info("API woken up and working...")
         except KeyboardInterrupt:
             server.should_exit = True
