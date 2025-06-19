@@ -92,9 +92,11 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
     best_coarse_loss = coarse_losses[top_k[0]]
 
     def fine_loss(seed: float) -> float:
-        seed_int = max(0, int(round(seed)))
-        return loss_function(seed_int, grid, known, known_vals)
-
+    # 如果 seed 是 numpy 陣列，解開 scalar 值；否則直接轉 float
+    seed_scalar = float(seed[0]) if isinstance(seed, np.ndarray) else float(seed)
+    seed_int = max(0, int(round(seed_scalar)))
+    return loss_function(seed_int, grid, known, known_vals)
+    
     result = minimize(fine_loss, x0=best_coarse_seed, method='Powell', bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)])
     best_seed = max(0, int(round(result.x[0])))
     best_loss = result.fun
