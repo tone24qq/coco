@@ -2,9 +2,9 @@ import math
 import logging
 from collections import Counter, defaultdict
 from typing import List, Tuple, Callable, Optional, Dict, Any
-
 import numpy as np
 import random
+from numba import njit
 
 # Logging configuration
 logging.basicConfig(
@@ -17,42 +17,42 @@ logger = logging.getLogger(__name__)
 # Math helpers
 class MathUtils:
     """Utility functions for common mathematical operations."""
-    def sigmoid(self, x: float, k: float = 1.0) -> float:
+    @staticmethod
+    @njit
+    def sigmoid(x: float, k: float = 1.0) -> float:
         """Clamped sigmoid to avoid overflow."""
-        try:
-            clamped_x = max(-700.0, min(700.0, -k * x))
-            return 1 / (1 + math.exp(clamped_x))
-        except OverflowError:
-            return 0.0 if -k * x > 0 else 1.0
+        clamped_x = max(-700.0, min(700.0, -k * x))
+        return 1 / (1 + math.exp(clamped_x)) if not math.isinf(clamped_x) else (0.0 if -k * x > 0 else 1.0)
 
-    def normalize_value(self, value: float, min_val: float, max_val: float, clamp: bool = True) -> float:
+    @staticmethod
+    @njit
+    def normalize_value(value: float, min_val: float, max_val: float, clamp: bool = True) -> float:
         """Normalize value to [0, 1]."""
         if math.isclose(max_val, min_val, rel_tol=1e-9):
-            return 0.5 if math.isclose(value, min_val, rel_tol=1e-9) else (
-                0.0 if value < min_val else 1.0
-            )
+            return 0.5 if math.isclose(value, min_val, rel_tol=1e-9) else (0.0 if value < min_val else 1.0)
         normalized = (value - min_val) / (max_val - min_val + 1e-10)
         return max(0.0, min(1.0, normalized)) if clamp else normalized
 
-    def manhattan_distance(self, p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
+    @staticmethod
+    def manhattan_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
         """Compute Manhattan distance between two (row, col) points."""
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
 
 # Board analysis helpers
 class BoardAnalyzerUtils:
     """Utility collection for scratch-card grid analysis."""
+    @staticmethod
+    @njit
     def get_neighborhood_values(
-        self,
         grid: np.ndarray,
         r: int,
         c: int,
         radius: int = 2,
         eight_connectivity: bool = True,
-        val_func: Callable[[int], Optional[float]] = lambda x: float(x) if x != -1 else None,
         include_center: bool = False,
     ) -> List[float]:
         """Collect values surrounding grid[r, c] in a square radius."""
-        neighbors: List[float] = []
+        neighbors = []
         rows, cols = grid.shape
         for dr in range(-radius, radius + 1):
             for dc in range(-radius, radius + 1):
@@ -61,10 +61,8 @@ class BoardAnalyzerUtils:
                 if not eight_connectivity and abs(dr) + abs(dc) > radius:
                     continue
                 nr, nc = r + dr, c + dc
-                if 0 <= nr < rows and 0 <= nc < cols:
-                    processed_val = val_func(grid[nr, nc])
-                    if processed_val is not None:
-                        neighbors.append(processed_val)
+                if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
+                    neighbors.append(float(grid[nr, nc]))
         return neighbors
 
     def check_sequences(
@@ -77,12 +75,12 @@ class BoardAnalyzerUtils:
         """Return True if board contains arithmetic/geometric sequence in various shapes."""
         rows, cols = board.shape
         shapes = [
-            lambda r, c: [(r+i, c) for i in range(min_len)],  # 行
-            lambda r, c: [(r, c+i) for i in range(min_len)],  # 列
-            lambda r, c: [(r+i, c+i) for i in range(min_len)],  # 主對角線
-            lambda r, c: [(r+i, c-i) for i in range(min_len)],  # 副對角線
-            lambda r, c: [(r, c), (r+1, c+2), (r+2, c+1)],  # Z 型
-            lambda r, c: [(r+i, c) for i in range(2)] + [(r+2, c+2)],  # L 型
+            lambda r, c: [(r+i, c) for i in range(min_len)],
+            lambda r, c: [(r, c+i) for i in range(min_len)],
+            lambda r, c: [(r+i, c+i) for i in range(min_len)],
+            lambda r, c: [(r+i, c-i) for i in range(min_len)],
+            lambda r, c: [(r, c), (r+1, c+2), (r+2, c+1)],
+            lambda r, c: [(r+i, c) for i in range(2)] + [(r+2, c+2)],
         ]
 
         for r in range(rows):
@@ -97,14 +95,15 @@ class BoardAnalyzerUtils:
                             return True
         return False
 
+    @staticmethod
+    @njit
     def get_arithmetic_or_geometric_sequences(
-        self,
         line: np.ndarray,
         min_len: int = 3,
         allow_gaps: int = 1,
     ) -> List[List[int]]:
         """Detect arithmetic/geometric subsequences in a 1-D array."""
-        sequences: List[List[int]] = []
+        sequences = []
         n = len(line)
         for i in range(n):
             if line[i] == -1:
@@ -135,7 +134,7 @@ class BoardAnalyzerUtils:
                                     else:
                                         break
                                 if len(seq_vals) >= min_len:
-                                    sequences.append(seq_vals)
+                                    sequences.append(seq_vals.copy())
                             break
                 else:
                     diff = line[j] - line[i]
@@ -151,12 +150,12 @@ class BoardAnalyzerUtils:
                             continue
                         expected = seq_vals[-1] + diff
                         if math.isclose(line[k], expected, rel_tol=1e-9):
-                            seq_vals.append(line[k])  # Fixed: Changed line[l] to line[k]
+                            seq_vals.append(line[k])
                             gap_cnt = 0
                         else:
                             break
                     if len(seq_vals) >= min_len:
-                        sequences.append(seq_vals)
+                        sequences.append(seq_vals.copy())
         return sequences
 
     def get_card_max_value_from_gridDimensions(self, grid_shape: Tuple[int, int]) -> int:
@@ -192,6 +191,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         return np.zeros((rows, cols), dtype=float)
 
 # Scoring modules
+@njit
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -216,10 +216,11 @@ def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
                 base_score = tail_counts.get(tail, 0) / total_tails
                 distance_factor = 1.0 - (abs(val - mean_val) % 10) * 0.05
                 score = base_score * distance_factor + random.uniform(0, 0.1)
-                max_score = max(max_score, MathUtils().normalize_value(score, 0, 1.0))
+                max_score = max(max_score, MathUtils.normalize_value(score, 0, 1.0))
             scores[r, c] = max_score
     return scores
 
+@njit
 def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on 5x5 neighborhood mean and variance."""
     rows, cols = grid.shape
@@ -243,11 +244,12 @@ def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") 
             for val in legal_values:
                 deviation = abs(val - mean_val) / std_val
                 seq_bonus = 0.3 if (row_seq or col_seq) and abs(val - mean_val) > std_val else 0.0
-                score = MathUtils().normalize_value(deviation + seq_bonus, 0, max(1.0, std_val + 0.3))
+                score = MathUtils.normalize_value(deviation + seq_bonus, 0, max(1.0, std_val + 0.3))
                 max_score = max(max_score, score)
             scores[r, c] = max_score
     return scores
 
+@njit
 def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on sequence blocks in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -283,12 +285,13 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
                 col_fit = any(val in seq for seq in col_seqs)
                 diag_fit = any(val in seq for seq in diag_seqs)
                 score = (row_fit + col_fit + diag_fit) / 3.0
-                max_score = max(max_score, MathUtils().normalize_value(score, 0, 1.0))
+                max_score = max(max_score, MathUtils.normalize_value(score, 0, 1.0))
             scores[r, c] = max_score
     return scores
 
 error_memory = defaultdict(Counter)
 
+@njit
 def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on historical error correction in 5x5 neighborhood."""
     global error_memory
@@ -309,11 +312,12 @@ def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N
                 for nr, nc in [(r+dr, c+dc) for dr in range(-radius, radius+1) for dc in range(-radius, radius+1) if 0 <= r+dr < rows and 0 <= c+dc < cols]:
                     error_count += error_memory[(nr, nc)][val] * 0.1
                 penalty = min(0.3, error_count * 0.05)
-                score = MathUtils().normalize_value(base_score - penalty, 0, 1.0)
+                score = MathUtils.normalize_value(base_score - penalty, 0, 1.0)
                 if score > scores[r, c]:
                     scores[r, c] = score
     return scores
 
+@njit
 def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on strong arithmetic or symmetry patterns."""
     rows, cols = grid.shape
@@ -335,11 +339,12 @@ def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
                     base_score += 0.3
                 if symmetry and (0 <= rows-1-r < rows and 0 <= cols-1-c < cols) and grid[rows-1-r, cols-1-c] == val:
                     base_score += 0.2
-                score = MathUtils().normalize_value(base_score, 0, 1.0)
+                score = MathUtils.normalize_value(base_score, 0, 1.0)
                 max_score = max(max_score, score)
             scores[r, c] = max_score
     return scores
 
+@njit
 def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on skip pattern confidence."""
     rows, cols = grid.shape
