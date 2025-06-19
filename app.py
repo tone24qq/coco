@@ -3,11 +3,10 @@ import sys
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-import asyncio
 import psutil
 import ray
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -74,28 +73,28 @@ async def root() -> Dict[str, Any]:
 async def root_head() -> str:
     return ""
 
-async def async_predict_task(req: GridRequest):
-    if not req.grid or not all(isinstance(row, list) for row in req.grid):
-        raise ValueError("Invalid grid format: expected List[List[int]].")
-    rows, cols = len(req.grid), len(req.grid[0])
-    if rows < 4 or rows > 20 or cols < 4 or cols > 20:
-        raise ValueError("Grid must be 4x4 to 20x20")
-    max_val = rows * cols
-    known_vals = [v for row in req.grid for v in row if v != -1]
-    if len(known_vals) != len(set(known_vals)):
-        raise ValueError("Grid contains duplicate numbers")
-    if any(v < 1 or v > max_val for v in known_vals):
-        raise ValueError(f"Numbers must be between 1 and {max_val}")
-    # 實際分析流程（請補上你原本的分析邏輯）
-    return {"result": "ok"}  # 這行只是範例
-
 @ray.remote
 def predict_task(req: GridRequest):
-    return asyncio.run(async_predict_task(req))       
+    """Run prediction task with Ray for parallel processing."""
+    try:
+        if not req.grid or not all(isinstance(row, list) for row in req.grid):
+            raise ValueError("Invalid grid format: expected List[List[int]].")
+        rows, cols = len(req.grid), len(req.grid[0])
+        if rows < 4 or rows > 20 or cols < 4 or cols > 20:
+            raise ValueError("Grid must be 4x4 to 20x20")
+        max_val = rows * cols
+        known_vals = [v for row in req.grid for v in row if v != -1]
+        if len(known_vals) != len(set(known_vals)):
+            raise ValueError("Grid contains duplicate numbers")
+        if any(v < 1 or v > max_val for v in known_vals):
+            raise ValueError(f"Numbers must be between 1 and {max_val}")
+        
         logger.info(
-            "Predict API called | size=%dx%d | target=%s | iterations=%d",
-            len(req.grid), len(req.grid[0]), str(req.target_num), req.iterations
+            "Predict API called | size=%dx%d | target=%s | iterations=%d | memory=%.1f%% | cpu=%.1f%%",
+            rows, cols, str(req.target_num), req.iterations,
+            psutil.virtual_memory().percent, psutil.cpu_percent()
         )
+        
         result = predict_scratch_card(
             grid=req.grid,
             target_num=req.target_num,
@@ -129,15 +128,18 @@ def predict_task(req: GridRequest):
 
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: GridRequest):
+    """Handle prediction requests with resource monitoring."""
     if psutil.virtual_memory().percent > 75 or psutil.cpu_percent() > 90:
-        logger.warning("Entering Safemode due to high resource usage")
+        logger.warning("Entering Safemode: high resource usage (memory=%.1f%%, cpu=%.1f%%)",
+                       psutil.virtual_memory().percent, psutil.cpu_percent())
         req.iterations = max(100, req.iterations // 2)
     
-    result = await predict_task.remote(req)
-    return await result
+    result = ray.get(predict_task.remote(req))
+    return result
 
 @app.on_event("startup")
 async def warm_up():
+    """Warm-up the system with a dummy prediction."""
     ray.init(num_cpus=4)
     dummy_grid = [
         [1, 2, -1, 4, 5],
@@ -158,6 +160,7 @@ async def warm_up():
 
 @app.on_event("shutdown")
 async def shutdown():
+    """Clean up resources on shutdown."""
     ray.shutdown()
     logger.info("API shutting down to save resources.")
 
