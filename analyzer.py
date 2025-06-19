@@ -95,7 +95,7 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
 
     # Fine-tune with integer constraint
     def fine_loss(seed: float) -> float:
-        seed_int = max(0, int(round(seed)))  # Ensure non-negative integer
+        seed_int = max(0, int(round(float(seed))))  # ✅ 強制轉 float 再 round
         return loss_function(seed_int, grid, known, known_vals)
 
     # Powell optimization for fine-tuning
