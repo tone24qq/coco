@@ -5,7 +5,6 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 import psutil
 import ray
-
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -55,12 +54,12 @@ class Prediction(BaseModel):
     row: int
     col: int
     candidates: List[int]
-    probability: float  # Changed to percentage
-    reasons: List[str]  # Added for module contribution reasons
+    probability: float
+    reasons: List[str]
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[str, float]]  # String keys for serialization
+    full_probabilities: Dict[str, Dict[str, float]]
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -117,7 +116,7 @@ def predict_task(req: GridRequest):
                         num_key = str(int(float(num)))
                     except (ValueError, TypeError):
                         num_key = str(num)
-                    inner_clean[num_key] = float(p) * 100  # Convert to percentage
+                    inner_clean[num_key] = float(p) * 100
                 clean_fp[key_str] = inner_clean
             result["full_probabilities"] = clean_fp
         
@@ -129,31 +128,40 @@ def predict_task(req: GridRequest):
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: GridRequest):
     """Handle prediction requests with resource monitoring."""
+    safemode_count = 0
     if psutil.virtual_memory().percent > 75 or psutil.cpu_percent() > 90:
-        logger.warning("Entering Safemode: high resource usage (memory=%.1f%%, cpu=%.1f%%)",
-                       psutil.virtual_memory().percent, psutil.cpu_percent())
+        safemode_count += 1
+        logger.warning("Entering Safemode: high resource usage (memory=%.1f%%, cpu=%.1f%%, safemode_count=%d)",
+                       psutil.virtual_memory().percent, psutil.cpu_percent(), safemode_count)
         req.iterations = max(100, req.iterations // 2)
     
-    result = ray.get(predict_task.remote(req))
-    return result
+    try:
+        result = ray.get(predict_task.remote(req))
+        logger.info("Prediction completed | safemode_count=%d", safemode_count)
+        return result
+    except Exception as exc:
+        logger.error("Prediction task failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(exc)}") from exc
 
 @app.on_event("startup")
 async def warm_up():
     """Warm-up the system with a dummy prediction."""
-    ray.init(num_cpus=4)
-    dummy_grid = [
-        [1, 2, -1, 4, 5],
-        [-1, 7, 8, -1, 10],
-        [11, -1, 13, 14, -1],
-        [-1, 17, 18, -1, 20]
-    ]
-    base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
     try:
+        # Ensure Ray initialization with sufficient shared memory
+        ray.init(num_cpus=4, object_store_memory=int(8e9 * 0.3))  # 30% of 8GB RAM
+        dummy_grid = [
+            [1, 2, -1, 4, 5],
+            [-1, 7, 8, -1, 10],
+            [11, -1, 13, 14, -1],
+            [-1, 17, 18, -1, 20]
+        ]
+        base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
         predict_scratch_card(
             grid=dummy_grid,
             iterations=base_iter
         )
-        logger.info("Warm-up completed successfully.")
+        logger.info("Warm-up completed successfully | memory=%.1f%% | cpu=%.1f%%",
+                    psutil.virtual_memory().percent, psutil.cpu_percent())
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
         logger.warning("Continuing startup despite warm-up failure.")
@@ -166,16 +174,21 @@ async def shutdown():
 
 def run_api():
     """Run API with on-demand activation."""
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    port = int(os.getenv("PORT", 10000))  # Default Render port
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="debug")
     server = uvicorn.Server(config)
-    logger.info("API in sleep mode, will wake on request...")
+    logger.info("API starting on 0.0.0.0:%d | memory=%.1f%% | cpu=%.1f%%",
+                port, psutil.virtual_memory().percent, psutil.cpu_percent())
     while True:
         try:
             server.run()
-            logger.info("API woken up and working...")
+            logger.info("API running successfully")
         except KeyboardInterrupt:
             server.should_exit = True
             break
+        except Exception as exc:
+            logger.error("API startup failed: %s", exc, exc_info=True)
+            sys.exit(1)
 
 if __name__ == "__main__":
     run_api()
