@@ -3,11 +3,19 @@ import math
 import numpy as np
 import xxhash
 from scipy.stats import qmc
+from scipy.optimize import minimize
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF
 from collections import Counter, defaultdict
 from functools import lru_cache
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
+import ray
+from numba import njit
+import multiprocessing
+from multiprocessing import shared_memory
+import psutil
 
 # Logger configuration
 logging.basicConfig(
@@ -51,23 +59,74 @@ def pack_key(cell_idx: int, num: int) -> bytes:
     return (cell_idx << 16 | num).to_bytes(4, "little")
 
 # Precompute skip scores with LRU cache
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=300)  # Reduced for 8GB RAM
 def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarray:
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
+    grid = np.frombuffer(grid_bytes, dtype=np.int16).reshape(rows, cols)
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
 def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
     """Dynamically adjust formula weights based on historical performance."""
     total = sum(history.values()) or 1e-10
-    return np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")])
+    return np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")], dtype=np.float32)
 
 def select_modules(grid: np.ndarray) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
-    base_modules = ["EXT_F10_Magnetic_Tail_Pattern_Vec", "EXT_GM20_Skip_Pattern_Confidence_Vec"]
+    base_modules = ["EXT_M1_Tail_Pattern_Vec", "EXT_GM20_Skip_Pattern_Confidence_Vec"]  # Fixed missing module
     scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
+# 新增：逆推公式實現
+def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.ndarray, rows: int, cols: int, seed_range: Tuple[int, int] = (0, 100000)) -> Tuple[int, float]:
+    """Reverse engineer the seed for excel formula using coarse-to-fine search."""
+    def loss_function(seed: int, grid: np.ndarray, known: np.ndarray, known_vals: np.ndarray) -> float:
+        rng = np.random.default_rng(int(seed))
+        generated = FORMULA_REGISTRY["excel"](rows, cols, rng)
+        mse = np.mean((generated[known[:, 0], known[:, 1]] - known_vals) ** 2)
+        entropy = -np.sum([p * np.log2(p + 1e-10) for p in np.unique(generated, return_counts=True)[1] / (rows * cols)])
+        return mse + abs(entropy - compute_global_features(grid)[1])  # MSE + entropy difference
+
+    # Coarse grid search
+    coarse_seeds = np.arange(seed_range[0], seed_range[1], 10000)  # Interval 10^4
+    coarse_losses = Parallel(n_jobs=4)(delayed(loss_function)(s, grid, known, known_vals) for s in coarse_seeds)
+    top_k = np.argsort(coarse_losses)[:5]  # Top 5 seeds
+    best_coarse_seed = coarse_seeds[top_k[0]]
+    best_coarse_loss = coarse_losses[top_k[0]]
+
+    # Fine-tune大声
+    def fine_loss(seed: float) -> float:
+        return loss_function(int(seed), grid, known, known_vals)
+
+    # Powell optimization for fine-tuning
+    result = minimize(fine_loss, x0=best_coarse_seed, method='Powell', bounds=[(best_coarse_seed - 5000, best_coarse_seed + 5000)])
+    best_seed = int(result.x[0])
+    best_loss = result.fun
+
+    logger.info(f"Reverse engineered seed: {best_seed}, loss: {best_loss}")
+    return best_seed, best_loss
+
+# 新增：代理模型實現
+class SurrogateModel:
+    """Gaussian Process surrogate model for seed prediction."""
+    def __init__(self):
+        self.gp = GaussianProcessRegressor(kernel=RBF(length_scale=1000), n_restarts_optimizer=5)
+
+    def fit(self, seeds: np.ndarray, losses: np.ndarray):
+        """Fit the surrogate model with seed-loss pairs."""
+        self.gp.fit(seeds.reshape(-1, 1), losses)
+
+    def predict(self, seeds: np.ndarray) -> np.ndarray:
+        """Predict loss for new seeds."""
+        return self.gp.predict(seeds.reshape(-1, 1))
+
+    def select_top_seeds(self, seed_range: Tuple[int, int], n_samples: int = 100) -> List[int]:
+        """Select top seeds using active learning."""
+        seeds = np.linspace(seed_range[0], seed_range[1], n_samples, dtype=np.int32)
+        pred_losses, std = self.gp.predict(seeds.reshape(-1, 1), return_std=True)
+        top_indices = np.argsort(pred_losses + std)[:10]  # Balance exploration and exploitation
+        return seeds[top_indices].tolist()
+
+@njit
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
@@ -77,81 +136,100 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
         boards[i] = FORMULA_REGISTRY[f](rows, cols, rng).ravel()
     return boards.reshape(batch, rows, cols)
 
-def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
+@ray.remote
+def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, seed: Optional[int] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with enhanced importance sampling and target_num hits."""
-    if rng is None:
-        rng = np.random.default_rng()
+    rng = np.random.default_rng(seed if seed is not None else np.random.randint(0, 1000000))
+    
+    # Shared memory for grid
+    shm_name = f"grid_{id(grid)}_{rng.integers(0, 1000000)}"
+    shm = shared_memory.SharedMemory(create=True, size=grid.nbytes, name=shm_name)
+    shared_grid = np.ndarray(grid.shape, dtype=np.int16, buffer=shm.buf)
+    np.copyto(shared_grid, grid)
+    
+    try:
+        g = shared_grid
+        rows, cols = g.shape
+        blanks = np.argwhere(g == -1)
+        known = np.argwhere(g != -1)
+        known_vals = g[g != -1]
+        legal_all = analyzer_utils.get_legal_values_for_placement(g)
 
-    g = np.asarray(grid, dtype=np.int16)
-    rows, cols = g.shape
-    blanks = np.argwhere(g == -1)
-    known = np.argwhere(g != -1)
-    known_vals = g[g != -1]
-    legal_all = analyzer_utils.get_legal_values_for_placement(g)
+        # Enhanced module selection for importance sampling
+        modules = select_modules(g)
+        module_scores = np.mean([get_module_score(mod, g) for mod in modules], axis=0)
+        importance_weights = np.where(g == -1, module_scores, 0).flatten()
+        importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
-    # Enhanced module selection for importance sampling
-    modules = select_modules(g)
-    module_scores = np.mean([get_module_score(mod, g) for mod in modules], axis=0)
-    importance_weights = np.where(g == -1, module_scores, 0).flatten()
-    importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
+        # Dynamic formula weights based on grid pattern
+        history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}
+        if np.mean(module_scores) > 0.6:
+            history["tail_cluster"] += 0.1
+            history["random_entropy"] -= 0.05
+        weights = adjust_weights_based_on_history(history)
 
-    # Dynamic formula weights based on grid pattern
-    history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}  # Default
-    if np.mean(module_scores) > 0.6:  # Adjust if strong patterns detected
-        history["tail_cluster"] += 0.1
-        history["random_entropy"] -= 0.05
-    weights = adjust_weights_based_on_history(history)
+        # Variance-driven iteration allocation
+        variance = np.var(module_scores[module_scores > 0]) if np.any(module_scores > 0) else 1.0
+        adjusted_iter = int(n_iter * min(1.5, max(0.5, variance / 0.1)))  # Adjust iterations based on variance
 
-    formulas = ("random_entropy", "shuffle", "tail_cluster")
-    remain = n_iter
-    counts = defaultdict(lambda: defaultdict(int))
+        formulas = ("random_entropy", "shuffle", "tail_cluster")
+        remain = adjusted_iter
+        counts = defaultdict(lambda: defaultdict(int))
 
-    while remain > 0:
-        batch = min(4000, remain)
-        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+        while remain > 0:
+            batch = min(1000, remain)  # Adjusted for memory
+            if psutil.virtual_memory().percent > 75:
+                batch = max(100, batch // 2)  # Safemode
+            boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
 
-        if known.size:
-            mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-            boards = boards[mask]
-            if len(boards) == 0:
-                batch = min(batch * 2, 8000)
-                boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+            if known.size:
                 mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
                 boards = boards[mask]
+                if len(boards) == 0:
+                    batch = min(batch * 2, 2000)
+                    boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+                    mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+                    boards = boards[mask]
 
-        if len(boards) > 0:
-            for i, board in enumerate(boards):
-                for r, c in blanks:
-                    idx = r * cols + c
-                    if rng.random() < importance_weights[idx]:
-                        num = board[r, c]
-                        counts[(r, c)][num] += 1
-                        if target_num is not None and num == target_num:
-                            counts[(r, c)][target_num] += 2  # Boost target_num
-        remain -= batch
+            if len(boards) > 0:
+                for i, board in enumerate(boards):
+                    for r, c in blanks:
+                        idx = r * cols + c
+                        if rng.random() < importance_weights[idx]:
+                            num = board[r, c]
+                            counts[(r, c)][num] += 1
+                            if target_num is not None and num == target_num:
+                                counts[(r, c)][target_num] += 2  # Boost target_num
+            remain -= batch
 
-    prob_map = {}
-    for (r, c) in [tuple(b) for b in blanks]:
-        total = sum(counts[(r, c)].values()) or 1e-10
-        probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
-        prob_map[(r, c)] = probs
+        prob_map = {}
+        for (r, c) in [tuple(b) for b in blanks]:
+            total = sum(counts[(r, c)].values()) or 1e-10
+            probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
+            prob_map[(r, c)] = probs
 
-    return prob_map
+        return prob_map
+    finally:
+        shm.close()
+        shm.unlink()
 
+@njit
 def weight_prob_by_modules(grid: np.ndarray,
                            prob_map: Dict[Tuple[int, int], Dict[int, float]],
                            target_num: Optional[int] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """Weight probabilities by module scores with adaptive weighting."""
     if not isinstance(prob_map, dict):
         logger.error(f"Invalid prob_map type: {type(prob_map)}")
         return {}
 
     result = prob_map.copy()
-    modules = select_modules(grid)  # Enhanced dynamic module selection
-    module_scores = Parallel(n_jobs=4)(
-        delayed(get_module_score)(mod, grid) for mod in modules
-    )
-    module_scores = np.array(module_scores)
+    modules = select_modules(grid)
+    module_scores = np.array([get_module_score(mod, grid) for mod in modules], dtype=np.float32)
 
+    # Adaptive weighting based on error history
+    error_history = defaultdict(float)
+    weights = np.array([0.4, 0.3, 0.3], dtype=np.float32)  # Initial weights: [reverse, tracking, heuristic]
+    
     for (r, c), probs in result.items():
         if (r, c) not in prob_map:
             continue
@@ -162,7 +240,7 @@ def weight_prob_by_modules(grid: np.ndarray,
 
         if target_num is not None:
             if target_num in probs:
-                probs[target_num] = max(probs[target_num] * mean_score, 1e-10)
+                probs[target_num] = max(probs[target_num] * mean_score * weights[1], 1e-10)
                 total = probs[target_num] or 1e-10
                 result[(r, c)] = {target_num: probs[target_num] / total}
             else:
@@ -173,18 +251,29 @@ def weight_prob_by_modules(grid: np.ndarray,
             total = sum(probs.values()) or 1e-10
             result[(r, c)] = {k: v / total for k, v in probs.items()}
 
+    # Update weights based on error (sliding window)
+    if target_num is not None:
+        for (r, c), probs in result.items():
+            error = 1.0 - probs.get(target_num, 0.0)
+            error_history[(r, c)] = (error_history[(r, c)] * 4 + error) / 5  # Sliding window of 5
+            if error_history[(r, c)] > 0.2:  # High error, reduce weight
+                weights[1] *= 0.95
+                weights = weights / (np.sum(weights) + 1e-10)
+
     return result
 
+@njit
 def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
                   blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
+    """Global unique assignment with linear sum assignment."""
     try:
         from scipy.optimize import linear_sum_assignment
         nums = sorted({n for d in prob_map.values() for n in d})
-        cost = np.full((len(blanks), len(nums)), 50.0)
+        cost = np.full((len(blanks), len(nums)), 50.0, dtype=np.float32)
 
         for i, cell in enumerate(blanks):
             for j, n in enumerate(nums):
-                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)  # 保底 > 0
+                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)
                 cost[i, j] = -math.log(prob)
 
         row, col = linear_sum_assignment(cost)
@@ -193,11 +282,8 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
     except Exception as e:
         logger.error(f"Global unique assignment failed: {e}")
         assigned, res = set(), {}
-        for cell in sorted(blanks,
-                           key=lambda p: max(prob_map[p].values() or [0]),
-                           reverse=True):
-            for n, p in sorted(prob_map[cell].items(),
-                               key=lambda x: x[1], reverse=True):
+        for cell in sorted(blanks, key=lambda p: max(prob_map[p].values() or [0]), reverse=True):
+            for n, p in sorted(prob_map[cell].items(), key=lambda x: x[1], reverse=True):
                 if n not in assigned:
                     assigned.add(n)
                     res[cell] = (n, p)
@@ -214,7 +300,7 @@ class MCTSNode:
         self.children = []
         self.visits = 0
         self.value = 0.0
-        self.virtual_loss = 0  # Add virtual loss
+        self.virtual_loss = 0
         self.untried_actions = [(r, c, v)
                                 for r, c in np.argwhere(grid == -1)
                                 for v in analyzer_utils.get_legal_values_for_placement(grid)]
@@ -224,15 +310,31 @@ class MCTSNode:
                    key=lambda c: (c.value / (c.visits + c.virtual_loss)) +
                    c_param * np.sqrt(2 * np.log(self.visits + 1e-10) / (c.visits + c.virtual_loss + 1e-10)))
 
-def mcts(grid: np.ndarray, iterations: int = 1000):
+@ray.remote
+def mcts(grid: np.ndarray, iterations: int = 1000, seed: Optional[int] = None):
+    """Monte Carlo Tree Search with simulated annealing."""
+    rng = np.random.default_rng(seed if seed is not None else np.random.randint(0, 1000000))
     rows, cols = grid.shape
     root = MCTSNode(grid)
+    temperature = 500.0  # Initial temperature for 300-grid scale
 
     def simulate(node):
         current = node
+        ttl = 5  # TTL for pruning
+        no_improvement = 0
+        best_value = float('-inf')
+
         while current.untried_actions and current.children:
             current = current.uct_select()
-            current.virtual_loss += 1  # Apply virtual loss
+            current.virtual_loss += 1
+            if current.value > best_value:
+                best_value = current.value
+                no_improvement = 0
+            else:
+                no_improvement += 1
+                if no_improvement >= ttl:
+                    break  # Prune if no improvement
+
         if current.untried_actions:
             r, c, v = current.untried_actions.pop()
             new_grid = current.grid.copy()
@@ -241,7 +343,8 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             current.children.append(child)
             current = child
 
-        sim_result = simulate_full_board(current.grid, None, n_iter=100)  # Enhanced with full_board
+        sim_result = simulate_full_board.remote(current.grid, None, n_iter=100, seed=rng.integers(0, 1000000))
+        sim_result = ray.get(sim_result)
         if not isinstance(sim_result, dict):
             logger.error(f"Invalid sim_result type: {type(sim_result)}")
             return 0.0
@@ -249,20 +352,25 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
         reward = 0.0
         for r, c in np.argwhere(grid == -1):
             if (r, c) in sim_result:
-                weighted = weight_prob_by_modules(
-                    current.grid, {(r, c): sim_result[(r, c)]})
+                weighted = weight_prob_by_modules(current.grid, {(r, c): sim_result[(r, c)]})
                 reward += max(weighted[(r, c)].values())
+
+        # Simulated annealing acceptance
+        if current.parent is not None:
+            delta = reward - current.parent.value
+            if delta < 0 and rng.random() > math.exp(delta / temperature):
+                current.parent.children.remove(current)
+                return 0.0
 
         while current is not None:
             current.visits += 1
             current.value += reward
-            current.virtual_loss -= 1  # Remove virtual loss
+            current.virtual_loss -= 1
             current = current.parent
         return reward
 
-    Parallel(n_jobs=4)(delayed(simulate)(root) for _ in range(iterations // 4))
-    best_child = max(root.children, key=lambda c: c.value / c.visits,
-                     default=root)
+    ray.get([simulate.remote(root) for _ in range(iterations // 4)])
+    best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
     return best_child.grid
 
 # Main prediction entry point
@@ -275,7 +383,7 @@ def predict_scratch_card(
     min_total_iter: Optional[int] = None,
     unique: bool = True
 ) -> Dict[str, Any]:
-    grid_np = np.array(grid, dtype=np.int64)
+    grid_np = np.array(grid, dtype=np.int16)
     rows, cols = grid_np.shape
     blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
 
@@ -297,17 +405,45 @@ def predict_scratch_card(
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
     min_total_iter = min_total_iter if min_total_iter is not None else max(1000, total_iter // 5)
 
-    logger.info(f"Simulating full board with {total_iter} iterations")
-    prob_map = simulate_full_board(
-        grid_np, target_num, n_iter=total_iter, rng=np.random.default_rng()
-    )
+    # Reverse engineer seed for initial guess
+    known = np.argwhere(grid_np != -1)
+    known_vals = grid_np[grid_np != -1]
+    best_seed, best_loss = reverse_engineer_seed(grid_np, known, known_vals, rows, cols)
+
+    # Surrogate model for seed selection
+    surrogate = SurrogateModel()
+    coarse_seeds = np.arange(0, 100000, 10000, dtype=np.int32)
+    coarse_losses = Parallel(n_jobs=4)(delayed(lambda s: reverse_engineer_seed(grid_np, known, known_vals, rows, cols, seed_range=(s, s+1))[1])(s) for s in coarse_seeds)
+    surrogate.fit(coarse_seeds, coarse_losses)
+    top_seeds = surrogate.select_top_seeds((0, 100000), n_samples=100)
+
+    # Simulate with top seeds
+    prob_maps = []
+    for seed in top_seeds[:5]:  # Use top 5 seeds
+        prob_map = ray.get(simulate_full_board.remote(grid_np, target_num, n_iter=quick_iter, seed=seed))
+        prob_maps.append(prob_map)
+
+    # Combine probability maps
+    final_prob_map = defaultdict(lambda: defaultdict(float))
+    for prob_map in prob_maps:
+        for (r, c), probs in prob_map.items():
+            for num, prob in probs.items():
+                final_prob_map[(r, c)][num] += prob / len(prob_maps)
+
+    logger.info(f"Simulating full board with {total_iter} iterations, best seed: {best_seed}")
+    prob_map = ray.get(simulate_full_board.remote(grid_np, target_num, n_iter=refine_iter, seed=best_seed))
+
+    # Merge with surrogate results
+    for (r, c), probs in prob_map.items():
+        for num, prob in probs.items():
+            final_prob_map[(r, c)][num] = 0.4 * final_prob_map[(r, c)][num] + 0.6 * prob  # Weighted merge
 
     if target_num is not None:
         rank = [{
             "row": r,
             "col": c,
             "candidates": [target_num],
-            "probability": prob_map[(r, c)].get(target_num, 0.0) * 100
+            "probability": final_prob_map[(r, c)].get(target_num, 0.0) * 100
         } for r, c in blanks]
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
@@ -326,16 +462,16 @@ def predict_scratch_card(
             "mode": "target",
             "target": target_num,
             "predictions": rank[:3],
-            "full_probabilities": prob_map
+            "full_probabilities": final_prob_map
         }
 
     if unique:
-        assign = global_unique(prob_map, blanks)
-        best_grid = mcts(grid_np, iterations=1000)
+        assign = global_unique(final_prob_map, blanks)
+        best_grid = ray.get(mcts.remote(grid_np, iterations=1000, seed=best_seed))
 
         old_conf = max([p for (_, _), (_, p) in assign.items()] or [0])
         new_conf = max([
-            max(weight_prob_by_modules(best_grid, {(r, c): prob_map[(r, c)]})[(r, c)].values())
+            max(weight_prob_by_modules(best_grid, {(r, c): final_prob_map[(r, c)]})[(r, c)].values())
             for r, c in blanks
         ] or [0])
 
@@ -366,11 +502,11 @@ def predict_scratch_card(
         return {
             "mode": mode,
             "predictions": preds[:3],
-            "full_probabilities": prob_map
+            "full_probabilities": final_prob_map
         }
 
     preds = []
-    for (r, c), dist in prob_map.items():
+    for (r, c), dist in final_prob_map.items():
         top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
         nums, probs = zip(*top3) if top3 else ([], [])
         preds.append({
@@ -396,10 +532,12 @@ def predict_scratch_card(
     return {
         "mode": "top3",
         "predictions": preds[:3],
-        "full_probabilities": prob_map
+        "full_probabilities": final_prob_map
     }
 
+@njit
 def process_grid(grid):
+    """Process grid for predictions."""
     blanks = np.argwhere(grid == -1)
     preds = []
     for r, c in blanks:
