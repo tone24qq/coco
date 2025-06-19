@@ -79,12 +79,25 @@ class AdaptiveWeights:
         except OSError as e:
             logging.error(f"Failed to save weights history: {e}")
 
-@njit
+# ---------- FIX for Numba boolean indexing ----------
+@njit(cache=True, fastmath=True)
 def compute_global_features(grid: np.ndarray) -> Tuple[float, float]:
-    """Compute global statistical features of the grid."""
-    known_vals = grid[grid != -1].astype(np.float32)
-    if known_vals.size == 0:
-        return 0.0, 1.0
-    mean_val = np.mean(known_vals)
-    std_val = np.std(known_vals) if np.std(known_vals) > 0 else 1.0
-    return mean_val, std_val
+    """
+    Compute global statistical features of the grid.
+    Returns (mean, entropy) of known values.  -1 代表未開格。
+    """
+    flat = grid.ravel()                 # 先展平成 1-D
+    mask = flat != -1
+    if mask.sum() == 0:                 # 全空盤保險
+        return 0.0, 0.0
+
+    known_vals = flat[mask].astype(np.float32)  # 1-D ⇐ 1-D 布林遮罩 ✅
+    mean_val = known_vals.mean()
+
+    # Shannon entropy（簡單版本）
+    hist = np.bincount(known_vals.astype(np.int32))
+    probs = hist[hist > 0] / hist.sum()
+    entropy = -np.sum(probs * np.log2(probs))
+
+    return mean_val, entropy
+# ---------- END FIX ---------------------------------
