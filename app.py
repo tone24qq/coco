@@ -147,25 +147,34 @@ async def predict(req: GridRequest):
 async def warm_up():
     """Warm-up the system with a dummy prediction."""
     try:
-        # Ensure Ray initialization with sufficient shared memory
-        ray.init(num_cpus=4, object_store_memory=int(8e9 * 0.3))  # 30% of 8GB RAM
+        ray.init(
+            num_cpus=4,
+            object_store_memory=50 * 1024 * 1024,  # 降低要求避免 SHM 爆炸
+            _temp_dir="/tmp/ray"  # 防止 container /dev/shm 爆炸
+        )
+
         dummy_grid = [
             [1, 2, -1, 4, 5],
             [-1, 7, 8, -1, 10],
             [11, -1, 13, 14, -1],
             [-1, 17, 18, -1, 20]
         ]
-        base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
-        predict_scratch_card(
-            grid=dummy_grid,
-            iterations=base_iter
-        )
-        logger.info("Warm-up completed successfully | memory=%.1f%% | cpu=%.1f%%",
-                    psutil.virtual_memory().percent, psutil.cpu_percent())
-    except Exception as exc:
-        logger.error("Warm-up failed: %s", exc, exc_info=True)
-        logger.warning("Continuing startup despite warm-up failure.")
 
+        base_iter = max(100, int(os.getenv("BASE_ITER", 1000)) // 25)
+
+        logger.info("Warm-up started | dummy iter = %d", base_iter)
+        result = predict_scratch_card(
+            grid=dummy_grid,
+            iterations=base_iter,
+        )
+
+        logger.info("Warm-up completed | seed = %s | loss = %.3f",
+                    result.get("best_seed", "N/A"),
+                    result.get("loss", -1.0))
+
+    except Exception as exc:
+        logger.warning("Warm-up failed: %s", str(exc), exc_info=True)
+        logger.warning("Continuing startup despite warm-up failure.")
 @app.on_event("shutdown")
 async def shutdown():
     """Clean up resources on shutdown."""
