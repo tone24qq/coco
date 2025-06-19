@@ -149,8 +149,8 @@ async def warm_up():
     try:
         ray.init(
             num_cpus=4,
-            object_store_memory=50 * 1024 * 1024,  # 降低要求避免 SHM 爆炸
-            _temp_dir="/tmp/ray"  # 防止 container /dev/shm 爆炸
+            object_store_memory=80 * 1024 * 1024,  # ✅ 至少 80MB，Ray 最低要求
+            _temp_dir="/tmp/ray"                   # ✅ 避免佔用 /dev/shm
         )
 
         dummy_grid = [
