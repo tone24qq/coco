@@ -5,6 +5,7 @@ import logging
 import os
 import json
 import random
+from numba import njit
 
 # Logging configuration
 logging.basicConfig(
@@ -24,25 +25,28 @@ def register_formula(name: str) -> Callable:
     return _decorator
 
 @register_formula("excel")
+@njit
 def gen_excel(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid using random permutation of numbers 1 to N."""
-    nums = rng.permutation(rows * cols) + 1
+    nums = rng.permutation(np.arange(1, rows * cols + 1, dtype=np.int16))
     return nums.reshape(rows, cols)
 
 @register_formula("shuffle")
+@njit
 def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid by shuffling numbers within each row."""
-    nums = np.arange(1, rows * cols + 1)
+    nums = np.arange(1, rows * cols + 1, dtype=np.int16)
     board = nums.reshape(rows, cols)
     for r in range(rows):
         rng.shuffle(board[r])
     return board
 
 @register_formula("random_entropy")
+@njit
 def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid with entropy-based random dispersion."""
-    grid = np.zeros((rows, cols), dtype=np.int64)
-    legal = list(range(1, rows * cols + 1))
+    grid = np.zeros((rows, cols), dtype=np.int16)
+    legal = np.arange(1, rows * cols + 1, dtype=np.int16)
     rng.shuffle(legal)
     for i in range(rows * cols):
         r, c = divmod(i, cols)
@@ -75,6 +79,7 @@ class AdaptiveWeights:
         except OSError as e:
             logging.error(f"Failed to save weights history: {e}")
 
+@njit
 def compute_global_features(grid: np.ndarray) -> Tuple[float, float]:
     """Compute global statistical features of the grid."""
     known_vals = grid[grid != -1].astype(np.float32)
