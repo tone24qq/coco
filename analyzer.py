@@ -56,6 +56,18 @@ def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarra
     grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
+def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
+    """Dynamically adjust formula weights based on historical performance."""
+    total = sum(history.values()) or 1e-10
+    return np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")])
+
+def select_modules(grid: np.ndarray) -> List[str]:
+    """Dynamically select modules based on grid characteristics."""
+    base_modules = ["EXT_F10_Magnetic_Tail_Pattern_Vec", "EXT_GM20_Skip_Pattern_Confidence_Vec"]
+    scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
+    top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
+    return base_modules + [m for m in top_modules if m not in base_modules]
+
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
@@ -66,7 +78,7 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     return boards.reshape(batch, rows, cols)
 
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """Simulate full boards with importance sampling and count target_num hits."""
+    """Simulate full boards with enhanced importance sampling and target_num hits."""
     if rng is None:
         rng = np.random.default_rng()
 
@@ -77,14 +89,20 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     known_vals = g[g != -1]
     legal_all = analyzer_utils.get_legal_values_for_placement(g)
 
-    # Precompute module scores for importance sampling
-    modules = ["EXT_F10_Magnetic_Tail_Pattern_Vec", "EXT_GM20_Skip_Pattern_Confidence_Vec"]
+    # Enhanced module selection for importance sampling
+    modules = select_modules(g)
     module_scores = np.mean([get_module_score(mod, g) for mod in modules], axis=0)
     importance_weights = np.where(g == -1, module_scores, 0).flatten()
     importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
+    # Dynamic formula weights based on grid pattern
+    history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}  # Default
+    if np.mean(module_scores) > 0.6:  # Adjust if strong patterns detected
+        history["tail_cluster"] += 0.1
+        history["random_entropy"] -= 0.05
+    weights = adjust_weights_based_on_history(history)
+
     formulas = ("random_entropy", "shuffle", "tail_cluster")
-    weights = np.array([0.4, 0.3, 0.3])  # Base weights
     remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
 
@@ -103,7 +121,6 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
         if len(boards) > 0:
             for i, board in enumerate(boards):
-                # Apply importance sampling based on precomputed weights
                 for r, c in blanks:
                     idx = r * cols + c
                     if rng.random() < importance_weights[idx]:
@@ -113,7 +130,6 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
                             counts[(r, c)][target_num] += 2  # Boost target_num
         remain -= batch
 
-    # Build probability map
     prob_map = {}
     for (r, c) in [tuple(b) for b in blanks]:
         total = sum(counts[(r, c)].values()) or 1e-10
@@ -130,14 +146,7 @@ def weight_prob_by_modules(grid: np.ndarray,
         return {}
 
     result = prob_map.copy()
-    modules = [
-        "EXT_M1_Tail_Pattern_Vec",
-        "EXT_M3_Local_Focus_Vec",
-        "EXT_M10_Sequence_Block_Vec",
-        "EXT_R3_Error_Correction_Vec",
-        "EXT_F7_Strong_Pattern_Vec",
-        "EXT_GM20_Skip_Pattern_Confidence_Vec"
-    ]
+    modules = select_modules(grid)  # Enhanced dynamic module selection
     module_scores = Parallel(n_jobs=4)(
         delayed(get_module_score)(mod, grid) for mod in modules
     )
@@ -232,8 +241,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             current.children.append(child)
             current = child
 
-        sim_result = simulate_with_formulas(current.grid.tobytes(),
-                                            rows, cols, 500, None, 100)
+        sim_result = simulate_full_board(current.grid, None, n_iter=100)  # Enhanced with full_board
         if not isinstance(sim_result, dict):
             logger.error(f"Invalid sim_result type: {type(sim_result)}")
             return 0.0
@@ -289,11 +297,9 @@ def predict_scratch_card(
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
     min_total_iter = min_total_iter if min_total_iter is not None else max(1000, total_iter // 5)
 
-    prob_map = simulate_with_formulas(
-        grid_np.tobytes(), rows, cols,
-        n_iter=total_iter,
-        target_num=target_num,
-        min_iter=min_total_iter
+    logger.info(f"Simulating full board with {total_iter} iterations")
+    prob_map = simulate_full_board(
+        grid_np, target_num, n_iter=total_iter, rng=np.random.default_rng()
     )
 
     if target_num is not None:
