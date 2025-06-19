@@ -76,33 +76,34 @@ def select_modules(grid: np.ndarray) -> List[str]:
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
-# 新增：逆推公式實現
+# 修復：逆推公式實現
 def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.ndarray, rows: int, cols: int, seed_range: Tuple[int, int] = (0, 100000)) -> Tuple[int, float]:
     """Reverse engineer the seed for excel formula using coarse-to-fine search."""
     def loss_function(seed: int, grid: np.ndarray, known: np.ndarray, known_vals: np.ndarray) -> float:
-        rng = np.random.default_rng(int(seed))
+        rng = np.random.default_rng(seed)
         generated = FORMULA_REGISTRY["excel"](rows, cols, rng)
         mse = np.mean((generated[known[:, 0], known[:, 1]] - known_vals) ** 2)
         entropy = -np.sum([p * np.log2(p + 1e-10) for p in np.unique(generated, return_counts=True)[1] / (rows * cols)])
-        return mse + abs(entropy - compute_global_features(grid)[1])  # MSE + entropy difference
+        return mse + abs(entropy - compute_global_features(grid)[1])
 
     # Coarse grid search
-    coarse_seeds = np.arange(seed_range[0], seed_range[1], 10000)  # Interval 10^4
+    coarse_seeds = np.arange(max(0, seed_range[0]), seed_range[1], 10000, dtype=np.int32)  # Ensure non-negative
     coarse_losses = Parallel(n_jobs=4)(delayed(loss_function)(s, grid, known, known_vals) for s in coarse_seeds)
-    top_k = np.argsort(coarse_losses)[:5]  # Top 5 seeds
+    top_k = np.argsort(coarse_losses)[:5]
     best_coarse_seed = coarse_seeds[top_k[0]]
     best_coarse_loss = coarse_losses[top_k[0]]
 
-    # Fine-tune大声
+    # Fine-tune with integer constraint
     def fine_loss(seed: float) -> float:
-        return loss_function(int(seed), grid, known, known_vals)
+        seed_int = max(0, int(round(seed)))  # Ensure non-negative integer
+        return loss_function(seed_int, grid, known, known_vals)
 
     # Powell optimization for fine-tuning
-    result = minimize(fine_loss, x0=best_coarse_seed, method='Powell', bounds=[(best_coarse_seed - 5000, best_coarse_seed + 5000)])
-    best_seed = int(result.x[0])
+    result = minimize(fine_loss, x0=best_coarse_seed, method='Powell', bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)])
+    best_seed = max(0, int(round(result.x[0])))  # Ensure non-negative integer
     best_loss = result.fun
 
-    logger.info(f"Reverse engineered seed: {best_seed}, loss: {best_loss}")
+    logger.info(f"Reverse engineered seed: {best_seed}, loss: {best_loss:.4f}")
     return best_seed, best_loss
 
 # 新增：代理模型實現
