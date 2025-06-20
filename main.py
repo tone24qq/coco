@@ -4,7 +4,6 @@ import sys
 import argparse
 import numpy as np
 from typing import List, Dict, Any
-import psutil
 from analyzer import predict_scratch_card
 
 # Logging configuration
@@ -13,7 +12,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
@@ -32,21 +30,16 @@ def parse_grid(grid_str: str) -> List[List[int]]:
             raise ValueError("Grid must be 4x4 to 20x20 with consistent row length")
         return grid
     except ValueError as e:
-        logger.error(f"Invalid grid format: {e}")
+        logging.error(f"Invalid grid format: {e}")
         raise
 
 def main():
-    """Main function to run scratch card prediction with resource monitoring."""
+    """Main function to run scratch card prediction."""
     args = parse_args()
     try:
-        # Resource monitoring
-        if psutil.virtual_memory().percent > 75 or psutil.cpu_percent() > 90:
-            logger.warning("High resource usage detected, reducing iterations")
-            args.iterations = max(100, args.iterations // 2)
-
         grid = parse_grid(args.grid)
         iterations = args.iterations
-        grid_np = np.array(grid, dtype=np.int16)  # Use int16 for memory efficiency
+        grid_np = np.array(grid, dtype=np.int64)
         
         # Validate grid
         known_vals = grid_np[grid_np != -1]
@@ -57,19 +50,14 @@ def main():
         if any(v < 1 or v > max_val for v in known_vals):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
         
-        logger.info(f"Starting prediction for {rows}x{cols} grid with {iterations} iterations")
         result = predict_scratch_card(grid, target_num=args.target, iterations=iterations)
-        
-        # Log results with detailed metrics
-        logger.info("Prediction results:")
+        logging.info("Prediction results:")
         for pred in result["predictions"]:
-            logger.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%")
-        logger.info(f"Full probabilities available in result['full_probabilities']")
-        logger.info(f"Memory usage: {psutil.virtual_memory().percent:.1f}%, CPU usage: {psutil.cpu_percent():.1f}%")
-        
+            logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%")
+        logging.info("Full probabilities available in result['full_probabilities']")
         return result
     except (ValueError, Exception) as e:
-        logger.error(f"Error during prediction: {e}", exc_info=True)
+        logging.error(f"Error during prediction: {e}")
         sys.exit(1)
 
 if __name__ == "__main__":
