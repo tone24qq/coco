@@ -341,14 +341,17 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[
     """Score based on skip pattern confidence."""
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=np.float32)
-    revealed = [
-        {"value": int(grid[r, c]), "r": r, "c": c}
-        for r in range(rows)
-        for c in range(cols)
-        if grid[r, c] != -1 and grid[r, c] > 0
-    ]
-    if not revealed:
-        return scores
+    ...
+    for vec, cnt in zip(unique_vecs, counts):
+        if cnt < min_occ:
+            break
+        pattern_vals = np.array([v for v, sv in skip_vecs.items() if np.array_equal(sv, vec)], dtype=np.int16)
+        pattern_vals = np.sort(pattern_vals)
+        strength = MathUtils.normalize_value(cnt, min_occ, len(skip_vecs)) * 1.1   # ← 已修正
+        dominant_patterns.append({"skip": tuple(vec), "values": pattern_vals, "strength": strength})
+    ...
+            scores[r, c] = MathUtils.normalize_value(best_conf, 0, 1.0)            # ← 已修正
+    return scores
 
     utils = BoardAnalyzerUtils()
     max_val = utils.get_card_max_value_from_gridDimensions((rows, cols))
