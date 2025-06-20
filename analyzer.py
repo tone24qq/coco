@@ -190,33 +190,34 @@ while remain > 0:
     if psutil.virtual_memory().percent > 75:
         batch = max(100, batch // 2)
     boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
-            if known.size:
-                mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-                boards = boards[mask]
-                if len(boards) == 0:
-                    batch = min(batch * 2, 2000)
-                    boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
-                    mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-                    boards = boards[mask]
 
-            if len(boards) > 0:
-                for i, board in enumerate(boards):
-                    for r, c in blanks:
-                        idx = r * cols + c
-                        if rng.random() < importance_weights[idx]:
-                            num = board[r, c]
-                            counts[(r, c)][num] += 1
-                            if target_num is not None and num == target_num:
-                                counts[(r, c)][num] += 2
-            remain -= batch
+    if known.size:
+        mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+        boards = boards[mask]
+        if len(boards) == 0:
+            batch = min(batch * 2, 2000)
+            boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+            mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+            boards = boards[mask]
 
-        prob_map = {}
-        for (r, c) in [tuple(b) for b in blanks]:
-            total = sum(counts[(r, c)].values()) or 1e-10
-            probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
-            prob_map[(r, c)] = probs
+    if len(boards) > 0:
+        for i, board in enumerate(boards):
+            for r, c in blanks:
+                idx = r * cols + c
+                if rng.random() < importance_weights[idx]:
+                    num = board[r, c]
+                    counts[(r, c)][num] += 1
+                    if target_num is not None and num == target_num:
+                        counts[(r, c)][num] += 2
+    remain -= batch
 
-        return prob_map
+prob_map = {}
+for (r, c) in [tuple(b) for b in blanks]:
+    total = sum(counts[(r, c)].values()) or 1e-10
+    probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
+    prob_map[(r, c)] = probs
+
+return prob_map
     finally:
         shm.close()
         shm.unlink()
