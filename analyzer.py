@@ -87,7 +87,7 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
 
     best_coarse_seed = None
     best_coarse_loss = float('inf')
-    for s in range(seed_range[0], seed_range[1], 1000):
+    for s in range(max(0, seed_range[0]), seed_range[1], 1000):
         try:
             loss = loss_function(s, grid, known, known_vals)
             if loss < best_coarse_loss:
@@ -108,8 +108,9 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
         bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)],
     )
 
-    best_seed = int(round(result.x[0]))
+    best_seed = max(0, int(round(result.x[0])))
     best_loss = result.fun
+    logger.info(f"Reverse engineered seed: {best_seed}, loss: {best_loss:.4f}")
     return best_seed, best_loss
 
 class SurrogateModel:
@@ -176,48 +177,48 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
         preferred = ("random_entropy", "shuffle", "tail_cluster")
         formulas = tuple(f for f in preferred if f in FORMULA_REGISTRY) or tuple(FORMULA_REGISTRY.keys())
+        formulas_and_weights = [(f, w) for f, w in zip(formulas, weights) if f in FORMULA_REGISTRY]
+        if not formulas_and_weights:
+            raise ValueError("No valid formulas found in FORMULA_REGISTRY.")
+        formulas, weights = zip(*formulas_and_weights)
+        weights = np.array(weights, dtype=np.float32) / np.sum(weights)  # Normalize weights
+
         remain = adjusted_iter
         counts = defaultdict(lambda: defaultdict(int))
 
-        # 防呆處理 formulas 與 weights 長度不一致或非法 key
-formulas_and_weights = [(f, w) for f, w in zip(formulas, weights) if f in FORMULA_REGISTRY]
-if not formulas_and_weights:
-    raise ValueError("No valid formulas found in FORMULA_REGISTRY.")
-formulas, weights = zip(*formulas_and_weights)
-
-while remain > 0:
-    batch = min(1000, remain)
-    if psutil.virtual_memory().percent > 75:
-        batch = max(100, batch // 2)
-    boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
-
-    if known.size:
-        mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-        boards = boards[mask]
-        if len(boards) == 0:
-            batch = min(batch * 2, 2000)
+        while remain > 0:
+            batch = min(1000, remain)
+            if psutil.virtual_memory().percent > 75:
+                batch = max(100, batch // 2)
             boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
-            mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-            boards = boards[mask]
 
-    if len(boards) > 0:
-        for i, board in enumerate(boards):
-            for r, c in blanks:
-                idx = r * cols + c
-                if rng.random() < importance_weights[idx]:
-                    num = board[r, c]
-                    counts[(r, c)][num] += 1
-                    if target_num is not None and num == target_num:
-                        counts[(r, c)][num] += 2
-    remain -= batch
+            if known.size:
+                mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+                boards = boards[mask]
+                if len(boards) == 0:
+                    batch = min(batch * 2, 2000)
+                    boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+                    mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+                    boards = boards[mask]
 
-prob_map = {}
-for (r, c) in [tuple(b) for b in blanks]:
-    total = sum(counts[(r, c)].values()) or 1e-10
-    probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
-    prob_map[(r, c)] = probs
+            if len(boards) > 0:
+                for i, board in enumerate(boards):
+                    for r, c in blanks:
+                        idx = r * cols + c
+                        if rng.random() < importance_weights[idx]:
+                            num = board[r, c]
+                            counts[(r, c)][num] += 1
+                            if target_num is not None and num == target_num:
+                                counts[(r, c)][num] += 2
+            remain -= batch
 
-return prob_map
+        prob_map = {}
+        for (r, c) in [tuple(b) for b in blanks]:
+            total = sum(counts[(r, c)].values()) or 1e-10
+            probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
+            prob_map[(r, c)] = probs
+
+        return prob_map
     finally:
         shm.close()
         shm.unlink()
