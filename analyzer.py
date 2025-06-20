@@ -177,11 +177,11 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
         preferred = ("random_entropy", "shuffle", "tail_cluster")
         formulas = tuple(f for f in preferred if f in FORMULA_REGISTRY) or tuple(FORMULA_REGISTRY.keys())
+
         formulas_and_weights = [(f, w) for f, w in zip(formulas, weights) if f in FORMULA_REGISTRY]
         if not formulas_and_weights:
             raise ValueError("No valid formulas found in FORMULA_REGISTRY.")
         formulas, weights = zip(*formulas_and_weights)
-        weights = np.array(weights, dtype=np.float32) / np.sum(weights)  # Normalize weights
 
         remain = adjusted_iter
         counts = defaultdict(lambda: defaultdict(int))
