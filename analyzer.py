@@ -87,16 +87,11 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
         entropy = -np.sum([p * np.log2(p + 1e-10) for p in np.unique(generated, return_counts=True)[1] / (rows * cols)])
         return mse + abs(entropy - compute_global_features(grid)[1])
 
-    best_coarse_seed = None
-    best_coarse_loss = float('inf')
-    for s in range(max(0, seed_range[0]), seed_range[1], 1000):
-        try:
-            loss = loss_function(s, grid, known, known_vals)
-            if loss < best_coarse_loss:
-                best_coarse_loss = loss
-                best_coarse_seed = s
-        except Exception:
-            continue
+    coarse_seeds = np.arange(max(0, seed_range[0]), seed_range[1], 500, dtype=np.int32)
+    coarse_losses = Parallel(n_jobs=4)(delayed(loss_function)(s, grid, known, known_vals) for s in coarse_seeds)
+    top_k = np.argsort(coarse_losses)[:3]  # Limit to top-3 seeds
+    best_coarse_seed = coarse_seeds[top_k[0]]
+    best_coarse_loss = coarse_losses[top_k[0]]
 
     def fine_loss(seed) -> float:
         seed_scalar = float(seed[0]) if isinstance(seed, np.ndarray) else float(seed)
@@ -107,7 +102,7 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
         fine_loss,
         x0=[best_coarse_seed],
         method='Powell',
-        bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)],
+        bounds=[(max(0, best_coarse_seed - 2500), best_coarse_seed + 2500)],
     )
 
     best_seed = max(0, int(round(result.x[0])))
@@ -286,7 +281,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000, seed: Optional[int] = None):
     root = MCTSNode(grid)
 
     # Execute simulations in parallel
-    ray.get([simulate_mcts_node.remote(root, grid) for _ in range(iterations // 4)])
+    ray.get([simulate_mcts_node.remote(root, grid) for _ in range(iterations // 2)])  # Increase parallelism
     best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
     return best_child.grid
 
@@ -528,7 +523,7 @@ def predict_scratch_card(
         for mod, score, desc in top_modules:
             if score > 0.5:
                 reasons.append(f"{desc} (score: {score:.2f})")
-            pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+        pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
 
     preds.sort(key=lambda x: x["probability"][0] if x["probability"] else 0,
                reverse=True)
