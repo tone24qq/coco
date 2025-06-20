@@ -2,10 +2,9 @@ import os
 import sys
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-import psutil
-import ray
-from fastapi import FastAPI, HTTPException, status
+from typing import List, Dict, Any, Optional  # Added Optional import
+
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -54,12 +53,12 @@ class Prediction(BaseModel):
     row: int
     col: int
     candidates: List[int]
-    probability: float
-    reasons: List[str]
+    probability: float  # Changed to percentage
+    reasons: List[str]  # Added for module contribution reasons
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[str, float]]
+    full_probabilities: Dict[str, Dict[str, float]]  # String keys for serialization
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -72,9 +71,8 @@ async def root() -> Dict[str, Any]:
 async def root_head() -> str:
     return ""
 
-@ray.remote
-def predict_task(req: GridRequest):
-    """Run prediction task with Ray for parallel processing."""
+@app.post("/predict", response_model=PredictResponse)
+async def predict(req: GridRequest):
     try:
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
@@ -89,11 +87,9 @@ def predict_task(req: GridRequest):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
         
         logger.info(
-            "Predict API called | size=%dx%d | target=%s | iterations=%d | memory=%.1f%% | cpu=%.1f%%",
-            rows, cols, str(req.target_num), req.iterations,
-            psutil.virtual_memory().percent, psutil.cpu_percent()
+            "Predict API called | size=%dx%d | target=%s | iterations=%d",
+            len(req.grid), len(req.grid[0]), str(req.target_num), req.iterations
         )
-        
         result = predict_scratch_card(
             grid=req.grid,
             target_num=req.target_num,
@@ -116,7 +112,7 @@ def predict_task(req: GridRequest):
                         num_key = str(int(float(num)))
                     except (ValueError, TypeError):
                         num_key = str(num)
-                    inner_clean[num_key] = float(p) * 100
+                    inner_clean[num_key] = float(p) * 100  # Convert to percentage
                 clean_fp[key_str] = inner_clean
             result["full_probabilities"] = clean_fp
         
@@ -125,79 +121,41 @@ def predict_task(req: GridRequest):
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-@app.post("/predict", response_model=PredictResponse)
-async def predict(req: GridRequest):
-    """Handle prediction requests with resource monitoring."""
-    safemode_count = 0
-    if psutil.virtual_memory().percent > 75 or psutil.cpu_percent() > 90:
-        safemode_count += 1
-        logger.warning("Entering Safemode: high resource usage (memory=%.1f%%, cpu=%.1f%%, safemode_count=%d)",
-                       psutil.virtual_memory().percent, psutil.cpu_percent(), safemode_count)
-        req.iterations = max(100, req.iterations // 2)
-    
-    try:
-        result = ray.get(predict_task.remote(req))
-        logger.info("Prediction completed | safemode_count=%d", safemode_count)
-        return result
-    except Exception as exc:
-        logger.error("Prediction task failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(exc)}") from exc
-
 @app.on_event("startup")
 async def warm_up():
-    """Warm-up the system with a dummy prediction."""
+    dummy_grid = [
+        [1, 2, -1, 4, 5],
+        [-1, 7, 8, -1, 10],
+        [11, -1, 13, 14, -1],
+        [-1, 17, 18, -1, 20]
+    ]
+    base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
     try:
-        ray.init(
-            num_cpus=4,
-            object_store_memory=80 * 1024 * 1024,  # ✅ 至少 80MB，Ray 最低要求
-            _temp_dir="/tmp/ray"                   # ✅ 避免佔用 /dev/shm
-        )
-
-        dummy_grid = [
-            [1, 2, -1, 4, 5],
-            [-1, 7, 8, -1, 10],
-            [11, -1, 13, 14, -1],
-            [-1, 17, 18, -1, 20]
-        ]
-
-        base_iter = max(100, int(os.getenv("BASE_ITER", 1000)) // 25)
-
-        logger.info("Warm-up started | dummy iter = %d", base_iter)
-        result = predict_scratch_card(
+        predict_scratch_card(
             grid=dummy_grid,
-            iterations=base_iter,
+            iterations=base_iter
         )
-
-        logger.info("Warm-up completed | seed = %s | loss = %.3f",
-                    result.get("best_seed", "N/A"),
-                    result.get("loss", -1.0))
-
+        logger.info("Warm-up completed successfully.")
     except Exception as exc:
-        logger.warning("Warm-up failed: %s", str(exc), exc_info=True)
+        logger.error("Warm-up failed: %s", exc, exc_info=True)
         logger.warning("Continuing startup despite warm-up failure.")
+
 @app.on_event("shutdown")
 async def shutdown():
-    """Clean up resources on shutdown."""
-    ray.shutdown()
     logger.info("API shutting down to save resources.")
 
 def run_api():
     """Run API with on-demand activation."""
-    port = int(os.getenv("PORT", 10000))  # Default Render port
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="debug")
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
-    logger.info("API starting on 0.0.0.0:%d | memory=%.1f%% | cpu=%.1f%%",
-                port, psutil.virtual_memory().percent, psutil.cpu_percent())
+    logger.info("API in sleep mode, will wake on request...")
     while True:
         try:
-            server.run()
-            logger.info("API running successfully")
+            server.run()  # 啟動時休眠，呼叫時醒來
+            logger.info("API woken up and working...")
         except KeyboardInterrupt:
             server.should_exit = True
             break
-        except Exception as exc:
-            logger.error("API startup failed: %s", exc, exc_info=True)
-            sys.exit(1)
 
 if __name__ == "__main__":
     run_api()
