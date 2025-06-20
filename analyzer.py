@@ -92,20 +92,10 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
     best_coarse_loss = coarse_losses[top_k[0]]
 
     def fine_loss(seed: float) -> float:
-        """
-        Refine RNG seed by computing the loss for a single integer‐seed candidate.
-        Powell optimizer把 x 視為 1-D ndarray；這裡要先解包成 scalar。
-        """
-        seed_scalar = seed.item() if isinstance(seed, np.ndarray) else float(seed)
-        seed_int = max(0, int(round(seed_scalar)))
+        seed_int = max(0, int(round(seed)))
         return loss_function(seed_int, grid, known, known_vals)
 
-    result = minimize(
-        fine_loss,
-        x0=[best_coarse_seed],
-        method='Powell',
-        bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)]
-    )
+    result = minimize(fine_loss, x0=best_coarse_seed, method='Powell', bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)])
     best_seed = max(0, int(round(result.x[0])))
     best_loss = result.fun
 
@@ -138,7 +128,8 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     choices = rng.choice(formulas, size=batch, p=weights)
     boards = np.empty((batch, n), dtype=np.int16)
     for i, f in enumerate(choices):
-        boards[i] = FORMULA_REGISTRY[f](rows, cols, rng).ravel()
+        func = FORMULA_REGISTRY.get(f, FORMULA_REGISTRY[list(FORMULA_REGISTRY.keys())[0]])
+        boards[i] = func(rows, cols, rng).ravel()
     return boards.reshape(batch, rows, cols)
 
 @ray.remote
@@ -173,7 +164,8 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         variance = np.var(module_scores[module_scores > 0]) if np.any(module_scores > 0) else 1.0
         adjusted_iter = int(n_iter * min(1.5, max(0.5, variance / 0.1)))
 
-        formulas = ("random_entropy", "shuffle", "tail_cluster")
+        preferred = ("random_entropy", "shuffle", "tail_cluster")
+        formulas = tuple(f for f in preferred if f in FORMULA_REGISTRY) or tuple(FORMULA_REGISTRY.keys())
         remain = adjusted_iter
         counts = defaultdict(lambda: defaultdict(int))
 
