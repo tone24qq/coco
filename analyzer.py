@@ -68,8 +68,7 @@ def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
     """Dynamically adjust formula weights based on historical performance."""
     total = sum(history.values()) or 1e-10
     weights = np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")], dtype=np.float32)
-    # Ensure weights sum to 1
-    weights = weights / (np.sum(weights) + 1e-10)
+    weights = weights / (np.sum(weights) + 1e-10)  # Normalize weights
     return weights
 
 def select_modules(grid: np.ndarray) -> List[str]:
@@ -227,6 +226,70 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         shm.close()
         shm.unlink()
 
+@ray.remote
+def simulate_mcts_node(node, grid, temperature=500.0):
+    """Simulate a single MCTS node."""
+    rng = np.random.default_rng(np.random.randint(0, 1000000))
+    ttl = 5
+    no_improvement = 0
+    best_value = float('-inf')
+
+    current = node
+    while current.untried_actions and current.children:
+        current = current.uct_select()
+        current.virtual_loss += 1
+        if current.value > best_value:
+            best_value = current.value
+            no_improvement = 0
+        else:
+            no_improvement += 1
+            if no_improvement >= ttl:
+                break
+
+    if current.untried_actions:
+        r, c, v = current.untried_actions.pop()
+        new_grid = current.grid.copy()
+        new_grid[r, c] = v
+        child = MCTSNode(new_grid, current, (r, c, v))
+        current.children.append(child)
+        current = child
+
+    sim_result = ray.get(simulate_full_board.remote(current.grid, None, n_iter=100, seed=rng.integers(0, 1000000)))
+    if not isinstance(sim_result, dict):
+        logger.error(f"Invalid sim_result type: {type(sim_result)}")
+        return 0.0
+
+    reward = 0.0
+    for r, c in np.argwhere(grid == -1):
+        if (r, c) in sim_result:
+            weighted = weight_prob_by_modules(current.grid, {(r, c): sim_result[(r, c)]})
+            reward += max(weighted[(r, c)].values())
+
+    if current.parent is not None:
+        delta = reward - current.parent.value
+        if delta < 0 and rng.random() > math.exp(delta / temperature):
+            current.parent.children.remove(current)
+            return 0.0
+
+    while current is not None:
+        current.visits += 1
+        current.value += reward
+        current.virtual_loss -= 1
+        current = current.parent
+    return reward
+
+@ray.remote
+def mcts(grid: np.ndarray, iterations: int = 1000, seed: Optional[int] = None):
+    """Monte Carlo Tree Search with simulated annealing."""
+    rng = np.random.default_rng(seed if seed is not None else np.random.randint(0, 1000000))
+    rows, cols = grid.shape
+    root = MCTSNode(grid)
+
+    # Execute simulations in parallel
+    ray.get([simulate_mcts_node.remote(root, grid) for _ in range(iterations // 4)])
+    best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
+    return best_child.grid
+
 def weight_prob_by_modules(grid: np.ndarray,
                            prob_map: Dict[Tuple[int, int], Dict[int, float]],
                            target_num: Optional[int] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
@@ -318,67 +381,6 @@ class MCTSNode:
         return max(self.children,
                    key=lambda c: (c.value / (c.visits + c.virtual_loss)) +
                    c_param * np.sqrt(2 * np.log(self.visits + 1e-10) / (c.visits + c.virtual_loss + 1e-10)))
-
-@ray.remote
-def mcts(grid: np.ndarray, iterations: int = 1000, seed: Optional[int] = None):
-    """Monte Carlo Tree Search with simulated annealing."""
-    rng = np.random.default_rng(seed if seed is not None else np.random.randint(0, 1000000))
-    rows, cols = grid.shape
-    root = MCTSNode(grid)
-    temperature = 500.0
-
-    def simulate(node):
-        current = node
-        ttl = 5
-        no_improvement = 0
-        best_value = float('-inf')
-
-        while current.untried_actions and current.children:
-            current = current.uct_select()
-            current.virtual_loss += 1
-            if current.value > best_value:
-                best_value = current.value
-                no_improvement = 0
-            else:
-                no_improvement += 1
-                if no_improvement >= ttl:
-                    break
-
-        if current.untried_actions:
-            r, c, v = current.untried_actions.pop()
-            new_grid = current.grid.copy()
-            new_grid[r, c] = v
-            child = MCTSNode(new_grid, current, (r, c, v))
-            current.children.append(child)
-            current = child
-
-        sim_result = ray.get(simulate_full_board.remote(current.grid, None, n_iter=100, seed=rng.integers(0, 1000000)))
-        if not isinstance(sim_result, dict):
-            logger.error(f"Invalid sim_result type: {type(sim_result)}")
-            return 0.0
-
-        reward = 0.0
-        for r, c in np.argwhere(grid == -1):
-            if (r, c) in sim_result:
-                weighted = weight_prob_by_modules(current.grid, {(r, c): sim_result[(r, c)]})
-                reward += max(weighted[(r, c)].values())
-
-        if current.parent is not None:
-            delta = reward - current.parent.value
-            if delta < 0 and rng.random() > math.exp(delta / temperature):
-                current.parent.children.remove(current)
-                return 0.0
-
-        while current is not None:
-            current.visits += 1
-            current.value += reward
-            current.virtual_loss -= 1
-            current = current.parent
-        return reward
-
-    ray.get([simulate.remote(root) for _ in range(iterations // 4)])
-    best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
-    return best_child.grid
 
 def predict_scratch_card(
     grid: List[List[int]],
@@ -526,7 +528,7 @@ def predict_scratch_card(
         for mod, score, desc in top_modules:
             if score > 0.5:
                 reasons.append(f"{desc} (score: {score:.2f})")
-        pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+            pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
 
     preds.sort(key=lambda x: x["probability"][0] if x["probability"] else 0,
                reverse=True)
