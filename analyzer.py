@@ -85,21 +85,31 @@ def reverse_engineer_seed(grid: np.ndarray, known: np.ndarray, known_vals: np.nd
         entropy = -np.sum([p * np.log2(p + 1e-10) for p in np.unique(generated, return_counts=True)[1] / (rows * cols)])
         return mse + abs(entropy - compute_global_features(grid)[1])
 
-    coarse_seeds = np.arange(max(0, seed_range[0]), seed_range[1], 10000, dtype=np.int32)
-    coarse_losses = Parallel(n_jobs=4)(delayed(loss_function)(s, grid, known, known_vals) for s in coarse_seeds)
-    top_k = np.argsort(coarse_losses)[:5]
-    best_coarse_seed = coarse_seeds[top_k[0]]
-    best_coarse_loss = coarse_losses[top_k[0]]
+    best_coarse_seed = None
+    best_coarse_loss = float('inf')
+    for s in range(seed_range[0], seed_range[1], 1000):
+        try:
+            loss = loss_function(s, grid, known, known_vals)
+            if loss < best_coarse_loss:
+                best_coarse_loss = loss
+                best_coarse_seed = s
+        except Exception:
+            continue
 
-    def fine_loss(seed: float) -> float:
-        seed_int = max(0, int(round(seed)))
+    def fine_loss(seed) -> float:
+        seed_scalar = float(seed[0]) if isinstance(seed, np.ndarray) else float(seed)
+        seed_int = max(0, int(round(seed_scalar)))
         return loss_function(seed_int, grid, known, known_vals)
 
-    result = minimize(fine_loss, x0=best_coarse_seed, method='Powell', bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)])
-    best_seed = max(0, int(round(result.x[0])))
-    best_loss = result.fun
+    result = minimize(
+        fine_loss,
+        x0=[best_coarse_seed],
+        method='Powell',
+        bounds=[(max(0, best_coarse_seed - 5000), best_coarse_seed + 5000)],
+    )
 
-    logger.info(f"Reverse engineered seed: {best_seed}, loss: {best_loss:.4f}")
+    best_seed = int(round(result.x[0]))
+    best_loss = result.fun
     return best_seed, best_loss
 
 class SurrogateModel:
