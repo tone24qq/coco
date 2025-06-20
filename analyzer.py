@@ -67,7 +67,10 @@ def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarra
 def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
     """Dynamically adjust formula weights based on historical performance."""
     total = sum(history.values()) or 1e-10
-    return np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")], dtype=np.float32)
+    weights = np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")], dtype=np.float32)
+    # Ensure weights sum to 1
+    weights = weights / (np.sum(weights) + 1e-10)
+    return weights
 
 def select_modules(grid: np.ndarray) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
@@ -182,6 +185,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         if not formulas_and_weights:
             raise ValueError("No valid formulas found in FORMULA_REGISTRY.")
         formulas, weights = zip(*formulas_and_weights)
+        weights = np.array(weights, dtype=np.float32) / (np.sum(weights) + 1e-10)  # Normalize weights
 
         remain = adjusted_iter
         counts = defaultdict(lambda: defaultdict(int))
