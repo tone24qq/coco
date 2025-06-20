@@ -5,6 +5,7 @@ from typing import List, Tuple, Callable, Optional, Dict, Any
 import numpy as np
 import random
 from numba import njit
+from functools import lru_cache
 
 # Logging configuration
 logging.basicConfig(
@@ -190,6 +191,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         return np.zeros((rows, cols), dtype=np.float32)
 
 # Scoring modules
+@lru_cache(maxsize=128)
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -219,6 +221,7 @@ def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
             scores[r, c] = max_score
     return scores
 
+@lru_cache(maxsize=128)
 def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on 5x5 neighborhood mean and variance."""
     rows, cols = grid.shape
@@ -247,6 +250,7 @@ def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") 
             scores[r, c] = max_score
     return scores
 
+@lru_cache(maxsize=128)
 def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on sequence blocks in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -286,6 +290,7 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
             scores[r, c] = max_score
     return scores
 
+@lru_cache(maxsize=128)
 def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on historical error correction in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -310,6 +315,7 @@ def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N
                     scores[r, c] = score
     return scores
 
+@lru_cache(maxsize=128)
 def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on strong arithmetic or symmetry patterns."""
     rows, cols = grid.shape
@@ -336,6 +342,7 @@ def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
             scores[r, c] = max_score
     return scores
 
+@lru_cache(maxsize=128)
 def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on skip pattern confidence."""
     rows, cols = grid.shape
