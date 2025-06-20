@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Math helpers
 class MathUtils:
     """Utility functions for common mathematical operations."""
+
     @staticmethod
     @njit
     def sigmoid(x: float, k: float = 1.0) -> float:
@@ -26,10 +27,16 @@ class MathUtils:
 
     @staticmethod
     @njit
+    def isclose(a: float, b: float, rel_tol: float = 1e-9) -> bool:
+        """Numba-safe isclose implementation."""
+        return abs(a - b) <= rel_tol * max(abs(a), abs(b))
+
+    @staticmethod
+    @njit
     def normalize_value(value: float, min_val: float, max_val: float, clamp: bool = True) -> float:
         """Normalize value to [0, 1]."""
-        if math.isclose(max_val, min_val, rel_tol=1e-9):
-            return 0.5 if math.isclose(value, min_val, rel_tol=1e-9) else (0.0 if value < min_val else 1.0)
+        if MathUtils.isclose(max_val, min_val, 1e-9):
+            return 0.5 if MathUtils.isclose(value, min_val, 1e-9) else (0.0 if value < min_val else 1.0)
         normalized = (value - min_val) / (max_val - min_val + 1e-10)
         return max(0.0, min(1.0, normalized)) if clamp else normalized
 
@@ -37,7 +44,6 @@ class MathUtils:
     def manhattan_distance(p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
         """Compute Manhattan distance between two (row, col) points."""
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
-
 # Board analysis helpers
 class BoardAnalyzerUtils:
     """Utility collection for scratch-card grid analysis."""
