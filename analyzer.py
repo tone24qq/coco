@@ -179,12 +179,17 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         remain = adjusted_iter
         counts = defaultdict(lambda: defaultdict(int))
 
-        while remain > 0:
-            batch = min(1000, remain)
-            if psutil.virtual_memory().percent > 75:
-                batch = max(100, batch // 2)
-            boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+        # 防呆處理 formulas 與 weights 長度不一致或非法 key
+formulas_and_weights = [(f, w) for f, w in zip(formulas, weights) if f in FORMULA_REGISTRY]
+if not formulas_and_weights:
+    raise ValueError("No valid formulas found in FORMULA_REGISTRY.")
+formulas, weights = zip(*formulas_and_weights)
 
+while remain > 0:
+    batch = min(1000, remain)
+    if psutil.virtual_memory().percent > 75:
+        batch = max(100, batch // 2)
+    boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
             if known.size:
                 mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
                 boards = boards[mask]
