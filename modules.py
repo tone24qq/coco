@@ -5,7 +5,6 @@ import logging
 import os
 import json
 import random
-from numba import njit
 
 # Logging configuration
 logging.basicConfig(
@@ -25,28 +24,25 @@ def register_formula(name: str) -> Callable:
     return _decorator
 
 @register_formula("excel")
-@njit
 def gen_excel(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid using random permutation of numbers 1 to N."""
-    nums = rng.permutation(np.arange(1, rows * cols + 1, dtype=np.int16))
+    nums = rng.permutation(rows * cols) + 1
     return nums.reshape(rows, cols)
 
 @register_formula("shuffle")
-@njit
 def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid by shuffling numbers within each row."""
-    nums = np.arange(1, rows * cols + 1, dtype=np.int16)
+    nums = np.arange(1, rows * cols + 1)
     board = nums.reshape(rows, cols)
     for r in range(rows):
         rng.shuffle(board[r])
     return board
 
 @register_formula("random_entropy")
-@njit
 def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid with entropy-based random dispersion."""
-    grid = np.zeros((rows, cols), dtype=np.int16)
-    legal = np.arange(1, rows * cols + 1, dtype=np.int16)
+    grid = np.zeros((rows, cols), dtype=np.int64)
+    legal = list(range(1, rows * cols + 1))
     rng.shuffle(legal)
     for i in range(rows * cols):
         r, c = divmod(i, cols)
@@ -79,25 +75,11 @@ class AdaptiveWeights:
         except OSError as e:
             logging.error(f"Failed to save weights history: {e}")
 
-# ---------- FIX for Numba boolean indexing ----------
-@njit(cache=True, fastmath=True)
 def compute_global_features(grid: np.ndarray) -> Tuple[float, float]:
-    """
-    Compute global statistical features of the grid.
-    Returns (mean, entropy) of known values.  -1 代表未開格。
-    """
-    flat = grid.ravel()                 # 先展平成 1-D
-    mask = flat != -1
-    if mask.sum() == 0:                 # 全空盤保險
-        return 0.0, 0.0
-
-    known_vals = flat[mask].astype(np.float32)  # 1-D ⇐ 1-D 布林遮罩 ✅
-    mean_val = known_vals.mean()
-
-    # Shannon entropy（簡單版本）
-    hist = np.bincount(known_vals.astype(np.int32))
-    probs = hist[hist > 0] / hist.sum()
-    entropy = -np.sum(probs * np.log2(probs))
-
-    return mean_val, entropy
-# ---------- END FIX ---------------------------------
+    """Compute global statistical features of the grid."""
+    known_vals = grid[grid != -1].astype(np.float32)
+    if known_vals.size == 0:
+        return 0.0, 1.0
+    mean_val = np.mean(known_vals)
+    std_val = np.std(known_vals) if np.std(known_vals) > 0 else 1.0
+    return mean_val, std_val
