@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional  # Added Optional import
+from typing import List, Dict, Any, Optional
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -62,6 +62,8 @@ class PredictResponse(BaseModel):
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
+os.environ.setdefault("ITER", "100000")
+os.environ.setdefault("TOPK_RERANK", "100")
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
