@@ -8,6 +8,7 @@ from functools import lru_cache
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
+import heapq
 
 # Logger configuration
 logging.basicConfig(
@@ -63,19 +64,31 @@ def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
 
 def select_modules(grid: np.ndarray) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
-    base_modules = ["EXT_F10_Magnetic_Tail_Pattern_Vec", "EXT_GM20_Skip_Pattern_Confidence_Vec"]
+    base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec"]
     scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
+
+@lru_cache(maxsize=500_000)
+def _cached_board(mask_key, seed, r, c, known_vals, known_mask):
+    sob = qmc.Sobol(d=r*c, scramble=True, seed=seed)
+    vec = sob.random(n=r*c*4)[0]
+    flat = np.argsort(vec) + 1
+    flat[known_mask] = known_vals[known_mask]
+    return flat.reshape(r, c)
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
     choices = rng.choice(formulas, size=batch, p=weights)
-    boards = np.empty((batch, n), dtype=np.int16)
-    for i, f in enumerate(choices):
-        boards[i] = FORMULA_REGISTRY[f](rows, cols, rng).ravel()
-    return boards.reshape(batch, rows, cols)
+    boards = np.empty((batch, rows, cols), dtype=np.int16)
+    known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
+    known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
+    mask = xxhash.xxh64(known_vals.tobytes()).hexdigest()
+    seed = rng.integers(0, 0xFFFF)
+    for i in range(batch):
+        boards[i] = _cached_board(mask, seed, rows, cols, known_vals, known_mask)
+    return boards
 
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with enhanced importance sampling and target_num hits."""
@@ -121,13 +134,14 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
         if len(boards) > 0:
             for i, board in enumerate(boards):
+                fast = 0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board) + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board)
                 for r, c in blanks:
                     idx = r * cols + c
                     if rng.random() < importance_weights[idx]:
                         num = board[r, c]
-                        counts[(r, c)][num] += 1
+                        counts[(r, c)][num] += fast[r, c]
                         if target_num is not None and num == target_num:
-                            counts[(r, c)][target_num] += 2  # Boost target_num
+                            counts[(r, c)][target_num] += 2 * fast[r, c]
         remain -= batch
 
     prob_map = {}
@@ -136,7 +150,17 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
         prob_map[(r, c)] = probs
 
-    return prob_map
+    # Two-phase scoring: Re-rank top K candidates
+    candidates = [(r, c, max(probs.values()), num) for (r, c), probs in prob_map.items() for num in probs]
+    top_k = heapq.nlargest(int(os.getenv("TOPK_RERANK", "100")), candidates, key=lambda x: x[2])
+    final_prob_map = {}
+    for r, c, fast_score, num in top_k:
+        final_score = 0.5 * fast_score + 0.5 * (0.6 * get_module_score("EXT_Q3_DiscontinuitySym_Vec", g)[r, c] + 0.4 * get_module_score("EXT_Q4_ControlComposite_Vec", g)[r, c])
+        if (r, c) not in final_prob_map:
+            final_prob_map[(r, c)] = {}
+        final_prob_map[(r, c)][num] = final_score
+
+    return final_prob_map
 
 def weight_prob_by_modules(grid: np.ndarray,
                            prob_map: Dict[Tuple[int, int], Dict[int, float]],
@@ -146,7 +170,7 @@ def weight_prob_by_modules(grid: np.ndarray,
         return {}
 
     result = prob_map.copy()
-    modules = select_modules(grid)  # Enhanced dynamic module selection
+    modules = select_modules(grid)
     module_scores = Parallel(n_jobs=4)(
         delayed(get_module_score)(mod, grid) for mod in modules
     )
@@ -184,7 +208,7 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
 
         for i, cell in enumerate(blanks):
             for j, n in enumerate(nums):
-                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)  # 保底 > 0
+                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)
                 cost[i, j] = -math.log(prob)
 
         row, col = linear_sum_assignment(cost)
@@ -214,15 +238,16 @@ class MCTSNode:
         self.children = []
         self.visits = 0
         self.value = 0.0
-        self.virtual_loss = 0  # Add virtual loss
+        self.virtual_loss = 0
         self.untried_actions = [(r, c, v)
                                 for r, c in np.argwhere(grid == -1)
                                 for v in analyzer_utils.get_legal_values_for_placement(grid)]
 
-    def uct_select(self, c_param=1.4):
+    def uct_select(self, c_param=1.414):
         return max(self.children,
                    key=lambda c: (c.value / (c.visits + c.virtual_loss)) +
-                   c_param * np.sqrt(2 * np.log(self.visits + 1e-10) / (c.visits + c.virtual_loss + 1e-10)))
+                   c_param * np.sqrt(2 * np.log(self.visits + 1e-10) / (c.visits + c.virtual_loss + 1e-10)) -
+                   1.0 * c.virtual_loss)
 
 def mcts(grid: np.ndarray, iterations: int = 1000):
     rows, cols = grid.shape
@@ -230,9 +255,9 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
 
     def simulate(node):
         current = node
-        while current.untried_actions and current.children:
+        while current.untried_actions and len(current.children) < 1.5 * current.visits ** 0.5:
             current = current.uct_select()
-            current.virtual_loss += 1  # Apply virtual loss
+            current.virtual_loss += 1
         if current.untried_actions:
             r, c, v = current.untried_actions.pop()
             new_grid = current.grid.copy()
@@ -241,7 +266,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             current.children.append(child)
             current = child
 
-        sim_result = simulate_full_board(current.grid, None, n_iter=100)  # Enhanced with full_board
+        sim_result = simulate_full_board(current.grid, None, n_iter=100)
         if not isinstance(sim_result, dict):
             logger.error(f"Invalid sim_result type: {type(sim_result)}")
             return 0.0
@@ -256,7 +281,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
         while current is not None:
             current.visits += 1
             current.value += reward
-            current.virtual_loss -= 1  # Remove virtual loss
+            current.virtual_loss -= 1
             current = current.parent
         return reward
 
@@ -283,12 +308,10 @@ def predict_scratch_card(
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
 
     modules = [
-        ("EXT_M1_Tail_Pattern_Vec", "Tail number pattern match"),
-        ("EXT_M3_Local_Focus_Vec", "Neighborhood mean/variance alignment"),
-        ("EXT_M10_Sequence_Block_Vec", "Sequence block continuity"),
-        ("EXT_R3_Error_Correction_Vec", "Historical error correction"),
-        ("EXT_F7_Strong_Pattern_Vec", "Arithmetic/symmetry pattern"),
-        ("EXT_GM20_Skip_Pattern_Confidence_Vec", "Skip pattern confidence")
+        ("EXT_Q1_ProximityEntropy_Vec", "Proximity and entropy scoring"),
+        ("EXT_Q2_PotentialPath_Vec", "Sequence and path scoring"),
+        ("EXT_Q3_DiscontinuitySym_Vec", "Discontinuity and symmetry scoring"),
+        ("EXT_Q4_ControlComposite_Vec", "Control and error correction")
     ]
 
     base_iter = iterations if iterations is not None else int(os.getenv("ITER", 6000))
