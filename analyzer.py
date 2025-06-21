@@ -31,6 +31,13 @@ from brain import (
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
 
+# 來自 probmap_key_patch_v2.txt
+def _native_coord(k):
+    return int(k[0]), int(k[1])
+
+def _native_dict(d):
+    return {_native_coord(k): v for k, v in d.items()}
+
 # Count-Min Sketch (optimized for low memory)
 class CountMinSketch:
     def __init__(self, width: int = 1024, depth: int = 1):
@@ -110,10 +117,6 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
         boards[i] = board1d
     return boards
 
-# 來自 final_numpy_coord_fix_summary.txt
-def _native_dict(d):
-    return {(int(k[0]), int(k[1])): v for k, v in d.items()}
-
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with enhanced importance sampling and target_num hits."""
     if rng is None:
@@ -184,7 +187,9 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
             final_prob_map[(r, c)] = {}
         final_prob_map[(r, c)][num] = final_score
 
-    return _native_dict(final_prob_map)  # 來自 final_numpy_coord_fix_summary.txt
+    # 來自 probmap_key_patch_v2.txt
+    prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
+    return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray,
                            prob_map: Dict[Tuple[int, int], Dict[int, float]],
@@ -221,7 +226,7 @@ def weight_prob_by_modules(grid: np.ndarray,
             total = sum(probs.values()) or 1e-10
             result[(r, c)] = {k: v / total for k, v in probs.items()}
 
-    return _native_dict(result)  # 來自 final_numpy_coord_fix_summary.txt
+    return _native_dict(result)
 
 def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
                   blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
@@ -326,7 +331,7 @@ def predict_scratch_card(
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
-    blanks = [tuple(b) for b in np.argwhere(grid_np == -1)]
+    blanks = [tuple(map(int, b)) for b in np.argwhere(grid_np == -1)]  # 來自 probmap_key_patch_v2.txt
 
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
@@ -355,7 +360,7 @@ def predict_scratch_card(
             "col": c,
             "candidates": [target_num],
             "probability": prob_map[(r, c)].get(target_num, 0.0) * 100
-        } for r, c in blanks]
+        } for r, c in prob_map.keys()]  # 來自 probmap_key_patch_v2.txt
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
