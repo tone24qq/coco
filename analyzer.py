@@ -78,7 +78,6 @@ def _cached_board(mask_key, seed, r, c, known_vals, known_mask):
     return flat.reshape(r, c)
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
-    """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
     choices = rng.choice(formulas, size=batch, p=weights)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
@@ -87,7 +86,7 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     mask = xxhash.xxh64(known_vals.tobytes()).hexdigest()
     seed = rng.integers(0, 0xFFFF)
     for i in range(batch):
-        boards[i] = _cached_board(mask, seed, rows, cols, known_vals, known_mask)
+        boards[i] = _cached_board(mask, seed, rows, cols, known_vals, known_mask).reshape(rows, cols)
     return boards
 
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
