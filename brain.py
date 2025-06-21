@@ -47,10 +47,10 @@ class BoardAnalyzerUtils:
         r: int,
         c: int,
         radius: int = 2,
-        connectivity: int = 8,  # 來自 fix_eight_connectivity_patch.txt
+        connectivity: int = 8,  # 新參數，預設八連通
         val_func: Callable[[int], Optional[float]] = lambda x: float(x) if x != -1 else None,
         include_center: bool = False,
-        **kw
+        **kw  # 捕獲舊關鍵字
     ) -> List[float]:
         """
         Collect values surrounding grid[r, c] in a square radius.
@@ -58,6 +58,7 @@ class BoardAnalyzerUtils:
         Accepts legacy keywords:
             eight_connectivity / four_connectivity
         """
+        # 舊關鍵字映射
         if "eight_connectivity" in kw:
             connectivity = 8 if kw.pop("eight_connectivity") else 4
         if "four_connectivity" in kw:
@@ -69,7 +70,7 @@ class BoardAnalyzerUtils:
             for dc in range(-radius, radius + 1):
                 if not include_center and dr == 0 and dc == 0:
                     continue
-                if connectivity == 4 and abs(dr) + abs(dc) > radius:
+                if connectivity == 4 and abs(dr) + abs(dc) > radius:  # 四連通限制
                     continue
                 nr, nc = r + dr, c + dc
                 if 0 <= nr < rows and 0 <= nc < cols:
@@ -202,8 +203,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
     module_func = REGISTERED_MODULES_BRAIN[module_name]
-    if logger.isEnabledFor(logging.DEBUG):  # 來自 log_throttle_patch.txt
-        logger.debug(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
+    logger.info(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
     try:
         score_grid = module_func(grid, **kwargs)
         return score_grid
