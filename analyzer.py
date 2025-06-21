@@ -24,7 +24,8 @@ from brain import (
     MathUtils,
     BoardAnalyzerUtils,
     REGISTERED_MODULES_BRAIN,
-    get_module_score
+    get_module_score,
+    bytes_to_grid  # 添加從 brain.py 導入
 )
 
 math_utils = MathUtils()
@@ -54,7 +55,7 @@ def pack_key(cell_idx: int, num: int) -> bytes:
 # Precompute skip scores with LRU cache
 @lru_cache(maxsize=1024)
 def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarray:
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(rows, cols)
+    grid = bytes_to_grid(grid_bytes, (rows, cols))  # 使用 bytes_to_grid
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
 def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
@@ -70,23 +71,32 @@ def select_modules(grid: np.ndarray) -> List[str]:
     return base_modules + [m for m in top_modules if m not in base_modules]
 
 @lru_cache(maxsize=500_000)
-def _cached_board(mask_key, seed, r, c, known_vals, known_mask):
+def _cached_board(mask_key: str, seed: int, r: int, c: int, kv_bytes: bytes, mask_bytes: bytes, *, shape):
+    """Cached function to generate board with hashable inputs."""
+    from scipy.stats import qmc  # 確保 Sobol 可用
     sob = qmc.Sobol(d=r*c, scramble=True, seed=seed)
     vec = sob.random(n=r*c*4)[0]
     flat = np.argsort(vec) + 1
+
+    known_vals = np.frombuffer(kv_bytes, dtype=np.int32).reshape(shape)  # 從 bytes 還原
+    known_mask = np.frombuffer(mask_bytes, dtype=bool).reshape(shape)    # 從 bytes 還原
+
     flat[known_mask] = known_vals[known_mask]
-    return flat.reshape(r, c)
+    return flat  # 1-D; caller reshapes
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
+    """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
     choices = rng.choice(formulas, size=batch, p=weights)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
     known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
     known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
-    mask = xxhash.xxh64(known_vals.tobytes()).hexdigest()
+    kv_bytes = known_vals.tobytes()  # 轉換為 bytes
+    mask_bytes = known_mask.tobytes()  # 轉換為 bytes
+    mask = xxhash.xxh64(kv_bytes + mask_bytes).hexdigest()  # 使用 digest 作為 mask_key
     seed = rng.integers(0, 0xFFFF)
     for i in range(batch):
-        boards[i] = _cached_board(mask, seed, rows, cols, known_vals, known_mask).reshape(rows, cols)
+        boards[i] = _cached_board(mask, seed, rows, cols, kv_bytes, mask_bytes, shape=known_vals.shape).reshape(rows, cols)
     return boards
 
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
