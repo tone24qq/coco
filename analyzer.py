@@ -433,19 +433,20 @@ def predict_scratch_card(
 
         old_conf = max(
     p
-    for _, cell_probs in prob_map.items()
-    for p in cell_probs.values()
+    for _, cell_probs in prob_map.items()      # 逐格取出內部 dict
+    for p in cell_probs.values()               # 逐個號碼機率
 )
 
+# 2️⃣  嘗試把每個候選格 (r,c) 掛回去後，重新加權 → 看能否誕生更高機率
 new_conf = max([
     max(
-        weight_prob_by_modules(
-            best_grid,
-            {(r, c): prob_map.get((r, c), {})}
-        ).get((r, c), {}).values(),
-        default=0        # ← 防止空 dict
+        weight_prob_by_modules(                # <<< 你自己已有的函式
+            best_grid,                         #   - 當前最佳棋盤
+            {(r, c): prob_map.get((r, c), {})} #   - 只帶單一候選格的機率
+        ).get((r, c), {}).values(),            # 取回各模組加權後的機率們
+        default=0                              # ← dict 為空時避免 ValueError
     )
-    for (r, c) in candidates
+    for (r, c) in candidates                   # 逐一測試所有候選格
 ])
 # -------------------------------------------------------
 
