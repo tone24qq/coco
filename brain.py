@@ -47,7 +47,7 @@ class BoardAnalyzerUtils:
         r: int,
         c: int,
         radius: int = 2,
-        eight_connectivity: bool = True,
+        eight权_connectivity: bool = True,
         val_func: Callable[[int], Optional[float]] = lambda x: float(x) if x != -1 else None,
         include_center: bool = False,
     ) -> List[float]:
@@ -171,7 +171,7 @@ class BoardAnalyzerUtils:
         used = set(int(v) for v in grid.flatten() if v != -1 and v > 0)
         return all_vals - used
 
-# 根據 fix_unsupported_itemsize_and_cache.txt 添加
+# 來自之前的 fix_unsupported_itemsize_and_cache.txt
 DTYPE_DEFAULT = np.int32
 ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize  # 修正為 4 bytes
 
@@ -196,7 +196,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         score_grid = module_func(grid, **kwargs)
         return score_grid
     except Exception as e:
-        logger.error(f"Error executing module {module_name}: {e}", exc_info=True, extra={"request_id": effective_request_id})
+        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})  # 移除 exc_info=True
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
 
