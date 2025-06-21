@@ -211,6 +211,15 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
     # 來自 probmap_key_patch_v2.txt
     prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
+
+    # --- 保證所有格都有 entry ------------------------------
+    if os.getenv("FORCE_FULL_SCAN", "0") == "1":
+        for r in range(rows):
+            for c in range(cols):
+                if (r, c) not in prob_map:
+                    prob_map[(r, c)] = {n: 0.0 for n in range(100)}
+    # --------------------------------------------------------
+
     return prob_map
 
 def weight_prob_by_modules(grid: np.ndarray,
@@ -384,8 +393,8 @@ def predict_scratch_card(
             "row": r,
             "col": c,
             "candidates": [target_num],
-            "probability": prob_map[(r, c)].get(target_num, 0.0) * 100
-        } for r, c in prob_map.keys()]  # 來自 probmap_key_patch_v2.txt
+            "probability": cell_probs.get(target_num, 0.0) * 100
+        } for r, c in prob_map.keys()]  # 改用 .get()
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
@@ -412,9 +421,9 @@ def predict_scratch_card(
 
         old_conf = max([p for (_, _), (_, p) in assign.items()] or [0])
         new_conf = max([
-            max(weight_prob_by_modules(best_grid, {(r, c): prob_map[(r, c)]})[(r, c)].values())
+            max(weight_prob_by_modules(best_grid, {(r, c): cell_probs})[(r, c)].values())
             for r, c in blanks
-        ] or [0])
+        ] or [0])  # 改用 .get()
 
         if new_conf <= old_conf * 0.95:
             preds = [{
