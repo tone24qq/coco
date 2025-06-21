@@ -18,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
     parser.add_argument("--grid", type=str, required=True, help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'")
-    parser.add_argument("--iterations", type=int, default=1000, help="Number of Monte Carlo iterations")
+    parser.add_argument("--iterations", type=int, default=int(os.getenv("ITER", "5000")), help="Number of Monte Carlo iterations")
     parser.add_argument("--target", type=int, default=None, help="Target number to predict")
     return parser.parse_args()
 
