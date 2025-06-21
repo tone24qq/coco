@@ -72,17 +72,17 @@ def select_modules(grid: np.ndarray) -> List[str]:
 
 @lru_cache(maxsize=500000)
 def _cached_board(mask_key: str, seed: int, r: int, c: int,
-                  kv_bytes: bytes, mask_bytes: bytes):
+                  kv_bytes: bytes, idx_bytes: bytes):
     """Return 1-D board (length r*c) with known cells filled."""
     sob = qmc.Sobol(d=r*c, scramble=True, seed=seed)
     m = int(np.ceil(np.log2(r*c*4)))  # 計算 power-of-2 批次
     vec = sob.random_base2(m=m)[-1]   # 使用最後一點以消除警告
-    flat = np.argsort(vec) + 1        # permutation 1..r*c
+    flat = np.argsort(vec) + 1        # permutation
 
-    known_mask = np.frombuffer(mask_bytes, dtype=bool)
-    known_vals = np.frombuffer(kv_bytes, dtype=np.int32)
+    idx = np.frombuffer(idx_bytes, dtype=np.int32)
+    vals = np.frombuffer(kv_bytes, dtype=np.int32)
 
-    flat[known_mask] = known_vals
+    flat[idx] = vals                  # direct scatter
     return flat                       # caller reshapes
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
@@ -93,14 +93,14 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
     known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
     kv_bytes = known_vals.tobytes()   # 轉換為 bytes
-    mask_bytes = known_mask.tobytes() # 轉換為 bytes
-    mask = xxhash.xxh64(kv_bytes + mask_bytes).hexdigest()
+    idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()  # positions of True
+    mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
     seed = rng.integers(0, 0xFFFF)
     for i in range(batch):
         board1d = _cached_board(
             mask, seed & 0xFFFF,
             rows, cols,
-            kv_bytes, mask_bytes      # no shape arg
+            kv_bytes, idx_bytes       # note order changed
         ).reshape(rows, cols)
         boards[i] = board1d
     return boards
