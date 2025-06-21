@@ -72,7 +72,7 @@ def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
 
 def select_modules(grid: np.ndarray) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
-    base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec"]
+    base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]
     scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
@@ -161,7 +161,9 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
         if len(boards) > 0:
             for i, board in enumerate(boards):
-                fast = 0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board) + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board)
+                fast = 0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board) + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board) + \
+                       0.2 * get_module_score("EXT_Q5_GlobalEntropy_Vec", board) + 0.2 * get_module_score("EXT_Q6_LineBridge_Vec", board) + \
+                       0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", board)
                 for r, c in blanks:
                     idx = r * cols + c
                     if rng.random() < importance_weights[idx]:
@@ -177,12 +179,24 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
         prob_map[(r, c)] = probs
 
-    # Two-phase scoring: Re-rank top K candidates
+    # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
+    tau = 0.3
+    w = np.array([0.28, 0.28, 0.12, 0.12, 0.08, 0.07, 0.05])  # Q1~Q7
     candidates = [(r, c, max(probs.values()), num) for (r, c), probs in prob_map.items() for num in probs]
-    top_k = heapq.nlargest(int(os.getenv("TOPK_RERANK", "100")), candidates, key=lambda x: x[2])
+    top_k = heapq.nlargest(int(os.getenv("TOPK_RERANK", "120")), candidates, key=lambda x: x[2])
     final_prob_map = {}
     for r, c, fast_score, num in top_k:
-        final_score = 0.5 * fast_score + 0.5 * (0.6 * get_module_score("EXT_Q3_DiscontinuitySym_Vec", g)[r, c] + 0.4 * get_module_score("EXT_Q4_ControlComposite_Vec", g)[r, c])
+        scores = [
+            get_module_score("EXT_Q1_ProximityEntropy_Vec", g)[r, c],
+            get_module_score("EXT_Q2_PotentialPath_Vec", g)[r, c],
+            get_module_score("EXT_Q3_DiscontinuitySym_Vec", g)[r, c],
+            get_module_score("EXT_Q4_ControlComposite_Vec", g)[r, c],
+            get_module_score("EXT_Q5_GlobalEntropy_Vec", g)[r, c],
+            get_module_score("EXT_Q6_LineBridge_Vec", g)[r, c],
+            get_module_score("EXT_Q7_VariancePrior_Vec", g)[r, c]
+        ]
+        soft = np.exp(np.array(scores) / tau); soft /= soft.sum() + 1e-10
+        final_score = (w * soft).sum()
         if (r, c) not in final_prob_map:
             final_prob_map[(r, c)] = {}
         final_prob_map[(r, c)][num] = final_score
@@ -340,10 +354,13 @@ def predict_scratch_card(
         ("EXT_Q1_ProximityEntropy_Vec", "Proximity and entropy scoring"),
         ("EXT_Q2_PotentialPath_Vec", "Sequence and path scoring"),
         ("EXT_Q3_DiscontinuitySym_Vec", "Discontinuity and symmetry scoring"),
-        ("EXT_Q4_ControlComposite_Vec", "Control and error correction")
+        ("EXT_Q4_ControlComposite_Vec", "Control and error correction"),
+        ("EXT_Q5_GlobalEntropy_Vec", "Global entropy and clustering"),
+        ("EXT_Q6_LineBridge_Vec", "Linearity and bridge connectivity"),
+        ("EXT_Q7_VariancePrior_Vec", "Variance smoothing and prior")
     ]
 
-    base_iter = iterations if iterations is not None else int(os.getenv("ITER", "6000"))
+    base_iter = iterations if iterations is not None else int(os.getenv("ITER", "5000"))
     total_iter = int(base_iter * max(rows * cols / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
