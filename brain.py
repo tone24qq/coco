@@ -151,7 +151,7 @@ class BoardAnalyzerUtils:
                             continue
                         expected = seq_vals[-1] + diff
                         if math.isclose(line[k], expected, rel_tol=1e-9):
-                            seq_vals.append(line[k])  # Fixed: Changed line[l] to line[k]
+                            seq_vals.append(line[k])
                             gap_cnt = 0
                         else:
                             break
@@ -191,7 +191,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
 
-# Scoring modules
+# --- Scoring Module Implementations ---
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -405,6 +405,32 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[
             scores[r, c] = math_utils.normalize_value(best_conf, 0, 1.0)
     return scores
 
+def EXT_Q1_ProximityEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Composite scoring for proximity and entropy."""
+    a2 = get_module_score("EXT_M3_Local_Focus_Vec", grid, request_id=request_id)
+    m1 = get_module_score("EXT_M1_Tail_Pattern_Vec", grid, request_id=request_id)
+    return 0.65 * a2 + 0.35 * m1
+
+def EXT_Q2_PotentialPath_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Composite scoring for potential paths and sequences."""
+    m10 = get_module_score("EXT_M10_Sequence_Block_Vec", grid, request_id=request_id)
+    f7 = get_module_score("EXT_F7_Strong_Pattern_Vec", grid, request_id=request_id)
+    return 0.5 * m10 + 0.5 * f7
+
+def EXT_Q3_DiscontinuitySym_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Composite scoring for discontinuity and symmetry."""
+    gm20 = get_module_score("EXT_GM20_Skip_Pattern_Confidence_Vec", grid, request_id=request_id)
+    rows, cols = grid.shape
+    sym_score = 0.3 if (rows > 1 and cols > 1 and grid[rows-1, cols-1] == grid[0, 0] and grid[rows-1, cols-1] != -1) else 0.0
+    return 0.7 * gm20 + sym_score
+
+def EXT_Q4_ControlComposite_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Composite scoring for control and error correction."""
+    r3 = get_module_score("EXT_R3_Error_Correction_Vec", grid, request_id=request_id)
+    other_modules = [m for m in REGISTERED_MODULES_BRAIN if m != "EXT_R3_Error_Correction_Vec"]
+    mean_score = np.mean([get_module_score(m, grid, request_id=request_id) for m in other_modules], axis=0)
+    return 0.5 * r3 + 0.5 * mean_score
+
 # Register modules
 REGISTERED_MODULES_BRAIN.update({
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
@@ -413,6 +439,10 @@ REGISTERED_MODULES_BRAIN.update({
     "EXT_R3_Error_Correction_Vec": EXT_R3_Error_Correction_Vec,
     "EXT_F7_Strong_Pattern_Vec": EXT_F7_Strong_Pattern_Vec,
     "EXT_GM20_Skip_Pattern_Confidence_Vec": EXT_GM20_Skip_Pattern_Confidence_Vec,
+    "EXT_Q1_ProximityEntropy_Vec": EXT_Q1_ProximityEntropy_Vec,
+    "EXT_Q2_PotentialPath_Vec": EXT_Q2_PotentialPath_Vec,
+    "EXT_Q3_DiscontinuitySym_Vec": EXT_Q3_DiscontinuitySym_Vec,
+    "EXT_Q4_ControlComposite_Vec": EXT_Q4_ControlComposite_Vec,
 })
 
 # Verification
@@ -420,7 +450,7 @@ if __name__ == "__main__":
     print("Verifying brain.py structure...")
     dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
     print(f"Created dummy grid:\n{dummy_grid}")
-    for module_to_test in ["EXT_M1_Tail_Pattern_Vec", "EXT_M3_Local_Focus_Vec", "EXT_M10_Sequence_Block_Vec"]:
+    for module_to_test in ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q3_DiscontinuitySym_Vec"]:
         print(f"Testing get_module_score with '{module_to_test}'...")
         try:
             scores = get_module_score(module_to_test, dummy_grid)
