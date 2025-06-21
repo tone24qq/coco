@@ -1,10 +1,12 @@
-import os
 import math
 import logging
+import os
+import numpy as np
 from collections import Counter, defaultdict
 from typing import List, Tuple, Callable, Optional, Dict, Any
-
-import numpy as np
+from scipy.cluster.vq import kmeans2
+from scipy import ndimage as ndi
+from numpy.fft import rfftn, irfftn
 import random
 
 # Logging configuration
@@ -204,79 +206,104 @@ def bytes_to_grid(grid_bytes: bytes, shape):
 REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, Optional[str]], np.ndarray]] = {}
 
 if os.getenv("ENABLE_LEGACY", "0") != "1":
-    # 移除舊的 6 支重複模組，僅保留 Q1-Q4
     logger.info("Legacy modules disabled by default (ENABLE_LEGACY=0). Running Q1-Q4 only.")
 else:
     logger.warning("Legacy modules enabled via ENABLE_LEGACY=1. Performance may degrade by 30-40%.")
 
-# 新增 Q5-Q7 模組
-def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
-    """Score based on global entropy and clustering hotspots (1.2×Q1)."""
+# ----------------------------------------------------------------------
+# Utility kernels / helpers from q_series_advanced_patch.py
+# ----------------------------------------------------------------------
+def _local_hist(grid, bins=100, win=5):
+    """Return sliding-window histogram (vectorised via FFT)."""
     rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    mean_val, std_val = compute_global_features(grid)
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            entropy_score = -np.log(std_val + 1e-10) if std_val > 0 else 0.0
-            scores[r, c] = MathUtils().normalize_value(entropy_score, -5.0, 0.0)
-    return scores
+    one_hot = np.eye(bins, dtype=float)[grid]  # (r,c,b)
+    kernel = np.ones((win, win), dtype=float)
+    # FFT-based convolution per bin
+    k_fft = rfftn(kernel, s=grid.shape)
+    convs = []
+    for b in range(bins):
+        x_fft = rfftn(one_hot[..., b], s=grid.shape)
+        convs.append(irfftn(x_fft * k_fft, s=grid.shape))
+    hist = np.stack(convs, axis=-1)
+    hist = hist / hist.sum(-1, keepdims=True).clip(1e-9)
+    return hist
+
+# ----------------------------------------------------------------------
+# Q-Series modules from q_series_advanced_patch.py
+# ----------------------------------------------------------------------
+def compute_global_features(grid: np.ndarray):
+    flat = grid.ravel().astype(float)
+    mean_ = flat.mean()
+    std_ = flat.std(ddof=0)
+    bins = 100
+    counts = np.bincount(flat.astype(int), minlength=bins) + 1e-9
+    p = counts / counts.sum()
+    entropy = -(p * np.log2(p)).sum() / np.log2(bins)
+    return mean_, std_, entropy, p
+
+def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    _, _, entropy, _ = compute_global_features(grid)
+    vals = grid.ravel().astype(float)
+    centroids, labels = kmeans2(vals, k=2, minit='points')
+    hot = int(np.argmax(centroids))
+    coords = np.column_stack(np.unravel_index(np.arange(vals.size), grid.shape))
+    hot_coords = coords[labels == hot]
+    heat_score = 0.0 if hot_coords.size == 0 else 1.0 - (
+        np.linalg.norm(hot_coords - hot_coords.mean(0), axis=1).mean()
+        / max(grid.shape)
+    )
+    return np.full(grid.shape, 0.6 * entropy + 0.4 * heat_score, dtype=float)
+
+def compute_line_bridge_score(grid):
+    eq_h = (grid[:, :-1] == grid[:, 1:]).astype(float)
+    eq_v = (grid[:-1, :] == grid[1:, :]).astype(float)
+    score = np.zeros_like(grid, dtype=float)
+    score[:, :-1] += eq_h
+    score[:, 1:] += eq_h
+    score[:-1, :] += eq_v
+    score[1:, :] += eq_v
+    cross = ndi.generic_filter(
+        grid, lambda x: np.sum(x[1:] == x[0]), size=3,
+        mode='constant', cval=-1
+    )
+    score += cross / 4.0
+    score /= score.max(initial=1)
+    return score
 
 def EXT_Q6_LineBridge_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
-    """Score based on linearity and L-bridge connectivity (0.8×Q3)."""
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    utils = BoardAnalyzerUtils()
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            neighbors = utils.get_neighborhood_values(grid, r, c, radius=1, connectivity=4)
-            line_score = 1.0 if len(neighbors) > 1 and max(neighbors) - min(neighbors) < 3 else 0.0
-            scores[r, c] = MathUtils().normalize_value(line_score, 0.0, 1.0)
-    return scores
+    return compute_line_bridge_score(grid)
+
+def compute_local_variance_prior(grid, w=3):
+    g = grid.astype(float)
+    m = ndi.uniform_filter(g, size=w, mode='reflect')
+    v = ndi.uniform_filter(g**2, size=w, mode='reflect') - m**2
+    inv = 1 / (v + 1e-6)
+    inv = (inv - inv.min()) / (inv.max() - inv.min() + 1e-9)
+    return inv
 
 def EXT_Q7_VariancePrior_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
-    """Score based on variance smoothing and prior (0.6×Q4)."""
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    mean_val, std_val = compute_global_features(grid)
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            var_score = 1.0 - (abs(grid[r, c] - mean_val) / (std_val + 1e-10) if std_val > 0 else 0.0)
-            scores[r, c] = MathUtils().normalize_value(var_score, 0.0, 1.0)
-    return scores
+    _, std_, _, _ = compute_global_features(grid)
+    alpha = min(std_ / 15, 1)
+    return alpha * compute_local_variance_prior(grid) + (1 - alpha) * 0.5
 
-def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray:
-    """Retrieve and execute a specific scoring module from the registry."""
-    effective_request_id = kwargs.get("request_id", "N/A")
-    if module_name not in REGISTERED_MODULES_BRAIN:
-        logger.error(f"Module {module_name} not found in REGISTERED_MODULES_BRAIN.", extra={"request_id": effective_request_id})
-        rows, cols = grid.shape
-        return np.zeros((rows, cols), dtype=float)
-    module_func = REGISTERED_MODULES_BRAIN[module_name]
-    score_grid = module_func(grid, **kwargs)
-    # 來自 final_numpy_coord_fix_summary.txt 和 log_once_patch.txt
-    if module_name not in _seen_modules_once:
-        logger.info(f"Executing module FIRST time: {module_name}", extra={"request_id": effective_request_id})
-        _seen_modules_once.add(module_name)
-    else:
-        logger.debug(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
-    # 來自 final_numpy_coord_fix_summary.txt
-    if isinstance(score_grid, (list, tuple)):
-        if score_grid and isinstance(score_grid[0], tuple):
-            score_grid = [_to_native_coord(p) for p in score_grid]
-        elif len(score_grid) == 2 and all(isinstance(x, (int, np.integer)) for x in score_grid):
-            score_grid = _to_native_coord(score_grid)
-    try:
-        return score_grid
-    except Exception as e:
-        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})
-        rows, cols = grid.shape
-        return np.zeros((rows, cols), dtype=float)
+def EXT_Q8_SpatialKL_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A", win=5) -> np.ndarray:
+    _, _, _, global_p = compute_global_features(grid)
+    local_hist = _local_hist(grid, bins=100, win=win)  # (r,c,b)
+    kl = (local_hist * np.log((local_hist + 1e-9) / global_p)).sum(-1)
+    kl = (kl - kl.min()) / (kl.max() - kl.min() + 1e-9)
+    return 1 - kl  # high = match global, anomalies low
+
+def EXT_Q9_MultiScaleEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    ent1 = EXT_Q5_GlobalEntropy_Vec(grid)  # global
+    ent2 = EXT_Q5_GlobalEntropy_Vec(grid[::2, ::2], request_id).repeat(2, 0).repeat(2, 1)[:grid.shape[0], :grid.shape[1]]
+    ent3 = EXT_Q5_GlobalEntropy_Vec(grid[::4, ::4], request_id).repeat(4, 0).repeat(4, 1)[:grid.shape[0], :grid.shape[1]]
+    return 0.5 * ent1 + 0.3 * ent2 + 0.2 * ent3
+
+def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    target_mask = grid == grid.max()  # treat max value as revealed?
+    dist = ndi.distance_transform_edt(~target_mask)
+    dist_norm = (dist - dist.min()) / (dist.max() - dist.min() + 1e-9)
+    return 1 - dist_norm
 
 # --- Scoring Module Implementations ---
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
@@ -518,8 +545,16 @@ def EXT_Q4_ControlComposite_Vec(grid: np.ndarray, request_id: Optional[str] = "N
     mean_score = np.mean([get_module_score(m, grid, request_id=request_id) for m in other_modules], axis=0)
     return 0.5 * r3 + 0.5 * mean_score
 
-# Register modules
-REGISTERED_MODULES_BRAIN.update({
+# ----------------------------------------------------------------------
+# Registration
+# ----------------------------------------------------------------------
+mods = {
+    "EXT_Q5_GlobalEntropy_Vec": EXT_Q5_GlobalEntropy_Vec,
+    "EXT_Q6_LineBridge_Vec": EXT_Q6_LineBridge_Vec,
+    "EXT_Q7_VariancePrior_Vec": EXT_Q7_VariancePrior_Vec,
+    "EXT_Q8_SpatialKL_Vec": EXT_Q8_SpatialKL_Vec,
+    "EXT_Q9_MultiScaleEntropy_Vec": EXT_Q9_MultiScaleEntropy_Vec,
+    "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -530,17 +565,74 @@ REGISTERED_MODULES_BRAIN.update({
     "EXT_Q2_PotentialPath_Vec": EXT_Q2_PotentialPath_Vec,
     "EXT_Q3_DiscontinuitySym_Vec": EXT_Q3_DiscontinuitySym_Vec,
     "EXT_Q4_ControlComposite_Vec": EXT_Q4_ControlComposite_Vec,
-    "EXT_Q5_GlobalEntropy_Vec": EXT_Q5_GlobalEntropy_Vec,
-    "EXT_Q6_LineBridge_Vec": EXT_Q6_LineBridge_Vec,
-    "EXT_Q7_VariancePrior_Vec": EXT_Q7_VariancePrior_Vec,
-})
+}
+try:
+    REGISTERED_MODULES_BRAIN
+except NameError:
+    REGISTERED_MODULES_BRAIN = {}
+REGISTERED_MODULES_BRAIN.update(mods)
+
+FAST_PHASE = [
+    "EXT_Q1_ProximityEntropy_Vec",
+    "EXT_Q2_PotentialPath_Vec",
+    "EXT_Q5_GlobalEntropy_Vec",
+    "EXT_Q8_SpatialKL_Vec",
+]
+
+RERANK_PHASE = [
+    "EXT_Q3_DiscontinuitySym_Vec",
+    "EXT_Q6_LineBridge_Vec",
+    "EXT_Q7_VariancePrior_Vec",
+    "EXT_Q9_MultiScaleEntropy_Vec",
+    "EXT_Q10_DistPotential_Vec",
+]
+
+# ----------------------------------------------------------------------
+# Module execution
+# ----------------------------------------------------------------------
+def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray:
+    """Retrieve and execute a specific scoring module from the registry."""
+    effective_request_id = kwargs.get("request_id", "N/A")
+    if module_name not in REGISTERED_MODULES_BRAIN:
+        logger.error(f"Module {module_name} not found in REGISTERED_MODULES_BRAIN.", extra={"request_id": effective_request_id})
+        rows, cols = grid.shape
+        return np.zeros((rows, cols), dtype=float)
+    module_func = REGISTERED_MODULES_BRAIN[module_name]
+    score_grid = module_func(grid, **kwargs)
+    if module_name not in _seen_modules_once:
+        logger.info(f"Executing module FIRST time: {module_name}", extra={"request_id": effective_request_id})
+        _seen_modules_once.add(module_name)
+    else:
+        logger.debug(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
+    if isinstance(score_grid, (list, tuple)):
+        if score_grid and isinstance(score_grid[0], tuple):
+            score_grid = [_to_native_coord(p) for p in score_grid]
+        elif len(score_grid) == 2 and all(isinstance(x, (int, np.integer)) for x in score_grid):
+            score_grid = _to_native_coord(score_grid)
+    try:
+        return score_grid
+    except Exception as e:
+        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})
+        rows, cols = grid.shape
+        return np.zeros((rows, cols), dtype=float)
 
 # Verification
 if __name__ == "__main__":
     print("Verifying brain.py structure...")
     dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
     print(f"Created dummy grid:\n{dummy_grid}")
-    for module_to_test in ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q3_DiscontinuitySym_Vec", "EXT_Q4_ControlComposite_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]:
+    for module_to_test in [
+        "EXT_Q1_ProximityEntropy_Vec",
+        "EXT_Q2_PotentialPath_Vec",
+        "EXT_Q3_DiscontinuitySym_Vec",
+        "EXT_Q4_ControlComposite_Vec",
+        "EXT_Q5_GlobalEntropy_Vec",
+        "EXT_Q6_LineBridge_Vec",
+        "EXT_Q7_VariancePrior_Vec",
+        "EXT_Q8_SpatialKL_Vec",
+        "EXT_Q9_MultiScaleEntropy_Vec",
+        "EXT_Q10_DistPotential_Vec"
+    ]:
         print(f"Testing get_module_score with '{module_to_test}'...")
         try:
             scores = get_module_score(module_to_test, dummy_grid)
