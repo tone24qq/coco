@@ -291,6 +291,8 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
         return res
 
 class MCTSNode:
+    EPS = 1e-9  # 檔頭或 class 內自訂常數
+
     def __init__(self, grid, parent=None, parent_action=None):
         self.grid = grid.copy()
         self.parent = parent
@@ -303,49 +305,59 @@ class MCTSNode:
                                 for r, c in np.argwhere(grid == -1)
                                 for v in analyzer_utils.get_legal_values_for_placement(grid)]
 
-    def uct_select(self, c_param=1.414):
-        return max(self.children,
-                   key=lambda c: (c.value / (c.visits + c.virtual_loss)) +
-                   c_param * np.sqrt(2 * np.log(self.visits + 1e-10) / (c.visits + c.virtual_loss + 1e-10)) -
-                   1.0 * c.virtual_loss)
+    def uct_select(self):
+        """Upper-Confidence bound with virtual-loss safe division"""
+        def ucb(child):
+            denom = child.visits + child.virtual_loss
+            if denom == 0:
+                return float('inf')  # 確保新節點優先被選
+            exploitation = child.value / denom
+            exploration = math.sqrt(2 * math.log(self.visits + 1) / denom)
+            return exploitation + exploration
+        return max(self.children, key=ucb)
 
 def mcts(grid: np.ndarray, iterations: int = 1000):
     rows, cols = grid.shape
     root = MCTSNode(grid)
 
     def simulate(node):
-        current = node
-        while current.untried_actions and len(current.children) < 1.5 * current.visits ** 0.5:
-            current = current.uct_select()
-            current.virtual_loss += 1
-        if current.untried_actions:
-            r, c, v = current.untried_actions.pop()
-            new_grid = current.grid.copy()
-            new_grid[r, c] = v
-            child = MCTSNode(new_grid, current, (r, c, v))
-            current.children.append(child)
-            current = child
+        try:
+            current = node
+            while current.untried_actions and len(current.children) < 1.5 * current.visits ** 0.5:
+                current = current.uct_select()
+                current.virtual_loss += 1
+            if current.untried_actions:
+                r, c, v = current.untried_actions.pop()
+                new_grid = current.grid.copy()
+                new_grid[r, c] = v
+                new_child = MCTSNode(new_grid, current, (r, c, v))
+                new_child.visits = 1  # 或 new_child.visits = new_child.virtual_loss = EPS
+                current.children.append(new_child)
+                current = new_child
 
-        sim_result = simulate_full_board(current.grid, None, n_iter=100)
-        if not isinstance(sim_result, dict):
-            logger.error(f"Invalid sim_result type: {type(sim_result)}")
+            sim_result = simulate_full_board(current.grid, None, n_iter=100)
+            if not isinstance(sim_result, dict):
+                logger.error(f"Invalid sim_result type: {type(sim_result)}")
+                return 0.0
+
+            reward = 0.0
+            for r, c in np.argwhere(grid == -1):
+                if (r, c) in sim_result:
+                    weighted = weight_prob_by_modules(
+                        current.grid, {(r, c): sim_result[(r, c)]})
+                    reward += max(weighted[(r, c)].values())
+
+            while current is not None:
+                current.visits += 1
+                current.value += reward
+                current.virtual_loss -= 1
+                current = current.parent
+            return reward
+        except ZeroDivisionError as e:
+            logger.error(f"ZeroDivisionError in simulate: {e}")
             return 0.0
 
-        reward = 0.0
-        for r, c in np.argwhere(grid == -1):
-            if (r, c) in sim_result:
-                weighted = weight_prob_by_modules(
-                    current.grid, {(r, c): sim_result[(r, c)]})
-                reward += max(weighted[(r, c)].values())
-
-        while current is not None:
-            current.visits += 1
-            current.value += reward
-            current.virtual_loss -= 1
-            current = current.parent
-        return reward
-
-    Parallel(n_jobs=4)(delayed(simulate)(root) for _ in range(iterations // 4))
+    Parallel(n_jobs=4, require='sharedmem')(delayed(simulate)(root) for _ in range(iterations // 4))
     best_child = max(root.children, key=lambda c: c.value / c.visits,
                      default=root)
     return best_child.grid
