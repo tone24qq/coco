@@ -231,14 +231,29 @@ def _local_hist(grid, bins=100, win=5):
 # ----------------------------------------------------------------------
 # Q-Series modules from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
-def compute_global_features(grid: np.ndarray):
+def compute_global_features(grid: np.ndarray, bins: int = 100):
+    """
+    Robust global stats: mean, std, entropy (0‑1), and PDF (bins).
+    Works even when grid contains negative or very large integers.
+    """
     flat = grid.ravel().astype(float)
     mean_ = flat.mean()
-    std_ = flat.std(ddof=0)
-    bins = 100
-    counts = np.bincount(flat.astype(int), minlength=bins) + 1e-9
+    std_  = flat.std(ddof=0)
+
+    # Scale values into 0..bins‑1
+    minv, maxv = flat.min(), flat.max()
+    if minv == maxv:
+        # Degenerate board – zero entropy
+        p = np.zeros(bins, dtype=float)
+        p[0] = 1.0
+        return mean_, std_, 0.0, p
+
+    norm = (flat - minv) / (maxv - minv)
+    idx  = np.clip((norm * (bins - 1)).astype(int), 0, bins - 1)
+    counts = np.bincount(idx, minlength=bins).astype(float) + 1e-9
     p = counts / counts.sum()
-    entropy = -(p * np.log2(p)).sum() / np.log2(bins)
+
+    entropy = -(p * np.log2(p)).sum() / np.log2(bins)    # 0‑1
     return mean_, std_, entropy, p
 
 def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
