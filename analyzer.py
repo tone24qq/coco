@@ -75,20 +75,20 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
                   kv_bytes: bytes, idx_bytes: bytes):
     """Return 1-D board (length r*c) with known cells filled."""
     sob = qmc.Sobol(d=r*c, scramble=True, seed=seed)
-    m = int(np.ceil(np.log2(r*c*4)))  # 計算 power-of-2 批次
-    vec = sob.random_base2(m=m)[-1]   # 使用最後一點以消除警告
-    flat = np.argsort(vec) + 1        # 1..r*c permutation
+    m = int(np.ceil(np.log2(r*c*4)))
+    vec = sob.random_base2(m=m)[-1]
+    flat = np.argsort(vec) + 1
 
     idx = np.frombuffer(idx_bytes, dtype=np.int32)
-    if idx.size == 0:      # guard 1 – nothing to override
+    if idx.size == 0:
         return flat
 
     vals = np.frombuffer(kv_bytes, dtype=np.int32)
-    if idx.size != vals.size:  # guard 2 – mismatch, skip override
+    if idx.size != vals.size:
         return flat
 
-    flat[idx] = vals          # safe scatter
-    return flat               # caller reshapes
+    flat[idx] = vals
+    return flat
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
@@ -97,8 +97,8 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     boards = np.empty((batch, rows, cols), dtype=np.int16)
     known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
     known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
-    kv_bytes = known_vals.tobytes()   # 轉換為 bytes
-    idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()  # positions of True
+    kv_bytes = known_vals.tobytes()
+    idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
     mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
     seed = rng.integers(0, 0xFFFF)
     for i in range(batch):
@@ -109,6 +109,10 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
         ).reshape(rows, cols)
         boards[i] = board1d
     return boards
+
+# 來自 final_numpy_coord_fix_summary.txt
+def _native_dict(d):
+    return {(int(k[0]), int(k[1])): v for k, v in d.items()}
 
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with enhanced importance sampling and target_num hits."""
@@ -129,8 +133,8 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
     # Dynamic formula weights based on grid pattern
-    history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}  # Default
-    if np.mean(module_scores) > 0.6:  # Adjust if strong patterns detected
+    history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}
+    if np.mean(module_scores) > 0.6:
         history["tail_cluster"] += 0.1
         history["random_entropy"] -= 0.05
     weights = adjust_weights_based_on_history(history)
@@ -161,7 +165,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
                         num = board[r, c]
                         counts[(r, c)][num] += fast[r, c]
                         if target_num is not None and num == target_num:
-                            counts[(r, c)][target_num] += 2 * fast[r, c]
+                            counts[(r, c)][num] += 2 * fast[r, c]
         remain -= batch
 
     prob_map = {}
@@ -180,7 +184,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
             final_prob_map[(r, c)] = {}
         final_prob_map[(r, c)][num] = final_score
 
-    return final_prob_map
+    return _native_dict(final_prob_map)  # 來自 final_numpy_coord_fix_summary.txt
 
 def weight_prob_by_modules(grid: np.ndarray,
                            prob_map: Dict[Tuple[int, int], Dict[int, float]],
@@ -217,7 +221,7 @@ def weight_prob_by_modules(grid: np.ndarray,
             total = sum(probs.values()) or 1e-10
             result[(r, c)] = {k: v / total for k, v in probs.items()}
 
-    return result
+    return _native_dict(result)  # 來自 final_numpy_coord_fix_summary.txt
 
 def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
                   blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
@@ -334,7 +338,7 @@ def predict_scratch_card(
         ("EXT_Q4_ControlComposite_Vec", "Control and error correction")
     ]
 
-    base_iter = iterations if iterations is not None else int(os.getenv("ITER", 6000))
+    base_iter = iterations if iterations is not None else int(os.getenv("ITER", "6000"))
     total_iter = int(base_iter * max(rows * cols / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
