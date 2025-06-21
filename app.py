@@ -15,6 +15,10 @@ from analyzer import predict_scratch_card
 # Logging configuration
 from logging.handlers import RotatingFileHandler
 
+# 設置日誌等級從環境變數 LOG_LEVEL 獲取，預設為 INFO
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.getLogger().setLevel(LOG_LEVEL)
+
 log_handlers = [
     logging.StreamHandler(sys.stdout),
     RotatingFileHandler(
@@ -22,7 +26,7 @@ log_handlers = [
     ),
 ]
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,  # 使用環境變數控制
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=log_handlers,
 )
