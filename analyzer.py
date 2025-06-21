@@ -72,6 +72,10 @@ def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
 
 def select_modules(grid: np.ndarray) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
+    # 根據 FORCE_FULL_SCAN 環境變數決定是否使用所有模組
+    if os.getenv("FORCE_FULL_SCAN", "0") == "1":
+        return list(REGISTERED_MODULES_BRAIN)   # 直接使用所有模組
+    # 原始邏輯：動態選擇模組
     base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]
     scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
@@ -180,10 +184,14 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         prob_map[(r, c)] = probs
 
     # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
-    tau = 0.3
+    tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
     w = np.array([0.28, 0.28, 0.12, 0.12, 0.08, 0.07, 0.05])  # Q1~Q7
+    topk = int(os.getenv("TOPK_RERANK", "100"))
+    if topk < 0:             # -1 表示 rows × cols
+        topk = rows * cols
+
     candidates = [(r, c, max(probs.values()), num) for (r, c), probs in prob_map.items() for num in probs]
-    top_k = heapq.nlargest(int(os.getenv("TOPK_RERANK", "120")), candidates, key=lambda x: x[2])
+    top_k = heapq.nlargest(topk, candidates, key=lambda x: x[2])
     final_prob_map = {}
     for r, c, fast_score, num in top_k:
         scores = [
