@@ -202,6 +202,53 @@ def bytes_to_grid(grid_bytes: bytes, shape):
 # Module registry
 REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray, Optional[str]], np.ndarray]] = {}
 
+if os.getenv("ENABLE_LEGACY", "0") != "1":
+    # 移除舊的 6 支重複模組，僅保留 Q1-Q4
+    logger.info("Legacy modules disabled by default (ENABLE_LEGACY=0). Running Q1-Q4 only.")
+else:
+    logger.warning("Legacy modules enabled via ENABLE_LEGACY=1. Performance may degrade by 30-40%.")
+
+# 新增 Q5-Q7 模組
+def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on global entropy and clustering hotspots (1.2×Q1)."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    mean_val, std_val = compute_global_features(grid)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            entropy_score = -np.log(std_val + 1e-10) if std_val > 0 else 0.0
+            scores[r, c] = MathUtils().normalize_value(entropy_score, -5.0, 0.0)
+    return scores
+
+def EXT_Q6_LineBridge_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on linearity and L-bridge connectivity (0.8×Q3)."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    utils = BoardAnalyzerUtils()
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            neighbors = utils.get_neighborhood_values(grid, r, c, radius=1, connectivity=4)
+            line_score = 1.0 if len(neighbors) > 1 and max(neighbors) - min(neighbors) < 3 else 0.0
+            scores[r, c] = MathUtils().normalize_value(line_score, 0.0, 1.0)
+    return scores
+
+def EXT_Q7_VariancePrior_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on variance smoothing and prior (0.6×Q4)."""
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    mean_val, std_val = compute_global_features(grid)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            var_score = 1.0 - (abs(grid[r, c] - mean_val) / (std_val + 1e-10) if std_val > 0 else 0.0)
+            scores[r, c] = MathUtils().normalize_value(var_score, 0.0, 1.0)
+    return scores
+
 def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray:
     """Retrieve and execute a specific scoring module from the registry."""
     effective_request_id = kwargs.get("request_id", "N/A")
@@ -482,6 +529,9 @@ REGISTERED_MODULES_BRAIN.update({
     "EXT_Q2_PotentialPath_Vec": EXT_Q2_PotentialPath_Vec,
     "EXT_Q3_DiscontinuitySym_Vec": EXT_Q3_DiscontinuitySym_Vec,
     "EXT_Q4_ControlComposite_Vec": EXT_Q4_ControlComposite_Vec,
+    "EXT_Q5_GlobalEntropy_Vec": EXT_Q5_GlobalEntropy_Vec,
+    "EXT_Q6_LineBridge_Vec": EXT_Q6_LineBridge_Vec,
+    "EXT_Q7_VariancePrior_Vec": EXT_Q7_VariancePrior_Vec,
 })
 
 # Verification
@@ -489,7 +539,7 @@ if __name__ == "__main__":
     print("Verifying brain.py structure...")
     dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
     print(f"Created dummy grid:\n{dummy_grid}")
-    for module_to_test in ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q3_DiscontinuitySym_Vec", "EXT_Q4_ControlComposite_Vec"]:
+    for module_to_test in ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q3_DiscontinuitySym_Vec", "EXT_Q4_ControlComposite_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]:
         print(f"Testing get_module_score with '{module_to_test}'...")
         try:
             scores = get_module_score(module_to_test, dummy_grid)
