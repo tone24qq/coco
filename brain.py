@@ -14,6 +14,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 來自 log_once_patch.txt (Option A)
+_seen_modules_once = set()
+
 # Math helpers
 class MathUtils:
     """Utility functions for common mathematical operations."""
@@ -47,10 +50,10 @@ class BoardAnalyzerUtils:
         r: int,
         c: int,
         radius: int = 2,
-        connectivity: int = 8,  # 新參數，預設八連通
+        connectivity: int = 8,
         val_func: Callable[[int], Optional[float]] = lambda x: float(x) if x != -1 else None,
         include_center: bool = False,
-        **kw  # 捕獲舊關鍵字
+        **kw
     ) -> List[float]:
         """
         Collect values surrounding grid[r, c] in a square radius.
@@ -58,7 +61,6 @@ class BoardAnalyzerUtils:
         Accepts legacy keywords:
             eight_connectivity / four_connectivity
         """
-        # 舊關鍵字映射
         if "eight_connectivity" in kw:
             connectivity = 8 if kw.pop("eight_connectivity") else 4
         if "four_connectivity" in kw:
@@ -70,7 +72,7 @@ class BoardAnalyzerUtils:
             for dc in range(-radius, radius + 1):
                 if not include_center and dr == 0 and dc == 0:
                     continue
-                if connectivity == 4 and abs(dr) + abs(dc) > radius:  # 四連通限制
+                if connectivity == 4 and abs(dr) + abs(dc) > radius:
                     continue
                 nr, nc = r + dr, c + dc
                 if 0 <= nr < rows and 0 <= nc < cols:
@@ -203,12 +205,17 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
     module_func = REGISTERED_MODULES_BRAIN[module_name]
-    logger.info(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
+    # 來自 log_once_patch.txt (Option A)
+    if module_name not in _seen_modules_once:
+        logger.info(f"Executing module FIRST time: {module_name}", extra={"request_id": effective_request_id})
+        _seen_modules_once.add(module_name)
+    else:
+        logger.debug(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
     try:
         score_grid = module_func(grid, **kwargs)
         return score_grid
     except Exception as e:
-        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})  # 來自 analyzer_fix_v5.txt
+        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
 
@@ -448,7 +455,7 @@ def EXT_Q3_DiscontinuitySym_Vec(grid: np.ndarray, request_id: Optional[str] = "N
 def EXT_Q4_ControlComposite_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for control and error correction."""
     r3 = get_module_score("EXT_R3_Error_Correction_Vec", grid, request_id=request_id)
-    other_modules = [m for m in REGISTERED_MODULES_BRAIN if m != "EXT_R3_Error_Correction_Vec"]
+    other_modules = [m for m in REGISTERED_MODULES_BRAIN if m not in ["EXT_R3_Error_Correction_Vec", "EXT_Q4_ControlComposite_Vec"]]
     mean_score = np.mean([get_module_score(m, grid, request_id=request_id) for m in other_modules], axis=0)
     return 0.5 * r3 + 0.5 * mean_score
 
@@ -471,7 +478,7 @@ if __name__ == "__main__":
     print("Verifying brain.py structure...")
     dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
     print(f"Created dummy grid:\n{dummy_grid}")
-    for module_to_test in ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q3_DiscontinuitySym_Vec"]:
+    for module_to_test in ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q3_DiscontinuitySym_Vec", "EXT_Q4_ControlComposite_Vec"]:
         print(f"Testing get_module_score with '{module_to_test}'...")
         try:
             scores = get_module_score(module_to_test, dummy_grid)
