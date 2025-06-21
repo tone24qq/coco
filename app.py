@@ -47,7 +47,7 @@ app.add_middleware(
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
-    iterations: Optional[int] = 1000
+    iterations: Optional[int] = 5000
 
 class Prediction(BaseModel):
     row: int
@@ -62,8 +62,9 @@ class PredictResponse(BaseModel):
 
 # Health check / root route
 startup_time = datetime.utcnow().isoformat() + "Z"
-os.environ.setdefault("ITER", "100000")
-os.environ.setdefault("TOPK_RERANK", "100")
+os.environ.setdefault("ITER", "5000")
+os.environ.setdefault("TOPK_RERANK", "120")
+os.environ.setdefault("LOG_LEVEL", "INFO")
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
@@ -131,7 +132,7 @@ async def warm_up():
         [11, -1, 13, 14, -1],
         [-1, 17, 18, -1, 20]
     ]
-    base_iter = int(os.getenv("BASE_ITER", 1000)) // 25
+    base_iter = int(os.getenv("BASE_ITER", "800")) // 25
     try:
         predict_scratch_card(
             grid=dummy_grid,
