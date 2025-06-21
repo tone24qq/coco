@@ -431,11 +431,23 @@ def predict_scratch_card(
         assign = global_unique(prob_map, blanks)
         best_grid = mcts(grid_np, iterations=1000)
 
-        old_conf = max([p for (_, _), (_, p) in assign.items()] or [0])
-        new_conf = max([
-            max(weight_prob_by_modules(best_grid, {(r, c): cell_probs})[(r, c)].values())
-            for r, c in blanks
-        ] or [0])  # 改用 .get()
+        old_conf = max(
+    p
+    for _, cell_probs in prob_map.items()
+    for p in cell_probs.values()
+)
+
+new_conf = max([
+    max(
+        weight_prob_by_modules(
+            best_grid,
+            {(r, c): prob_map.get((r, c), {})}
+        ).get((r, c), {}).values(),
+        default=0        # ← 防止空 dict
+    )
+    for (r, c) in candidates
+])
+# -------------------------------------------------------
 
         if new_conf <= old_conf * 0.95:
             preds = [{
