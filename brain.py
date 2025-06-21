@@ -172,7 +172,7 @@ class BoardAnalyzerUtils:
         return all_vals - used
 
 # Module registry
-REGISTERED_MODULES_BRAIN: Dict[str, Callable[[bytes, Optional[str]], np.ndarray]] = {}
+REGISTERED_MODULES_BRAIN: Dict[str, Callable[[bytes, Dict[str, Any]], np.ndarray]] = {}
 
 def _hashable_view(arr: np.ndarray) -> bytes:
     """Zero-copy read, used for set/dict key."""
@@ -188,8 +188,30 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
     module_func = REGISTERED_MODULES_BRAIN[module_name]
     logger.info(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
     try:
-        shape = grid.shape
-        score_grid = module_func(_hashable_view(grid), shape=shape, **kwargs)
+        grid_bytes = _hashable_view(grid)
+        # Calculate actual size based on bytes and dtype
+        dtype = np.int64  # Match the dtype used in serialization
+        itemsize = dtype.itemsize
+        data_size = len(grid_bytes) // itemsize
+        expected_shape = grid.shape
+        expected_size = np.prod(expected_shape)
+        
+        if data_size != expected_size:
+            logger.warning(f"Shape mismatch: expected {expected_shape} ({expected_size} elements), but got {data_size} elements. Adjusting shape.")
+            # Adjust shape to match actual data size
+            if data_size > 0:
+                # Try to infer a plausible 2D shape or flatten
+                rows = int(np.sqrt(data_size)) or 1
+                cols = data_size // rows if data_size % rows == 0 else data_size
+                adjusted_shape = (rows, cols)
+            else:
+                adjusted_shape = (1,)
+        else:
+            adjusted_shape = expected_shape
+
+        kwargs["shape"] = adjusted_shape
+        kwargs["dtype"] = dtype
+        score_grid = module_func(grid_bytes, **kwargs)
         return score_grid
     except Exception as e:
         logger.error(f"Error executing module {module_name}: {e}", exc_info=True, extra={"request_id": effective_request_id})
@@ -197,10 +219,10 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         return np.zeros((rows, cols), dtype=float)
 
 # --- Scoring Module Implementations ---
-def EXT_M1_Tail_Pattern_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_M1_Tail_Pattern_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
-    rows, cols = shape
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
+    rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
     radius = min(2, min(rows, cols) // 2 - 1)
@@ -226,10 +248,10 @@ def EXT_M1_Tail_Pattern_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_i
             scores[r, c] = max_score
     return scores
 
-def EXT_M3_Local_Focus_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_M3_Local_Focus_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on 5x5 neighborhood mean and variance."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
-    rows, cols = shape
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
+    rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
     radius = min(2, min(rows, cols) // 2 - 1)
@@ -255,10 +277,10 @@ def EXT_M3_Local_Focus_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id
             scores[r, c] = max_score
     return scores
 
-def EXT_M10_Sequence_Block_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_M10_Sequence_Block_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on sequence blocks in 5x5 neighborhood."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
-    rows, cols = shape
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
+    rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
     radius = min(2, min(rows, cols) // 2 - 1)
@@ -297,11 +319,11 @@ def EXT_M10_Sequence_Block_Vec(grid_bytes: bytes, shape: Tuple[int, int], reques
 
 error_memory = defaultdict(Counter)
 
-def EXT_R3_Error_Correction_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_R3_Error_Correction_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on historical error correction in 5x5 neighborhood."""
     global error_memory
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
-    rows, cols = shape
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
+    rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
     legal_values = utils.get_legal_values_for_placement(grid)
@@ -323,10 +345,10 @@ def EXT_R3_Error_Correction_Vec(grid_bytes: bytes, shape: Tuple[int, int], reque
                     scores[r, c] = score
     return scores
 
-def EXT_F7_Strong_Pattern_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_F7_Strong_Pattern_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on strong arithmetic or symmetry patterns."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
-    rows, cols = shape
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
+    rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
 
@@ -350,10 +372,10 @@ def EXT_F7_Strong_Pattern_Vec(grid_bytes: bytes, shape: Tuple[int, int], request
             scores[r, c] = max_score
     return scores
 
-def EXT_GM20_Skip_Pattern_Confidence_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_GM20_Skip_Pattern_Confidence_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on skip pattern confidence."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
-    rows, cols = shape
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
+    rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     revealed = [
         {"value": int(grid[r, c]), "r": r, "c": c}
@@ -416,31 +438,31 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(grid_bytes: bytes, shape: Tuple[int, in
             scores[r, c] = math_utils.normalize_value(best_conf, 0, 1.0)
     return scores
 
-def EXT_Q1_ProximityEntropy_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_Q1_ProximityEntropy_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for proximity and entropy."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
     a2 = get_module_score("EXT_M3_Local_Focus_Vec", grid, request_id=request_id)
     m1 = get_module_score("EXT_M1_Tail_Pattern_Vec", grid, request_id=request_id)
     return 0.65 * a2 + 0.35 * m1
 
-def EXT_Q2_PotentialPath_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_Q2_PotentialPath_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for potential paths and sequences."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
     m10 = get_module_score("EXT_M10_Sequence_Block_Vec", grid, request_id=request_id)
     f7 = get_module_score("EXT_F7_Strong_Pattern_Vec", grid, request_id=request_id)
     return 0.5 * m10 + 0.5 * f7
 
-def EXT_Q3_DiscontinuitySym_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_Q3_DiscontinuitySym_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for discontinuity and symmetry."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
     gm20 = get_module_score("EXT_GM20_Skip_Pattern_Confidence_Vec", grid, request_id=request_id)
-    rows, cols = shape
+    rows, cols = grid.shape
     sym_score = 0.3 if (rows > 1 and cols > 1 and grid[rows-1, cols-1] == grid[0, 0] and grid[rows-1, cols-1] != -1) else 0.0
     return 0.7 * gm20 + sym_score
 
-def EXT_Q4_ControlComposite_Vec(grid_bytes: bytes, shape: Tuple[int, int], request_id: Optional[str] = "N/A") -> np.ndarray:
+def EXT_Q4_ControlComposite_Vec(grid_bytes: bytes, shape: Tuple[int, ...], dtype: np.dtype, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for control and error correction."""
-    grid = np.frombuffer(grid_bytes, dtype=np.int64).reshape(shape)
+    grid = np.frombuffer(grid_bytes, dtype=dtype).reshape(shape)
     r3 = get_module_score("EXT_R3_Error_Correction_Vec", grid, request_id=request_id)
     other_modules = [m for m in REGISTERED_MODULES_BRAIN if m != "EXT_R3_Error_Correction_Vec"]
     mean_score = np.mean([get_module_score(m, grid, request_id=request_id) for m in other_modules], axis=0)
