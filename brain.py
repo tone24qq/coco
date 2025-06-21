@@ -47,18 +47,30 @@ class BoardAnalyzerUtils:
         r: int,
         c: int,
         radius: int = 2,
-        eight权_connectivity: bool = True,
+        connectivity: int = 8,  # 新參數，預設八連通
         val_func: Callable[[int], Optional[float]] = lambda x: float(x) if x != -1 else None,
         include_center: bool = False,
+        **kw  # 捕獲舊關鍵字
     ) -> List[float]:
-        """Collect values surrounding grid[r, c] in a square radius."""
+        """
+        Collect values surrounding grid[r, c] in a square radius.
+
+        Accepts legacy keywords:
+            eight_connectivity / four_connectivity
+        """
+        # 舊關鍵字映射
+        if "eight_connectivity" in kw:
+            connectivity = 8 if kw.pop("eight_connectivity") else 4
+        if "four_connectivity" in kw:
+            connectivity = 4 if kw.pop("four_connectivity") else 8
+
         neighbors: List[float] = []
         rows, cols = grid.shape
         for dr in range(-radius, radius + 1):
             for dc in range(-radius, radius + 1):
                 if not include_center and dr == 0 and dc == 0:
                     continue
-                if not eight_connectivity and abs(dr) + abs(dc) > radius:
+                if connectivity == 4 and abs(dr) + abs(dc) > radius:  # 四連通限制
                     continue
                 nr, nc = r + dr, c + dc
                 if 0 <= nr < rows and 0 <= nc < cols:
@@ -171,7 +183,7 @@ class BoardAnalyzerUtils:
         used = set(int(v) for v in grid.flatten() if v != -1 and v > 0)
         return all_vals - used
 
-# 來自之前的 fix_unsupported_itemsize_and_cache.txt
+# 來自 fix_unsupported_itemsize_and_cache.txt
 DTYPE_DEFAULT = np.int32
 ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize  # 修正為 4 bytes
 
@@ -196,7 +208,7 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         score_grid = module_func(grid, **kwargs)
         return score_grid
     except Exception as e:
-        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})  # 移除 exc_info=True
+        logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})  # 來自 analyzer_fix_v5.txt
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
 
