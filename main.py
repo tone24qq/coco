@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 from typing import List, Dict, Any
 from analyzer import predict_scratch_card
+import ray
 
 # Logging configuration
 logging.basicConfig(
@@ -50,7 +51,9 @@ def main():
         if any(v < 1 or v > max_val for v in known_vals):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
         
+        ray.init(num_cpus=4)
         result = predict_scratch_card(grid, target_num=args.target, iterations=iterations)
+        ray.shutdown()
         logging.info("Prediction results:")
         for pred in result["predictions"]:
             logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%")
