@@ -77,13 +77,18 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
     sob = qmc.Sobol(d=r*c, scramble=True, seed=seed)
     m = int(np.ceil(np.log2(r*c*4)))  # 計算 power-of-2 批次
     vec = sob.random_base2(m=m)[-1]   # 使用最後一點以消除警告
-    flat = np.argsort(vec) + 1        # permutation
+    flat = np.argsort(vec) + 1        # 1..r*c permutation
 
     idx = np.frombuffer(idx_bytes, dtype=np.int32)
-    vals = np.frombuffer(kv_bytes, dtype=np.int32)
+    if idx.size == 0:      # guard 1 – nothing to override
+        return flat
 
-    flat[idx] = vals                  # direct scatter
-    return flat                       # caller reshapes
+    vals = np.frombuffer(kv_bytes, dtype=np.int32)
+    if idx.size != vals.size:  # guard 2 – mismatch, skip override
+        return flat
+
+    flat[idx] = vals          # safe scatter
+    return flat               # caller reshapes
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
@@ -100,7 +105,7 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
         board1d = _cached_board(
             mask, seed & 0xFFFF,
             rows, cols,
-            kv_bytes, idx_bytes       # note order changed
+            kv_bytes, idx_bytes
         ).reshape(rows, cols)
         boards[i] = board1d
     return boards
