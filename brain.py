@@ -14,8 +14,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 來自 log_once_patch.txt (Option A)
+# 來自 log_once_patch.txt 和 final_numpy_coord_fix_summary.txt
 _seen_modules_once = set()
+
+# 來自 final_numpy_coord_fix_summary.txt
+def _to_native_coord(coord):
+    r, c = coord
+    return int(r), int(c)
 
 # Math helpers
 class MathUtils:
@@ -205,14 +210,20 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
     module_func = REGISTERED_MODULES_BRAIN[module_name]
-    # 來自 log_once_patch.txt (Option A)
+    score_grid = module_func(grid, **kwargs)
+    # 來自 final_numpy_coord_fix_summary.txt 和 log_once_patch.txt
     if module_name not in _seen_modules_once:
         logger.info(f"Executing module FIRST time: {module_name}", extra={"request_id": effective_request_id})
         _seen_modules_once.add(module_name)
     else:
         logger.debug(f"Executing module: {module_name}", extra={"request_id": effective_request_id})
+    # 來自 final_numpy_coord_fix_summary.txt
+    if isinstance(score_grid, (list, tuple)):
+        if score_grid and isinstance(score_grid[0], tuple):
+            score_grid = [_to_native_coord(p) for p in score_grid]
+        elif len(score_grid) == 2 and all(isinstance(x, (int, np.integer)) for x in score_grid):
+            score_grid = _to_native_coord(score_grid)
     try:
-        score_grid = module_func(grid, **kwargs)
         return score_grid
     except Exception as e:
         logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})
