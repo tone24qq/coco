@@ -49,6 +49,30 @@ def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.nda
         grid[r, c] = legal[i]
     return grid
 
+@register_formula("tail_cluster")
+def gen_tail_cluster(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
+    """Generate grid clustering larger numbers near the bottom-right corner."""
+    n = rows * cols
+    high_rows = max(1, int(rows * 0.3))
+    high_cols = max(1, int(cols * 0.3))
+    mask = np.zeros((rows, cols), dtype=bool)
+    mask[-high_rows:, -high_cols:] = True
+    high_idx = np.flatnonzero(mask.ravel())
+    low_idx = np.flatnonzero(~mask.ravel())
+
+    nums = np.arange(1, n + 1)
+    rng.shuffle(nums)
+    nums.sort()
+    high_nums = nums[-len(high_idx):]
+    low_nums = nums[:-len(high_idx)]
+    rng.shuffle(high_nums)
+    rng.shuffle(low_nums)
+
+    board = np.empty(n, dtype=np.int64)
+    board[low_idx] = low_nums
+    board[high_idx] = high_nums
+    return board.reshape(rows, cols)
+
 class AdaptiveWeights:
     """Manages dynamic weight adjustments for formulas based on performance."""
     def __init__(self, initial_weights: Dict[str, float]):
