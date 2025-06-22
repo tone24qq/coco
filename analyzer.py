@@ -3,7 +3,7 @@ import math
 import numpy as np
 import xxhash
 from scipy.stats import qmc
-from collections import Counter, defaultdict
+from collections import defaultdict
 from functools import lru_cache
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
@@ -18,7 +18,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from modules import FORMULA_REGISTRY, compute_global_features
 from brain import (
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
@@ -104,10 +103,10 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
-    choices = rng.choice(formulas, size=batch, p=weights)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
-    known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
-    known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
+    global_grid = globals().get('grid')
+    known_vals = global_grid.ravel() if global_grid is not None else np.zeros(n, dtype=np.int16)
+    known_mask = (global_grid != -1).ravel() if global_grid is not None else np.zeros(n, dtype=bool)
     kv_bytes = known_vals.tobytes()
     idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
     mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()

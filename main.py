@@ -3,7 +3,7 @@ import logging
 import sys
 import argparse
 import numpy as np
-from typing import List, Dict, Any
+from typing import List
 from analyzer import predict_scratch_card
 import ray
 
