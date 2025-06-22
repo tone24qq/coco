@@ -101,13 +101,15 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
     flat[idx] = vals
     return flat
 
-def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
+def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator,
+                         formulas: Tuple[str, ...], weights: np.ndarray,
+                         grid: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
     choices = rng.choice(formulas, size=batch, p=weights)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
-    known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
-    known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
+    known_vals = grid.ravel()
+    known_mask = (grid != -1).ravel()
     kv_bytes = known_vals.tobytes()
     idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
     mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
@@ -152,14 +154,14 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
     while remain > 0:
         batch = min(4000, remain)
-        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights, g)
 
         if known.size:
             mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
             boards = boards[mask]
             if len(boards) == 0:
                 batch = min(batch * 2, 8000)
-                boards = generate_full_boards(rows, cols, batch, rng, formulas, weights)
+                boards = generate_full_boards(rows, cols, batch, rng, formulas, weights, g)
                 mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
                 boards = boards[mask]
 
