@@ -386,7 +386,6 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
-    radius = min(2, min(rows, cols) // 2 - 1)
 
     for r in range(rows):
         for c in range(cols):
@@ -424,7 +423,6 @@ error_memory = defaultdict(Counter)
 
 def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on historical error correction in 5x5 neighborhood."""
-    global error_memory
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
@@ -435,7 +433,6 @@ def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
             base_score = 0.5
             for val in legal_values:
                 error_count = error_memory[(r, c)][val]
