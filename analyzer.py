@@ -31,6 +31,9 @@ from brain import (
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
 
+# Track how many child nodes are skipped in UCT selection
+SKIPPED_NODES = 0
+
 # 來自 probmap_key_patch_v2.txt
 def _native_coord(k):
     return int(k[0]), int(k[1])
@@ -384,11 +387,23 @@ class MCTSNode:
             exploitation = child.value / denom
             exploration = math.sqrt(2 * math.log(self.visits + 1) / denom)
             return exploitation + exploration
-        return max(self.children, key=ucb)
+        scores = [(child, ucb(child)) for child in self.children]
+        if not scores:
+            raise ValueError("No children to select")
+        global_best = max(s for _, s in scores)
+        threshold = global_best * 0.95
+        filtered = [child for child, s in scores if s >= threshold]
+        skipped = len(scores) - len(filtered)
+        if skipped:
+            global SKIPPED_NODES
+            SKIPPED_NODES += skipped
+        return max(filtered, key=ucb)
 
 def mcts(grid: np.ndarray, iterations: int = 1000):
     rows, cols = grid.shape
     root = MCTSNode(grid)
+    global SKIPPED_NODES
+    SKIPPED_NODES = 0
 
     def simulate(node):
         try:
@@ -428,6 +443,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             return 0.0
 
     Parallel(n_jobs=4, require='sharedmem')(delayed(simulate)(root) for _ in range(iterations // 4))
+    logger.info("MCTS iterations=%d | skipped_children=%d", iterations, SKIPPED_NODES)
     best_child = max(root.children, key=lambda c: c.value / c.visits,
                      default=root)
     return best_child.grid
