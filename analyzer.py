@@ -88,32 +88,31 @@ def select_modules(grid: np.ndarray) -> List[str]:
 _CACHE_PATH = os.path.join(os.path.dirname(__file__), "board_cache.duckdb")
 _CACHE_LOCAL = threading.local()
 
-_CACHE_INIT_LOCK = threading.Lock()
-_CACHE_INITIALIZED = False
-
-def _init_cache(conn: duckdb.DuckDBPyConnection) -> None:
-    global _CACHE_INITIALIZED
-    if not _CACHE_INITIALIZED:
-        with _CACHE_INIT_LOCK:
-            if not _CACHE_INITIALIZED:
-                try:
-                    conn.execute(
-                        "CREATE TABLE IF NOT EXISTS board_cache ("
-                        "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
-                        "PRIMARY KEY(mask, seed, r, c))"
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    logger.error("Cache init error: %s", exc)
-                _CACHE_INITIALIZED = True
+def _init_cache_conn() -> duckdb.DuckDBPyConnection:
+    """Create a new DuckDB connection and initialize schema."""
+    conn = duckdb.connect(_CACHE_PATH)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS board_cache ("
+        "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
+        "PRIMARY KEY(mask, seed, r, c))"
+    )
+    return conn
 
 def _get_cache_conn() -> duckdb.DuckDBPyConnection:
-    """Return thread-local DuckDB connection."""
+    """Return a valid thread-local DuckDB connection."""
     conn = getattr(_CACHE_LOCAL, "conn", None)
-    if conn is None or not isinstance(conn, duckdb.DuckDBPyConnection):
-        conn = duckdb.connect(_CACHE_PATH)
+    if conn is None:
+        conn = _init_cache_conn()
         _CACHE_LOCAL.conn = conn
-    _init_cache(conn)
+    else:
+        try:
+            conn.execute("SELECT 1")
+        except Exception:
+            try:
+                conn.close()
+            finally:
+                conn = _init_cache_conn()
+                _CACHE_LOCAL.conn = conn
     return conn
 
 _MEM_CACHE: Dict[Tuple[str, int, int, int], np.ndarray] = {}
