@@ -4,6 +4,7 @@ import os
 import numpy as np
 from collections import Counter, defaultdict
 from typing import List, Tuple, Callable, Optional, Dict, Any
+from numba import njit, prange
 from scipy.cluster.vq import kmeans2
 from scipy import ndimage as ndi
 from numpy.fft import rfftn, irfftn
@@ -198,8 +199,8 @@ class BoardAnalyzerUtils:
         return all_vals - used
 
 # 來自 fix_unsupported_itemsize_and_cache.txt
-DTYPE_DEFAULT = np.int32
-ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize  # 修正為 4 bytes
+DTYPE_DEFAULT = np.int16  # use int16 when possible for compact boards
+ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize
 
 def bytes_to_grid(grid_bytes: bytes, shape):
     # zero-copy, read-only view
@@ -353,33 +354,64 @@ def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
             scores[r, c] = max_score
     return scores
 
-def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
-    """Score based on 5x5 neighborhood mean and variance."""
+@njit(parallel=True, fastmath=True)
+def _m3_local_focus_kernel(grid, legal_vals, row_flags, col_flags, radius):
     rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    utils = BoardAnalyzerUtils()
-    radius = min(2, min(rows, cols) // 2 - 1)
-
-    for r in range(rows):
+    scores = np.zeros((rows, cols), dtype=np.float32)
+    for r in prange(rows):
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
-            if len(neighbors) < 2:
+            neigh = []
+            for dr in range(-radius, radius + 1):
+                for dc in range(-radius, radius + 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr = r + dr
+                    nc = c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        val = grid[nr, nc]
+                        if val != -1:
+                            neigh.append(float(val))
+            if len(neigh) < 2:
                 continue
-            mean_val = np.mean(neighbors)
-            std_val = np.std(neighbors, ddof=1) or 1.0
-            row_seq = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
-            col_seq = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
-            legal_values = utils.get_legal_values_for_placement(grid)
+            mean_val = 0.0
+            for v in neigh:
+                mean_val += v
+            mean_val /= len(neigh)
+            var = 0.0
+            for v in neigh:
+                diff = v - mean_val
+                var += diff * diff
+            std_val = math.sqrt(var / (len(neigh) - 1)) if len(neigh) > 1 else 1.0
+            if std_val == 0.0:
+                std_val = 1.0
+            flag = row_flags[r, c] or col_flags[r, c]
             max_score = 0.0
-            for val in legal_values:
-                deviation = abs(val - mean_val) / std_val
-                seq_bonus = 0.3 if (row_seq or col_seq) and abs(val - mean_val) > std_val else 0.0
-                score = MathUtils().normalize_value(deviation + seq_bonus, 0, max(1.0, std_val + 0.3))
-                max_score = max(max_score, score)
+            for val in legal_vals:
+                deviation = abs(float(val) - mean_val) / std_val
+                seq_bonus = 0.3 if flag and abs(float(val) - mean_val) > std_val else 0.0
+                score = (deviation + seq_bonus) / max(1.0, std_val + 0.3)
+                if score > max_score:
+                    max_score = score
             scores[r, c] = max_score
     return scores
+
+def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score based on 5x5 neighborhood mean and variance."""
+    rows, cols = grid.shape
+    utils = BoardAnalyzerUtils()
+    radius = min(2, min(rows, cols) // 2 - 1)
+    dtype = np.int16 if grid.max() <= np.iinfo(np.int16).max else np.int32
+    g_int = grid.astype(dtype, copy=False)
+    legal_vals = np.array(list(utils.get_legal_values_for_placement(grid)), dtype=dtype)
+    row_flags = np.zeros((rows, cols), dtype=np.bool_)
+    col_flags = np.zeros((rows, cols), dtype=np.bool_)
+    for r in range(rows):
+        for c in range(cols):
+            row_flags[r, c] = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
+            col_flags[r, c] = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
+    return _m3_local_focus_kernel(g_int, legal_vals, row_flags, col_flags, radius)
 
 def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on sequence blocks in 5x5 neighborhood."""
