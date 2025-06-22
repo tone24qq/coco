@@ -8,6 +8,7 @@ from scipy.cluster.vq import kmeans2
 from scipy import ndimage as ndi
 from numpy.fft import rfftn, irfftn
 import random
+from functools import lru_cache
 
 # Logging configuration
 logging.basicConfig(
@@ -231,14 +232,11 @@ def _local_hist(grid, bins=100, win=5):
 # ----------------------------------------------------------------------
 # Q-Series modules from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
-def compute_global_features(grid: np.ndarray, bins: int = 100):
-    """
-    Robust global stats: mean, std, entropy (0‑1), and PDF (bins).
-    Works even when grid contains negative or very large integers.
-    """
+def _compute_global_features_impl(grid: np.ndarray, bins: int = 100):
+    """Internal implementation for global statistics."""
     flat = grid.ravel().astype(float)
     mean_ = flat.mean()
-    std_  = flat.std(ddof=0)
+    std_ = flat.std(ddof=0)
 
     # Scale values into 0..bins‑1
     minv, maxv = flat.min(), flat.max()
@@ -255,6 +253,17 @@ def compute_global_features(grid: np.ndarray, bins: int = 100):
 
     entropy = -(p * np.log2(p)).sum() / np.log2(bins)    # 0‑1
     return mean_, std_, entropy, p
+
+
+@lru_cache(maxsize=128)
+def _compute_global_features_cached(grid_bytes: bytes, rows: int, cols: int, bins: int = 100):
+    grid = np.frombuffer(grid_bytes, dtype=DTYPE_DEFAULT).reshape((rows, cols))
+    return _compute_global_features_impl(grid, bins)
+
+def compute_global_features(grid: np.ndarray, bins: int = 100):
+    """Cached wrapper for global statistics."""
+    casted = np.asarray(grid, dtype=DTYPE_DEFAULT)
+    return _compute_global_features_cached(casted.tobytes(), *casted.shape, bins)
 
 def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     _, _, entropy, _ = compute_global_features(grid)

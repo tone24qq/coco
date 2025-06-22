@@ -32,22 +32,16 @@ def gen_excel(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
 @register_formula("shuffle")
 def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid by shuffling numbers within each row."""
-    nums = np.arange(1, rows * cols + 1)
-    board = nums.reshape(rows, cols)
-    for r in range(rows):
-        rng.shuffle(board[r])
-    return board
+    nums = np.arange(1, rows * cols + 1).reshape(rows, cols)
+    rand_keys = rng.random((rows, cols))
+    order = np.argsort(rand_keys, axis=1)
+    return np.take_along_axis(nums, order, axis=1)
 
 @register_formula("random_entropy")
 def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid with entropy-based random dispersion."""
-    grid = np.zeros((rows, cols), dtype=np.int64)
-    legal = list(range(1, rows * cols + 1))
-    rng.shuffle(legal)
-    for i in range(rows * cols):
-        r, c = divmod(i, cols)
-        grid[r, c] = legal[i]
-    return grid
+    nums = rng.permutation(np.arange(1, rows * cols + 1))
+    return nums.reshape(rows, cols)
 
 class AdaptiveWeights:
     """Manages dynamic weight adjustments for formulas based on performance."""

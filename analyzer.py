@@ -111,14 +111,12 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     kv_bytes = known_vals.tobytes()
     idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
     mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
-    seed = rng.integers(0, 0xFFFF)
-    for i in range(batch):
-        board1d = _cached_board(
-            mask, seed & 0xFFFF,
-            rows, cols,
-            kv_bytes, idx_bytes
-        ).reshape(rows, cols)
-        boards[i] = board1d
+    seeds = rng.integers(0, 0xFFFF, size=batch, dtype=np.uint16)
+    boards_list = [
+        _cached_board(mask, int(s), rows, cols, kv_bytes, idx_bytes).reshape(rows, cols)
+        for s in seeds
+    ]
+    boards[...] = np.stack(boards_list, axis=0)
     return boards
 
 def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
@@ -148,7 +146,9 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
     formulas = ("random_entropy", "shuffle", "tail_cluster")
     remain = n_iter
-    counts = defaultdict(lambda: defaultdict(int))
+    max_val = rows * cols
+    counts_arr = np.zeros((rows, cols, max_val + 1), dtype=float)
+    flat_idx = blanks[:,0] * cols + blanks[:,1]
 
     while remain > 0:
         batch = min(4000, remain)
@@ -164,23 +164,32 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
                 boards = boards[mask]
 
         if len(boards) > 0:
-            for i, board in enumerate(boards):
-                fast = 0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board) + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board) + \
-                       0.2 * get_module_score("EXT_Q5_GlobalEntropy_Vec", board) + 0.2 * get_module_score("EXT_Q6_LineBridge_Vec", board) + \
-                       0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", board)
-                for r, c in blanks:
-                    idx = r * cols + c
-                    if rng.random() < importance_weights[idx]:
-                        num = board[r, c]
-                        counts[(r, c)][num] += fast[r, c]
-                        if target_num is not None and num == target_num:
-                            counts[(r, c)][num] += 2 * fast[r, c]
+            fast_scores = np.stack([
+                0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", b) +
+                0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", b) +
+                0.2 * get_module_score("EXT_Q5_GlobalEntropy_Vec", b) +
+                0.2 * get_module_score("EXT_Q6_LineBridge_Vec", b) +
+                0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", b)
+                for b in boards
+            ])
+
+            rand_mask = rng.random((len(boards), len(blanks))) < importance_weights[flat_idx]
+            board_vals = boards[:, blanks[:,0], blanks[:,1]]
+            fast_vals = fast_scores[:, blanks[:,0], blanks[:,1]]
+            for idx_blank, (r, c) in enumerate(blanks):
+                mask = rand_mask[:, idx_blank]
+                vals = board_vals[mask, idx_blank].astype(int)
+                weights = fast_vals[mask, idx_blank]
+                np.add.at(counts_arr[r, c], vals, weights)
+                if target_num is not None:
+                    mask_t = vals == target_num
+                    counts_arr[r, c, target_num] += 2 * weights[mask_t]
         remain -= batch
 
     prob_map = {}
-    for (r, c) in [tuple(b) for b in blanks]:
-        total = sum(counts[(r, c)].values()) or 1e-10
-        probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
+    for r, c in blanks:
+        total = counts_arr[r, c].sum() or 1e-10
+        probs = {n: max(counts_arr[r, c, n] / total, 1e-10) for n in legal_all}
         prob_map[(r, c)] = probs
 
     # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
