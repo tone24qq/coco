@@ -5,6 +5,7 @@ import xxhash
 from collections import defaultdict
 from functools import lru_cache
 import duckdb
+import threading
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
@@ -85,12 +86,21 @@ def select_modules(grid: np.ndarray) -> List[str]:
     return base_modules + [m for m in top_modules if m not in base_modules]
 
 _CACHE_PATH = os.path.join(os.path.dirname(__file__), "board_cache.duckdb")
-_CACHE_CONN = duckdb.connect(_CACHE_PATH)
-_CACHE_CONN.execute(
-    "CREATE TABLE IF NOT EXISTS board_cache ("
-    "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
-    "PRIMARY KEY(mask, seed, r, c))"
-)
+_CACHE_LOCAL = threading.local()
+
+def _get_cache_conn() -> duckdb.DuckDBPyConnection:
+    """Return thread-local DuckDB connection."""
+    conn = getattr(_CACHE_LOCAL, "conn", None)
+    if conn is None or not isinstance(conn, duckdb.DuckDBPyConnection):
+        conn = duckdb.connect(_CACHE_PATH)
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS board_cache ("
+            "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
+            "PRIMARY KEY(mask, seed, r, c))"
+        )
+        _CACHE_LOCAL.conn = conn
+    return conn
+
 _MEM_CACHE: Dict[Tuple[str, int, int, int], np.ndarray] = {}
 
 def _cached_board(mask_key: str, seed: int, r: int, c: int,
@@ -100,8 +110,9 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
     if cache_key in _MEM_CACHE:
         return _MEM_CACHE[cache_key]
 
+    conn = _get_cache_conn()
     try:
-        row = _CACHE_CONN.execute(
+        row = conn.execute(
             "SELECT board FROM board_cache WHERE mask=? AND seed=? AND r=? AND c=?",
             cache_key,
         ).fetchone()
@@ -133,11 +144,11 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
             board[unknown_idx] = remaining[:unknown_idx.size]
 
     try:
-        _CACHE_CONN.execute(
+        conn.execute(
             "INSERT OR REPLACE INTO board_cache VALUES (?, ?, ?, ?, ?)",
             (*cache_key, board.tobytes()),
         )
-        _CACHE_CONN.commit()
+        conn.commit()
     except Exception as exc:
         logger.error("Cache write error: %s", exc)
 
