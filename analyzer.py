@@ -159,6 +159,8 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     weights = adjust_weights_based_on_history(history, formulas)
     remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
+    prev_probs: Optional[Dict[Tuple[int, int], Dict[int, float]]] = None
+    variance_map: Dict[Tuple[int, int], float] = {}
 
     while remain > 0:
         batch = min(4000, remain)
@@ -185,7 +187,28 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
                         counts[(r, c)][num] += fast[r, c]
                         if target_num is not None and num == target_num:
                             counts[(r, c)][num] += 2 * fast[r, c]
+
         remain -= batch
+
+        # --- convergence check ---
+        prob_map_cur: Dict[Tuple[int, int], Dict[int, float]] = {}
+        for (r, c) in [tuple(b) for b in blanks]:
+            total = sum(counts[(r, c)].values()) or 1e-10
+            probs = {n: counts[(r, c)][n] / total for n in legal_all}
+            prob_map_cur[(r, c)] = probs
+            variance_map[(r, c)] = float(np.var(list(counts[(r, c)].values()) or [0.0]))
+
+        if prev_probs is not None:
+            diff = 0.0
+            denom = 0
+            for cell in prob_map_cur:
+                for n in legal_all:
+                    diff += abs(prob_map_cur[cell].get(n, 0.0) - prev_probs[cell].get(n, 0.0))
+                    denom += 1
+            if denom and diff / denom < 0.002:
+                break
+
+        prev_probs = prob_map_cur
 
     prob_map = {}
     for (r, c) in [tuple(b) for b in blanks]:
