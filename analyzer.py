@@ -3,7 +3,7 @@ import math
 import numpy as np
 import xxhash
 from scipy.stats import qmc
-from collections import Counter, defaultdict
+from collections import defaultdict
 from functools import lru_cache
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
@@ -18,7 +18,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from modules import FORMULA_REGISTRY, compute_global_features
 from brain import (
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
