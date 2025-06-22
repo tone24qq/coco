@@ -85,22 +85,28 @@ def select_modules(grid: np.ndarray) -> List[str]:
 @lru_cache(maxsize=500000)
 def _cached_board(mask_key: str, seed: int, r: int, c: int,
                   kv_bytes: bytes, idx_bytes: bytes):
-    """Return 1-D board (length r*c) with known cells filled."""
-    sob = qmc.Sobol(d=r*c, scramble=True, seed=seed)
-    m = int(np.ceil(np.log2(r*c*4)))
-    vec = sob.random_base2(m=m)[-1]
-    flat = np.argsort(vec) + 1
+    """Return a unique 1-D board (length r*c) with known cells filled."""
+    rng = np.random.default_rng(seed)
+    n = r * c
+    perm = rng.permutation(n) + 1
 
     idx = np.frombuffer(idx_bytes, dtype=np.int32)
     if idx.size == 0:
-        return flat
+        return perm.astype(np.int16)
 
     vals = np.frombuffer(kv_bytes, dtype=np.int32)
     if idx.size != vals.size:
-        return flat
+        return perm.astype(np.int16)
 
-    flat[idx] = vals
-    return flat
+    # Remove known values from permutation to avoid duplicates
+    mask = np.isin(perm, vals, invert=True)
+    remaining = perm[mask]
+
+    board = np.empty(n, dtype=np.int16)
+    board[idx] = vals
+    unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
+    board[unknown_idx] = remaining[:unknown_idx.size]
+    return board
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator,
                          formulas: Tuple[str, ...], weights: np.ndarray,
