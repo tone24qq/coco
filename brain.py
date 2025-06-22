@@ -258,8 +258,13 @@ def compute_global_features(grid: np.ndarray, bins: int = 100):
 
 def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     _, _, entropy, _ = compute_global_features(grid)
-    vals = grid.ravel().astype(float)
-    centroids, labels = kmeans2(vals, k=2, minit='points')
+    vals = grid.reshape(-1, 1).astype(float)
+    if vals.shape[0] < 2:
+        centroids = np.array([[vals.mean()], [vals.mean()]])
+        labels = np.zeros(vals.shape[0], dtype=int)
+    else:
+        centroids, labels = kmeans2(vals, k=2, minit='points')
+        labels = labels.flatten()
     hot = int(np.argmax(centroids))
     coords = np.column_stack(np.unravel_index(np.arange(vals.size), grid.shape))
     hot_coords = coords[labels == hot]
