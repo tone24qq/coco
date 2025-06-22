@@ -419,6 +419,8 @@ def predict_scratch_card(
                 if score > 0.5:
                     reasons.append(f"{desc} (score: {score:.2f})")
             pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+            pred["module_scores"] = {mod: float(module_scores[mod][pred['row'], pred['col']])
+                                   for mod, _ in modules}
 
         return {
             "mode": "target",
@@ -478,6 +480,8 @@ def predict_scratch_card(
                 if score > 0.5:
                     reasons.append(f"{desc} (score: {score:.2f})")
             pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+            pred["module_scores"] = {mod: float(module_scores[mod][pred['row'], pred['col']])
+                                   for mod, _ in modules}
 
         preds.sort(key=lambda x: x["probability"], reverse=True)
         return {
@@ -507,6 +511,8 @@ def predict_scratch_card(
             if score > 0.5:
                 reasons.append(f"{desc} (score: {score:.2f})")
         pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+        pred["module_scores"] = {mod: float(module_scores[mod][pred['row'], pred['col']])
+                               for mod, _ in modules}
 
     preds.sort(key=lambda x: x["probability"][0] if x["probability"] else 0,
                reverse=True)

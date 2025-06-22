@@ -55,6 +55,7 @@ class Prediction(BaseModel):
     candidates: List[int]
     probability: float  # Changed to percentage
     reasons: List[str]  # Added for module contribution reasons
+    module_scores: Dict[str, float]
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
@@ -80,8 +81,8 @@ async def predict(req: GridRequest):
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
         rows, cols = len(req.grid), len(req.grid[0])
-        if rows < 4 or rows > 20 or cols < 4 or cols > 20:
-            raise ValueError("Grid must be 4x4 to 20x20")
+        if rows < 2 or cols < 2:
+            raise ValueError("Grid must be at least 2x2")
         max_val = rows * cols
         known_vals = [v for row in req.grid for v in row if v != -1]
         if len(known_vals) != len(set(known_vals)):

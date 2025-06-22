@@ -17,7 +17,12 @@ logging.basicConfig(
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
-    parser.add_argument("--grid", type=str, required=True, help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'")
+    parser.add_argument(
+        "--grid",
+        type=str,
+        required=True,
+        help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'",
+    )
     parser.add_argument("--iterations", type=int, default=int(os.getenv("ITER", "5000")), help="Number of Monte Carlo iterations")
     parser.add_argument("--target", type=int, default=None, help="Target number to predict")
     return parser.parse_args()
@@ -25,11 +30,15 @@ def parse_args() -> argparse.Namespace:
 def parse_grid(grid_str: str) -> List[List[int]]:
     """Parse string input into 2D grid."""
     try:
-        rows = grid_str.strip().split(';')
-        grid = [[int(x) for x in row.split(',')] for row in rows]
-        if not all(len(row) == len(grid[0]) for row in grid) or len(grid) < 4 or len(grid) > 20 or len(grid[0]) < 4 or len(grid[0]) > 20:
-            raise ValueError("Grid must be 4x4 to 20x20 with consistent row length")
-        return grid
+        rows = grid_str.strip().split(";")
+        grid = [[int(x) for x in row.split(",")] for row in rows]
+        grid_np = np.array(grid, dtype=int)
+        if grid_np.ndim != 2:
+            raise ValueError("Grid must be a 2D matrix")
+        r, c = grid_np.shape
+        if r < 2 or c < 2:
+            raise ValueError("Grid must be at least 2x2 with consistent row length")
+        return grid_np.tolist()
     except ValueError as e:
         logging.error(f"Invalid grid format: {e}")
         raise
@@ -46,9 +55,9 @@ def main():
         known_vals = grid_np[grid_np != -1]
         rows, cols = grid_np.shape
         max_val = rows * cols
-        if len(known_vals) != len(np.unique(known_vals)):
+        if known_vals.size != np.unique(known_vals).size:
             raise ValueError("Grid contains duplicate numbers")
-        if any(v < 1 or v > max_val for v in known_vals):
+        if np.any((known_vals < 1) | (known_vals > max_val)):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
         
         ray.init(num_cpus=4)
