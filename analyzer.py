@@ -2,8 +2,7 @@ import os
 import math
 import numpy as np
 import xxhash
-from scipy.stats import qmc
-from collections import Counter, defaultdict
+from collections import defaultdict
 from functools import lru_cache
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
@@ -20,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 from modules import FORMULA_REGISTRY
 from brain import (
-    compute_global_features,
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
     BoardAnalyzerUtils,
@@ -112,13 +110,11 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
                          formulas: Tuple[str, ...], weights: np.ndarray,
                          grid: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
-    n = rows * cols
     valid = [f for f in formulas if f in FORMULA_REGISTRY]
     if not valid:
         raise ValueError("No valid formulas available")
     weights = np.array([weights[i] for i, f in enumerate(formulas) if f in FORMULA_REGISTRY], dtype=float)
     weights = weights / (weights.sum() + 1e-10)
-    choices = rng.choice(valid, size=batch, p=weights)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
     known_vals = grid.ravel()
     known_mask = (grid != -1).ravel()
