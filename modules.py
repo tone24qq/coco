@@ -74,12 +74,3 @@ class AdaptiveWeights:
                 json.dump(self.history, f, ensure_ascii=False)
         except OSError as e:
             logging.error(f"Failed to save weights history: {e}")
-
-def compute_global_features(grid: np.ndarray) -> Tuple[float, float]:
-    """Compute global statistical features of the grid."""
-    known_vals = grid[grid != -1].astype(np.float32)
-    if known_vals.size == 0:
-        return 0.0, 1.0
-    mean_val = np.mean(known_vals)
-    std_val = np.std(known_vals) if np.std(known_vals) > 0 else 1.0
-    return mean_val, std_val
