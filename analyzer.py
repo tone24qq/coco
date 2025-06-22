@@ -121,10 +121,10 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     kv_bytes = known_vals.tobytes()
     idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
     mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
-    seed = rng.integers(0, 0xFFFF)
-    for i in range(batch):
+    seeds = rng.integers(0, 0xFFFF, size=batch)
+    for i, s in enumerate(seeds):
         board1d = _cached_board(
-            mask, seed & 0xFFFF,
+            mask, int(s) & 0xFFFF,
             rows, cols,
             kv_bytes, idx_bytes
         ).reshape(rows, cols)
