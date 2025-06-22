@@ -4,6 +4,7 @@ import numpy as np
 import xxhash
 from collections import defaultdict
 from functools import lru_cache
+import duckdb
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
@@ -80,30 +81,66 @@ def select_modules(grid: np.ndarray) -> List[str]:
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
-@lru_cache(maxsize=500000)
+_CACHE_PATH = os.path.join(os.path.dirname(__file__), "board_cache.duckdb")
+_CACHE_CONN = duckdb.connect(_CACHE_PATH)
+_CACHE_CONN.execute(
+    "CREATE TABLE IF NOT EXISTS board_cache ("
+    "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
+    "PRIMARY KEY(mask, seed, r, c))"
+)
+_MEM_CACHE: Dict[Tuple[str, int, int, int], np.ndarray] = {}
+
 def _cached_board(mask_key: str, seed: int, r: int, c: int,
-                  kv_bytes: bytes, idx_bytes: bytes):
-    """Return a unique 1-D board (length r*c) with known cells filled."""
+                  kv_bytes: bytes, idx_bytes: bytes) -> np.ndarray:
+    """Return a unique 1-D board (length r*c) with persistent caching."""
+    cache_key = (mask_key, seed, r, c)
+    if cache_key in _MEM_CACHE:
+        return _MEM_CACHE[cache_key]
+
+    try:
+        row = _CACHE_CONN.execute(
+            "SELECT board FROM board_cache WHERE mask=? AND seed=? AND r=? AND c=?",
+            cache_key,
+        ).fetchone()
+        if row:
+            board = np.frombuffer(row[0], dtype=np.int16)
+            if board.size == r * c:
+                _MEM_CACHE[cache_key] = board
+                return board
+    except Exception as exc:
+        logger.error("Cache read error: %s", exc)
+
     rng = np.random.default_rng(seed)
     n = r * c
     perm = rng.permutation(n) + 1
 
     idx = np.frombuffer(idx_bytes, dtype=np.int32)
     if idx.size == 0:
-        return perm.astype(np.int16)
+        board = perm.astype(np.int16)
+    else:
+        vals = np.frombuffer(kv_bytes, dtype=np.int32)
+        if idx.size != vals.size:
+            board = perm.astype(np.int16)
+        else:
+            mask = np.isin(perm, vals, invert=True)
+            remaining = perm[mask]
+            board = np.empty(n, dtype=np.int16)
+            board[idx] = vals
+            unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
+            board[unknown_idx] = remaining[:unknown_idx.size]
 
-    vals = np.frombuffer(kv_bytes, dtype=np.int32)
-    if idx.size != vals.size:
-        return perm.astype(np.int16)
+    try:
+        _CACHE_CONN.execute(
+            "INSERT OR REPLACE INTO board_cache VALUES (?, ?, ?, ?, ?)",
+            (*cache_key, board.tobytes()),
+        )
+        _CACHE_CONN.commit()
+    except Exception as exc:
+        logger.error("Cache write error: %s", exc)
 
-    # Remove known values from permutation to avoid duplicates
-    mask = np.isin(perm, vals, invert=True)
-    remaining = perm[mask]
-
-    board = np.empty(n, dtype=np.int16)
-    board[idx] = vals
-    unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
-    board[unknown_idx] = remaining[:unknown_idx.size]
+    _MEM_CACHE[cache_key] = board
+    if len(_MEM_CACHE) > 10000:
+        _MEM_CACHE.pop(next(iter(_MEM_CACHE)))
     return board
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator,
