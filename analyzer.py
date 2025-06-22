@@ -18,8 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from modules import FORMULA_REGISTRY, compute_global_features
+from modules import FORMULA_REGISTRY
 from brain import (
+    compute_global_features,
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
     BoardAnalyzerUtils,
