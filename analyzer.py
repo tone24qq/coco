@@ -65,10 +65,10 @@ def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarra
     grid = bytes_to_grid(grid_bytes, (rows, cols))
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
-def adjust_weights_based_on_history(history: Dict[str, float]) -> np.ndarray:
+def adjust_weights_based_on_history(history: Dict[str, float], formulas: Tuple[str, ...]) -> np.ndarray:
     """Dynamically adjust formula weights based on historical performance."""
-    total = sum(history.values()) or 1e-10
-    return np.array([history.get(f, 0.0) / total for f in ("random_entropy", "shuffle", "tail_cluster")])
+    total = sum(history.get(f, 0.0) for f in formulas) or 1e-10
+    return np.array([history.get(f, 0.0) / total for f in formulas])
 
 def select_modules(grid: np.ndarray) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
@@ -104,7 +104,12 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator, formulas: Tuple[str, ...], weights: np.ndarray) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     n = rows * cols
-    choices = rng.choice(formulas, size=batch, p=weights)
+    valid = [f for f in formulas if f in FORMULA_REGISTRY]
+    if not valid:
+        raise ValueError("No valid formulas available")
+    weights = np.array([weights[i] for i, f in enumerate(formulas) if f in FORMULA_REGISTRY], dtype=float)
+    weights = weights / (weights.sum() + 1e-10)
+    choices = rng.choice(valid, size=batch, p=weights)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
     known_vals = grid.ravel() if 'grid' in globals() else np.zeros(n, dtype=np.int16)
     known_mask = (grid != -1).ravel() if 'grid' in globals() else np.zeros(n, dtype=bool)
@@ -144,9 +149,9 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     if np.mean(module_scores) > 0.6:
         history["tail_cluster"] += 0.1
         history["random_entropy"] -= 0.05
-    weights = adjust_weights_based_on_history(history)
 
     formulas = ("random_entropy", "shuffle", "tail_cluster")
+    weights = adjust_weights_based_on_history(history, formulas)
     remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
 
