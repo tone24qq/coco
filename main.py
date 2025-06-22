@@ -60,7 +60,8 @@ def main():
         if np.any((known_vals < 1) | (known_vals > max_val)):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
         
-        ray.init(num_cpus=4)
+        # Disable Ray dashboard to avoid excessive port scanning
+        ray.init(num_cpus=4, include_dashboard=False)
         result = predict_scratch_card(grid, target_num=args.target, iterations=iterations)
         ray.shutdown()
         logging.info("Prediction results:")
