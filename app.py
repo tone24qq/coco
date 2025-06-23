@@ -9,11 +9,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-from logging.handlers import RotatingFileHandler
 
 from analyzer import predict_scratch_card
 
 # Logging configuration
+from logging.handlers import RotatingFileHandler
+
 log_handlers = [
     logging.StreamHandler(sys.stdout),
     RotatingFileHandler(
@@ -147,7 +148,7 @@ async def warm_up():
 async def shutdown():
     logger.info("API shutting down to save resources.")
 
-def run_api():
+def run_api() -> None:
     """Run the FastAPI server on the configured port."""
     port = int(os.getenv("PORT", "8000"))
     logger.info("Starting API server on port %d", port)
