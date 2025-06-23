@@ -354,6 +354,18 @@ def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
             scores[r, c] = max_score
     return scores
 
+def EXT_E1_TailCluster_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score cells by clustering of tail digits within a 3x3 neighborhood."""
+    valid = grid == -1
+    tails = np.mod(np.where(valid, 0, grid), 10)
+    one_hot = np.eye(10, dtype=float)[tails]
+    kernel = np.ones((3, 3, 1), dtype=float)
+    conv = ndi.convolve(one_hot, kernel, mode="constant", cval=0.0)
+    conv -= one_hot
+    score = conv.max(axis=-1) / 8.0
+    score[~valid] = 0.0
+    return score
+
 @njit(parallel=True, fastmath=True)
 def _m3_local_focus_kernel(grid, legal_vals, row_flags, col_flags, radius):
     rows, cols = grid.shape
@@ -571,7 +583,8 @@ def EXT_Q1_ProximityEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N
     """Composite scoring for proximity and entropy."""
     a2 = get_module_score("EXT_M3_Local_Focus_Vec", grid, request_id=request_id)
     m1 = get_module_score("EXT_M1_Tail_Pattern_Vec", grid, request_id=request_id)
-    return 0.65 * a2 + 0.35 * m1
+    e1 = get_module_score("EXT_E1_TailCluster_Vec", grid, request_id=request_id)
+    return 0.5 * a2 + 0.3 * m1 + 0.2 * e1
 
 def EXT_Q2_PotentialPath_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for potential paths and sequences."""
@@ -604,6 +617,7 @@ mods = {
     "EXT_Q9_MultiScaleEntropy_Vec": EXT_Q9_MultiScaleEntropy_Vec,
     "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
+    "EXT_E1_TailCluster_Vec": EXT_E1_TailCluster_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
     "EXT_R3_Error_Correction_Vec": EXT_R3_Error_Correction_Vec,
@@ -625,6 +639,7 @@ FAST_PHASE = [
     "EXT_Q2_PotentialPath_Vec",
     "EXT_Q5_GlobalEntropy_Vec",
     "EXT_Q8_SpatialKL_Vec",
+    "EXT_E1_TailCluster_Vec",
 ]
 
 RERANK_PHASE = [

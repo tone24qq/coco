@@ -80,7 +80,7 @@ def select_modules(grid: np.ndarray) -> List[str]:
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
         return list(REGISTERED_MODULES_BRAIN)   # 直接使用所有模組
     # 原始邏輯：動態選擇模組
-    base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]
+    base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec", "EXT_E1_TailCluster_Vec"]
     scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
@@ -234,12 +234,12 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
     # Dynamic formula weights based on grid pattern
-    history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}
+    history = {"random_entropy": 0.35, "shuffle": 0.25, "tail_cluster": 0.25, "spatial_entropy": 0.15}
     if np.mean(module_scores) > 0.6:
         history["tail_cluster"] += 0.1
         history["random_entropy"] -= 0.05
 
-    formulas = ("random_entropy", "shuffle", "tail_cluster")
+    formulas = ("random_entropy", "shuffle", "tail_cluster", "spatial_entropy")
     weights = adjust_weights_based_on_history(history, formulas)
     remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
