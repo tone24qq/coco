@@ -137,6 +137,11 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
                 return board
     except Exception as exc:
         logger.error("Cache read error: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _CACHE_LOCAL.conn = _init_cache_conn()
 
     rng = np.random.default_rng(seed)
     n = r * c
@@ -165,6 +170,11 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
         conn.commit()
     except Exception as exc:
         logger.error("Cache write error: %s", exc)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _CACHE_LOCAL.conn = _init_cache_conn()
 
     _MEM_CACHE[cache_key] = board
     if len(_MEM_CACHE) > 10000:
