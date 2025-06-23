@@ -9,26 +9,32 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
-
-from analyzer import predict_scratch_card
-
-# Logging configuration
 from logging.handlers import RotatingFileHandler
+
+from analyzer import predict_scratch_card  # 你自己的核心函式
+
+# ──────────────────────────────────────────────
+# 1️⃣ Logging 設定 ── 可用環境變數 LOG_LEVEL 控制
+# ──────────────────────────────────────────────
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
 log_handlers = [
     logging.StreamHandler(sys.stdout),
     RotatingFileHandler(
-        "app.log", mode="a", encoding="utf-8", maxBytes=5_000_000, backupCount=3
+        "app.log", mode="a", encoding="utf-8",
+        maxBytes=5_000_000, backupCount=3
     ),
 ]
 logging.basicConfig(
-    level=logging.INFO,
+    level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=log_handlers,
 )
 logger = logging.getLogger(__name__)
 
-# FastAPI initialization + CORS
+# ──────────────────────────────────────────────
+# 2️⃣ FastAPI 初始化 + CORS
+# ──────────────────────────────────────────────
 app = FastAPI(
     title="Scratch Card Prediction API",
     version="1.0.0",
@@ -43,7 +49,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Pydantic schema
+# ──────────────────────────────────────────────
+# 3️⃣ Pydantic Schemas
+# ──────────────────────────────────────────────
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
@@ -53,19 +61,18 @@ class Prediction(BaseModel):
     row: int
     col: int
     candidates: List[int]
-    probability: float  # Changed to percentage
-    reasons: List[str]  # Added for module contribution reasons
+    probability: float           # 0-100 %
+    reasons: List[str]
     module_scores: Dict[str, float]
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
-    full_probabilities: Dict[str, Dict[str, float]]  # String keys for serialization
+    full_probabilities: Dict[str, Dict[str, float]]  # 位置字串 -> 數字 -> 機率 %
 
-# Health check / root route
+# ──────────────────────────────────────────────
+# 4️⃣ 健康檢查 & 基本路由
+# ──────────────────────────────────────────────
 startup_time = datetime.utcnow().isoformat() + "Z"
-os.environ.setdefault("ITER", "5000")
-os.environ.setdefault("TOPK_RERANK", "120")
-os.environ.setdefault("LOG_LEVEL", "INFO")
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
@@ -75,70 +82,72 @@ async def root() -> Dict[str, Any]:
 async def root_head() -> str:
     return ""
 
+# ──────────────────────────────────────────────
+# 5️⃣ /predict 端點
+# ──────────────────────────────────────────────
 @app.post("/predict", response_model=PredictResponse)
 async def predict(req: GridRequest):
     try:
-        if not req.grid or not all(isinstance(row, list) for row in req.grid):
+        # --- 基本驗證 ---
+        if not req.grid or not all(isinstance(r, list) for r in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
         rows, cols = len(req.grid), len(req.grid[0])
         if rows < 2 or cols < 2:
-            raise ValueError("Grid must be at least 2x2")
+            raise ValueError("Grid must be at least 2x2.")
         max_val = rows * cols
         known_vals = [v for row in req.grid for v in row if v != -1]
         if len(known_vals) != len(set(known_vals)):
-            raise ValueError("Grid contains duplicate numbers")
+            raise ValueError("Grid contains duplicate numbers.")
         if any(v < 1 or v > max_val for v in known_vals):
-            raise ValueError(f"Numbers must be between 1 and {max_val}")
-        
+            raise ValueError(f"Numbers must be between 1 and {max_val}.")
+
         logger.info(
             "Predict API called | size=%dx%d | target=%s | iterations=%d",
-            len(req.grid), len(req.grid[0]), str(req.target_num), req.iterations
+            rows, cols, str(req.target_num), req.iterations
         )
+
+        # --- 呼叫核心函式 ---
         result = predict_scratch_card(
             grid=req.grid,
             target_num=req.target_num,
             iterations=req.iterations
         )
-        
-        # Serializable Fix: Convert full_probabilities keys to strings
-        if "full_probabilities" in result and isinstance(result["full_probabilities"], dict):
-            raw_fp = result["full_probabilities"]
-            clean_fp = {}
-            for loc_key, prob_map in raw_fp.items():
-                try:
-                    r, c = loc_key
-                    key_str = f"{int(r)},{int(c)}"
-                except (TypeError, ValueError):
+
+        # --- 序列化 full_probabilities ---
+        if isinstance(result.get("full_probabilities"), dict):
+            clean_fp: Dict[str, Dict[str, float]] = {}
+            for loc_key, prob_map in result["full_probabilities"].items():
+                # 位置轉字串
+                if isinstance(loc_key, (tuple, list)) and len(loc_key) == 2:
+                    key_str = f"{loc_key[0]},{loc_key[1]}"
+                else:
                     key_str = str(loc_key)
-                inner_clean = {}
-                for num, p in prob_map.items():
-                    try:
-                        num_key = str(int(float(num)))
-                    except (ValueError, TypeError):
-                        num_key = str(num)
-                    inner_clean[num_key] = float(p) * 100  # Convert to percentage
-                clean_fp[key_str] = inner_clean
+
+                # 內層數字轉字串、機率轉 %
+                inner = {str(num): float(p) * 100 for num, p in prob_map.items()}
+                clean_fp[key_str] = inner
             result["full_probabilities"] = clean_fp
-        
+
         return result
+
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+# ──────────────────────────────────────────────
+# 6️⃣ 啟動 & 關閉事件（warm-up）
+# ──────────────────────────────────────────────
 @app.on_event("startup")
 async def warm_up():
     dummy_grid = [
-        [1, 2, -1, 4, 5],
-        [-1, 7, 8, -1, 10],
+        [1,  2, -1,  4,  5],
+        [-1, 7,  8, -1, 10],
         [11, -1, 13, 14, -1],
-        [-1, 17, 18, -1, 20]
+        [-1, 17, 18, -1, 20],
     ]
-    base_iter = int(os.getenv("BASE_ITER", "800")) // 25
     try:
-        predict_scratch_card(
-            grid=dummy_grid,
-            iterations=base_iter
-        )
+        base_iter = int(os.getenv("BASE_ITER", "800")) // 25
+        predict_scratch_card(grid=dummy_grid, iterations=base_iter)
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
@@ -148,19 +157,14 @@ async def warm_up():
 async def shutdown():
     logger.info("API shutting down to save resources.")
 
-def run_api():
-    """Run API with on-demand activation."""
-    port = int(os.getenv("PORT", "8000"))
-    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
-    server = uvicorn.Server(config)
-    logger.info("API in sleep mode, will wake on request...")
-    while True:
-        try:
-            server.run()  # 啟動時休眠，呼叫時醒來
-            logger.info("API woken up and working...")
-        except KeyboardInterrupt:
-            server.should_exit = True
-            break
-
+# ──────────────────────────────────────────────
+# 7️⃣ 主程式入口 ── 用 uvicorn.run，吃 $PORT
+# ──────────────────────────────────────────────
 if __name__ == "__main__":
-    run_api()
+    port = int(os.getenv("PORT", "8000"))          # Render 會自動塞 PORT
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=port,
+        log_level=LOG_LEVEL.lower(),
+    )
