@@ -125,24 +125,12 @@ async def predict(req: GridRequest):
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+...
+
 @app.on_event("startup")
 async def warm_up():
-    dummy_grid = [
-        [1, 2, -1, 4, 5],
-        [-1, 7, 8, -1, 10],
-        [11, -1, 13, 14, -1],
-        [-1, 17, 18, -1, 20]
-    ]
-    base_iter = int(os.getenv("BASE_ITER", "800")) // 25
-    try:
-        predict_scratch_card(
-            grid=dummy_grid,
-            iterations=base_iter
-        )
-        logger.info("Warm-up completed successfully.")
-    except Exception as exc:
-        logger.error("Warm-up failed: %s", exc, exc_info=True)
-        logger.warning("Continuing startup despite warm-up failure.")
+    # 🔕 不再執行任何模組或模擬行為，僅記錄 log
+    logger.info("Warm-up disabled to speed up startup.")
 
 @app.on_event("shutdown")
 async def shutdown():
