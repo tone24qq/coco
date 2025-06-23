@@ -31,20 +31,29 @@ def gen_shuffle(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid by shuffling numbers within each row."""
     nums = np.arange(1, rows * cols + 1)
     board = nums.reshape(rows, cols)
-    for r in range(rows):
-        rng.shuffle(board[r])
+    shuffle_idx = rng.random((rows, cols)).argsort(axis=1)
+    board = np.take_along_axis(board, shuffle_idx, axis=1)
     return board
 
 @register_formula("random_entropy")
 def gen_random_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
     """Generate grid with entropy-based random dispersion."""
-    grid = np.zeros((rows, cols), dtype=np.int64)
-    legal = list(range(1, rows * cols + 1))
-    rng.shuffle(legal)
-    for i in range(rows * cols):
-        r, c = divmod(i, cols)
-        grid[r, c] = legal[i]
-    return grid
+    nums = rng.permutation(rows * cols) + 1
+    return nums.reshape(rows, cols)
+
+@register_formula("spatial_entropy")
+def gen_spatial_entropy(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
+    """Generate grid placing larger numbers near the center based on a spatial entropy map."""
+    n = rows * cols
+    nums = rng.permutation(n) + 1
+    base_grid = nums.reshape(rows, cols)
+    r_idx = np.linspace(-1.0, 1.0, rows)[:, None]
+    c_idx = np.linspace(-1.0, 1.0, cols)
+    dist = np.sqrt(r_idx ** 2 + c_idx ** 2)
+    order = np.argsort(dist.ravel())
+    flat = base_grid.ravel()
+    flat = flat[order]
+    return flat.reshape(rows, cols)
 
 @register_formula("tail_cluster")
 def gen_tail_cluster(rows: int, cols: int, rng: np.random.Generator) -> np.ndarray:
