@@ -150,9 +150,9 @@ async def shutdown():
 
 def run_api() -> None:
     """Run the FastAPI server on the configured port."""
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "10000"))  # Use Render's default port 10000
     logger.info("Starting API server on port %d", port)
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")  # Bind to 0.0.0.0
 
 if __name__ == "__main__":
     run_api()
