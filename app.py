@@ -134,11 +134,8 @@ async def predict(req: GridRequest):
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-# ──────────────────────────────────────────────
-# 6️⃣ 啟動 & 關閉事件（warm-up）
-# ──────────────────────────────────────────────
-@app.on_event("startup")
-async def warm_up():
+# # ───── 1. util：真正的暖機函式 ─────
+async def _do_warm_up():
     dummy_grid = [
         [1,  2, -1,  4,  5],
         [-1, 7,  8, -1, 10],
@@ -151,12 +148,14 @@ async def warm_up():
         logger.info("Warm-up completed successfully.")
     except Exception as exc:
         logger.error("Warm-up failed: %s", exc, exc_info=True)
-        logger.warning("Continuing startup despite warm-up failure.")
 
-@app.on_event("shutdown")
-async def shutdown():
-    logger.info("API shutting down to save resources.")
-
+# ───── 2. startup：立刻返回，再背景跑暖機 ─────
+@app.on_event("startup")
+async def startup_event():
+    import asyncio
+    if os.getenv("ENABLE_WARMUP", "1") == "1":
+        asyncio.create_task(_do_warm_up())      # 不阻塞
+    logger.info("Startup handler finished (warm-up running in background).")
 # ──────────────────────────────────────────────
 # 7️⃣ 主程式入口 ── 用 uvicorn.run，吃 $PORT
 # ──────────────────────────────────────────────
