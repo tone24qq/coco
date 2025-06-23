@@ -156,3 +156,5 @@ def run_api() -> None:
 
 if __name__ == "__main__":
     run_api()
+    
+app = app
