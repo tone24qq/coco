@@ -85,28 +85,37 @@ def select_modules(grid: np.ndarray) -> List[str]:
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
-_CACHE_PATH = os.path.join(os.path.dirname(__file__), "board_cache.duckdb")
+_CACHE_PATH = os.path.join(os.path.dirname(__file__), 'board_cache.duckdb')
 _CACHE_LOCAL = threading.local()
+_CACHE_INIT_LOCK = threading.Lock()
+_CACHE_INITIALIZED = False
 
 def _init_cache_conn() -> duckdb.DuckDBPyConnection:
-    """Create a new DuckDB connection and initialize schema."""
-    conn = duckdb.connect(_CACHE_PATH)
+    """Create a new DuckDB connection."""
+    return duckdb.connect(_CACHE_PATH)
+
+def _ensure_cache_schema(conn: duckdb.DuckDBPyConnection) -> None:
+    """Initialize table once in a thread-safe manner."""
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS board_cache ("
-        "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
-        "PRIMARY KEY(mask, seed, r, c))"
+        'CREATE TABLE IF NOT EXISTS board_cache ('
+        'mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,'
+        'PRIMARY KEY(mask, seed, r, c))'
     )
-    return conn
 
 def _get_cache_conn() -> duckdb.DuckDBPyConnection:
     """Return a valid thread-local DuckDB connection."""
-    conn = getattr(_CACHE_LOCAL, "conn", None)
+    conn = getattr(_CACHE_LOCAL, 'conn', None)
     if conn is None:
         conn = _init_cache_conn()
+        with _CACHE_INIT_LOCK:
+            global _CACHE_INITIALIZED
+            if not _CACHE_INITIALIZED:
+                _ensure_cache_schema(conn)
+                _CACHE_INITIALIZED = True
         _CACHE_LOCAL.conn = conn
     else:
         try:
-            conn.execute("SELECT 1")
+            conn.execute('SELECT 1')
         except Exception:
             try:
                 conn.close()
