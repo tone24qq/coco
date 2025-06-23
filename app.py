@@ -150,7 +150,7 @@ async def shutdown():
 
 def run_api():
     """Run API with on-demand activation."""
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.getenv("PORT", "8000"))
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     logger.info("API in sleep mode, will wake on request...")
