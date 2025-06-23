@@ -91,11 +91,11 @@ _CACHE_INIT_LOCK = threading.Lock()
 _CACHE_INITIALIZED = False
 
 def _init_cache_conn() -> duckdb.DuckDBPyConnection:
-    """Create a new DuckDB connection."""
+    "Create a new DuckDB connection."
     return duckdb.connect(_CACHE_PATH)
 
 def _ensure_cache_schema(conn: duckdb.DuckDBPyConnection) -> None:
-    """Initialize table once in a thread-safe manner."""
+    "Initialize table once in a thread-safe manner."
     conn.execute(
         'CREATE TABLE IF NOT EXISTS board_cache ('
         'mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,'
