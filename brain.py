@@ -10,12 +10,16 @@ from numpy.fft import rfftn, irfftn
 import random
 
 # Logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 logger = logging.getLogger(__name__)
+
+def configure_logging() -> None:
+    """Configure default logging if no handlers are present."""
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(message)s",
+            handlers=[logging.StreamHandler()]
+        )
 
 # 來自 log_once_patch.txt 和 final_numpy_coord_fix_summary.txt
 _seen_modules_once = set()
@@ -382,7 +386,6 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
-    radius = min(2, min(rows, cols) // 2 - 1)
 
     for r in range(rows):
         for c in range(cols):
@@ -420,7 +423,6 @@ error_memory = defaultdict(Counter)
 
 def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on historical error correction in 5x5 neighborhood."""
-    global error_memory
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
@@ -431,7 +433,6 @@ def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N
         for c in range(cols):
             if grid[r, c] != -1:
                 continue
-            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
             base_score = 0.5
             for val in legal_values:
                 error_count = error_memory[(r, c)][val]
@@ -630,35 +631,3 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         logger.error(f"Error executing module {module_name}: {e}", extra={"request_id": effective_request_id})
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
-
-# Verification
-if __name__ == "__main__":
-    print("Verifying brain.py structure...")
-    dummy_grid = np.array([[1, 2, -1], [-1, 1, 5], [3, -1, 4]])
-    print(f"Created dummy grid:\n{dummy_grid}")
-    for module_to_test in [
-        "EXT_Q1_ProximityEntropy_Vec",
-        "EXT_Q2_PotentialPath_Vec",
-        "EXT_Q3_DiscontinuitySym_Vec",
-        "EXT_Q4_ControlComposite_Vec",
-        "EXT_Q5_GlobalEntropy_Vec",
-        "EXT_Q6_LineBridge_Vec",
-        "EXT_Q7_VariancePrior_Vec",
-        "EXT_Q8_SpatialKL_Vec",
-        "EXT_Q9_MultiScaleEntropy_Vec",
-        "EXT_Q10_DistPotential_Vec"
-    ]:
-        print(f"Testing get_module_score with '{module_to_test}'...")
-        try:
-            scores = get_module_score(module_to_test, dummy_grid)
-            print(f"Successfully called {module_to_test}. Output:\n{scores}")
-            assert isinstance(scores, np.ndarray), "Return type is not np.ndarray"
-            assert scores.shape == dummy_grid.shape, "Return shape does not match grid shape"
-            assert scores.dtype == float, "Return dtype is not float"
-        except ValueError as e:
-            print(f"Error: {e}")
-    print("Listing all registered modules:")
-    for i, name in enumerate(REGISTERED_MODULES_BRAIN.keys()):
-        print(f" {i+1}. {name}")
-    print(f"Total modules registered: {len(REGISTERED_MODULES_BRAIN)}")
-    print("brain.py verification complete.")
