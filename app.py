@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -127,7 +128,10 @@ async def predict(req: GridRequest):
                     num_key = str(int(float(num)))
                 except Exception:
                     num_key = str(num)
-                inner[num_key] = float(prob) * 100
+                try:
+                    inner[num_key] = float(prob) * 100
+                except Exception:
+                    inner[num_key] = 0.0
             clean_probs[key_str] = inner
 
         response_payload = {
@@ -135,11 +139,15 @@ async def predict(req: GridRequest):
             "full_probabilities": clean_probs
         }
 
-        return JSONResponse(content=response_payload, status_code=200)
+        # ✅ 保險轉換 JSON-safe 格式，避免卡住
+        clean_json = json.loads(json.dumps(response_payload, default=lambda x: float(x)))
+        logger.info("✅ Final response payload: %s", clean_json)
+
+        return JSONResponse(content=clean_json, status_code=200)
 
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="❌ 回傳 JSON 格式異常：" + str(exc)) from exc
 
 @app.on_event("startup")
 async def warm_up():
