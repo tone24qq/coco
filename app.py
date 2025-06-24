@@ -1,24 +1,26 @@
-import os
-import sys
 import json
 import logging
+import os
+import sys
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-
-from fastapi import FastAPI, HTTPException, status
-from fastapi.responses import JSONResponse, PlainTextResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
-
-from analyzer import predict_scratch_card
 
 # Logging
 from logging.handlers import RotatingFileHandler
+from typing import Any, Dict, List, Optional
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel
+
+from analyzer import predict_scratch_card
 
 log_handlers = [
     logging.StreamHandler(sys.stdout),
-    RotatingFileHandler("app.log", mode="a", encoding="utf-8", maxBytes=5_000_000, backupCount=3),
+    RotatingFileHandler(
+        "app.log", mode="a", encoding="utf-8", maxBytes=5_000_000, backupCount=3
+    ),
 ]
 logging.basicConfig(
     level=logging.INFO,
@@ -45,10 +47,12 @@ app.add_middleware(
 
 # ==== Schemas ====
 
+
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
     iterations: Optional[int] = 5000
+
 
 class Prediction(BaseModel):
     row: int
@@ -58,9 +62,11 @@ class Prediction(BaseModel):
     reasons: List[str]
     module_scores: Dict[str, float]
 
+
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+
 
 # ==== Routes ====
 
@@ -69,19 +75,28 @@ os.environ.setdefault("ITER", "5000")
 os.environ.setdefault("TOPK_RERANK", "120")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
+
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
     return {"status": "OK", "startup": startup_time}
+
 
 @app.head("/", response_class=PlainTextResponse, status_code=status.HTTP_200_OK)
 async def root_head() -> str:
     return ""
 
+
 @app.get("/debug/ping", response_class=JSONResponse, status_code=200)
 async def ping() -> Dict[str, str]:
     return {"ping": "pong"}
 
-@app.post("/predict", response_model=PredictResponse, response_class=JSONResponse, status_code=200)
+
+@app.post(
+    "/predict",
+    response_model=PredictResponse,
+    response_class=JSONResponse,
+    status_code=200,
+)
 async def predict(req: GridRequest):
     try:
         # 格式檢查
@@ -101,14 +116,15 @@ async def predict(req: GridRequest):
 
         logger.info(
             "Predict API called | size=%dx%d | target=%s | iterations=%d",
-            rows, cols, str(req.target_num), req.iterations
+            rows,
+            cols,
+            str(req.target_num),
+            req.iterations,
         )
 
         # 推理邏輯
         result = predict_scratch_card(
-            grid=req.grid,
-            target_num=req.target_num,
-            iterations=req.iterations
+            grid=req.grid, target_num=req.target_num, iterations=req.iterations
         )
 
         predictions = result.get("predictions", [])
@@ -136,26 +152,33 @@ async def predict(req: GridRequest):
 
         response_payload = {
             "predictions": predictions,
-            "full_probabilities": clean_probs
+            "full_probabilities": clean_probs,
         }
 
         # ✅ 保險轉換 JSON-safe 格式，避免卡住
-        clean_json = json.loads(json.dumps(response_payload, default=lambda x: float(x)))
+        clean_json = json.loads(
+            json.dumps(response_payload, default=lambda x: float(x))
+        )
         logger.info("✅ Final response payload: %s", clean_json)
 
         return JSONResponse(content=clean_json, status_code=200)
 
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail="❌ 回傳 JSON 格式異常：" + str(exc)) from exc
+        raise HTTPException(
+            status_code=500, detail="❌ 回傳 JSON 格式異常：" + str(exc)
+        ) from exc
+
 
 @app.on_event("startup")
 async def warm_up():
     logger.info("Warm-up disabled to speed up startup.")
 
+
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("API shutting down to save resources.")
+
 
 # === Launch ===
 def run_api() -> None:
@@ -163,7 +186,6 @@ def run_api() -> None:
     logger.info("Starting API server on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
+
 if __name__ == "__main__":
     run_api()
-
-app = app
