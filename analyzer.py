@@ -4,8 +4,6 @@ import numpy as np
 import xxhash
 from collections import defaultdict
 from functools import lru_cache
-import duckdb
-import threading
 from typing import List, Dict, Tuple, Any, Optional
 from joblib import Parallel, delayed
 import logging
@@ -31,9 +29,6 @@ from brain import (
 
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
-
-# Track how many child nodes are skipped in UCT selection
-SKIPPED_NODES = 0
 
 # 來自 probmap_key_patch_v2.txt
 def _native_coord(k):
@@ -85,91 +80,30 @@ def select_modules(grid: np.ndarray) -> List[str]:
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
-_CACHE_PATH = os.path.join(os.path.dirname(__file__), "board_cache.duckdb")
-_CACHE_LOCAL = threading.local()
-
-_CACHE_INIT_LOCK = threading.Lock()
-_CACHE_INITIALIZED = False
-
-def _init_cache(conn: duckdb.DuckDBPyConnection) -> None:
-    global _CACHE_INITIALIZED
-    if not _CACHE_INITIALIZED:
-        with _CACHE_INIT_LOCK:
-            if not _CACHE_INITIALIZED:
-                try:
-                    conn.execute(
-                        "CREATE TABLE IF NOT EXISTS board_cache ("
-                        "mask TEXT, seed INTEGER, r INTEGER, c INTEGER, board BLOB,"
-                        "PRIMARY KEY(mask, seed, r, c))"
-                    )
-                    conn.commit()
-                except Exception as exc:
-                    logger.error("Cache init error: %s", exc)
-                _CACHE_INITIALIZED = True
-
-def _get_cache_conn() -> duckdb.DuckDBPyConnection:
-    """Return thread-local DuckDB connection."""
-    conn = getattr(_CACHE_LOCAL, "conn", None)
-    if conn is None or not isinstance(conn, duckdb.DuckDBPyConnection):
-        conn = duckdb.connect(_CACHE_PATH)
-        _CACHE_LOCAL.conn = conn
-    _init_cache(conn)
-    return conn
-
-_MEM_CACHE: Dict[Tuple[str, int, int, int], np.ndarray] = {}
-
+@lru_cache(maxsize=500000)
 def _cached_board(mask_key: str, seed: int, r: int, c: int,
-                  kv_bytes: bytes, idx_bytes: bytes) -> np.ndarray:
-    """Return a unique 1-D board (length r*c) with persistent caching."""
-    cache_key = (mask_key, seed, r, c)
-    if cache_key in _MEM_CACHE:
-        return _MEM_CACHE[cache_key]
-
-    conn = _get_cache_conn()
-    try:
-        row = conn.execute(
-            "SELECT board FROM board_cache WHERE mask=? AND seed=? AND r=? AND c=?",
-            cache_key,
-        ).fetchone()
-        if row:
-            board = np.frombuffer(row[0], dtype=np.int16)
-            if board.size == r * c:
-                _MEM_CACHE[cache_key] = board
-                return board
-    except Exception as exc:
-        logger.error("Cache read error: %s", exc)
-
+                  kv_bytes: bytes, idx_bytes: bytes):
+    """Return a unique 1-D board (length r*c) with known cells filled."""
     rng = np.random.default_rng(seed)
     n = r * c
     perm = rng.permutation(n) + 1
 
     idx = np.frombuffer(idx_bytes, dtype=np.int32)
     if idx.size == 0:
-        board = perm.astype(np.int16)
-    else:
-        vals = np.frombuffer(kv_bytes, dtype=np.int32)
-        if idx.size != vals.size:
-            board = perm.astype(np.int16)
-        else:
-            mask = np.isin(perm, vals, invert=True)
-            remaining = perm[mask]
-            board = np.empty(n, dtype=np.int16)
-            board[idx] = vals
-            unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
-            board[unknown_idx] = remaining[:unknown_idx.size]
+        return perm.astype(np.int16)
 
-    try:
-        conn.execute(
-            "INSERT OR REPLACE INTO board_cache VALUES (?, ?, ?, ?, ?)",
-            (*cache_key, board.tobytes()),
-        )
-        conn.commit()
-    except Exception as exc:
-        logger.error("Cache write error: %s", exc)
+    vals = np.frombuffer(kv_bytes, dtype=np.int32)
+    if idx.size != vals.size:
+        return perm.astype(np.int16)
 
-    _MEM_CACHE[cache_key] = board
-    if len(_MEM_CACHE) > 10000:
-        _MEM_CACHE.pop(next(iter(_MEM_CACHE)))
+    # Remove known values from permutation to avoid duplicates
+    mask = np.isin(perm, vals, invert=True)
+    remaining = perm[mask]
+
+    board = np.empty(n, dtype=np.int16)
+    board[idx] = vals
+    unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
+    board[unknown_idx] = remaining[:unknown_idx.size]
     return board
 
 def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator,
@@ -187,10 +121,10 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     kv_bytes = known_vals.tobytes()
     idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
     mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
-    seeds = rng.integers(0, 0xFFFF, size=batch)
-    for i, s in enumerate(seeds):
+    seed = rng.integers(0, 0xFFFF)
+    for i in range(batch):
         board1d = _cached_board(
-            mask, int(s) & 0xFFFF,
+            mask, seed & 0xFFFF,
             rows, cols,
             kv_bytes, idx_bytes
         ).reshape(rows, cols)
@@ -225,8 +159,6 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     weights = adjust_weights_based_on_history(history, formulas)
     remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
-    prev_probs: Optional[Dict[Tuple[int, int], Dict[int, float]]] = None
-    variance_map: Dict[Tuple[int, int], float] = {}
 
     while remain > 0:
         batch = min(4000, remain)
@@ -253,28 +185,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
                         counts[(r, c)][num] += fast[r, c]
                         if target_num is not None and num == target_num:
                             counts[(r, c)][num] += 2 * fast[r, c]
-
         remain -= batch
-
-        # --- convergence check ---
-        prob_map_cur: Dict[Tuple[int, int], Dict[int, float]] = {}
-        for (r, c) in [tuple(b) for b in blanks]:
-            total = sum(counts[(r, c)].values()) or 1e-10
-            probs = {n: counts[(r, c)][n] / total for n in legal_all}
-            prob_map_cur[(r, c)] = probs
-            variance_map[(r, c)] = float(np.var(list(counts[(r, c)].values()) or [0.0]))
-
-        if prev_probs is not None:
-            diff = 0.0
-            denom = 0
-            for cell in prob_map_cur:
-                for n in legal_all:
-                    diff += abs(prob_map_cur[cell].get(n, 0.0) - prev_probs[cell].get(n, 0.0))
-                    denom += 1
-            if denom and diff / denom < 0.002:
-                break
-
-        prev_probs = prob_map_cur
 
     prob_map = {}
     for (r, c) in [tuple(b) for b in blanks]:
@@ -413,23 +324,11 @@ class MCTSNode:
             exploitation = child.value / denom
             exploration = math.sqrt(2 * math.log(self.visits + 1) / denom)
             return exploitation + exploration
-        scores = [(child, ucb(child)) for child in self.children]
-        if not scores:
-            raise ValueError("No children to select")
-        global_best = max(s for _, s in scores)
-        threshold = global_best * 0.95
-        filtered = [child for child, s in scores if s >= threshold]
-        skipped = len(scores) - len(filtered)
-        if skipped:
-            global SKIPPED_NODES
-            SKIPPED_NODES += skipped
-        return max(filtered, key=ucb)
+        return max(self.children, key=ucb)
 
 def mcts(grid: np.ndarray, iterations: int = 1000):
     rows, cols = grid.shape
     root = MCTSNode(grid)
-    global SKIPPED_NODES
-    SKIPPED_NODES = 0
 
     def simulate(node):
         try:
@@ -469,7 +368,6 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             return 0.0
 
     Parallel(n_jobs=4, require='sharedmem')(delayed(simulate)(root) for _ in range(iterations // 4))
-    logger.info("MCTS iterations=%d | skipped_children=%d", iterations, SKIPPED_NODES)
     best_child = max(root.children, key=lambda c: c.value / c.visits,
                      default=root)
     return best_child.grid
