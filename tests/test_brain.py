@@ -30,3 +30,15 @@ def test_registered_modules():
             # Some modules may legitimately raise ValueError on small grids
             continue
     assert len(brain.REGISTERED_MODULES_BRAIN) >= len(modules)
+
+def test_global_offset_cooccurrence():
+    grid = np.array([[1, 2, -1], [2, 1, -1]])
+    scores = brain.get_module_score(
+        "EXT_GlobalOffsetCooccurrence_Vec",
+        grid,
+        target=1,
+    )
+    assert scores.shape == grid.shape
+    assert scores[0, 2] == 2
+    assert scores[1, 2] == 2
+

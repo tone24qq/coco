@@ -24,11 +24,15 @@ from brain import (
     BoardAnalyzerUtils,
     REGISTERED_MODULES_BRAIN,
     get_module_score,
-    bytes_to_grid
+    bytes_to_grid,
 )
 
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
+
+# Modules that require a target value when executed. These are skipped during
+# automatic module scoring where no target is provided.
+MODULES_REQUIRE_TARGET = {"EXT_GlobalOffsetCooccurrence_Vec"}
 
 # 來自 probmap_key_patch_v2.txt
 def _native_coord(k):
@@ -76,7 +80,11 @@ def select_modules(grid: np.ndarray) -> List[str]:
         return list(REGISTERED_MODULES_BRAIN)   # 直接使用所有模組
     # 原始邏輯：動態選擇模組
     base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]
-    scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
+    scores = {}
+    for mod in REGISTERED_MODULES_BRAIN:
+        if mod in MODULES_REQUIRE_TARGET:
+            continue
+        scores[mod] = np.mean(get_module_score(mod, grid))
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
