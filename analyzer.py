@@ -334,7 +334,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         for r in range(rows):
             for c in range(cols):
                 if (r, c) not in prob_map:
-                    prob_map[(r, c)] = {n: 0.0 for n in range(100)}
+                    prob_map[(r, c)] = {n: 0.0 for n in range(1, rows * cols + 1)}
     # --------------------------------------------------------
 
     return prob_map
