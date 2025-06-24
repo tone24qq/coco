@@ -4,7 +4,6 @@ import os
 import numpy as np
 from collections import Counter, defaultdict
 from typing import List, Tuple, Callable, Optional, Dict, Any
-from numba import njit, prange
 from scipy.cluster.vq import kmeans2
 from scipy import ndimage as ndi
 from numpy.fft import rfftn, irfftn
@@ -199,8 +198,8 @@ class BoardAnalyzerUtils:
         return all_vals - used
 
 # 來自 fix_unsupported_itemsize_and_cache.txt
-DTYPE_DEFAULT = np.int16  # use int16 when possible for compact boards
-ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize
+DTYPE_DEFAULT = np.int32
+ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize  # 修正為 4 bytes
 
 def bytes_to_grid(grid_bytes: bytes, shape):
     # zero-copy, read-only view
@@ -218,18 +217,10 @@ else:
 # ----------------------------------------------------------------------
 # Utility kernels / helpers from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
-def _local_hist(grid, bins: int | None = None, win: int = 5) -> np.ndarray:
-    """Return sliding-window histogram (vectorised via FFT).
-
-    The number of bins automatically adapts to ``rows*cols`` when not
-    specified. Hidden cells ``-1`` are shifted to index ``0`` to avoid
-    indexing errors.
-    """
+def _local_hist(grid, bins=100, win=5):
+    """Return sliding-window histogram (vectorised via FFT)."""
     rows, cols = grid.shape
-    if bins is None:
-        bins = rows * cols + 1
-    idx = np.clip(grid + 1, 0, bins - 1)
-    one_hot = np.eye(bins, dtype=float)[idx]  # (r,c,b)
+    one_hot = np.eye(bins, dtype=float)[grid]  # (r,c,b)
     kernel = np.ones((win, win), dtype=float)
     # FFT-based convolution per bin
     k_fft = rfftn(kernel, s=grid.shape)
@@ -244,24 +235,29 @@ def _local_hist(grid, bins: int | None = None, win: int = 5) -> np.ndarray:
 # ----------------------------------------------------------------------
 # Q-Series modules from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
-def compute_global_features(grid: np.ndarray, bins: int | None = None):
-    """Return global statistics and histogram for a grid.
-
-    ``bins`` defaults to ``rows * cols + 1`` so hidden cells ``-1`` map to index
-    ``0``. Values are shifted by ``+1`` and clipped to avoid indexing errors.
+def compute_global_features(grid: np.ndarray, bins: int = 100):
     """
-    rows, cols = grid.shape
-    if bins is None:
-        bins = rows * cols + 1
+    Robust global stats: mean, std, entropy (0‑1), and PDF (bins).
+    Works even when grid contains negative or very large integers.
+    """
     flat = grid.ravel().astype(float)
     mean_ = flat.mean()
-    std_ = flat.std(ddof=0)
+    std_  = flat.std(ddof=0)
 
-    idx = np.clip(flat + 1, 0, bins - 1).astype(int)
+    # Scale values into 0..bins‑1
+    minv, maxv = flat.min(), flat.max()
+    if minv == maxv:
+        # Degenerate board – zero entropy
+        p = np.zeros(bins, dtype=float)
+        p[0] = 1.0
+        return mean_, std_, 0.0, p
+
+    norm = (flat - minv) / (maxv - minv)
+    idx  = np.clip((norm * (bins - 1)).astype(int), 0, bins - 1)
     counts = np.bincount(idx, minlength=bins).astype(float) + 1e-9
     p = counts / counts.sum()
 
-    entropy = -(p * np.log2(p)).sum() / np.log2(bins)
+    entropy = -(p * np.log2(p)).sum() / np.log2(bins)    # 0‑1
     return mean_, std_, entropy, p
 
 def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
@@ -309,19 +305,9 @@ def EXT_Q7_VariancePrior_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A"
     alpha = min(std_ / 15, 1)
     return alpha * compute_local_variance_prior(grid) + (1 - alpha) * 0.5
 
-def EXT_Q8_SpatialKL_Vec(
-    grid: np.ndarray,
-    request_id: Optional[str] = "N/A",
-    win: int = 5,
-    bins: int | None = None,
-) -> np.ndarray:
-    """Compute KL-divergence between local and global distributions."""
-    rows, cols = grid.shape
-    if bins is None:
-        bins = rows * cols + 1
-    _, _, _, global_p = compute_global_features(grid, bins=bins)
-    local_hist = _local_hist(grid, bins=bins, win=win)
-    assert local_hist.shape[-1] == global_p.shape[0], "Mismatch between local_hist and global_p bins"
+def EXT_Q8_SpatialKL_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A", win=5) -> np.ndarray:
+    _, _, _, global_p = compute_global_features(grid)
+    local_hist = _local_hist(grid, bins=100, win=win)  # (r,c,b)
     kl = (local_hist * np.log((local_hist + 1e-9) / global_p)).sum(-1)
     kl = (kl - kl.min()) / (kl.max() - kl.min() + 1e-9)
     return 1 - kl  # high = match global, anomalies low
@@ -337,21 +323,6 @@ def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
     dist = ndi.distance_transform_edt(~target_mask)
     dist_norm = (dist - dist.min()) / (dist.max() - dist.min() + 1e-9)
     return 1 - dist_norm
-
-def EXT_Q11_SpatialEntropy_Vec(
-    grid: np.ndarray,
-    request_id: Optional[str] = "N/A",
-    bins: int | None = None,
-) -> np.ndarray:
-    """Score cells by local entropy in a 5x5 window."""
-    rows, cols = grid.shape
-    if bins is None:
-        bins = rows * cols + 1
-    hist = _local_hist(grid.clip(min=0), bins=bins, win=5)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        entropy = -(hist * np.log(hist + 1e-9)).sum(-1)
-    norm = (entropy - entropy.min()) / (np.ptp(entropy) + 1e-9)
-    return 1 - norm.astype(np.float32)
 
 # --- Scoring Module Implementations ---
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
@@ -382,64 +353,33 @@ def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
             scores[r, c] = max_score
     return scores
 
-@njit(parallel=True, fastmath=True)
-def _m3_local_focus_kernel(grid, legal_vals, row_flags, col_flags, radius):
-    rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=np.float32)
-    for r in prange(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            neigh = []
-            for dr in range(-radius, radius + 1):
-                for dc in range(-radius, radius + 1):
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr = r + dr
-                    nc = c + dc
-                    if 0 <= nr < rows and 0 <= nc < cols:
-                        val = grid[nr, nc]
-                        if val != -1:
-                            neigh.append(float(val))
-            if len(neigh) < 2:
-                continue
-            mean_val = 0.0
-            for v in neigh:
-                mean_val += v
-            mean_val /= len(neigh)
-            var = 0.0
-            for v in neigh:
-                diff = v - mean_val
-                var += diff * diff
-            std_val = math.sqrt(var / (len(neigh) - 1)) if len(neigh) > 1 else 1.0
-            if std_val == 0.0:
-                std_val = 1.0
-            flag = row_flags[r, c] or col_flags[r, c]
-            max_score = 0.0
-            for val in legal_vals:
-                deviation = abs(float(val) - mean_val) / std_val
-                seq_bonus = 0.3 if flag and abs(float(val) - mean_val) > std_val else 0.0
-                score = (deviation + seq_bonus) / max(1.0, std_val + 0.3)
-                if score > max_score:
-                    max_score = score
-            scores[r, c] = max_score
-    return scores
-
 def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on 5x5 neighborhood mean and variance."""
     rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
     utils = BoardAnalyzerUtils()
     radius = min(2, min(rows, cols) // 2 - 1)
-    dtype = np.int16 if grid.max() <= np.iinfo(np.int16).max else np.int32
-    g_int = grid.astype(dtype, copy=False)
-    legal_vals = np.array(list(utils.get_legal_values_for_placement(grid)), dtype=dtype)
-    row_flags = np.zeros((rows, cols), dtype=np.bool_)
-    col_flags = np.zeros((rows, cols), dtype=np.bool_)
+
     for r in range(rows):
         for c in range(cols):
-            row_flags[r, c] = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
-            col_flags[r, c] = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
-    return _m3_local_focus_kernel(g_int, legal_vals, row_flags, col_flags, radius)
+            if grid[r, c] != -1:
+                continue
+            neighbors = utils.get_neighborhood_values(grid, r, c, radius=radius, eight_connectivity=True)
+            if len(neighbors) < 2:
+                continue
+            mean_val = np.mean(neighbors)
+            std_val = np.std(neighbors, ddof=1) or 1.0
+            row_seq = utils.check_sequences(grid[max(0, r-2):min(rows, r+3)], grid, min_len=3, allow_gaps=1)
+            col_seq = utils.check_sequences(grid[:, max(0, c-2):min(cols, c+3)].T, grid, min_len=3, allow_gaps=1)
+            legal_values = utils.get_legal_values_for_placement(grid)
+            max_score = 0.0
+            for val in legal_values:
+                deviation = abs(val - mean_val) / std_val
+                seq_bonus = 0.3 if (row_seq or col_seq) and abs(val - mean_val) > std_val else 0.0
+                score = MathUtils().normalize_value(deviation + seq_bonus, 0, max(1.0, std_val + 0.3))
+                max_score = max(max_score, score)
+            scores[r, c] = max_score
+    return scores
 
 def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on sequence blocks in 5x5 neighborhood."""
@@ -631,7 +571,6 @@ mods = {
     "EXT_Q8_SpatialKL_Vec": EXT_Q8_SpatialKL_Vec,
     "EXT_Q9_MultiScaleEntropy_Vec": EXT_Q9_MultiScaleEntropy_Vec,
     "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
-    "EXT_Q11_SpatialEntropy_Vec": EXT_Q11_SpatialEntropy_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -654,7 +593,6 @@ FAST_PHASE = [
     "EXT_Q2_PotentialPath_Vec",
     "EXT_Q5_GlobalEntropy_Vec",
     "EXT_Q8_SpatialKL_Vec",
-    "EXT_Q11_SpatialEntropy_Vec",
 ]
 
 RERANK_PHASE = [
