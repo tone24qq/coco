@@ -8,6 +8,7 @@ from scipy.cluster.vq import kmeans2
 from scipy import ndimage as ndi
 from numpy.fft import rfftn, irfftn
 import random
+from modules import global_offset_cooccurrence
 
 # Logging configuration
 logger = logging.getLogger(__name__)
@@ -324,6 +325,20 @@ def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
     dist_norm = (dist - dist.min()) / (dist.max() - dist.min() + 1e-9)
     return 1 - dist_norm
 
+def EXT_GlobalOffsetCooccurrence_Vec(
+    grid: np.ndarray,
+    target: int,
+    offsets: Optional[list[int]] = None,
+    request_id: Optional[str] = "N/A",
+) -> np.ndarray:
+    """Wrapper for :func:`modules.global_offset_cooccurrence`.
+
+    Parameters are forwarded to the underlying implementation and the resulting
+    score for the single grid is returned.
+    """
+    scores = global_offset_cooccurrence(grid[np.newaxis, :, :], target, offsets)
+    return scores[0]
+
 # --- Scoring Module Implementations ---
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
@@ -571,6 +586,7 @@ mods = {
     "EXT_Q8_SpatialKL_Vec": EXT_Q8_SpatialKL_Vec,
     "EXT_Q9_MultiScaleEntropy_Vec": EXT_Q9_MultiScaleEntropy_Vec,
     "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
+    "EXT_GlobalOffsetCooccurrence_Vec": EXT_GlobalOffsetCooccurrence_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -614,7 +630,10 @@ def get_module_score(module_name: str, grid: np.ndarray, **kwargs) -> np.ndarray
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
     module_func = REGISTERED_MODULES_BRAIN[module_name]
-    score_grid = module_func(grid, **kwargs)
+    if grid.ndim == 3:
+        score_grid = np.stack([module_func(g, **kwargs) for g in grid])
+    else:
+        score_grid = module_func(grid, **kwargs)
     if module_name not in _seen_modules_once:
         logger.info(f"Executing module FIRST time: {module_name}", extra={"request_id": effective_request_id})
         _seen_modules_once.add(module_name)
