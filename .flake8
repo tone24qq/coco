@@ -1,6 +1,24 @@
 [flake8]
-max-line-length = 120      # 跟 black -l 120 對齊
-extend-ignore = E203,E501  
+# 一行最多 120 字，跟 black -l 120 對齊
+max-line-length = 120
+
+# 忽略 black 與 PEP8 衝突的兩條規則
+extend-ignore = E203, E501
+
+# 只抓錯誤與警告，W 系列包含縮排、E 系列包含語法
+select = E, W, F
+
+# 排除自動產生或不想檢查的資料夾
+exclude =
+    .git,
+    __pycache__,
+    build,
+    dist,
+    .venv,
+    env
+
+# 不要再自動把長行裁切，交由 black 解決
+inline-quotes = single  
 ===== Begin 防錯字典.txt =====
 
 
