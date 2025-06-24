@@ -125,24 +125,41 @@ async def predict(req: GridRequest):
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-...
-
 @app.on_event("startup")
 async def warm_up():
-    # 🔕 不再執行任何模組或模擬行為，僅記錄 log
-    logger.info("Warm-up disabled to speed up startup.")
+    dummy_grid = [
+        [1, 2, -1, 4, 5],
+        [-1, 7, 8, -1, 10],
+        [11, -1, 13, 14, -1],
+        [-1, 17, 18, -1, 20]
+    ]
+    base_iter = int(os.getenv("BASE_ITER", "800")) // 25
+    try:
+        predict_scratch_card(
+            grid=dummy_grid,
+            iterations=base_iter
+        )
+        logger.info("Warm-up completed successfully.")
+    except Exception as exc:
+        logger.error("Warm-up failed: %s", exc, exc_info=True)
+        logger.warning("Continuing startup despite warm-up failure.")
 
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("API shutting down to save resources.")
 
-def run_api() -> None:
-    """Run the FastAPI server on the configured port."""
-    port = int(os.getenv("PORT", "10000"))  # Use Render's default port 10000
-    logger.info("Starting API server on port %d", port)
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")  # Bind to 0.0.0.0
+def run_api():
+    """Run API with on-demand activation."""
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    server = uvicorn.Server(config)
+    logger.info("API in sleep mode, will wake on request...")
+    while True:
+        try:
+            server.run()  # 啟動時休眠，呼叫時醒來
+            logger.info("API woken up and working...")
+        except KeyboardInterrupt:
+            server.should_exit = True
+            break
 
 if __name__ == "__main__":
     run_api()
-    
-app = app
