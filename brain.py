@@ -331,7 +331,7 @@ def EXT_Q11_SpatialEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
     hist = _local_hist(grid.clip(min=0), bins=bins, win=5)
     with np.errstate(divide="ignore", invalid="ignore"):
         entropy = -(hist * np.log(hist + 1e-9)).sum(-1)
-    norm = (entropy - entropy.min()) / (entropy.ptp() + 1e-9)
+    norm = (entropy - entropy.min()) / (np.ptp(entropy) + 1e-9)
     return 1 - norm.astype(np.float32)
 
 # --- Scoring Module Implementations ---
