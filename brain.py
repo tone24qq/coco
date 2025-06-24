@@ -325,6 +325,15 @@ def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
     dist_norm = (dist - dist.min()) / (dist.max() - dist.min() + 1e-9)
     return 1 - dist_norm
 
+def EXT_Q11_SpatialEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
+    """Score cells by local entropy in a 5x5 window."""
+    bins = min(50, int(grid.max(initial=0)) + 1)
+    hist = _local_hist(grid.clip(min=0), bins=bins, win=5)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        entropy = -(hist * np.log(hist + 1e-9)).sum(-1)
+    norm = (entropy - entropy.min()) / (entropy.ptp() + 1e-9)
+    return 1 - norm.astype(np.float32)
+
 # --- Scoring Module Implementations ---
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
@@ -603,6 +612,7 @@ mods = {
     "EXT_Q8_SpatialKL_Vec": EXT_Q8_SpatialKL_Vec,
     "EXT_Q9_MultiScaleEntropy_Vec": EXT_Q9_MultiScaleEntropy_Vec,
     "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
+    "EXT_Q11_SpatialEntropy_Vec": EXT_Q11_SpatialEntropy_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -625,6 +635,7 @@ FAST_PHASE = [
     "EXT_Q2_PotentialPath_Vec",
     "EXT_Q5_GlobalEntropy_Vec",
     "EXT_Q8_SpatialKL_Vec",
+    "EXT_Q11_SpatialEntropy_Vec",
 ]
 
 RERANK_PHASE = [
