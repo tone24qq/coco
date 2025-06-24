@@ -8,6 +8,17 @@ from scipy.cluster.vq import kmeans2
 from scipy import ndimage as ndi
 from numpy.fft import rfftn, irfftn
 import random
+from modules import global_offset_cooccurrence, neighbor_value_distribution
+
+
+def batchable(fn: Callable) -> Callable:
+    """Decorator to allow modules to accept batch or single board input."""
+    def wrapper(boards: np.ndarray, *args, **kwargs) -> np.ndarray:
+        boards = np.asarray(boards)
+        if boards.ndim == 2:
+            return fn(boards, *args, **kwargs)
+        return np.stack([fn(b, *args, **kwargs) for b in boards], axis=0)
+    return wrapper
 
 # Logging configuration
 logger = logging.getLogger(__name__)
@@ -260,6 +271,8 @@ def compute_global_features(grid: np.ndarray, bins: int = 100):
     entropy = -(p * np.log2(p)).sum() / np.log2(bins)    # 0‑1
     return mean_, std_, entropy, p
 
+
+@batchable
 def EXT_Q5_GlobalEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     _, _, entropy, _ = compute_global_features(grid)
     vals = grid.ravel().astype(float)
@@ -289,6 +302,8 @@ def compute_line_bridge_score(grid):
     score /= score.max(initial=1)
     return score
 
+
+@batchable
 def EXT_Q6_LineBridge_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     return compute_line_bridge_score(grid)
 
@@ -300,11 +315,15 @@ def compute_local_variance_prior(grid, w=3):
     inv = (inv - inv.min()) / (inv.max() - inv.min() + 1e-9)
     return inv
 
+
+@batchable
 def EXT_Q7_VariancePrior_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     _, std_, _, _ = compute_global_features(grid)
     alpha = min(std_ / 15, 1)
     return alpha * compute_local_variance_prior(grid) + (1 - alpha) * 0.5
 
+
+@batchable
 def EXT_Q8_SpatialKL_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A", win=5) -> np.ndarray:
     _, _, _, global_p = compute_global_features(grid)
     local_hist = _local_hist(grid, bins=100, win=win)  # (r,c,b)
@@ -312,12 +331,16 @@ def EXT_Q8_SpatialKL_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A", wi
     kl = (kl - kl.min()) / (kl.max() - kl.min() + 1e-9)
     return 1 - kl  # high = match global, anomalies low
 
+
+@batchable
 def EXT_Q9_MultiScaleEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     ent1 = EXT_Q5_GlobalEntropy_Vec(grid)  # global
     ent2 = EXT_Q5_GlobalEntropy_Vec(grid[::2, ::2], request_id).repeat(2, 0).repeat(2, 1)[:grid.shape[0], :grid.shape[1]]
     ent3 = EXT_Q5_GlobalEntropy_Vec(grid[::4, ::4], request_id).repeat(4, 0).repeat(4, 1)[:grid.shape[0], :grid.shape[1]]
     return 0.5 * ent1 + 0.3 * ent2 + 0.2 * ent3
 
+
+@batchable
 def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     target_mask = grid == grid.max()  # treat max value as revealed?
     dist = ndi.distance_transform_edt(~target_mask)
@@ -325,6 +348,8 @@ def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
     return 1 - dist_norm
 
 # --- Scoring Module Implementations ---
+
+@batchable
 def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on tail number patterns in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -353,6 +378,8 @@ def EXT_M1_Tail_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A")
             scores[r, c] = max_score
     return scores
 
+
+@batchable
 def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on 5x5 neighborhood mean and variance."""
     rows, cols = grid.shape
@@ -381,6 +408,8 @@ def EXT_M3_Local_Focus_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") 
             scores[r, c] = max_score
     return scores
 
+
+@batchable
 def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on sequence blocks in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -421,6 +450,8 @@ def EXT_M10_Sequence_Block_Vec(grid: np.ndarray, request_id: Optional[str] = "N/
 
 error_memory = defaultdict(Counter)
 
+
+@batchable
 def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on historical error correction in 5x5 neighborhood."""
     rows, cols = grid.shape
@@ -444,6 +475,8 @@ def EXT_R3_Error_Correction_Vec(grid: np.ndarray, request_id: Optional[str] = "N
                     scores[r, c] = score
     return scores
 
+
+@batchable
 def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on strong arithmetic or symmetry patterns."""
     rows, cols = grid.shape
@@ -470,6 +503,8 @@ def EXT_F7_Strong_Pattern_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
             scores[r, c] = max_score
     return scores
 
+
+@batchable
 def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score based on skip pattern confidence."""
     rows, cols = grid.shape
@@ -535,18 +570,24 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(grid: np.ndarray, request_id: Optional[
             scores[r, c] = math_utils.normalize_value(best_conf, 0, 1.0)
     return scores
 
+
+@batchable
 def EXT_Q1_ProximityEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for proximity and entropy."""
     a2 = get_module_score("EXT_M3_Local_Focus_Vec", grid, request_id=request_id)
     m1 = get_module_score("EXT_M1_Tail_Pattern_Vec", grid, request_id=request_id)
     return 0.65 * a2 + 0.35 * m1
 
+
+@batchable
 def EXT_Q2_PotentialPath_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for potential paths and sequences."""
     m10 = get_module_score("EXT_M10_Sequence_Block_Vec", grid, request_id=request_id)
     f7 = get_module_score("EXT_F7_Strong_Pattern_Vec", grid, request_id=request_id)
     return 0.5 * m10 + 0.5 * f7
 
+
+@batchable
 def EXT_Q3_DiscontinuitySym_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for discontinuity and symmetry."""
     gm20 = get_module_score("EXT_GM20_Skip_Pattern_Confidence_Vec", grid, request_id=request_id)
@@ -554,6 +595,8 @@ def EXT_Q3_DiscontinuitySym_Vec(grid: np.ndarray, request_id: Optional[str] = "N
     sym_score = 0.3 if (rows > 1 and cols > 1 and grid[rows-1, cols-1] == grid[0, 0] and grid[rows-1, cols-1] != -1) else 0.0
     return 0.7 * gm20 + sym_score
 
+
+@batchable
 def EXT_Q4_ControlComposite_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Composite scoring for control and error correction."""
     r3 = get_module_score("EXT_R3_Error_Correction_Vec", grid, request_id=request_id)
@@ -581,6 +624,8 @@ mods = {
     "EXT_Q2_PotentialPath_Vec": EXT_Q2_PotentialPath_Vec,
     "EXT_Q3_DiscontinuitySym_Vec": EXT_Q3_DiscontinuitySym_Vec,
     "EXT_Q4_ControlComposite_Vec": EXT_Q4_ControlComposite_Vec,
+    "GlobalOffsetCooccurrence": lambda boards, target, offsets=None, **_: global_offset_cooccurrence(boards, target, offsets),
+    "ValueProximityDistribution": lambda boards, target, tolerance=1, radius=1, **_: neighbor_value_distribution(boards, target, tolerance, radius),
 }
 try:
     REGISTERED_MODULES_BRAIN
