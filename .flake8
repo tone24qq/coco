@@ -1,0 +1,3 @@
+[flake8]
+max-line-length = 120      # 跟 black -l 120 對齊
+extend-ignore = E203,E501  # E203/E501 與 black 衝突，直接忽略
