@@ -1,41 +1,45 @@
-import os
+import heapq
+import logging
 import math
-import numpy as np
-import xxhash
+import os
 from collections import defaultdict
 from functools import lru_cache
-from typing import List, Dict, Tuple, Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import xxhash
 from joblib import Parallel, delayed
-import logging
-import heapq
 
 # Logger configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
-from modules import FORMULA_REGISTRY
 from brain import (
+    REGISTERED_MODULES_BRAIN,
+    BoardAnalyzerUtils,
     EXT_GM20_Skip_Pattern_Confidence_Vec,
     MathUtils,
-    BoardAnalyzerUtils,
-    REGISTERED_MODULES_BRAIN,
+    bytes_to_grid,
     get_module_score,
-    bytes_to_grid
 )
+from modules import FORMULA_REGISTRY
 
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
+
 
 # 來自 probmap_key_patch_v2.txt
 def _native_coord(k):
     return int(k[0]), int(k[1])
 
+
 def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
+
 
 # Count-Min Sketch (optimized for low memory)
 class CountMinSketch:
@@ -43,7 +47,7 @@ class CountMinSketch:
         self.w = max(1024, min(2048, int(8e9 / (depth * 4))))  # 8 GB RAM 動態調整
         self.d = depth
         self.table = np.zeros((depth, self.w), dtype=np.uint32)
-        self.seeds = [i * 0x9e3779B1 for i in range(depth)]
+        self.seeds = [i * 0x9E3779B1 for i in range(depth)]
 
     def _idx(self, key: bytes, seed: int) -> int:
         return xxhash.xxh32(key, seed=seed).intdigest() % self.w
@@ -55,8 +59,10 @@ class CountMinSketch:
     def query(self, key: bytes) -> int:
         return min(self.table[i, self._idx(key, s)] for i, s in enumerate(self.seeds))
 
+
 def pack_key(cell_idx: int, num: int) -> bytes:
     return (cell_idx << 16 | num).to_bytes(4, "little")
+
 
 # Precompute skip scores with LRU cache
 @lru_cache(maxsize=1024)
@@ -64,25 +70,40 @@ def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarra
     grid = bytes_to_grid(grid_bytes, (rows, cols))
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
-def adjust_weights_based_on_history(history: Dict[str, float], formulas: Tuple[str, ...]) -> np.ndarray:
+
+def adjust_weights_based_on_history(
+    history: Dict[str, float], formulas: Tuple[str, ...]
+) -> np.ndarray:
     """Dynamically adjust formula weights based on historical performance."""
     total = sum(history.get(f, 0.0) for f in formulas) or 1e-10
     return np.array([history.get(f, 0.0) / total for f in formulas])
 
-def select_modules(grid: np.ndarray) -> List[str]:
+
+def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
     # 根據 FORCE_FULL_SCAN 環境變數決定是否使用所有模組
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
-        return list(REGISTERED_MODULES_BRAIN)   # 直接使用所有模組
+        return list(REGISTERED_MODULES_BRAIN)  # 直接使用所有模組
     # 原始邏輯：動態選擇模組
-    base_modules = ["EXT_Q1_ProximityEntropy_Vec", "EXT_Q2_PotentialPath_Vec", "EXT_Q5_GlobalEntropy_Vec", "EXT_Q6_LineBridge_Vec", "EXT_Q7_VariancePrior_Vec"]
-    scores = {mod: np.mean(get_module_score(mod, grid)) for mod in REGISTERED_MODULES_BRAIN}
+    base_modules = [
+        "EXT_Q1_ProximityEntropy_Vec",
+        "EXT_Q2_PotentialPath_Vec",
+        "EXT_Q5_GlobalEntropy_Vec",
+        "EXT_Q6_LineBridge_Vec",
+        "EXT_Q7_VariancePrior_Vec",
+    ]
+    scores = {
+        mod: np.mean(get_module_score(mod, grid, target=target))
+        for mod in REGISTERED_MODULES_BRAIN
+    }
     top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
     return base_modules + [m for m in top_modules if m not in base_modules]
 
+
 @lru_cache(maxsize=500000)
-def _cached_board(mask_key: str, seed: int, r: int, c: int,
-                  kv_bytes: bytes, idx_bytes: bytes):
+def _cached_board(
+    mask_key: str, seed: int, r: int, c: int, kv_bytes: bytes, idx_bytes: bytes
+):
     """Return a unique 1-D board (length r*c) with known cells filled."""
     rng = np.random.default_rng(seed)
     n = r * c
@@ -103,17 +124,27 @@ def _cached_board(mask_key: str, seed: int, r: int, c: int,
     board = np.empty(n, dtype=np.int16)
     board[idx] = vals
     unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
-    board[unknown_idx] = remaining[:unknown_idx.size]
+    board[unknown_idx] = remaining[: unknown_idx.size]
     return board
 
-def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Generator,
-                         formulas: Tuple[str, ...], weights: np.ndarray,
-                         grid: np.ndarray) -> np.ndarray:
+
+def generate_full_boards(
+    rows: int,
+    cols: int,
+    batch: int,
+    rng: np.random.Generator,
+    formulas: Tuple[str, ...],
+    weights: np.ndarray,
+    grid: np.ndarray,
+) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
     valid = [f for f in formulas if f in FORMULA_REGISTRY]
     if not valid:
         raise ValueError("No valid formulas available")
-    weights = np.array([weights[i] for i, f in enumerate(formulas) if f in FORMULA_REGISTRY], dtype=float)
+    weights = np.array(
+        [weights[i] for i, f in enumerate(formulas) if f in FORMULA_REGISTRY],
+        dtype=float,
+    )
     weights = weights / (weights.sum() + 1e-10)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
     known_vals = grid.ravel()
@@ -124,14 +155,18 @@ def generate_full_boards(rows: int, cols: int, batch: int, rng: np.random.Genera
     seed = rng.integers(0, 0xFFFF)
     for i in range(batch):
         board1d = _cached_board(
-            mask, seed & 0xFFFF,
-            rows, cols,
-            kv_bytes, idx_bytes
+            mask, seed & 0xFFFF, rows, cols, kv_bytes, idx_bytes
         ).reshape(rows, cols)
         boards[i] = board1d
     return boards
 
-def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int = 6000, rng: Optional[np.random.Generator] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
+
+def simulate_full_board(
+    grid: np.ndarray,
+    target_num: Optional[int],
+    n_iter: int = 6000,
+    rng: Optional[np.random.Generator] = None,
+) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with enhanced importance sampling and target_num hits."""
     if rng is None:
         rng = np.random.default_rng()
@@ -144,8 +179,11 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     legal_all = analyzer_utils.get_legal_values_for_placement(g)
 
     # Enhanced module selection for importance sampling
-    modules = select_modules(g)
-    module_scores = np.mean([get_module_score(mod, g) for mod in modules], axis=0)
+    modules = select_modules(g, target=target_num)
+    module_scores = np.mean(
+        [get_module_score(mod, g, target=target_num) for mod in modules],
+        axis=0,
+    )
     importance_weights = np.where(g == -1, module_scores, 0).flatten()
     importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
@@ -169,15 +207,21 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
             boards = boards[mask]
             if len(boards) == 0:
                 batch = min(batch * 2, 8000)
-                boards = generate_full_boards(rows, cols, batch, rng, formulas, weights, g)
+                boards = generate_full_boards(
+                    rows, cols, batch, rng, formulas, weights, g
+                )
                 mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
                 boards = boards[mask]
 
         if len(boards) > 0:
             for i, board in enumerate(boards):
-                fast = 0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board) + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board) + \
-                       0.2 * get_module_score("EXT_Q5_GlobalEntropy_Vec", board) + 0.2 * get_module_score("EXT_Q6_LineBridge_Vec", board) + \
-                       0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", board)
+                fast = (
+                    0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board)
+                    + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board)
+                    + 0.2 * get_module_score("EXT_Q5_GlobalEntropy_Vec", board)
+                    + 0.2 * get_module_score("EXT_Q6_LineBridge_Vec", board)
+                    + 0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", board)
+                )
                 for r, c in blanks:
                     idx = r * cols + c
                     if rng.random() < importance_weights[idx]:
@@ -188,7 +232,7 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
         remain -= batch
 
     prob_map = {}
-    for (r, c) in [tuple(b) for b in blanks]:
+    for r, c in [tuple(b) for b in blanks]:
         total = sum(counts[(r, c)].values()) or 1e-10
         probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
         prob_map[(r, c)] = probs
@@ -197,10 +241,14 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
     tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
     w = np.array([0.28, 0.28, 0.12, 0.12, 0.08, 0.07, 0.05])  # Q1~Q7
     topk = int(os.getenv("TOPK_RERANK", "100"))
-    if topk < 0:             # -1 表示 rows × cols
+    if topk < 0:  # -1 表示 rows × cols
         topk = rows * cols
 
-    candidates = [(r, c, max(probs.values()), num) for (r, c), probs in prob_map.items() for num in probs]
+    candidates = [
+        (r, c, max(probs.values()), num)
+        for (r, c), probs in prob_map.items()
+        for num in probs
+    ]
     top_k = heapq.nlargest(topk, candidates, key=lambda x: x[2])
     final_prob_map = {}
     for r, c, fast_score, num in top_k:
@@ -211,9 +259,10 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
             get_module_score("EXT_Q4_ControlComposite_Vec", g)[r, c],
             get_module_score("EXT_Q5_GlobalEntropy_Vec", g)[r, c],
             get_module_score("EXT_Q6_LineBridge_Vec", g)[r, c],
-            get_module_score("EXT_Q7_VariancePrior_Vec", g)[r, c]
+            get_module_score("EXT_Q7_VariancePrior_Vec", g)[r, c],
         ]
-        soft = np.exp(np.array(scores) / tau); soft /= soft.sum() + 1e-10
+        soft = np.exp(np.array(scores) / tau)
+        soft /= soft.sum() + 1e-10
         final_score = (w * soft).sum()
         if (r, c) not in final_prob_map:
             final_prob_map[(r, c)] = {}
@@ -232,17 +281,20 @@ def simulate_full_board(grid: np.ndarray, target_num: Optional[int], n_iter: int
 
     return prob_map
 
-def weight_prob_by_modules(grid: np.ndarray,
-                           prob_map: Dict[Tuple[int, int], Dict[int, float]],
-                           target_num: Optional[int] = None) -> Dict[Tuple[int, int], Dict[int, float]]:
+
+def weight_prob_by_modules(
+    grid: np.ndarray,
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    target_num: Optional[int] = None,
+) -> Dict[Tuple[int, int], Dict[int, float]]:
     if not isinstance(prob_map, dict):
         logger.error(f"Invalid prob_map type: {type(prob_map)}")
         return {}
 
     result = prob_map.copy()
-    modules = select_modules(grid)
+    modules = select_modules(grid, target=target_num)
     module_scores = Parallel(n_jobs=4)(
-        delayed(get_module_score)(mod, grid) for mod in modules
+        delayed(get_module_score)(mod, grid, target=target_num) for mod in modules
     )
     module_scores = np.array(module_scores)
 
@@ -269,10 +321,13 @@ def weight_prob_by_modules(grid: np.ndarray,
 
     return _native_dict(result)
 
-def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
-                  blanks: List[Tuple[int, int]]) -> Dict[Tuple[int, int], Tuple[int, float]]:
+
+def global_unique(
+    prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: List[Tuple[int, int]]
+) -> Dict[Tuple[int, int], Tuple[int, float]]:
     try:
         from scipy.optimize import linear_sum_assignment
+
         nums = sorted({n for d in prob_map.values() for n in d})
         cost = np.full((len(blanks), len(nums)), 50.0)
 
@@ -282,23 +337,31 @@ def global_unique(prob_map: Dict[Tuple[int, int], Dict[int, float]],
                 cost[i, j] = -math.log(prob)
 
         row, col = linear_sum_assignment(cost)
-        return {blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0))
-                for r, c in zip(row, col)}
+        return {
+            blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0))
+            for r, c in zip(row, col)
+        }
     except Exception as e:
         logger.error(f"Global unique assignment failed: {e}")
         assigned, res = set(), {}
-        for cell in sorted(blanks,
-                           key=lambda p: max(prob_map[p].values() or [0]),
-                           reverse=True):
-            for n, p in sorted(prob_map[cell].items(),
-                               key=lambda x: x[1], reverse=True):
+        for cell in sorted(
+            blanks, key=lambda p: max(prob_map[p].values() or [0]), reverse=True
+        ):
+            for n, p in sorted(
+                prob_map[cell].items(), key=lambda x: x[1], reverse=True
+            ):
                 if n not in assigned:
                     assigned.add(n)
                     res[cell] = (n, p)
                     break
             if cell not in res:
-                res[cell] = (list(prob_map[cell].keys())[0], 0.0) if prob_map[cell] else (1, 0.0)
+                res[cell] = (
+                    (list(prob_map[cell].keys())[0], 0.0)
+                    if prob_map[cell]
+                    else (1, 0.0)
+                )
         return res
+
 
 class MCTSNode:
     EPS = 1e-9  # 檔頭或 class 內自訂常數
@@ -311,20 +374,25 @@ class MCTSNode:
         self.visits = 0
         self.value = 0.0
         self.virtual_loss = 0
-        self.untried_actions = [(r, c, v)
-                                for r, c in np.argwhere(grid == -1)
-                                for v in analyzer_utils.get_legal_values_for_placement(grid)]
+        self.untried_actions = [
+            (r, c, v)
+            for r, c in np.argwhere(grid == -1)
+            for v in analyzer_utils.get_legal_values_for_placement(grid)
+        ]
 
     def uct_select(self):
         """Upper-Confidence bound with virtual-loss safe division"""
+
         def ucb(child):
             denom = child.visits + child.virtual_loss
             if denom == 0:
-                return float('inf')  # 確保新節點優先被選
+                return float("inf")  # 確保新節點優先被選
             exploitation = child.value / denom
             exploration = math.sqrt(2 * math.log(self.visits + 1) / denom)
             return exploitation + exploration
+
         return max(self.children, key=ucb)
+
 
 def mcts(grid: np.ndarray, iterations: int = 1000):
     rows, cols = grid.shape
@@ -333,7 +401,10 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
     def simulate(node):
         try:
             current = node
-            while current.untried_actions and len(current.children) < 1.5 * current.visits ** 0.5:
+            while (
+                current.untried_actions
+                and len(current.children) < 1.5 * current.visits**0.5
+            ):
                 current = current.uct_select()
                 current.virtual_loss += 1
             if current.untried_actions:
@@ -341,7 +412,9 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
                 new_grid = current.grid.copy()
                 new_grid[r, c] = v
                 new_child = MCTSNode(new_grid, current, (r, c, v))
-                new_child.visits = 1  # 或 new_child.visits = new_child.virtual_loss = EPS
+                new_child.visits = (
+                    1  # 或 new_child.visits = new_child.virtual_loss = EPS
+                )
                 current.children.append(new_child)
                 current = new_child
 
@@ -354,7 +427,8 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             for r, c in np.argwhere(grid == -1):
                 if (r, c) in sim_result:
                     weighted = weight_prob_by_modules(
-                        current.grid, {(r, c): sim_result[(r, c)]})
+                        current.grid, {(r, c): sim_result[(r, c)]}
+                    )
                     reward += max(weighted[(r, c)].values())
 
             while current is not None:
@@ -367,10 +441,12 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             logger.error(f"ZeroDivisionError in simulate: {e}")
             return 0.0
 
-    Parallel(n_jobs=4, require='sharedmem')(delayed(simulate)(root) for _ in range(iterations // 4))
-    best_child = max(root.children, key=lambda c: c.value / c.visits,
-                     default=root)
+    Parallel(n_jobs=4, require="sharedmem")(
+        delayed(simulate)(root) for _ in range(iterations // 4)
+    )
+    best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
     return best_child.grid
+
 
 # Main prediction entry point
 def predict_scratch_card(
@@ -380,11 +456,13 @@ def predict_scratch_card(
     quick_iter: Optional[int] = None,
     refine_iter: Optional[int] = None,
     min_total_iter: Optional[int] = None,
-    unique: bool = True
+    unique: bool = True,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
-    blanks = [tuple(map(int, b)) for b in np.argwhere(grid_np == -1)]  # 來自 probmap_key_patch_v2.txt
+    blanks = [
+        tuple(map(int, b)) for b in np.argwhere(grid_np == -1)
+    ]  # 來自 probmap_key_patch_v2.txt
 
     if not blanks:
         return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
@@ -396,14 +474,16 @@ def predict_scratch_card(
         ("EXT_Q4_ControlComposite_Vec", "Control and error correction"),
         ("EXT_Q5_GlobalEntropy_Vec", "Global entropy and clustering"),
         ("EXT_Q6_LineBridge_Vec", "Linearity and bridge connectivity"),
-        ("EXT_Q7_VariancePrior_Vec", "Variance smoothing and prior")
+        ("EXT_Q7_VariancePrior_Vec", "Variance smoothing and prior"),
     ]
 
     base_iter = iterations if iterations is not None else int(os.getenv("ITER", "5000"))
     total_iter = int(base_iter * max(rows * cols / 40, 1))
     quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
     refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
-    min_total_iter = min_total_iter if min_total_iter is not None else max(1000, total_iter // 5)
+    min_total_iter = (
+        min_total_iter if min_total_iter is not None else max(1000, total_iter // 5)
+    )
 
     logger.info(f"Simulating full board with {total_iter} iterations")
     prob_map = simulate_full_board(
@@ -411,32 +491,41 @@ def predict_scratch_card(
     )
 
     if target_num is not None:
-        rank = [{
-            "row": r,
-            "col": c,
-            "candidates": [target_num],
-            "probability": prob_map.get((r, c), {}).get(target_num, 0.0) * 100
-        } for r, c in prob_map.keys()]  # 改用 .get()
+        rank = [
+            {
+                "row": r,
+                "col": c,
+                "candidates": [target_num],
+                "probability": prob_map.get((r, c), {}).get(target_num, 0.0) * 100,
+            }
+            for r, c in prob_map.keys()
+        ]  # 改用 .get()
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
         for pred in rank[:3]:
             reasons = []
-            scores = [(mod, module_scores[mod][pred['row'], pred['col']], desc)
-                      for mod, desc in modules]
+            scores = [
+                (mod, module_scores[mod][pred["row"], pred["col"]], desc)
+                for mod, desc in modules
+            ]
             top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
             for mod, score, desc in top_modules:
                 if score > 0.5:
                     reasons.append(f"{desc} (score: {score:.2f})")
-            pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
-            pred["module_scores"] = {mod: float(module_scores[mod][pred['row'], pred['col']])
-                                   for mod, _ in modules}
+            pred["reasons"] = (
+                reasons if reasons else ["No dominant module contribution"]
+            )
+            pred["module_scores"] = {
+                mod: float(module_scores[mod][pred["row"], pred["col"]])
+                for mod, _ in modules
+            }
 
         return {
             "mode": "target",
             "target": target_num,
             "predictions": rank[:3],
-            "full_probabilities": prob_map
+            "full_probabilities": prob_map,
         }
 
     if unique:
@@ -452,29 +541,31 @@ def predict_scratch_card(
         # 1️⃣ 先找整張表目前“最高”的機率 (baseline)
         old_conf = max(
             p
-            for _, cell_probs in prob_map.items()      # 逐格取出內部 dict
-            for p in cell_probs.values()               # 逐個號碼機率
+            for _, cell_probs in prob_map.items()  # 逐格取出內部 dict
+            for p in cell_probs.values()  # 逐個號碼機率
         )
 
         # 2️⃣ 嘗試把每個候選格 (r,c) 掛回去後，重新加權 → 看能否誕生更高機率
-        new_conf = max([
-            max(
-                weight_prob_by_modules(                # <<< 你自己已有的函式
-                    best_grid,                         # - 當前最佳棋盤
-                    {(r, c): prob_map.get((r, c), {})} # - 只帶單一候選格的機率
-                ).get((r, c), {}).values(),            # 取回各模組加權後的機率們
-                default=0                              # ← dict 為空時避免 ValueError
-            )
-            for (r, c) in blanks                   # 逐一測試所有候選格
-        ])
+        new_conf = max(
+            [
+                max(
+                    weight_prob_by_modules(  # <<< 你自己已有的函式
+                        best_grid,  # - 當前最佳棋盤
+                        {(r, c): prob_map.get((r, c), {})},  # - 只帶單一候選格的機率
+                    )
+                    .get((r, c), {})
+                    .values(),  # 取回各模組加權後的機率們
+                    default=0,  # ← dict 為空時避免 ValueError
+                )
+                for (r, c) in blanks  # 逐一測試所有候選格
+            ]
+        )
 
         if new_conf <= old_conf * 0.95:
-            preds = [{
-                "row": r,
-                "col": c,
-                "candidates": [n],
-                "probability": float(p) * 100
-            } for (r, c), (n, p) in assign.items()]
+            preds = [
+                {"row": r, "col": c, "candidates": [n], "probability": float(p) * 100}
+                for (r, c), (n, p) in assign.items()
+            ]
             mode = "unique"
         else:
             preds = process_grid(best_grid)
@@ -483,54 +574,60 @@ def predict_scratch_card(
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
         for pred in preds[:3]:
             reasons = []
-            scores = [(mod, module_scores[mod][pred['row'], pred['col']], desc)
-                      for mod, desc in modules]
+            scores = [
+                (mod, module_scores[mod][pred["row"], pred["col"]], desc)
+                for mod, desc in modules
+            ]
             top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
             for mod, score, desc in top_modules:
                 if score > 0.5:
                     reasons.append(f"{desc} (score: {score:.2f})")
-            pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
-            pred["module_scores"] = {mod: float(module_scores[mod][pred['row'], pred['col']])
-                                   for mod, _ in modules}
+            pred["reasons"] = (
+                reasons if reasons else ["No dominant module contribution"]
+            )
+            pred["module_scores"] = {
+                mod: float(module_scores[mod][pred["row"], pred["col"]])
+                for mod, _ in modules
+            }
 
         preds.sort(key=lambda x: x["probability"], reverse=True)
-        return {
-            "mode": mode,
-            "predictions": preds[:3],
-            "full_probabilities": prob_map
-        }
+        return {"mode": mode, "predictions": preds[:3], "full_probabilities": prob_map}
 
     preds = []
     for (r, c), dist in prob_map.items():
         top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
         nums, probs = zip(*top3) if top3 else ([], [])
-        preds.append({
-            "row": r,
-            "col": c,
-            "candidates": list(nums),
-            "probability": [p * 100 for p in probs]
-        })
+        preds.append(
+            {
+                "row": r,
+                "col": c,
+                "candidates": list(nums),
+                "probability": [p * 100 for p in probs],
+            }
+        )
 
     module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
     for pred in preds[:3]:
         reasons = []
-        scores = [(mod, module_scores[mod][pred['row'], pred['col']], desc)
-                  for mod, desc in modules]
+        scores = [
+            (mod, module_scores[mod][pred["row"], pred["col"]], desc)
+            for mod, desc in modules
+        ]
         top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
         for mod, score, desc in top_modules:
             if score > 0.5:
                 reasons.append(f"{desc} (score: {score:.2f})")
         pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
-        pred["module_scores"] = {mod: float(module_scores[mod][pred['row'], pred['col']])
-                               for mod, _ in modules}
+        pred["module_scores"] = {
+            mod: float(module_scores[mod][pred["row"], pred["col"]])
+            for mod, _ in modules
+        }
 
-    preds.sort(key=lambda x: x["probability"][0] if x["probability"] else 0,
-               reverse=True)
-    return {
-        "mode": "top3",
-        "predictions": preds[:3],
-        "full_probabilities": prob_map
-    }
+    preds.sort(
+        key=lambda x: x["probability"][0] if x["probability"] else 0, reverse=True
+    )
+    return {"mode": "top3", "predictions": preds[:3], "full_probabilities": prob_map}
+
 
 def process_grid(grid):
     blanks = np.argwhere(grid == -1)
@@ -538,10 +635,12 @@ def process_grid(grid):
     for r, c in blanks:
         legal_vals = analyzer_utils.get_legal_values_for_placement(grid)
         max_prob = max(legal_vals) if legal_vals else 1
-        preds.append({
-            "row": int(r),
-            "col": int(c),
-            "candidates": [int(max_prob)],
-            "probability": 100.0 if grid[r, c] != -1 else 50.0
-        })
+        preds.append(
+            {
+                "row": int(r),
+                "col": int(c),
+                "candidates": [int(max_prob)],
+                "probability": 100.0 if grid[r, c] != -1 else 50.0,
+            }
+        )
     return preds
