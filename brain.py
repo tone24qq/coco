@@ -218,10 +218,18 @@ else:
 # ----------------------------------------------------------------------
 # Utility kernels / helpers from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
-def _local_hist(grid, bins=100, win=5):
-    """Return sliding-window histogram (vectorised via FFT)."""
+def _local_hist(grid, bins: int | None = None, win: int = 5) -> np.ndarray:
+    """Return sliding-window histogram (vectorised via FFT).
+
+    The number of bins automatically adapts to ``rows*cols`` when not
+    specified. Hidden cells ``-1`` are shifted to index ``0`` to avoid
+    indexing errors.
+    """
     rows, cols = grid.shape
-    one_hot = np.eye(bins, dtype=float)[grid]  # (r,c,b)
+    if bins is None:
+        bins = rows * cols + 1
+    idx = np.clip(grid + 1, 0, bins - 1)
+    one_hot = np.eye(bins, dtype=float)[idx]  # (r,c,b)
     kernel = np.ones((win, win), dtype=float)
     # FFT-based convolution per bin
     k_fft = rfftn(kernel, s=grid.shape)
@@ -236,11 +244,14 @@ def _local_hist(grid, bins=100, win=5):
 # ----------------------------------------------------------------------
 # Q-Series modules from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
-def compute_global_features(grid: np.ndarray, bins: int = 100):
+def compute_global_features(grid: np.ndarray, bins: int | None = None):
+    """Return global statistics and histogram for a grid.
+
+    ``bins`` defaults to ``rows*cols`` to support variable-sized boards.
     """
-    Robust global stats: mean, std, entropy (0‑1), and PDF (bins).
-    Works even when grid contains negative or very large integers.
-    """
+    rows, cols = grid.shape
+    if bins is None:
+        bins = rows * cols
     flat = grid.ravel().astype(float)
     mean_ = flat.mean()
     std_  = flat.std(ddof=0)
@@ -306,9 +317,10 @@ def EXT_Q7_VariancePrior_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A"
     alpha = min(std_ / 15, 1)
     return alpha * compute_local_variance_prior(grid) + (1 - alpha) * 0.5
 
-def EXT_Q8_SpatialKL_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A", win=5) -> np.ndarray:
+def EXT_Q8_SpatialKL_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A", win: int = 5) -> np.ndarray:
+    """Compute KL-divergence between local and global distributions."""
     _, _, _, global_p = compute_global_features(grid)
-    local_hist = _local_hist(grid, bins=100, win=win)  # (r,c,b)
+    local_hist = _local_hist(grid, win=win)
     kl = (local_hist * np.log((local_hist + 1e-9) / global_p)).sum(-1)
     kl = (kl - kl.min()) / (kl.max() - kl.min() + 1e-9)
     return 1 - kl  # high = match global, anomalies low
@@ -327,8 +339,7 @@ def EXT_Q10_DistPotential_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A
 
 def EXT_Q11_SpatialEntropy_Vec(grid: np.ndarray, request_id: Optional[str] = "N/A") -> np.ndarray:
     """Score cells by local entropy in a 5x5 window."""
-    bins = min(50, int(grid.max(initial=0)) + 1)
-    hist = _local_hist(grid.clip(min=0), bins=bins, win=5)
+    hist = _local_hist(grid.clip(min=0), win=5)
     with np.errstate(divide="ignore", invalid="ignore"):
         entropy = -(hist * np.log(hist + 1e-9)).sum(-1)
     norm = (entropy - entropy.min()) / (np.ptp(entropy) + 1e-9)
