@@ -1,31 +1,44 @@
-import os
-import logging
-import sys
 import argparse
-import numpy as np
+import logging
+import os
+import sys
 from typing import List
-from analyzer import predict_scratch_card
+
+import numpy as np
 import ray
+
+from analyzer import predict_scratch_card
 
 # Logging configuration
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
-    parser = argparse.ArgumentParser(description="Predict hidden numbers in a scratch card grid.")
+    parser = argparse.ArgumentParser(
+        description="Predict hidden numbers in a scratch card grid."
+    )
     parser.add_argument(
         "--grid",
         type=str,
         required=True,
         help="2D grid as a comma-separated string, e.g., '1,2,-1;3,-1,5;-1,4,6'",
     )
-    parser.add_argument("--iterations", type=int, default=int(os.getenv("ITER", "5000")), help="Number of Monte Carlo iterations")
-    parser.add_argument("--target", type=int, default=None, help="Target number to predict")
+    parser.add_argument(
+        "--iterations",
+        type=int,
+        default=int(os.getenv("ITER", "5000")),
+        help="Number of Monte Carlo iterations",
+    )
+    parser.add_argument(
+        "--target", type=int, default=None, help="Target number to predict"
+    )
     return parser.parse_args()
+
 
 def parse_grid(grid_str: str) -> List[List[int]]:
     """Parse string input into 2D grid."""
@@ -43,6 +56,7 @@ def parse_grid(grid_str: str) -> List[List[int]]:
         logging.error(f"Invalid grid format: {e}")
         raise
 
+
 def main():
     """Main function to run scratch card prediction."""
     args = parse_args()
@@ -50,7 +64,7 @@ def main():
         grid = parse_grid(args.grid)
         iterations = args.iterations
         grid_np = np.array(grid, dtype=np.int64)
-        
+
         # Validate grid
         known_vals = grid_np[grid_np != -1]
         rows, cols = grid_np.shape
@@ -59,19 +73,24 @@ def main():
             raise ValueError("Grid contains duplicate numbers")
         if np.any((known_vals < 1) | (known_vals > max_val)):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
-        
+
         # Disable Ray dashboard to avoid excessive port scanning
         ray.init(num_cpus=4, include_dashboard=False)
-        result = predict_scratch_card(grid, target_num=args.target, iterations=iterations)
+        result = predict_scratch_card(
+            grid, target_num=args.target, iterations=iterations
+        )
         ray.shutdown()
         logging.info("Prediction results:")
         for pred in result["predictions"]:
-            logging.info(f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%")
+            logging.info(
+                f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%"
+            )
         logging.info("Full probabilities available in result['full_probabilities']")
         return result
     except (ValueError, Exception) as e:
         logging.error(f"Error during prediction: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
