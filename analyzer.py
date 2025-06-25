@@ -10,14 +10,6 @@ import numpy as np
 import xxhash
 from joblib import Parallel, delayed
 
-# Logger configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
-)
-logger = logging.getLogger(__name__)
-
 from brain import (
     REGISTERED_MODULES_BRAIN,
     BoardAnalyzerUtils,
@@ -27,6 +19,14 @@ from brain import (
     get_module_score,
 )
 from modules import FORMULA_REGISTRY
+
+# Logger configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()],
+)
+logger = logging.getLogger(__name__)
 
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()

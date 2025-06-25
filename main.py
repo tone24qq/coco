@@ -86,6 +86,7 @@ def main():
                 f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%"
             )
         logging.info("Full probabilities available in result['full_probabilities']")
+        logging.info("Complete!")
         return result
     except (ValueError, Exception) as e:
         logging.error(f"Error during prediction: {e}")

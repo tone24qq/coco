@@ -1,11 +1,14 @@
 # tests/test_brain.py
-import inspect, numpy as np, importlib
+import inspect
+
+import numpy as np
+
 import brain
 
 MODULE_FNS = [
-    m for n, m in inspect.getmembers(brain, inspect.isfunction)
-    if n.startswith("EXT_")           # 你的模組名稱規則
+    m for n, m in inspect.getmembers(brain, inspect.isfunction) if n.startswith("EXT_")
 ]
+
 
 def test_module_shapes(make_grid):
     grid = np.array(make_grid(8, 10))

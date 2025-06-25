@@ -1,11 +1,23 @@
 # tests/test_cli.py
-import subprocess, sys, json, os, textwrap
+import subprocess
+import sys
+
 
 def test_cli_quick_exit(tmp_path):
     board = [[1, 2], [3, -1]]
+    grid_str = ";".join(",".join(str(x) for x in row) for row in board)
     cp = subprocess.run(
-        [sys.executable, "main.py", "--grid", json.dumps(board), "--iters", "4"],
-        capture_output=True, text=True,
+        [
+            sys.executable,
+            "main.py",
+            "--grid",
+            grid_str,
+            "--iterations",
+            "4",
+        ],
+        capture_output=True,
+        text=True,
     )
     assert cp.returncode == 0
-    assert "Predictions" in cp.stdout
+    assert "Prediction" in cp.stderr
+    assert "Complete!" in cp.stderr

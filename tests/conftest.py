@@ -1,16 +1,25 @@
 # tests/conftest.py
-import os
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+
 from app import app
 
+
 @pytest.fixture(scope="session")
-def client():
+def client() -> TestClient:
+    """Shared TestClient for FastAPI app."""
+
     return TestClient(app)
 
-def make_grid(r: int, c: int, hidden=(-1,)):
-    """產生唯一數字且保留一格隱藏值 (-1) 的盤面。"""
-    grid = np.arange(1, r*c+1, dtype=int).reshape(r, c)
-    grid[(r//2), (c//2)] = hidden[0]
-    return grid.tolist()
+
+@pytest.fixture()
+def make_grid():
+    """Return a helper to create an NxM grid with a hidden cell (-1)."""
+
+    def _make(r: int, c: int, hidden=(-1,)):
+        grid = np.arange(1, r * c + 1, dtype=int).reshape(r, c)
+        grid[(r // 2), (c // 2)] = hidden[0]
+        return grid.tolist()
+
+    return _make

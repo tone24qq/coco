@@ -197,15 +197,17 @@ class BoardAnalyzerUtils:
                                     break
                                 seq_vals = [line[i], line[k]]
                                 gap_cnt = temp_gap
-                                for l in range(k + 1, n):
-                                    if line[l] == -1:
+                                for idx_l in range(k + 1, n):
+                                    if line[idx_l] == -1:
                                         gap_cnt += 1
                                         if gap_cnt > allow_gaps:
                                             break
                                         continue
                                     expected = seq_vals[-1] + diff
-                                    if math.isclose(line[l], expected, rel_tol=1e-9):
-                                        seq_vals.append(line[l])
+                                    if math.isclose(
+                                        line[idx_l], expected, rel_tol=1e-9
+                                    ):
+                                        seq_vals.append(line[idx_l])
                                         gap_cnt = 0
                                     else:
                                         break
@@ -283,7 +285,7 @@ else:
 def _local_hist(grid, bins=100, win=5):
     """Return sliding-window histogram (vectorised via FFT)."""
     rows, cols = grid.shape
-    one_hot = np.eye(bins, dtype=float)[grid]  # (r,c,b)
+    one_hot = np.eye(bins, dtype=float)[np.mod(grid, bins)]  # (r,c,b)
     kernel = np.ones((win, win), dtype=float)
     # FFT-based convolution per bin
     k_fft = rfftn(kernel, s=grid.shape)
@@ -331,7 +333,11 @@ def EXT_Q5_GlobalEntropy_Vec(
 ) -> np.ndarray:
     _, _, entropy, _ = compute_global_features(grid)
     vals = grid.ravel().astype(float)
-    centroids, labels = kmeans2(vals, k=2, minit="points")
+    if len(np.unique(vals)) < 2:
+        centroids = np.array([vals[0], vals[0]])
+        labels = np.zeros_like(vals, dtype=int)
+    else:
+        centroids, labels = kmeans2(vals, k=2, minit="points")
     hot = int(np.argmax(centroids))
     coords = np.column_stack(np.unravel_index(np.arange(vals.size), grid.shape))
     hot_coords = coords[labels == hot]

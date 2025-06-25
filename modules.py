@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from scipy import ndimage as ndi
@@ -17,6 +17,64 @@ FORMULA_REGISTRY: Dict[
     str,
     Callable[[int, int, np.random.Generator], np.ndarray],
 ] = {}
+
+
+def generate_unique_grid(
+    rows: int,
+    cols: int,
+    *,
+    hidden: Union[int, Tuple[int, int], List[Tuple[int, int]], None] = None,
+    rng: Optional[np.random.Generator] = None,
+) -> np.ndarray:
+    """Return a ``rows x cols`` grid with unique numbers and optional hidden cells.
+
+    Parameters
+    ----------
+    rows, cols:
+        Dimensions of the grid. Each must be between 4 and 20 inclusive.
+    hidden:
+        If ``None`` a random cell is hidden. If an ``int`` ``n`` is provided,
+        ``n`` random cells are hidden. If a tuple ``(r, c)`` or a list of such
+        tuples is given, those coordinates are hidden.
+    rng:
+        Optional random generator used for sampling positions.
+
+    Returns
+    -------
+    np.ndarray
+        Generated grid with ``-1`` in hidden positions.
+
+    Raises
+    ------
+    ValueError
+        If ``rows`` or ``cols`` is outside the allowed range.
+    """
+
+    if not 4 <= rows <= 20 or not 4 <= cols <= 20:
+        raise ValueError("Grid size must be 4–20")
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    grid = np.arange(1, rows * cols + 1, dtype=int).reshape(rows, cols)
+
+    positions: List[Tuple[int, int]]
+    if hidden is None:
+        positions = [(int(rng.integers(rows)), int(rng.integers(cols)))]
+    elif isinstance(hidden, int):
+        if hidden < 1 or hidden > rows * cols:
+            raise ValueError("Invalid hidden count")
+        all_idx = [(r, c) for r in range(rows) for c in range(cols)]
+        chosen = rng.choice(len(all_idx), hidden, replace=False)
+        positions = [all_idx[i] for i in np.atleast_1d(chosen)]
+    elif isinstance(hidden, tuple):
+        positions = [hidden]
+    else:
+        positions = list(hidden)
+
+    for r, c in positions:
+        grid[int(r), int(c)] = -1
+    return grid
 
 
 def register_formula(name: str) -> Callable:
