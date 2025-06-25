@@ -188,3 +188,18 @@ def my_formula(board: np.ndarray, *, target=None, **kw) -> np.ndarray:
 | 速度不夠？ | 調整 `batch_size`、`ray` num_cpus，避序列化瓶頸 |
 
 ---
+#8
+--- AGENTS.md
++++ AGENTS.md
+@@ ## 7. FAQ
+ ## 8. Enforcing Unit Tests
+-All code submissions must include unit tests and pass CI before merge.
++All code submissions must include unit tests under `tests/` and pass CI:
++
++- **tests/** directory with files named `test_*.py`
++- **CI command**:  
++  ```bash
++  pytest --maxfail=1 --disable-warnings -q
++  ```
++
++Failure to include passing tests will block PR merges and deployments.
