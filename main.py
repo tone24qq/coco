@@ -7,7 +7,15 @@ from typing import List
 import numpy as np
 import ray
 
-from analyzer import predict_scratch_card
+# fmt: off
+# isort: off
+from analyzer import (
+    monte_carlo_prob_map,
+    predict_scratch_card,
+    prob_map_to_png,
+)
+# isort: on
+# fmt: on
 
 # Logging configuration
 logging.basicConfig(
@@ -50,6 +58,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epsilon", type=float, default=0.05, help="Exploration rate")
     parser.add_argument(
         "--target", type=int, default=None, help="Target number to predict"
+    )
+    parser.add_argument(
+        "--heatmap-k",
+        type=int,
+        default=None,
+        help="Generate probability heatmap for this number (None to skip)",
+    )
+    parser.add_argument(
+        "--heatmap-iter",
+        type=int,
+        default=1000,
+        help="Iterations for heatmap simulation",
     )
     return parser.parse_args()
 
@@ -100,6 +120,20 @@ def main():
             epsilon=args.epsilon,
         )
         ray.shutdown()
+
+        if args.heatmap_k is not None:
+            prob = monte_carlo_prob_map(
+                grid_np,
+                args.heatmap_k if args.heatmap_k != -1 else None,
+                args.heatmap_iter,
+            )
+            if not isinstance(prob, dict):
+                png_bytes = prob_map_to_png(prob)
+                with open("heatmap.png", "wb") as f:
+                    f.write(png_bytes)
+                logging.info("Heatmap saved to heatmap.png")
+            else:
+                logging.info("Full probability maps computed (no image)")
         logging.info("Prediction results:")
         for pred in result["predictions"]:
             logging.info(

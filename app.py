@@ -1,10 +1,11 @@
+import base64
 import json
 import logging
 import os
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
@@ -12,7 +13,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from analyzer import predict_scratch_card
+# fmt: off
+# isort: off
+from analyzer import (
+    monte_carlo_prob_map,
+    predict_scratch_card,
+    prob_map_to_png,
+)
+# isort: on
+# fmt: on
 
 log_handlers = [
     logging.StreamHandler(sys.stdout),
@@ -68,6 +77,18 @@ class Prediction(BaseModel):
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+
+
+class HeatmapRequest(BaseModel):
+    grid: List[List[int]]
+    k: Optional[int] = None
+    iterations: int = 1000
+    seed: int = 0
+
+
+class HeatmapResponse(BaseModel):
+    prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
+    heatmap: Optional[str] = None
 
 
 # ==== Routes ====
@@ -176,6 +197,27 @@ async def predict(req: GridRequest):
         raise HTTPException(
             status_code=500, detail="❌ 回傳 JSON 格式異常：" + str(exc)
         ) from exc
+
+
+@app.post(
+    "/heatmap",
+    response_model=HeatmapResponse,
+    response_class=JSONResponse,
+    status_code=200,
+)
+async def heatmap(req: HeatmapRequest):
+    try:
+        prob = monte_carlo_prob_map(req.grid, req.k, req.iterations, seed=req.seed)
+        if isinstance(prob, dict):
+            prob_map = {str(int(k)): v.tolist() for k, v in prob.items()}
+            return {"prob_map": prob_map, "heatmap": None}
+
+        png_bytes = prob_map_to_png(prob)
+        b64 = base64.b64encode(png_bytes).decode("ascii")
+        return {"prob_map": prob.tolist(), "heatmap": b64}
+    except Exception as exc:
+        logger.error("Heatmap generation failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.on_event("startup")

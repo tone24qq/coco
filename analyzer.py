@@ -4,7 +4,7 @@ import math
 import os
 from collections import defaultdict
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import xxhash
@@ -702,3 +702,101 @@ def process_grid(grid):
             }
         )
     return preds
+
+
+def monte_carlo_prob_map(
+    grid: Union[List[List[int]], np.ndarray],
+    k: Optional[int],
+    n_iter: int = 1000,
+    *,
+    seed: int = 0,
+) -> Union[np.ndarray, Dict[int, np.ndarray]]:
+    """Estimate number distribution via Monte-Carlo sampling.
+
+    Parameters
+    ----------
+    grid : List[List[int]] or np.ndarray
+        Board matrix where ``-1`` denotes an unknown cell.
+    k : int or None
+        Target number to estimate. ``None`` computes probability for all
+        remaining numbers.
+    n_iter : int
+        Simulation iterations.
+    seed : int
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    np.ndarray or Dict[int, np.ndarray]
+        If ``k`` is provided, a 2-D probability matrix of the same shape as the
+        grid is returned. Otherwise a mapping from number to probability matrix
+        is produced.
+    """
+
+    g = np.asarray(grid, dtype=int)
+    rng = np.random.default_rng(seed)
+
+    rows, cols = g.shape
+    blanks = np.argwhere(g == -1)
+    blank_idx = (blanks[:, 0], blanks[:, 1])
+    known_vals = g[g != -1]
+    all_vals = np.arange(1, rows * cols + 1)
+    remain = np.setdiff1d(all_vals, known_vals, assume_unique=True)
+
+    if k is not None and k not in all_vals:
+        raise ValueError("k out of range")
+
+    if k is not None:
+        counts = np.zeros((rows, cols), dtype=int)
+    else:
+        counts = {int(val): np.zeros((rows, cols), dtype=int) for val in remain}
+
+    for _ in range(max(1, n_iter)):
+        sample = rng.permutation(remain)
+        board = g.copy()
+        board[blank_idx] = sample[: blanks.shape[0]]
+
+        if k is not None:
+            hits = board == k
+            counts += hits.astype(int)
+        else:
+            for val in remain:
+                counts[int(val)] += (board == val).astype(int)
+
+    if k is not None:
+        prob = counts.astype(float) / float(n_iter)
+        prob[g != -1] = 0.0
+        return prob
+
+    prob_all: Dict[int, np.ndarray] = {}
+    for val, mat in counts.items():
+        arr = mat.astype(float) / float(n_iter)
+        arr[g != -1] = 0.0
+        prob_all[int(val)] = arr
+    return prob_all
+
+
+def prob_map_to_png(prob_map: np.ndarray) -> bytes:
+    """Render probability matrix to a grayscale PNG."""
+    import struct
+    import zlib
+
+    h, w = prob_map.shape
+    img = np.clip(prob_map, 0.0, 1.0)
+    img8 = (img * 255).astype(np.uint8)
+
+    raw = b"".join(b"\x00" + img8[i].tobytes() for i in range(h))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw))
+    png += chunk(b"IEND", b"")
+    return png

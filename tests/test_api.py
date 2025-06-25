@@ -30,3 +30,12 @@ def test_predict_too_small(client):
     resp = client.post("/predict", json={"grid": [[-1]]})
     assert resp.status_code == 500
     assert "at least 2x2" in resp.json()["detail"].lower()
+
+
+def test_heatmap_endpoint(client):
+    grid = [[1, -1], [2, -1]]
+    resp = client.post("/heatmap", json={"grid": grid, "k": 3, "iterations": 8})
+    body = resp.json()
+    assert resp.status_code == 200
+    assert "heatmap" in body
+    assert body["heatmap"].startswith("iVBOR")
