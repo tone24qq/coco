@@ -1,0 +1,15 @@
+# tests/test_brain.py
+import inspect, numpy as np, importlib
+import brain
+
+MODULE_FNS = [
+    m for n, m in inspect.getmembers(brain, inspect.isfunction)
+    if n.startswith("EXT_")           # 你的模組名稱規則
+]
+
+def test_module_shapes(make_grid):
+    grid = np.array(make_grid(8, 10))
+    for fn in MODULE_FNS:
+        out = fn(grid, target=42) if "target" in fn.__code__.co_varnames else fn(grid)
+        assert out.shape == grid.shape
+        assert np.isfinite(out).all(), f"{fn.__name__} 出現 NaN/Inf"
