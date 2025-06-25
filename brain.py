@@ -4,7 +4,7 @@ import math
 import os
 import random
 from collections import Counter, defaultdict
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -472,6 +472,63 @@ def EXT_Q11_GlobalDigitAffinity_Vec(
     return score.astype(np.float32)
 
 
+@lru_cache(maxsize=32)
+def _get_window(rows: int, cols: int, win_fn: str) -> np.ndarray:
+    if win_fn == "hann":
+        wr = np.hanning(rows)[:, None]
+        wc = np.hanning(cols)[None, :]
+        return wr * wc
+    if win_fn == "hamming":
+        wr = np.hamming(rows)[:, None]
+        wc = np.hamming(cols)[None, :]
+        return wr * wc
+    return np.ones((rows, cols), dtype=float)
+
+
+@batchable
+def EXT_Q13_GlobalConsistencySpectrum_Vec(
+    grid: np.ndarray,
+    *,
+    WIN_FN: str = "hann",
+    TRIM_LOW_FREQ: int = 1,
+    ENERGY_THRESH: float = 0.2,
+    GAP_FUNC: Optional[Callable[[int], float]] = None,
+    request_id: Optional[str] = "N/A",
+) -> np.ndarray:
+    """Score cells by spectrum consistency of known-number positions."""
+
+    _ = GAP_FUNC  # compatibility
+    mask = (grid != -1).astype(float)
+    rows, cols = mask.shape
+
+    win = _get_window(rows, cols, WIN_FN)
+    masked = mask * win
+    masked = masked - masked.mean()
+    spec = rfftn(masked, s=masked.shape, axes=(0, 1))
+
+    trim = min(TRIM_LOW_FREQ, rows // 4, cols // 4)
+    if trim > 0:
+        spec[: trim + 1, :] = 0
+        spec[:, : trim + 1] = 0
+
+    energy = np.abs(spec) ** 2
+    max_e = energy.max(initial=0.0)
+    if max_e <= 0:
+        score = np.zeros_like(mask)
+    else:
+        mask_high = energy >= ENERGY_THRESH * max_e
+        recon = irfftn(spec * mask_high, s=masked.shape, axes=(0, 1))
+        score = np.abs(recon)
+        mn, mx = score.min(), score.max()
+        if mx > mn:
+            score = (score - mn) / (mx - mn)
+        else:
+            score.fill(0.0)
+
+    score = np.where(grid == -1, score, 0.0)
+    return score.astype(np.float32)
+
+
 def _shift(arr: np.ndarray, dr: int, dc: int) -> np.ndarray:
     out = np.zeros_like(arr)
     r_start = max(0, dr)
@@ -855,6 +912,7 @@ mods = {
     "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
     "EXT_Q11_GlobalDigitAffinity_Vec": EXT_Q11_GlobalDigitAffinity_Vec,
     "EXT_Q12_ArithmeticProgression_Vec": EXT_Q12_ArithmeticProgression_Vec,
+    "EXT_Q13_GlobalConsistencySpectrum_Vec": EXT_Q13_GlobalConsistencySpectrum_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,

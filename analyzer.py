@@ -99,6 +99,11 @@ def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
         mods.append("EXT_Q12_ArithmeticProgression_Vec")
     if target is not None and "EXT_Q11_GlobalDigitAffinity_Vec" not in mods:
         mods.append("EXT_Q11_GlobalDigitAffinity_Vec")
+    if (
+        os.getenv("ENABLE_SPECTRUM", "0") == "1"
+        and "EXT_Q13_GlobalConsistencySpectrum_Vec" not in mods
+    ):
+        mods.append("EXT_Q13_GlobalConsistencySpectrum_Vec")
     return mods
 
 

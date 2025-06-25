@@ -2,6 +2,7 @@
 import importlib.util
 import pathlib
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -13,6 +14,9 @@ spec = importlib.util.spec_from_file_location("app", ROOT_DIR / "app.py")
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 app = module.app
+
+warnings.filterwarnings("ignore", category=RuntimeWarning, module="numpy")
+np.seterr(all="ignore")
 
 
 @pytest.fixture(scope="session")
