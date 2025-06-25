@@ -1,0 +1,17 @@
+# Formatting
+black>=24.4
+isort>=5.13
+
+# Lint / Type / Security
+flake8>=7.0
+mypy>=1.10
+bandit>=1.7
+pip-audit>=2.7
+
+# Testing
+pytest>=8.2
+hypothesis>=6.100
+pytest-xdist>=3.5
+
+# Optional coverage
+pytest-cov>=5.0
