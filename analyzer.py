@@ -10,14 +10,9 @@ import numpy as np
 import xxhash
 from joblib import Parallel, delayed
 
-from brain import (
-    REGISTERED_MODULES_BRAIN,
-    BoardAnalyzerUtils,
-    EXT_GM20_Skip_Pattern_Confidence_Vec,
-    MathUtils,
-    bytes_to_grid,
-    get_module_score,
-)
+from brain import (REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
+                   EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
+                   bytes_to_grid, get_module_score)
 from modules import FORMULA_REGISTRY
 
 # Logger configuration

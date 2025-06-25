@@ -476,44 +476,18 @@ def EXT_M3_Local_Focus_Vec(
 ) -> np.ndarray:
     """Score based on 5x5 neighborhood mean and variance."""
     rows, cols = grid.shape
-    scores = np.zeros((rows, cols), dtype=float)
-    utils = BoardAnalyzerUtils()
     radius = min(2, min(rows, cols) // 2 - 1)
+    if radius <= 0:
+        return np.zeros_like(grid, dtype=float)
 
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            neighbors = utils.get_neighborhood_values(
-                grid, r, c, radius=radius, eight_connectivity=True
-            )
-            if len(neighbors) < 2:
-                continue
-            mean_val = np.mean(neighbors)
-            std_val = np.std(neighbors, ddof=1) or 1.0
-            row_seq = utils.check_sequences(
-                grid[max(0, r - 2) : min(rows, r + 3)], grid, min_len=3, allow_gaps=1
-            )
-            col_seq = utils.check_sequences(
-                grid[:, max(0, c - 2) : min(cols, c + 3)].T,
-                grid,
-                min_len=3,
-                allow_gaps=1,
-            )
-            legal_values = utils.get_legal_values_for_placement(grid)
-            max_score = 0.0
-            for val in legal_values:
-                deviation = abs(val - mean_val) / std_val
-                seq_bonus = (
-                    0.3
-                    if (row_seq or col_seq) and abs(val - mean_val) > std_val
-                    else 0.0
-                )
-                score = MathUtils().normalize_value(
-                    deviation + seq_bonus, 0, max(1.0, std_val + 0.3)
-                )
-                max_score = max(max_score, score)
-            scores[r, c] = max_score
+    size = 2 * radius + 1
+    g = grid.astype(float)
+    mean = ndi.uniform_filter(g, size=size, mode="reflect")
+    var = ndi.uniform_filter(g**2, size=size, mode="reflect") - mean**2
+    std = np.sqrt(var, dtype=float)
+    deviation = np.abs(g - mean) / (std + 1e-6)
+    norm = (deviation - deviation.min()) / (deviation.max() - deviation.min() + 1e-9)
+    scores = np.where(grid == -1, norm, 0.0)
     return scores
 
 

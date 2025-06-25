@@ -72,8 +72,9 @@ def generate_unique_grid(
     else:
         positions = list(hidden)
 
-    for r, c in positions:
-        grid[int(r), int(c)] = -1
+    if positions:
+        rr, cc = np.array(positions).T
+        grid[rr.astype(int), cc.astype(int)] = -1
     return grid
 
 
@@ -109,13 +110,8 @@ def gen_random_entropy(
     rows: int, cols: int, rng: np.random.Generator
 ) -> np.ndarray:  # noqa: E501
     """Generate grid with entropy-based random dispersion."""
-    grid = np.zeros((rows, cols), dtype=np.int64)
-    legal = list(range(1, rows * cols + 1))
-    rng.shuffle(legal)
-    for i in range(rows * cols):
-        r, c = divmod(i, cols)
-        grid[r, c] = legal[i]
-    return grid
+    nums = rng.permutation(rows * cols) + 1
+    return nums.reshape(rows, cols)
 
 
 @register_formula("tail_cluster")
@@ -225,10 +221,10 @@ def global_offset_cooccurrence(
 
     batch, r, c = boards.shape
     mask_hidden = (boards == -1).astype(float)
-    score = np.zeros_like(boards, dtype=float)
-    for o in offsets:
-        counts = np.sum(boards == (target + o), axis=(1, 2))
-        score += mask_hidden * counts[:, None, None]
+    off = np.asarray(offsets, dtype=int)
+    matches = boards[..., None] == (target + off)[None, None, None, :]
+    counts = matches.sum(axis=(1, 2))  # (batch, len(offsets))
+    score = mask_hidden * counts.sum(axis=1)[:, None, None]
 
     return score[0] if single else score
 
