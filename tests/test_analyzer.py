@@ -20,6 +20,19 @@ def test_simulate_runs_on_min_board(make_grid):
     simulate_full_board(grid, None, n_iter=8)
 
 
+def test_simulate_focus_cells(make_grid):
+    grid = np.array(make_grid(4, 4))
+    blanks = [tuple(p) for p in np.argwhere(np.array(grid) == -1)]
+    probs = simulate_full_board(
+        grid,
+        None,
+        n_iter=4,
+        focus_cells=blanks[:1],
+        epsilon=0.1,
+    )
+    assert isinstance(probs, dict)
+
+
 def test_weight_prob_by_modules_variation(monkeypatch):
     grid = np.array([[1, -1], [3, -1]])
     prob_map = {(0, 1): {2: 0.6}, (1, 1): {4: 0.4}}

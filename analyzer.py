@@ -173,8 +173,11 @@ def simulate_full_board(
     target_num: Optional[int],
     n_iter: int = 6000,
     rng: Optional[np.random.Generator] = None,
+    *,
+    focus_cells: Optional[List[Tuple[int, int]]] = None,
+    epsilon: float = 0.0,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """Simulate full boards with enhanced importance sampling and target_num hits."""
+    """Simulate full boards with optional focus and ε-exploration."""
     if rng is None:
         rng = np.random.default_rng()
 
@@ -204,6 +207,10 @@ def simulate_full_board(
     weights = adjust_weights_based_on_history(history, formulas)
     remain = n_iter
     counts = defaultdict(lambda: defaultdict(int))
+    focus_set = {tuple(fc) for fc in focus_cells} if focus_cells else None
+    other_cells = (
+        [tuple(b) for b in blanks if tuple(b) not in focus_set] if focus_set else []
+    )
 
     while remain > 0:
         batch = min(4000, remain)
@@ -221,7 +228,7 @@ def simulate_full_board(
                 boards = boards[mask]
 
         if len(boards) > 0:
-            for i, board in enumerate(boards):
+            for board in boards:
                 fast = (
                     0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board)
                     + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board)
@@ -229,7 +236,12 @@ def simulate_full_board(
                     + 0.2 * get_module_score("EXT_Q6_LineBridge_Vec", board)
                     + 0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", board)
                 )
-                for r, c in blanks:
+                cells_iter = blanks if focus_set is None else focus_set
+                if focus_set is not None and other_cells and rng.random() < epsilon:
+                    cells_iter = list(focus_set) + [
+                        other_cells[int(rng.integers(len(other_cells)))]
+                    ]
+                for r, c in cells_iter:
                     idx = r * cols + c
                     if rng.random() < importance_weights[idx]:
                         num = board[r, c]
@@ -466,6 +478,11 @@ def predict_scratch_card(
     refine_iter: Optional[int] = None,
     min_total_iter: Optional[int] = None,
     unique: bool = True,
+    *,
+    global_iter: Optional[int] = None,
+    focus_iter: Optional[int] = None,
+    top_n: int = 10,
+    epsilon: float = 0.05,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -486,18 +503,38 @@ def predict_scratch_card(
         ("EXT_Q7_VariancePrior_Vec", "Variance smoothing and prior"),
     ]
 
-    base_iter = iterations if iterations is not None else int(os.getenv("ITER", "5000"))
-    total_iter = int(base_iter * max(rows * cols / 40, 1))
-    quick_iter = quick_iter if quick_iter is not None else int(total_iter * 0.35)
-    refine_iter = refine_iter if refine_iter is not None else total_iter - quick_iter
-    min_total_iter = (
-        min_total_iter if min_total_iter is not None else max(1000, total_iter // 5)
+    phase1 = global_iter if global_iter is not None else iterations or 5000
+    phase2 = focus_iter if focus_iter is not None else 1000
+    logger.info(
+        "Two-phase simulation | phase1=%d, phase2=%d, top_n=%d, epsilon=%.2f",
+        phase1,
+        phase2,
+        top_n,
+        epsilon,
     )
 
-    logger.info(f"Simulating full board with {total_iter} iterations")
     prob_map = simulate_full_board(
-        grid_np, target_num, n_iter=total_iter, rng=np.random.default_rng()
+        grid_np, target_num, n_iter=phase1, rng=np.random.default_rng()
     )
+
+    # select top-n cells for refinement
+    ranked = sorted(
+        ((r, c, max(d.values())) for (r, c), d in prob_map.items()),
+        key=lambda x: x[2],
+        reverse=True,
+    )
+    focus_cells = [(r, c) for r, c, _ in ranked[: max(1, min(top_n, len(ranked)))]]
+
+    if phase2 > 0:
+        refine_map = simulate_full_board(
+            grid_np,
+            target_num,
+            n_iter=phase2,
+            rng=np.random.default_rng(),
+            focus_cells=focus_cells,
+            epsilon=epsilon,
+        )
+        prob_map.update(refine_map)
 
     if target_num is not None:
         rank = [

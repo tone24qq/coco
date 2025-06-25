@@ -27,7 +27,15 @@ def test_predict_valid_grid():
             val += 1
         grid.append(row)
     grid[2][3] = -1
-    payload = {"grid": grid, "target_num": 6, "iterations": 10}
+    payload = {
+        "grid": grid,
+        "target_num": 6,
+        "iterations": 10,
+        "global_iter": 5,
+        "focus_iter": 2,
+        "top_n": 5,
+        "epsilon": 0.1,
+    }
     res = client.post("/predict", json=payload)
     assert res.status_code == 200
     body = res.json()

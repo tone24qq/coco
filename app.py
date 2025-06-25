@@ -50,6 +50,10 @@ class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
     iterations: Optional[int] = 5000
+    global_iter: Optional[int] = None
+    focus_iter: Optional[int] = None
+    top_n: int = 10
+    epsilon: float = 0.05
 
 
 class Prediction(BaseModel):
@@ -122,7 +126,13 @@ async def predict(req: GridRequest):
 
         # 推理邏輯
         result = predict_scratch_card(
-            grid=req.grid, target_num=req.target_num, iterations=req.iterations
+            grid=req.grid,
+            target_num=req.target_num,
+            iterations=req.iterations,
+            global_iter=req.global_iter,
+            focus_iter=req.focus_iter,
+            top_n=req.top_n,
+            epsilon=req.epsilon,
         )
 
         predictions = result.get("predictions", [])

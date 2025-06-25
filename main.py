@@ -35,6 +35,20 @@ def parse_args() -> argparse.Namespace:
         help="Number of Monte Carlo iterations",
     )
     parser.add_argument(
+        "--global-iter",
+        type=int,
+        default=None,
+        help="Phase-1 global iteration count",
+    )
+    parser.add_argument(
+        "--focus-iter",
+        type=int,
+        default=None,
+        help="Phase-2 focused iteration count",
+    )
+    parser.add_argument("--top-n", type=int, default=10, help="Top cells to refine")
+    parser.add_argument("--epsilon", type=float, default=0.05, help="Exploration rate")
+    parser.add_argument(
         "--target", type=int, default=None, help="Target number to predict"
     )
     return parser.parse_args()
@@ -77,7 +91,13 @@ def main():
         # Disable Ray dashboard to avoid excessive port scanning
         ray.init(num_cpus=4, include_dashboard=False)
         result = predict_scratch_card(
-            grid, target_num=args.target, iterations=iterations
+            grid,
+            target_num=args.target,
+            iterations=iterations,
+            global_iter=args.global_iter,
+            focus_iter=args.focus_iter,
+            top_n=args.top_n,
+            epsilon=args.epsilon,
         )
         ray.shutdown()
         logging.info("Prediction results:")
