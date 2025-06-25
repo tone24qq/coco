@@ -3,7 +3,6 @@ import logging
 import os
 import sys
 from datetime import datetime
-# Logging
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Optional
 

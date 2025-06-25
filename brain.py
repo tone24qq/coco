@@ -433,6 +433,96 @@ def EXT_Q10_DistPotential_Vec(
     return 1 - dist_norm
 
 
+@batchable
+def EXT_Q11_GlobalDigitAffinity_Vec(
+    grid: np.ndarray, target: Optional[int] = None, request_id: Optional[str] = "N/A"
+) -> np.ndarray:
+    if target is None:
+        return np.zeros_like(grid, dtype=float)
+
+    rows, cols = grid.shape
+    max_val = rows * cols
+    vals = np.arange(1, max_val + 1)
+
+    sim = np.zeros_like(vals, dtype=float)
+    np.maximum(sim, (vals % 10 == target % 10).astype(float) * 1.0, out=sim)
+    np.maximum(
+        sim, np.isin(np.abs(vals - target), [10, 20]).astype(float) * 0.7, out=sim
+    )
+    np.maximum(sim, (vals % 10 == target // 10).astype(float) * 0.4, out=sim)
+
+    rr = np.arange(rows)[:, None]
+    cc = np.arange(cols)[None, :]
+    center = ((rows - 1) / 2.0, (cols - 1) / 2.0)
+    dist = np.sqrt((rr - center[0]) ** 2 + (cc - center[1]) ** 2)
+    kernel = 1.0 / (1.0 + 0.5 * dist)
+
+    masks = (grid[..., None] == vals).astype(float)
+    k_fft = rfftn(kernel, s=grid.shape)
+    masks_fft = rfftn(masks, s=grid.shape, axes=(0, 1))
+    conv = irfftn(masks_fft * k_fft[..., None], s=grid.shape, axes=(0, 1))
+    score = np.tensordot(conv, sim, axes=([2], [0]))
+
+    score = np.where(grid == -1, score, 0.0)
+    mn, mx = score.min(), score.max()
+    if mx > mn:
+        score = (score - mn) / (mx - mn)
+    else:
+        score.fill(0.0)
+    return score.astype(np.float32)
+
+
+def _shift(arr: np.ndarray, dr: int, dc: int) -> np.ndarray:
+    out = np.zeros_like(arr)
+    r_start = max(0, dr)
+    r_end = arr.shape[0] + min(0, dr)
+    c_start = max(0, dc)
+    c_end = arr.shape[1] + min(0, dc)
+    out[r_start:r_end, c_start:c_end] = arr[
+        r_start - dr : r_end - dr, c_start - dc : c_end - dc
+    ]
+    return out
+
+
+@batchable
+def EXT_Q12_ArithmeticProgression_Vec(
+    grid: np.ndarray, request_id: Optional[str] = "N/A"
+) -> np.ndarray:
+    rows, cols = grid.shape
+    val = np.where(grid == -1, 0, grid)
+    mask = (grid != -1).astype(int)
+    score = np.zeros_like(val, dtype=float)
+
+    directions = [
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (1, -1),
+        (2, 1),
+        (2, -1),
+        (1, 2),
+        (-1, 2),
+    ]
+
+    for dr, dc in directions:
+        prev = _shift(val, -dr, -dc)
+        next_ = _shift(val, dr, dc)
+        conv1 = prev - 2 * val + next_
+        cnt = _shift(mask, -dr, -dc) + mask + _shift(mask, dr, dc)
+        valid = (conv1 == 0) & (cnt == 3)
+        w_gap = 1.0 / (1.0 + max(abs(dr), abs(dc)))
+        v = valid.astype(float)
+        score += w_gap * (v + _shift(v, dr, dc) + _shift(v, -dr, -dc))
+
+    score = np.where(grid == -1, score, 0.0)
+    mn, mx = score.min(), score.max()
+    if mx > mn:
+        score = (score - mn) / (mx - mn)
+    else:
+        score.fill(0.0)
+    return score.astype(np.float32)
+
+
 # --- Scoring Module Implementations ---
 
 
@@ -763,6 +853,8 @@ mods = {
     "EXT_Q8_SpatialKL_Vec": EXT_Q8_SpatialKL_Vec,
     "EXT_Q9_MultiScaleEntropy_Vec": EXT_Q9_MultiScaleEntropy_Vec,
     "EXT_Q10_DistPotential_Vec": EXT_Q10_DistPotential_Vec,
+    "EXT_Q11_GlobalDigitAffinity_Vec": EXT_Q11_GlobalDigitAffinity_Vec,
+    "EXT_Q12_ArithmeticProgression_Vec": EXT_Q12_ArithmeticProgression_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,

@@ -10,9 +10,11 @@ import numpy as np
 import xxhash
 from joblib import Parallel, delayed
 
+# fmt: off
 from brain import (REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
                    EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
                    bytes_to_grid, get_module_score)
+# fmt: on
 from modules import FORMULA_REGISTRY
 
 # Logger configuration
@@ -76,23 +78,28 @@ def adjust_weights_based_on_history(
 
 def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
     """Dynamically select modules based on grid characteristics."""
-    # 根據 FORCE_FULL_SCAN 環境變數決定是否使用所有模組
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
-        return list(REGISTERED_MODULES_BRAIN)  # 直接使用所有模組
-    # 原始邏輯：動態選擇模組
-    base_modules = [
-        "EXT_Q1_ProximityEntropy_Vec",
-        "EXT_Q2_PotentialPath_Vec",
-        "EXT_Q5_GlobalEntropy_Vec",
-        "EXT_Q6_LineBridge_Vec",
-        "EXT_Q7_VariancePrior_Vec",
-    ]
-    scores = {
-        mod: np.mean(get_module_score(mod, grid, target=target))
-        for mod in REGISTERED_MODULES_BRAIN
-    }
-    top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
-    return base_modules + [m for m in top_modules if m not in base_modules]
+        mods = list(REGISTERED_MODULES_BRAIN)
+    else:
+        base_modules = [
+            "EXT_Q1_ProximityEntropy_Vec",
+            "EXT_Q2_PotentialPath_Vec",
+            "EXT_Q5_GlobalEntropy_Vec",
+            "EXT_Q6_LineBridge_Vec",
+            "EXT_Q7_VariancePrior_Vec",
+        ]
+        scores = {
+            mod: np.mean(get_module_score(mod, grid, target=target))
+            for mod in REGISTERED_MODULES_BRAIN
+        }
+        top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
+        mods = base_modules + [m for m in top_modules if m not in base_modules]
+
+    if "EXT_Q12_ArithmeticProgression_Vec" not in mods:
+        mods.append("EXT_Q12_ArithmeticProgression_Vec")
+    if target is not None and "EXT_Q11_GlobalDigitAffinity_Vec" not in mods:
+        mods.append("EXT_Q11_GlobalDigitAffinity_Vec")
+    return mods
 
 
 @lru_cache(maxsize=500000)

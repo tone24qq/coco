@@ -1,9 +1,18 @@
 # tests/conftest.py
+import importlib.util
+import pathlib
+import sys
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from app import app
 
+ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))  # noqa: E402
+spec = importlib.util.spec_from_file_location("app", ROOT_DIR / "app.py")
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+app = module.app
 
 
 @pytest.fixture(scope="session")
