@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from coco.app import app   # 而不是 from app import app
 
-from app import app
 
 
 @pytest.fixture(scope="session")
