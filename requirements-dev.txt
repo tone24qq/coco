@@ -1,7 +1,7 @@
 # Formatting
 black>=24.4
 isort>=5.13
-
+httpx>=0.27
 # Lint / Type / Security
 flake8>=7.0
 mypy>=1.10
