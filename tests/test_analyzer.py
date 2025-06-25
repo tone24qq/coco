@@ -1,6 +1,7 @@
 # tests/test_analyzer.py
 import numpy as np
 
+import analyzer
 from analyzer import simulate_full_board
 
 
@@ -17,3 +18,31 @@ def test_simulate_runs_on_min_board(make_grid):
     """simulate_full_board may fail on tiny boards; ensure graceful handling."""
     grid = np.array(make_grid(2, 2))
     simulate_full_board(grid, None, n_iter=8)
+
+
+def test_weight_prob_by_modules_variation(monkeypatch):
+    grid = np.array([[1, -1], [3, -1]])
+    prob_map = {(0, 1): {2: 0.6}, (1, 1): {4: 0.4}}
+
+    def fake_select_modules(_grid, target=None):
+        return ["A", "B"]
+
+    def fake_get_module_score(mod, _grid, target=None):
+        arr = np.zeros_like(_grid, dtype=float)
+        if mod == "A":
+            arr.fill(1.0)
+        else:
+            arr.fill(0.1)
+        return arr
+
+    monkeypatch.setattr(analyzer, "select_modules", fake_select_modules)
+    monkeypatch.setattr(analyzer, "get_module_score", fake_get_module_score)
+    monkeypatch.setattr(
+        analyzer, "Parallel", lambda n_jobs=1: (lambda tasks: [t() for t in tasks])
+    )
+    monkeypatch.setattr(
+        analyzer, "delayed", lambda fn: (lambda *a, **k: lambda: fn(*a, **k))
+    )
+
+    weighted = analyzer.weight_prob_by_modules(grid, prob_map)
+    assert weighted[(0, 1)][2] != prob_map[(0, 1)][2]

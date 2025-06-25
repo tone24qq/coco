@@ -304,19 +304,20 @@ def weight_prob_by_modules(
             continue
         scores = module_scores[:, r, c]
         scores = np.nan_to_num(scores, nan=0.0)
-        softmax_scores = np.exp(scores / 0.5) / (np.sum(np.exp(scores / 0.5)) + 1e-10)
-        mean_score = np.mean(softmax_scores)
+        softmax_scores = np.exp(scores / 0.5)
+        softmax_scores /= softmax_scores.sum() + 1e-10
+        scale = float(np.linalg.norm(softmax_scores, ord=2))
 
         if target_num is not None:
             if target_num in probs:
-                probs[target_num] = max(probs[target_num] * mean_score, 1e-10)
+                probs[target_num] = max(probs[target_num] * scale, 1e-10)
                 total = probs[target_num] or 1e-10
                 result[(r, c)] = {target_num: probs[target_num] / total}
             else:
                 result[(r, c)] = {target_num: 0.0}
         else:
             for val in probs:
-                probs[val] = max(probs[val] * mean_score, 1e-10)
+                probs[val] = max(probs[val] * scale, 1e-10)
             total = sum(probs.values()) or 1e-10
             result[(r, c)] = {k: v / total for k, v in probs.items()}
 
