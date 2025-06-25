@@ -11,9 +11,9 @@ import xxhash
 from joblib import Parallel, delayed
 
 # fmt: off
-from brain import (REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
+from brain import (AGG_WEIGHTS, REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
                    EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
-                   bytes_to_grid, get_module_score)
+                   aggregate_scores, bytes_to_grid, get_module_score)
 # fmt: on
 from modules import FORMULA_REGISTRY
 
@@ -229,13 +229,22 @@ def simulate_full_board(
 
         if len(boards) > 0:
             for board in boards:
-                fast = (
-                    0.5 * get_module_score("EXT_Q1_ProximityEntropy_Vec", board)
-                    + 0.5 * get_module_score("EXT_Q2_PotentialPath_Vec", board)
-                    + 0.2 * get_module_score("EXT_Q5_GlobalEntropy_Vec", board)
-                    + 0.2 * get_module_score("EXT_Q6_LineBridge_Vec", board)
-                    + 0.1 * get_module_score("EXT_Q7_VariancePrior_Vec", board)
+                mods_fast = [
+                    "EXT_Q1_ProximityEntropy_Vec",
+                    "EXT_Q2_PotentialPath_Vec",
+                    "EXT_Q5_GlobalEntropy_Vec",
+                    "EXT_Q6_LineBridge_Vec",
+                    "EXT_Q7_VariancePrior_Vec",
+                ]
+                stack_fast = np.stack(
+                    [get_module_score(m, board) for m in mods_fast], axis=0
                 )
+                w_fast = np.array([AGG_WEIGHTS[m] for m in mods_fast])
+                fast = aggregate_scores(stack_fast, w_fast, mods_fast)
+                tau_local = float(os.getenv("TAU_SOFTMAX", "1.0"))
+                soft_fast = np.exp(fast / tau_local)
+                soft_fast /= soft_fast.sum() + 1e-10
+                fast = soft_fast
                 cells_iter = blanks if focus_set is None else focus_set
                 if focus_set is not None and other_cells and rng.random() < epsilon:
                     cells_iter = list(focus_set) + [
@@ -258,7 +267,22 @@ def simulate_full_board(
 
     # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
     tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
-    w = np.array([0.28, 0.28, 0.12, 0.12, 0.08, 0.07, 0.05])  # Q1~Q7
+    mods_rerank = [
+        "EXT_Q1_ProximityEntropy_Vec",
+        "EXT_Q2_PotentialPath_Vec",
+        "EXT_Q3_DiscontinuitySym_Vec",
+        "EXT_Q4_ControlComposite_Vec",
+        "EXT_Q5_GlobalEntropy_Vec",
+        "EXT_Q6_LineBridge_Vec",
+        "EXT_Q7_VariancePrior_Vec",
+    ]
+    w = np.array([AGG_WEIGHTS[m] for m in mods_rerank])
+    stack_rerank = np.stack(
+        [get_module_score(m, g, target=target_num) for m in mods_rerank], axis=0
+    )
+    final_heat = aggregate_scores(stack_rerank, w, mods_rerank)
+    soft_heat = np.exp(final_heat / tau)
+    soft_heat /= soft_heat.sum() + 1e-10
     topk = int(os.getenv("TOPK_RERANK", "100"))
     if topk < 0:  # -1 表示 rows × cols
         topk = rows * cols
@@ -271,19 +295,7 @@ def simulate_full_board(
     top_k = heapq.nlargest(topk, candidates, key=lambda x: x[2])
     final_prob_map = {}
     for r, c, fast_score, num in top_k:
-        scores = [
-            get_module_score("EXT_Q1_ProximityEntropy_Vec", g)[r, c],
-            get_module_score("EXT_Q2_PotentialPath_Vec", g)[r, c],
-            get_module_score("EXT_Q3_DiscontinuitySym_Vec", g)[r, c],
-            # pass target forward so composite & children receive it
-            get_module_score("EXT_Q4_ControlComposite_Vec", g, target=target_num)[r, c],
-            get_module_score("EXT_Q5_GlobalEntropy_Vec", g)[r, c],
-            get_module_score("EXT_Q6_LineBridge_Vec", g)[r, c],
-            get_module_score("EXT_Q7_VariancePrior_Vec", g)[r, c],
-        ]
-        soft = np.exp(np.array(scores) / tau)
-        soft /= soft.sum() + 1e-10
-        final_score = (w * soft).sum()
+        final_score = float(soft_heat[r, c])
         if (r, c) not in final_prob_map:
             final_prob_map[(r, c)] = {}
         final_prob_map[(r, c)][num] = final_score

@@ -951,6 +951,45 @@ RERANK_PHASE = [
     "EXT_Q10_DistPotential_Vec",
 ]
 
+# Static weights for module aggregation
+AGG_WEIGHTS = {
+    "EXT_Q1_ProximityEntropy_Vec": 0.20,
+    "EXT_Q2_PotentialPath_Vec": 0.15,
+    "EXT_Q3_DiscontinuitySym_Vec": 0.10,
+    "EXT_Q4_ControlComposite_Vec": 0.10,
+    "EXT_Q5_GlobalEntropy_Vec": 0.08,
+    "EXT_Q6_LineBridge_Vec": 0.08,
+    "EXT_Q7_VariancePrior_Vec": 0.08,
+    "EXT_Q8_SpatialKL_Vec": 0.05,
+    "EXT_Q9_MultiScaleEntropy_Vec": 0.05,
+    "EXT_Q10_DistPotential_Vec": 0.04,
+    "EXT_Q11_GlobalDigitAffinity_Vec": 0.03,
+    "EXT_Q12_ArithmeticProgression_Vec": 0.04,
+    "EXT_Q13_GlobalConsistencySpectrum_Vec": 0.04,
+}
+
+
+def _load_weights() -> Dict[str, float]:
+    """Return normalized weights with ENV overrides."""
+    w = AGG_WEIGHTS.copy()
+    for name in w:
+        env_key = f"WEIGHT_{name.split('_')[1]}"
+        env_val = os.getenv(env_key)
+        if env_val is not None:
+            try:
+                w[name] = float(env_val)
+            except ValueError:
+                logger.warning("Invalid weight for %s: %s", env_key, env_val)
+    total = sum(w.values())
+    if not math.isclose(total, 1.0, rel_tol=1e-3):
+        logger.info("Normalizing module weights (sum %.3f)", total)
+        for k in w:
+            w[k] /= total or 1e-10
+    return w
+
+
+AGG_WEIGHTS = _load_weights()
+
 
 # ----------------------------------------------------------------------
 # Module execution
@@ -968,7 +1007,6 @@ def get_module_score(
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
     module_func = REGISTERED_MODULES_BRAIN[module_name]
-    # Always forward the target keyword so lambdas requiring it won't fail
     kwargs["target"] = target
     score_grid = safe_call(module_func, grid, **kwargs)
     if module_name not in _seen_modules_once:
@@ -998,3 +1036,19 @@ def get_module_score(
         )
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
+
+
+def aggregate_scores(
+    stack: np.ndarray, weights: np.ndarray, names: Optional[list[str]] | None = None
+) -> np.ndarray:
+    """Normalize score maps then combine via weighted sum."""
+    mu = stack.mean(axis=(1, 2), keepdims=True)
+    sigma = stack.std(axis=(1, 2), keepdims=True) + 1e-6
+    stack_z = (stack - mu) / sigma
+    weights_normalized = weights / (weights.sum() + 1e-10)
+    final = np.tensordot(weights_normalized, stack_z, axes=(0, 0))
+    if names:
+        contrib = (weights_normalized[:, None, None] * stack_z).mean(axis=(1, 2))
+        for n, w, c in zip(names, weights_normalized, contrib):
+            logger.info("aggregate | %s | w=%.3f | contrib=%.3f", n, w, float(c))
+    return final
