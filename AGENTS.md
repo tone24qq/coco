@@ -203,3 +203,40 @@ def my_formula(board: np.ndarray, *, target=None, **kw) -> np.ndarray:
 +  ```
 +
 +Failure to include passing tests will block PR merges and deployments.
+## 9. Heuristic Parameters (Q11 & Q12)
+
+> 本節集中列出「尾數親和 Q11」與「等差序列 Q12」的可調常數，  
+> 並示範如何在 **不改程式碼** 的情況下做 A/B 測試或熱調整。
+
+| 模組 | 參數 | 預設值 | 型別 | 覆寫方式 | 說明 |
+|------|------|--------|------|-----------|------|
+| **Q11 – Global Digit Affinity** | `ALPHA` | `0.5` | float | `ENV: Q11_ALPHA` | 距離權重 w(d)=1 / (1 + α·d) 的 α |
+| | `P` | `1` | int | `ENV: Q11_P` | 距離權重冪次 `d^p`；1 = 曼哈頓，2 = 歐氏 |
+| | `SIM_TAIL` | `1.0` | float | 修改 `brain.DIGIT_SIM` | 尾數相同的相似度 |
+| | `SIM_±10` | `0.7` | float | 同上 | 差 10/20 的相似度 |
+| | `SIM_COMPLEMENT` | `0.4` | float | 同上 | 首尾互補（例 1↔31）相似度 |
+| **Q12 – Arithmetic Progression** | `GAP_FUNC` | `1/(1+gap)` | str/λ | `ENV: Q12_GAP` (`"linear"`, `"inv_sq"`) | gap = max(|dr|,|dc|) 的權重函數 |
+| | `DIRS` | 8 方向 | list(tuple) | 修改 `brain.Q12_DIRS` | `(dr, dc)` 方向集；可排除騎士步 |
+
+### 覆寫範例
+
+```bash
+# 放在 docker-compose / Render Secret / GitHub Actions
+export Q11_ALPHA=0.3
+export Q11_P=2
+export Q12_GAP="inv_sq"
+效能備註
+	•	Kernel Cache：Q11 使用 lru_cache(maxsize=32) 依 (H,W,α,p) 快取距離核
+	•	卷積實作：盤面 ≤ 20×20 採 direct convolve2d；>20×20 自動改 fftconvolve
+	•	向量化：Q12 先一次性 np.roll 產生 8 個 shifted view，再張量化驗證 AP
+
+⸻
+
+10. Parameter-Tuning Workflow
+1.	建立 grid-search.yaml 定義 α、p、gap_func 搜尋空間
+2.	執行python tools/tune_params.py --conf grid-search.yaml
+3.	最佳組合自動寫回 .env.q11q12，CI 報表附帶 Hit-Rate / Latency
+	4.	人工複核後，將 .env.q11q12 內容複製到 Render Secret 或 Production ENV
+
+注意：任何參數覆寫都需同步更新 tests/test_q11_q12.py 的 fixture，
+以確保回歸測試與 Production 行為一致。
