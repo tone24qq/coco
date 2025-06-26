@@ -1,3 +1,4 @@
+import base64
 import heapq
 import logging
 import math
@@ -800,3 +801,59 @@ def prob_map_to_png(prob_map: np.ndarray) -> bytes:
     png += chunk(b"IDAT", zlib.compress(raw))
     png += chunk(b"IEND", b"")
     return png
+
+
+def heatmap_to_base64(prob_map: np.ndarray) -> str:
+    """Convert probability map to a base64-encoded PNG."""
+    png_bytes = prob_map_to_png(prob_map)
+    return base64.b64encode(png_bytes).decode("ascii")
+
+
+def render_heatmap(prob_map: np.ndarray, output_format: str = "base64") -> Any:
+    """Return heatmap in the desired format.
+
+    Parameters
+    ----------
+    prob_map : np.ndarray
+        Probability matrix to render.
+    output_format : str
+        One of ``"raw"``, ``"base64"``, or ``"png_bytes"``.
+    """
+
+    fmt = output_format.lower()
+    if fmt == "raw":
+        return prob_map
+    if fmt == "base64":
+        return heatmap_to_base64(prob_map)
+    if fmt == "png_bytes":
+        return prob_map_to_png(prob_map)
+    raise ValueError(f"Unsupported output_format: {output_format}")
+
+
+def probability_heatmap(
+    grid: Union[List[List[int]], np.ndarray],
+    k: Optional[int],
+    n_iter: int = 6000,
+    *,
+    seed: int = 0,
+) -> Union[np.ndarray, Dict[int, np.ndarray]]:
+    """Heatmap simulation using :func:`simulate_full_board`."""
+
+    rng = np.random.default_rng(seed)
+    grid_np = np.asarray(grid, dtype=int)
+    prob_map_dict = simulate_full_board(grid_np, k, n_iter=n_iter, rng=rng)
+
+    if k is not None:
+        out = np.zeros_like(grid_np, dtype=float)
+        for (r, c), cell in prob_map_dict.items():
+            out[r, c] = cell.get(k, 0.0)
+        return out
+
+    numbers = {n for cell in prob_map_dict.values() for n in cell}
+    result: Dict[int, np.ndarray] = {
+        int(n): np.zeros_like(grid_np, dtype=float) for n in numbers
+    }
+    for (r, c), cell in prob_map_dict.items():
+        for n, p in cell.items():
+            result[int(n)][r, c] = p
+    return result

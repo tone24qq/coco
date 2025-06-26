@@ -39,3 +39,15 @@ def test_heatmap_endpoint(client):
     assert resp.status_code == 200
     assert "heatmap" in body
     assert body["heatmap"].startswith("iVBOR")
+
+
+def test_heatmap_endpoint_raw(client):
+    grid = [[1, -1], [2, -1]]
+    resp = client.post(
+        "/heatmap",
+        json={"grid": grid, "k": 3, "iterations": 8, "output_format": "raw"},
+    )
+    body = resp.json()
+    assert resp.status_code == 200
+    assert body["heatmap"] is None
+    assert isinstance(body["prob_map"], list)

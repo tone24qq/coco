@@ -16,9 +16,9 @@ from pydantic import BaseModel
 # fmt: off
 # isort: off
 from analyzer import (
-    monte_carlo_prob_map,
+    probability_heatmap,
     predict_scratch_card,
-    prob_map_to_png,
+    render_heatmap,
 )
 # isort: on
 # fmt: on
@@ -84,6 +84,7 @@ class HeatmapRequest(BaseModel):
     k: Optional[int] = None
     iterations: int = 1000
     seed: int = 0
+    output_format: str = "base64"
 
 
 class HeatmapResponse(BaseModel):
@@ -207,13 +208,19 @@ async def predict(req: GridRequest):
 )
 async def heatmap(req: HeatmapRequest):
     try:
-        prob = monte_carlo_prob_map(req.grid, req.k, req.iterations, seed=req.seed)
+        prob = probability_heatmap(req.grid, req.k, req.iterations, seed=req.seed)
         if isinstance(prob, dict):
             prob_map = {str(int(k)): v.tolist() for k, v in prob.items()}
             return {"prob_map": prob_map, "heatmap": None}
 
-        png_bytes = prob_map_to_png(prob)
-        b64 = base64.b64encode(png_bytes).decode("ascii")
+        if req.output_format.lower() == "raw":
+            return {"prob_map": prob.tolist(), "heatmap": None}
+
+        rendered = render_heatmap(prob, req.output_format)
+        if isinstance(rendered, bytes):
+            b64 = base64.b64encode(rendered).decode("ascii")
+        else:
+            b64 = rendered
         return {"prob_map": prob.tolist(), "heatmap": b64}
     except Exception as exc:
         logger.error("Heatmap generation failed: %s", exc, exc_info=True)

@@ -10,9 +10,9 @@ import ray
 # fmt: off
 # isort: off
 from analyzer import (
-    monte_carlo_prob_map,
+    probability_heatmap,
     predict_scratch_card,
-    prob_map_to_png,
+    render_heatmap,
 )
 # isort: on
 # fmt: on
@@ -71,6 +71,13 @@ def parse_args() -> argparse.Namespace:
         default=1000,
         help="Iterations for heatmap simulation",
     )
+    parser.add_argument(
+        "--heatmap-format",
+        type=str,
+        choices=["raw", "base64", "png_bytes"],
+        default="png_bytes",
+        help="Format for heatmap output",
+    )
     return parser.parse_args()
 
 
@@ -122,18 +129,23 @@ def main():
         ray.shutdown()
 
         if args.heatmap_k is not None:
-            prob = monte_carlo_prob_map(
+            prob = probability_heatmap(
                 grid_np,
                 args.heatmap_k if args.heatmap_k != -1 else None,
                 args.heatmap_iter,
             )
-            if not isinstance(prob, dict):
-                png_bytes = prob_map_to_png(prob)
-                with open("heatmap.png", "wb") as f:
-                    f.write(png_bytes)
-                logging.info("Heatmap saved to heatmap.png")
-            else:
+            if isinstance(prob, dict):
                 logging.info("Full probability maps computed (no image)")
+            else:
+                rendered = render_heatmap(prob, args.heatmap_format)
+                if isinstance(rendered, bytes):
+                    with open("heatmap.png", "wb") as f:
+                        f.write(rendered)
+                    logging.info("Heatmap saved to heatmap.png")
+                elif isinstance(rendered, str):
+                    with open("heatmap.txt", "w") as f:
+                        f.write(rendered)
+                    logging.info("Heatmap base64 saved to heatmap.txt")
         logging.info("Prediction results:")
         for pred in result["predictions"]:
             logging.info(
