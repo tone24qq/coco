@@ -349,24 +349,53 @@ def weight_prob_by_modules(
     return _native_dict(result)
 
 
+def assign_unique_numbers(
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+) -> Dict[int, Tuple[int, int]]:
+    """Assign each number to a unique cell maximizing overall probability."""
+    try:
+        from scipy.optimize import linear_sum_assignment
+
+        cells = list(prob_map.keys())
+        nums = sorted({n for d in prob_map.values() for n in d})
+        cost = np.full((len(nums), len(cells)), 50.0, dtype=float)
+
+        for i, num in enumerate(nums):
+            for j, cell in enumerate(cells):
+                prob = max(prob_map[cell].get(num, 1e-10), 1e-10)
+                cost[i, j] = -math.log(prob)
+
+        row, col = linear_sum_assignment(cost)
+        return {nums[r]: cells[c] for r, c in zip(row, col)}
+    except Exception as e:  # pragma: no cover - fallback rarely used
+        logger.error("assign_unique_numbers failed: %s", e)
+        assigned: Dict[int, Tuple[int, int]] = {}
+        used: set[Tuple[int, int]] = set()
+        numbers = sorted({n for d in prob_map.values() for n in d})
+        for num in numbers:
+            best_cell = None
+            best_p = -1.0
+            for cell, dist in prob_map.items():
+                if cell in used:
+                    continue
+                p = dist.get(num, 0.0)
+                if p > best_p:
+                    best_p = p
+                    best_cell = cell
+            if best_cell is not None:
+                assigned[num] = best_cell
+                used.add(best_cell)
+        return assigned
+
+
 def global_unique(
     prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: List[Tuple[int, int]]
 ) -> Dict[Tuple[int, int], Tuple[int, float]]:
     try:
-        from scipy.optimize import linear_sum_assignment
-
-        nums = sorted({n for d in prob_map.values() for n in d})
-        cost = np.full((len(blanks), len(nums)), 50.0)
-
-        for i, cell in enumerate(blanks):
-            for j, n in enumerate(nums):
-                prob = max(prob_map[cell].get(n, 1e-10), 1e-10)
-                cost[i, j] = -math.log(prob)
-
-        row, col = linear_sum_assignment(cost)
+        assignments = assign_unique_numbers(prob_map)
         return {
-            blanks[r]: (nums[c], prob_map[blanks[r]].get(nums[c], 0.0))
-            for r, c in zip(row, col)
+            cell: (num, prob_map[cell].get(num, 0.0))
+            for num, cell in assignments.items()
         }
     except Exception as e:
         logger.error(f"Global unique assignment failed: {e}")

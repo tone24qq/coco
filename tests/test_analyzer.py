@@ -59,3 +59,14 @@ def test_weight_prob_by_modules_variation(monkeypatch):
 
     weighted = analyzer.weight_prob_by_modules(grid, prob_map)
     assert weighted[(0, 1)][2] != prob_map[(0, 1)][2]
+
+
+def test_assign_unique_numbers_simple():
+    prob_map = {
+        (0, 0): {1: 0.8, 2: 0.2},
+        (0, 1): {1: 0.1, 2: 0.7, 3: 0.8},
+        (1, 0): {1: 0.1, 2: 0.1, 3: 0.2},
+    }
+    mapping = analyzer.assign_unique_numbers(prob_map)
+    assert set(mapping.keys()) == {1, 2, 3}
+    assert len(set(mapping.values())) == len(mapping)
