@@ -78,6 +78,12 @@ def parse_args() -> argparse.Namespace:
         default="png_bytes",
         help="Format for heatmap output",
     )
+    parser.add_argument(
+        "--result-top-k",
+        type=int,
+        default=None,
+        help="Number of predictions to display (env RESULT_TOP_K if omitted)",
+    )
     return parser.parse_args()
 
 
@@ -125,6 +131,7 @@ def main():
             focus_iter=args.focus_iter,
             top_n=args.top_n,
             epsilon=args.epsilon,
+            result_top_k=args.result_top_k,
         )
         ray.shutdown()
 

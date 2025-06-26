@@ -518,6 +518,7 @@ def predict_scratch_card(
     focus_iter: Optional[int] = None,
     top_n: int = 10,
     epsilon: float = 0.05,
+    result_top_k: Optional[int] = None,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -540,6 +541,17 @@ def predict_scratch_card(
 
     phase1 = global_iter if global_iter is not None else iterations or 5000
     phase2 = focus_iter if focus_iter is not None else 1000
+    top_k = (
+        result_top_k
+        if result_top_k is not None
+        else int(os.getenv("RESULT_TOP_K", "3"))
+    )
+
+    def _trim(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if top_k <= 0 or top_k >= len(items):
+            return items
+        return items[:top_k]
+
     logger.info(
         "Two-phase simulation | phase1=%d, phase2=%d, top_n=%d, epsilon=%.2f",
         phase1,
@@ -584,7 +596,7 @@ def predict_scratch_card(
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
-        for pred in rank[:3]:
+        for pred in _trim(rank):
             reasons = []
             scores = [
                 (mod, module_scores[mod][pred["row"], pred["col"]], desc)
@@ -605,7 +617,7 @@ def predict_scratch_card(
         return {
             "mode": "target",
             "target": target_num,
-            "predictions": rank[:3],
+            "predictions": _trim(rank),
             "full_probabilities": prob_map,
         }
 
@@ -653,7 +665,7 @@ def predict_scratch_card(
             mode = "mcts_unique"
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
-        for pred in preds[:3]:
+        for pred in _trim(preds):
             reasons = []
             scores = [
                 (mod, module_scores[mod][pred["row"], pred["col"]], desc)
@@ -672,7 +684,11 @@ def predict_scratch_card(
             }
 
         preds.sort(key=lambda x: x["probability"], reverse=True)
-        return {"mode": mode, "predictions": preds[:3], "full_probabilities": prob_map}
+        return {
+            "mode": mode,
+            "predictions": _trim(preds),
+            "full_probabilities": prob_map,
+        }
 
     preds = []
     for (r, c), dist in prob_map.items():
@@ -688,7 +704,7 @@ def predict_scratch_card(
         )
 
     module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
-    for pred in preds[:3]:
+    for pred in _trim(preds):
         reasons = []
         scores = [
             (mod, module_scores[mod][pred["row"], pred["col"]], desc)
@@ -705,9 +721,14 @@ def predict_scratch_card(
         }
 
     preds.sort(
-        key=lambda x: x["probability"][0] if x["probability"] else 0, reverse=True
+        key=lambda x: x["probability"][0] if x["probability"] else 0,
+        reverse=True,
     )
-    return {"mode": "top3", "predictions": preds[:3], "full_probabilities": prob_map}
+    return {
+        "mode": "top3",
+        "predictions": _trim(preds),
+        "full_probabilities": prob_map,
+    }
 
 
 def process_grid(grid):

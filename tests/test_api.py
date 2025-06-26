@@ -51,3 +51,14 @@ def test_heatmap_endpoint_raw(client):
     assert resp.status_code == 200
     assert body["heatmap"] is None
     assert isinstance(body["prob_map"], list)
+
+
+def test_result_top_k(client):
+    grid = [[-1, -1], [-1, -1]]
+    resp = client.post(
+        "/predict",
+        json={"grid": grid, "result_top_k": 2},
+    )
+    body = resp.json()
+    assert resp.status_code == 200
+    assert len(body["predictions"]) == 2
