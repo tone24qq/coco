@@ -11,6 +11,7 @@ import numpy as np
 import xxhash
 from joblib import Parallel, delayed
 
+import brain
 # fmt: off
 from brain import (AGG_WEIGHTS, REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
                    EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
@@ -78,23 +79,15 @@ def adjust_weights_based_on_history(
 
 
 def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
-    """Dynamically select modules based on grid characteristics."""
+    """Select up to ``CORE_LIMIT`` modules based on weights and scores."""
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
         mods = list(REGISTERED_MODULES_BRAIN)
     else:
-        base_modules = [
-            "EXT_Q1_ProximityEntropy_Vec",
-            "EXT_Q2_PotentialPath_Vec",
-            "EXT_Q5_GlobalEntropy_Vec",
-            "EXT_Q6_LineBridge_Vec",
-            "EXT_Q7_VariancePrior_Vec",
-        ]
+        base_modules = brain.get_core_modules()
         scores = {
-            mod: np.mean(get_module_score(mod, grid, target=target))
-            for mod in REGISTERED_MODULES_BRAIN
+            m: np.mean(get_module_score(m, grid, target=target)) for m in base_modules
         }
-        top_modules = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:2]
-        mods = base_modules + [m for m in top_modules if m not in base_modules]
+        mods = sorted(scores, key=scores.get, reverse=True)
 
     if "EXT_Q12_ArithmeticProgression_Vec" not in mods:
         mods.append("EXT_Q12_ArithmeticProgression_Vec")

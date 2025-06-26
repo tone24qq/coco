@@ -991,6 +991,23 @@ def _load_weights() -> Dict[str, float]:
 AGG_WEIGHTS = _load_weights()
 
 
+def get_core_modules(limit: int | None = None) -> list[str]:
+    """Return top-N modules ranked by weight.
+
+    The limit defaults to the ``CORE_LIMIT`` environment variable (8) and is
+    clamped to the range 5–10.
+    """
+    try:
+        limit_env = int(os.getenv("CORE_LIMIT", "8"))
+    except ValueError:  # FIXME invalid env value
+        limit_env = 8
+    if limit is None:
+        limit = limit_env
+    limit = max(5, min(10, limit))
+    sorted_mods = sorted(AGG_WEIGHTS.items(), key=lambda kv: kv[1], reverse=True)
+    return [m for m, _ in sorted_mods[:limit]]
+
+
 # ----------------------------------------------------------------------
 # Module execution
 # ----------------------------------------------------------------------

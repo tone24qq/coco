@@ -1,3 +1,4 @@
+# isort: skip_file
 import base64
 
 import numpy as np
