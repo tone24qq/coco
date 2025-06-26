@@ -23,6 +23,7 @@ from analyzer import (
 # isort: on
 # fmt: on
 
+# —— Logging setup —————————————————————————————————————————————————————————————
 log_handlers = [
     logging.StreamHandler(sys.stdout),
     RotatingFileHandler(
@@ -36,14 +37,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# App
+# —— FastAPI app & CORS —————————————————————————————————————————————————————————
 app = FastAPI(
     title="Scratch Card Prediction API",
     version="1.0.0",
     description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
 )
-
-# CORS for frontend/API access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,7 +51,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ==== Schemas ====
+# ==== Schemas ==============================================================
 
 
 class GridRequest(BaseModel):
@@ -92,12 +91,25 @@ class HeatmapResponse(BaseModel):
     heatmap: Optional[str] = None
 
 
-# ==== Routes ====
+# ==== Startup & ENV parsing =================================================
 
 startup_time = datetime.utcnow().isoformat() + "Z"
-os.environ.setdefault("ITER", "5000")
-os.environ.setdefault("TOPK_RERANK", "120")
+
+# 默认环境变量（未指定时回落到这些值）
+os.environ.setdefault("PHASE1_ITERATIONS", "5000")
+os.environ.setdefault("PHASE2_ITERATIONS", "1000")
+os.environ.setdefault("PHASE2_TOP_N", "10")
+os.environ.setdefault("PHASE2_EPSILON", "0.05")
 os.environ.setdefault("LOG_LEVEL", "INFO")
+
+# 解析 ENV 到 Python 常量
+PHASE1_ITER  = int(os.getenv("PHASE1_ITERATIONS"))
+PHASE2_ITER  = int(os.getenv("PHASE2_ITERATIONS"))
+PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
+PHASE2_EPS   = float(os.getenv("PHASE2_EPSILON"))
+
+
+# ==== Routes ==============================================================
 
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
@@ -123,14 +135,12 @@ async def ping() -> Dict[str, str]:
 )
 async def predict(req: GridRequest):
     try:
-        # 格式檢查
+        # — 格式檢查 —
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
-
         rows, cols = len(req.grid), len(req.grid[0])
         if rows < 2 or cols < 2:
             raise ValueError("Grid must be at least 2x2")
-
         max_val = rows * cols
         known_vals = [v for row in req.grid for v in row if v != -1]
         if len(known_vals) != len(set(known_vals)):
@@ -138,46 +148,49 @@ async def predict(req: GridRequest):
         if any(v < 1 or v > max_val for v in known_vals):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
 
+        # — 日志记录实际使用的两阶段参数 —
         logger.info(
-            "Predict API called | size=%dx%d | target=%s | iterations=%d",
+            "Predict API called | size=%dx%d | target=%s | phase1=%d | phase2=%d | top_n=%d | eps=%.3f",
             rows,
             cols,
             str(req.target_num),
-            req.iterations,
+            req.iterations or PHASE1_ITER,
+            req.focus_iter or PHASE2_ITER,
+            req.top_n      or PHASE2_TOP_N,
+            req.epsilon    or PHASE2_EPS,
         )
 
-        # 推理邏輯
+        # — 两阶段推理逻辑（优先用请求内值，否则用 ENV） —
+        phase1 = req.iterations or PHASE1_ITER
+        phase2 = req.focus_iter or PHASE2_ITER
+        top_n  = req.top_n      or PHASE2_TOP_N
+        eps    = req.epsilon    or PHASE2_EPS
+
         result = predict_scratch_card(
             grid=req.grid,
             target_num=req.target_num,
-            iterations=req.iterations,
+            iterations=phase1,
             global_iter=req.global_iter,
-            focus_iter=req.focus_iter,
-            top_n=req.top_n,
-            epsilon=req.epsilon,
+            focus_iter=phase2,
+            top_n=top_n,
+            epsilon=eps,
         )
 
+        # — 整理 full_probabilities 为 JSON-safe 格式 —
         predictions = result.get("predictions", [])
         full_probs = result.get("full_probabilities", {})
-
-        # 整理 full_probabilities: 序列化 key、百分比
-        clean_probs = {}
+        clean_probs: Dict[str, Dict[str, float]] = {}
         for loc_key, prob_map in full_probs.items():
+            # loc_key 可能是 (r,c) tuple 或 str
             try:
                 r, c = loc_key
                 key_str = f"{int(r)},{int(c)}"
             except Exception:
                 key_str = str(loc_key)
-            inner = {}
+            inner: Dict[str, float] = {}
             for num, prob in prob_map.items():
-                try:
-                    num_key = str(int(float(num)))
-                except Exception:
-                    num_key = str(num)
-                try:
-                    inner[num_key] = float(prob) * 100
-                except Exception:
-                    inner[num_key] = 0.0
+                num_key = str(int(float(num))) if isinstance(num, (int, float, str)) else str(num)
+                inner[num_key] = float(prob) * 100
             clean_probs[key_str] = inner
 
         response_payload = {
@@ -185,12 +198,8 @@ async def predict(req: GridRequest):
             "full_probabilities": clean_probs,
         }
 
-        # ✅ 保險轉換 JSON-safe 格式，避免卡住
-        clean_json = json.loads(
-            json.dumps(response_payload, default=lambda x: float(x))
-        )
+        clean_json = json.loads(json.dumps(response_payload, default=lambda x: float(x)))
         logger.info("✅ Final response payload: %s", clean_json)
-
         return JSONResponse(content=clean_json, status_code=200)
 
     except Exception as exc:
@@ -212,10 +221,8 @@ async def heatmap(req: HeatmapRequest):
         if isinstance(prob, dict):
             prob_map = {str(int(k)): v.tolist() for k, v in prob.items()}
             return {"prob_map": prob_map, "heatmap": None}
-
         if req.output_format.lower() == "raw":
             return {"prob_map": prob.tolist(), "heatmap": None}
-
         rendered = render_heatmap(prob, req.output_format)
         if isinstance(rendered, bytes):
             b64 = base64.b64encode(rendered).decode("ascii")
@@ -237,7 +244,9 @@ async def shutdown():
     logger.info("API shutting down to save resources.")
 
 
-# === Launch ===
+# ==== Launch ===============================================================
+
+
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API server on port %d", port)
