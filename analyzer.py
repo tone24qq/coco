@@ -518,6 +518,7 @@ def predict_scratch_card(
     focus_iter: Optional[int] = None,
     top_n: int = 10,
     epsilon: float = 0.05,
+    result_top_k: Optional[int] = None,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -540,16 +541,24 @@ def predict_scratch_card(
 
     phase1 = global_iter if global_iter is not None else iterations or 5000
     phase2 = focus_iter if focus_iter is not None else 1000
+    top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+
+    def _trim(items: List[Any]) -> List[Any]:
+        if top_k is None or top_k <= 0 or top_k >= len(items):
+            return items
+        return items[:top_k]
+
     logger.info(
-        "Two-phase simulation | phase1=%d, phase2=%d, top_n=%d, epsilon=%.2f",
+        "Two-phase | phase1=%d, phase2=%d, top_k=%d, top_n=%d, eps=%.2f",
         phase1,
         phase2,
+        top_k,
         top_n,
         epsilon,
     )
 
     prob_map = simulate_full_board(
-        grid_np, target_num, n_iter=phase1, rng=np.random.default_rng()
+        grid_np, None, n_iter=phase1, rng=np.random.default_rng()
     )
 
     # select top-n cells for refinement
@@ -563,13 +572,17 @@ def predict_scratch_card(
     if phase2 > 0:
         refine_map = simulate_full_board(
             grid_np,
-            target_num,
+            None,
             n_iter=phase2,
             rng=np.random.default_rng(),
             focus_cells=focus_cells,
             epsilon=epsilon,
         )
         prob_map.update(refine_map)
+
+    if target_num is not None:
+        for key, p in prob_map.items():
+            prob_map[key] = {target_num: p.get(target_num, 0.0)}
 
     if target_num is not None:
         rank = [
@@ -605,11 +618,11 @@ def predict_scratch_card(
         return {
             "mode": "target",
             "target": target_num,
-            "predictions": rank[:3],
+            "predictions": _trim(rank),
             "full_probabilities": prob_map,
         }
 
-    if unique:
+    if unique and target_num is None:
         assign = global_unique(prob_map, blanks)
         best_grid = mcts(grid_np, iterations=1000)
 
@@ -622,8 +635,8 @@ def predict_scratch_card(
         # 1️⃣ 先找整張表目前“最高”的機率 (baseline)
         old_conf = max(
             p
-            for _, cell_probs in prob_map.items()  # 逐格取出內部 dict
-            for p in cell_probs.values()  # 逐個號碼機率
+            for _, cell_probs in prob_map.items()
+            for p in cell_probs.values()  # 逐格取出內部 dict  # 逐個號碼機率
         )
 
         # 2️⃣ 嘗試把每個候選格 (r,c) 掛回去後，重新加權 → 看能否誕生更高機率
@@ -672,7 +685,11 @@ def predict_scratch_card(
             }
 
         preds.sort(key=lambda x: x["probability"], reverse=True)
-        return {"mode": mode, "predictions": preds[:3], "full_probabilities": prob_map}
+        return {
+            "mode": mode,
+            "predictions": _trim(preds),
+            "full_probabilities": prob_map,
+        }
 
     preds = []
     for (r, c), dist in prob_map.items():
@@ -707,7 +724,11 @@ def predict_scratch_card(
     preds.sort(
         key=lambda x: x["probability"][0] if x["probability"] else 0, reverse=True
     )
-    return {"mode": "top3", "predictions": preds[:3], "full_probabilities": prob_map}
+    return {
+        "mode": "top3",
+        "predictions": _trim(preds),
+        "full_probabilities": prob_map,
+    }
 
 
 def process_grid(grid):

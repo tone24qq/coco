@@ -62,6 +62,7 @@ class GridRequest(BaseModel):
     focus_iter: Optional[int] = None
     top_n: Optional[int] = None
     epsilon: Optional[float] = None
+    result_top_k: Optional[int] = None
 
 
 class Prediction(BaseModel):
@@ -103,10 +104,10 @@ os.environ.setdefault("PHASE2_EPSILON", "0.05")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
 # 解析 ENV 到 Python 常量
-PHASE1_ITER  = int(os.getenv("PHASE1_ITERATIONS"))
-PHASE2_ITER  = int(os.getenv("PHASE2_ITERATIONS"))
+PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
+PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
 PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
-PHASE2_EPS   = float(os.getenv("PHASE2_EPSILON"))
+PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
 
 
 # ==== Routes ==============================================================
@@ -151,16 +152,18 @@ async def predict(req: GridRequest):
         # — 日志记录实际使用的两阶段参数 —
         phase1 = req.iterations or PHASE1_ITER
         phase2 = req.focus_iter or PHASE2_ITER
-        top_n  = req.top_n      or PHASE2_TOP_N
-        eps    = req.epsilon    or PHASE2_EPS
+        top_n = req.top_n or PHASE2_TOP_N
+        eps = req.epsilon or PHASE2_EPS
+        top_k = req.result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
 
         logger.info(
-            "Predict API called | size=%dx%d | target=%s | phase1=%d | phase2=%d | top_n=%d | eps=%.3f",
+            "Predict API called | size=%dx%d | target=%s | phase1=%d | phase2=%d | top_k=%d | top_n=%d | eps=%.3f",
             rows,
             cols,
             str(req.target_num),
             phase1,
             phase2,
+            top_k,
             top_n,
             eps,
         )
@@ -174,6 +177,7 @@ async def predict(req: GridRequest):
             focus_iter=phase2,
             top_n=top_n,
             epsilon=eps,
+            result_top_k=req.result_top_k,
         )
 
         # — 整理 full_probabilities 为 JSON-safe 格式 —
@@ -188,7 +192,11 @@ async def predict(req: GridRequest):
                 key_str = str(loc_key)
             inner: Dict[str, float] = {}
             for num, prob in prob_map.items():
-                num_key = str(int(float(num))) if isinstance(num, (int, float, str)) else str(num)
+                num_key = (
+                    str(int(float(num)))
+                    if isinstance(num, (int, float, str))
+                    else str(num)
+                )
                 inner[num_key] = float(prob) * 100
             clean_probs[key_str] = inner
 
@@ -196,7 +204,9 @@ async def predict(req: GridRequest):
             "predictions": predictions,
             "full_probabilities": clean_probs,
         }
-        clean_json = json.loads(json.dumps(response_payload, default=lambda x: float(x)))
+        clean_json = json.loads(
+            json.dumps(response_payload, default=lambda x: float(x))
+        )
         logger.info("✅ Final response payload: %s", clean_json)
         return JSONResponse(content=clean_json, status_code=200)
 

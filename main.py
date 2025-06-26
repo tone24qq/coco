@@ -125,6 +125,7 @@ def main():
             focus_iter=args.focus_iter,
             top_n=args.top_n,
             epsilon=args.epsilon,
+            result_top_k=None,
         )
         ray.shutdown()
 
