@@ -57,11 +57,11 @@ app.add_middleware(
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
-    iterations: Optional[int] = 5000
+    iterations: Optional[int] = None
     global_iter: Optional[int] = None
     focus_iter: Optional[int] = None
-    top_n: int = 10
-    epsilon: float = 0.05
+    top_n: Optional[int] = None
+    epsilon: Optional[float] = None
 
 
 class Prediction(BaseModel):
@@ -149,23 +149,23 @@ async def predict(req: GridRequest):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
 
         # — 日志记录实际使用的两阶段参数 —
-        logger.info(
-            "Predict API called | size=%dx%d | target=%s | phase1=%d | phase2=%d | top_n=%d | eps=%.3f",
-            rows,
-            cols,
-            str(req.target_num),
-            req.iterations or PHASE1_ITER,
-            req.focus_iter or PHASE2_ITER,
-            req.top_n      or PHASE2_TOP_N,
-            req.epsilon    or PHASE2_EPS,
-        )
-
-        # — 两阶段推理逻辑（优先用请求内值，否则用 ENV） —
         phase1 = req.iterations or PHASE1_ITER
         phase2 = req.focus_iter or PHASE2_ITER
         top_n  = req.top_n      or PHASE2_TOP_N
         eps    = req.epsilon    or PHASE2_EPS
 
+        logger.info(
+            "Predict API called | size=%dx%d | target=%s | phase1=%d | phase2=%d | top_n=%d | eps=%.3f",
+            rows,
+            cols,
+            str(req.target_num),
+            phase1,
+            phase2,
+            top_n,
+            eps,
+        )
+
+        # — 两阶段推理逻辑 —
         result = predict_scratch_card(
             grid=req.grid,
             target_num=req.target_num,
@@ -181,7 +181,6 @@ async def predict(req: GridRequest):
         full_probs = result.get("full_probabilities", {})
         clean_probs: Dict[str, Dict[str, float]] = {}
         for loc_key, prob_map in full_probs.items():
-            # loc_key 可能是 (r,c) tuple 或 str
             try:
                 r, c = loc_key
                 key_str = f"{int(r)},{int(c)}"
@@ -197,7 +196,6 @@ async def predict(req: GridRequest):
             "predictions": predictions,
             "full_probabilities": clean_probs,
         }
-
         clean_json = json.loads(json.dumps(response_payload, default=lambda x: float(x)))
         logger.info("✅ Final response payload: %s", clean_json)
         return JSONResponse(content=clean_json, status_code=200)
