@@ -78,6 +78,20 @@ def adjust_weights_based_on_history(
     return np.array([history.get(f, 0.0) / total for f in formulas])
 
 
+def fill_unknowns_randomly(grid: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Fill -1 cells with remaining numbers uniformly at random."""
+    g = np.asarray(grid, dtype=int).copy()
+    rows, cols = g.shape
+    blanks = np.argwhere(g == -1)
+    if blanks.size == 0:
+        return g
+    all_nums = np.arange(1, rows * cols + 1, dtype=int)
+    remain = np.setdiff1d(all_nums, g[g != -1], assume_unique=True)
+    rng.shuffle(remain)
+    g[blanks[:, 0], blanks[:, 1]] = remain[: blanks.shape[0]]
+    return g
+
+
 def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
     """Select up to ``CORE_LIMIT`` modules based on weights and scores."""
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
@@ -179,139 +193,48 @@ def simulate_full_board(
     focus_cells: Optional[List[Tuple[int, int]]] = None,
     epsilon: float = 0.0,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """Simulate full boards with optional focus and ε-exploration."""
+    """Monte-Carlo simulation counting target number occurrences."""
+    logger.info(
+        "simulate_full_board called: target_num=%s, n_iter=%d", target_num, n_iter
+    )
+
     if rng is None:
         rng = np.random.default_rng()
 
-    g = np.asarray(grid, dtype=np.int16)
+    g = np.asarray(grid, dtype=int)
     rows, cols = g.shape
     blanks = np.argwhere(g == -1)
-    known = np.argwhere(g != -1)
-    known_vals = g[g != -1]
-    legal_all = analyzer_utils.get_legal_values_for_placement(g)
+    if blanks.size == 0:
+        return {}
 
-    # Enhanced module selection for importance sampling
-    modules = select_modules(g, target=target_num)
-    module_scores = np.mean(
-        [get_module_score(mod, g, target=target_num) for mod in modules],
-        axis=0,
-    )
-    importance_weights = np.where(g == -1, module_scores, 0).flatten()
-    importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
+    if target_num is None:
+        counts: Dict[Tuple[int, int], Dict[int, int]] = {
+            tuple(b): defaultdict(int) for b in blanks
+        }
+    else:
+        count_map = np.zeros((rows, cols), dtype=int)
 
-    # Dynamic formula weights based on grid pattern
-    history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}
-    if np.mean(module_scores) > 0.6:
-        history["tail_cluster"] += 0.1
-        history["random_entropy"] -= 0.05
+    for _ in range(n_iter):
+        filled = fill_unknowns_randomly(g, rng)
+        if target_num is None:
+            for r, c in blanks:
+                num = int(filled[r, c])
+                counts[(r, c)][num] += 1
+        else:
+            mask = filled == target_num
+            count_map += mask.astype(int)
 
-    formulas = ("random_entropy", "shuffle", "tail_cluster")
-    weights = adjust_weights_based_on_history(history, formulas)
-    remain = n_iter
-    counts = defaultdict(lambda: defaultdict(int))
-    focus_set = {tuple(fc) for fc in focus_cells} if focus_cells else None
-    other_cells = (
-        [tuple(b) for b in blanks if tuple(b) not in focus_set] if focus_set else []
-    )
-
-    while remain > 0:
-        batch = min(4000, remain)
-        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights, g)
-
-        if known.size:
-            mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-            boards = boards[mask]
-            if len(boards) == 0:
-                batch = min(batch * 2, 8000)
-                boards = generate_full_boards(
-                    rows, cols, batch, rng, formulas, weights, g
-                )
-                mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
-                boards = boards[mask]
-
-        if len(boards) > 0:
-            for board in boards:
-                mods_fast = [
-                    "EXT_Q1_ProximityEntropy_Vec",
-                    "EXT_Q2_PotentialPath_Vec",
-                    "EXT_Q5_GlobalEntropy_Vec",
-                    "EXT_Q6_LineBridge_Vec",
-                    "EXT_Q7_VariancePrior_Vec",
-                ]
-                stack_fast = np.stack(
-                    [get_module_score(m, board) for m in mods_fast], axis=0
-                )
-                w_fast = np.array([AGG_WEIGHTS[m] for m in mods_fast])
-                fast = aggregate_scores(stack_fast, w_fast, mods_fast)
-                tau_local = float(os.getenv("TAU_SOFTMAX", "1.0"))
-                soft_fast = np.exp(fast / tau_local)
-                soft_fast /= soft_fast.sum() + 1e-10
-                fast = soft_fast
-                cells_iter = blanks if focus_set is None else focus_set
-                if focus_set is not None and other_cells and rng.random() < epsilon:
-                    cells_iter = list(focus_set) + [
-                        other_cells[int(rng.integers(len(other_cells)))]
-                    ]
-                for r, c in cells_iter:
-                    idx = r * cols + c
-                    if rng.random() < importance_weights[idx]:
-                        num = board[r, c]
-                        counts[(r, c)][num] += fast[r, c]
-                        if target_num is not None and num == target_num:
-                            counts[(r, c)][num] += 2 * fast[r, c]
-        remain -= batch
-
-    prob_map = {}
-    for r, c in [tuple(b) for b in blanks]:
-        total = sum(counts[(r, c)].values()) or 1e-10
-        probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
-        prob_map[(r, c)] = probs
-
-    # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
-    tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
-    mods_rerank = [
-        "EXT_Q1_ProximityEntropy_Vec",
-        "EXT_Q2_PotentialPath_Vec",
-        "EXT_Q3_DiscontinuitySym_Vec",
-        "EXT_Q4_ControlComposite_Vec",
-        "EXT_Q5_GlobalEntropy_Vec",
-        "EXT_Q6_LineBridge_Vec",
-        "EXT_Q7_VariancePrior_Vec",
-    ]
-    w = np.array([AGG_WEIGHTS[m] for m in mods_rerank])
-    stack_rerank = np.stack(
-        [get_module_score(m, g, target=target_num) for m in mods_rerank], axis=0
-    )
-    final_heat = aggregate_scores(stack_rerank, w, mods_rerank)
-    soft_heat = np.exp(final_heat / tau)
-    soft_heat /= soft_heat.sum() + 1e-10
-    topk = int(os.getenv("TOPK_RERANK", "100"))
-    if topk < 0:  # -1 表示 rows × cols
-        topk = rows * cols
-
-    candidates = [
-        (r, c, max(probs.values()), num)
-        for (r, c), probs in prob_map.items()
-        for num in probs
-    ]
-    top_k = heapq.nlargest(topk, candidates, key=lambda x: x[2])
-    final_prob_map = {}
-    for r, c, fast_score, num in top_k:
-        final_score = float(soft_heat[r, c])
-        if (r, c) not in final_prob_map:
-            final_prob_map[(r, c)] = {}
-        final_prob_map[(r, c)][num] = final_score
-
-    # 來自 probmap_key_patch_v2.txt
-    prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
-
-    # --- 保證所有格都有 entry ------------------------------
-    if os.getenv("FORCE_FULL_SCAN", "0") == "1":
-        for r in range(rows):
-            for c in range(cols):
-                if (r, c) not in prob_map:
-                    prob_map[(r, c)] = {n: 0.0 for n in range(100)}
-    # --------------------------------------------------------
+    prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+    if target_num is None:
+        for r, c in blanks:
+            cell_counts = counts[(r, c)]
+            total = sum(cell_counts.values()) or 1
+            prob_map[(int(r), int(c))] = {
+                int(n): cell_counts[n] / float(total) for n in cell_counts
+            }
+    else:
+        for r, c in blanks:
+            prob_map[(int(r), int(c))] = {target_num: count_map[r, c] / float(n_iter)}
 
     return prob_map
 
@@ -565,9 +488,8 @@ def predict_scratch_card(
         epsilon,
     )
 
-    prob_map = simulate_full_board(
-        grid_np, None, n_iter=phase1, rng=np.random.default_rng()
-    )
+    rng = np.random.default_rng()
+    prob_map = simulate_full_board(grid_np, target_num, n_iter=phase1, rng=rng)
 
     # select top-n cells for refinement
     ranked = sorted(
@@ -580,7 +502,7 @@ def predict_scratch_card(
     if phase2 > 0:
         refine_map = simulate_full_board(
             grid_np,
-            None,
+            target_num,
             n_iter=phase2,
             rng=np.random.default_rng(),
             focus_cells=focus_cells,
@@ -605,6 +527,18 @@ def predict_scratch_card(
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+        logger.info(
+            "module_scores: %s",
+            {m: float(np.mean(sc)) for m, sc in module_scores.items()},
+        )
+        logger.info(
+            "prob_map top3: %s",
+            sorted(
+                prob_map.items(),
+                key=lambda x: list(x[1].values())[0] if x[1] else 0,
+                reverse=True,
+            )[:3],
+        )
         for pred in rank[:3]:
             reasons = []
             scores = [
@@ -674,6 +608,18 @@ def predict_scratch_card(
             mode = "mcts_unique"
 
         module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+        logger.info(
+            "module_scores: %s",
+            {m: float(np.mean(sc)) for m, sc in module_scores.items()},
+        )
+        logger.info(
+            "prob_map top3: %s",
+            sorted(
+                prob_map.items(),
+                key=lambda x: list(x[1].values())[0] if x[1] else 0,
+                reverse=True,
+            )[:3],
+        )
         for pred in preds[:3]:
             reasons = []
             scores = [
