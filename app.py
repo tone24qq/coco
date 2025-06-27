@@ -49,7 +49,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
+@app.on_event("startup")
+async def on_startup():
+    logger.info("📂 on_startup: starting Excel cleaning")
+    subprocess.run([...], check=True)
+    logger.info("📂 on_startup: cleaning script finished")
+    # 加载 priors 之后再 log
+    logger.info("📂 on_startup: priors loaded: %s", list(priors.keys()))
 
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
