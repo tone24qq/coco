@@ -1,9 +1,0 @@
-numpy>=2.0.0
-scipy>=1.14.0
-xxhash>=3.5.0
-joblib>=1.4.2
-ray>=2.47.1
-fastapi>=0.115.0
-uvicorn>=0.30.6
-pydantic>=2.8.2
-pytest
