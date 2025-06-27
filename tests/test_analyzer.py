@@ -33,6 +33,15 @@ def test_simulate_focus_cells(make_grid):
     assert isinstance(probs, dict)
 
 
+def test_simulate_target_mode(make_grid):
+    grid = np.array(make_grid(3, 3))
+    result = simulate_full_board(grid, 5, n_iter=10)
+    assert isinstance(result, dict)
+    for cell_probs in result.values():
+        for p in cell_probs.values():
+            assert 0.0 <= p <= 1.0
+
+
 def test_weight_prob_by_modules_variation(monkeypatch):
     grid = np.array([[1, -1], [3, -1]])
     prob_map = {(0, 1): {2: 0.6}, (1, 1): {4: 0.4}}

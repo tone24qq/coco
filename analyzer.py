@@ -137,6 +137,21 @@ def _cached_board(
     return board
 
 
+def fill_unknowns_randomly(grid: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Fill -1 cells in ``grid`` with a random permutation of remaining numbers."""
+    g = np.asarray(grid, dtype=int).copy()
+    blanks = np.argwhere(g == -1)
+    if blanks.size == 0:
+        return g
+
+    rows, cols = g.shape
+    all_vals = np.arange(1, rows * cols + 1)
+    remain = np.setdiff1d(all_vals, g[g != -1], assume_unique=True)
+    rng.shuffle(remain)
+    g[blanks[:, 0], blanks[:, 1]] = remain[: blanks.shape[0]]
+    return g
+
+
 def generate_full_boards(
     rows: int,
     cols: int,
@@ -180,6 +195,11 @@ def simulate_full_board(
     epsilon: float = 0.0,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with optional focus and ε-exploration."""
+    logger.info(
+        "simulate_full_board called: target_num=%s, n_iter=%d",
+        str(target_num),
+        n_iter,
+    )
     if rng is None:
         rng = np.random.default_rng()
 
@@ -189,6 +209,20 @@ def simulate_full_board(
     known = np.argwhere(g != -1)
     known_vals = g[g != -1]
     legal_all = analyzer_utils.get_legal_values_for_placement(g)
+
+    if target_num is not None:
+        count_map = np.zeros((rows, cols), dtype=int)
+        for _ in range(max(1, n_iter)):
+            filled = fill_unknowns_randomly(g, rng)
+            mask = filled == target_num
+            count_map += mask.astype(int)
+
+        prob_map = {}
+        for r, c in blanks:
+            prob_map[(int(r), int(c))] = {
+                target_num: float(count_map[r, c]) / float(max(1, n_iter))
+            }
+        return prob_map
 
     # Enhanced module selection for importance sampling
     modules = select_modules(g, target=target_num)
@@ -566,7 +600,10 @@ def predict_scratch_card(
     )
 
     prob_map = simulate_full_board(
-        grid_np, None, n_iter=phase1, rng=np.random.default_rng()
+        grid_np,
+        target_num,
+        n_iter=phase1,
+        rng=np.random.default_rng(),
     )
 
     # select top-n cells for refinement
@@ -580,13 +617,25 @@ def predict_scratch_card(
     if phase2 > 0:
         refine_map = simulate_full_board(
             grid_np,
-            None,
+            target_num,
             n_iter=phase2,
             rng=np.random.default_rng(),
             focus_cells=focus_cells,
             epsilon=epsilon,
         )
         prob_map.update(refine_map)
+
+    module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+    logger.info(
+        "module_scores: %s",
+        {m: float(np.mean(v)) for m, v in module_scores.items()},
+    )
+    top3 = sorted(
+        ((k, max(v.values())) for k, v in prob_map.items()),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:3]
+    logger.info("prob_map top3: %s", top3)
 
     if target_num is not None:
         for key, p in prob_map.items():
