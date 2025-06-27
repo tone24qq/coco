@@ -77,7 +77,9 @@ class PredictResponse(BaseModel):
 
 class HeatmapRequest(BaseModel):
     grid: List[List[int]]
+    # 原測試傳的是 target_num，我們把它和 k 並列
     k: Optional[int] = None
+    target_num: Optional[int] = None
     iterations: int = 1000
     seed: int = 0
     output_format: str = "base64"
@@ -101,12 +103,12 @@ PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
 PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
 PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
 
-# ==== Helper for sanitizing floats ===========================================
+# ==== Helpers: sanitize floats ===============================================
 
 def safe_float(x: Any) -> float:
     """
-    把任何 float / numpy.float / NaN / Inf 轉成合法 Python float
-    NaN、+Inf、-Inf 都會變成 0.0
+    把任何 float / numpy.float / NaN / Inf 變成合法 Python float
+    (NaN、+Inf、-Inf 均轉成 0.0)
     """
     try:
         v = float(x)
@@ -118,7 +120,7 @@ def safe_float(x: Any) -> float:
 
 def sanitize_floats(obj: Any) -> Any:
     """
-    遞迴地把 dict/list 裡所有 float 都跑 safe_float
+    遞迴地把 dict/list 裡所有 float 都套 safe_float
     """
     if isinstance(obj, dict):
         return {k: sanitize_floats(v) for k, v in obj.items()}
@@ -126,7 +128,6 @@ def sanitize_floats(obj: Any) -> Any:
         return [sanitize_floats(v) for v in obj]
     if isinstance(obj, float):
         return safe_float(obj)
-    # int, str, etc. 都原樣回傳
     return obj
 
 # ==== Routes ==============================================================
@@ -207,11 +208,7 @@ async def predict(req: GridRequest):
                 key_str = str(loc_key)
             inner: Dict[str, float] = {}
             for num, prob in prob_map.items():
-                num_key = (
-                    str(int(float(num)))
-                    if isinstance(num, (int, float, str))
-                    else str(num)
-                )
+                num_key = str(int(float(num))) if isinstance(num, (int, float, str)) else str(num)
                 inner[num_key] = safe_float(prob) * 100
             clean_probs[key_str] = inner
 
@@ -223,7 +220,6 @@ async def predict(req: GridRequest):
         # — 全面 sanitize predictions & full_probabilities —
         safe_payload = sanitize_floats(response_payload)
 
-        # — 序列化並回傳 —
         logger.info("✅ Final response payload: %s", safe_payload)
         return JSONResponse(content=safe_payload, status_code=200)
 
@@ -241,18 +237,25 @@ async def predict(req: GridRequest):
 )
 async def heatmap(req: HeatmapRequest):
     try:
-        prob = probability_heatmap(req.grid, req.k, req.iterations, seed=req.seed)
+        # 兼容測試傳入的 target_num
+        effective_k = req.k if req.k is not None else req.target_num
+
+        prob = probability_heatmap(req.grid, effective_k, req.iterations, seed=req.seed)
+
+        # 不管哪種分支，先組成一個 dict，再做 sanitize
         if isinstance(prob, dict):
-            prob_map = {str(int(k)): v.tolist() for k, v in prob.items()}
-            return {"prob_map": prob_map, "heatmap": None}
-        if req.output_format.lower() == "raw":
-            return {"prob_map": prob.tolist(), "heatmap": None}
-        rendered = render_heatmap(prob, req.output_format)
-        if isinstance(rendered, bytes):
-            b64 = base64.b64encode(rendered).decode("ascii")
+            pm = {str(int(k)): v.tolist() for k, v in prob.items()}
+            resp = {"prob_map": pm, "heatmap": None}
+        elif req.output_format.lower() == "raw":
+            resp = {"prob_map": prob.tolist(), "heatmap": None}
         else:
-            b64 = rendered
-        return {"prob_map": prob.tolist(), "heatmap": b64}
+            rendered = render_heatmap(prob, req.output_format)
+            b64 = base64.b64encode(rendered).decode("ascii") if isinstance(rendered, bytes) else rendered
+            resp = {"prob_map": prob.tolist(), "heatmap": b64}
+
+        safe_resp = sanitize_floats(resp)
+        return JSONResponse(content=safe_resp, status_code=200)
+
     except Exception as exc:
         logger.error("Heatmap generation failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -266,7 +269,6 @@ async def shutdown():
     logger.info("API shutting down to save resources.")
 
 # ==== Launch ===============================================================
-
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API server on port %d", port)
