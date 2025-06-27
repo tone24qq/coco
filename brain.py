@@ -765,6 +765,48 @@ def EXT_F7_Strong_Pattern_Vec(
 
 
 @batchable
+def EXT_M11_Mirror_Sequence_Vec(
+    grid: np.ndarray, request_id: Optional[str] = "N/A"
+) -> np.ndarray:
+    """Penalize sequential pairs on symmetric boards."""
+    rows, cols = grid.shape
+    max_val = rows * cols
+    penalty = np.zeros((rows, cols), dtype=float)
+
+    # Horizontal symmetry
+    for r in range(rows):
+        row = grid[r].astype(float)
+        rev = row[::-1]
+        diff_mean = np.mean(np.abs(row - rev))
+        sym_score = 1.0 - diff_mean / (max_val + 1e-9)
+        diffs = np.abs(np.diff(row))
+        pair = np.zeros(cols)
+        mask = diffs == 1
+        pair[:-1] += mask
+        pair[1:] += mask
+        penalty[r] += sym_score * pair
+
+    # Vertical symmetry
+    for c in range(cols):
+        col = grid[:, c].astype(float)
+        rev = col[::-1]
+        diff_mean = np.mean(np.abs(col - rev))
+        sym_score = 1.0 - diff_mean / (max_val + 1e-9)
+        diffs = np.abs(np.diff(col))
+        pair = np.zeros(rows)
+        mask = diffs == 1
+        pair[:-1] += mask
+        pair[1:] += mask
+        penalty[:, c] += sym_score * pair
+
+    if penalty.max(initial=0.0) > 0:
+        penalty /= penalty.max()
+    score = 1.0 - penalty
+    score = np.where(grid == -1, score, 0.0)
+    return score.astype(np.float32)
+
+
+@batchable
 def EXT_GM20_Skip_Pattern_Confidence_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A"
 ) -> np.ndarray:
@@ -918,6 +960,7 @@ mods = {
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
     "EXT_R3_Error_Correction_Vec": EXT_R3_Error_Correction_Vec,
     "EXT_F7_Strong_Pattern_Vec": EXT_F7_Strong_Pattern_Vec,
+    "EXT_M11_Mirror_Sequence_Vec": EXT_M11_Mirror_Sequence_Vec,
     "EXT_GM20_Skip_Pattern_Confidence_Vec": EXT_GM20_Skip_Pattern_Confidence_Vec,
     "EXT_Q1_ProximityEntropy_Vec": EXT_Q1_ProximityEntropy_Vec,
     "EXT_Q2_PotentialPath_Vec": EXT_Q2_PotentialPath_Vec,
@@ -949,6 +992,7 @@ RERANK_PHASE = [
     "EXT_Q7_VariancePrior_Vec",
     "EXT_Q9_MultiScaleEntropy_Vec",
     "EXT_Q10_DistPotential_Vec",
+    "EXT_M11_Mirror_Sequence_Vec",
 ]
 
 # Static weights for module aggregation
@@ -966,6 +1010,7 @@ AGG_WEIGHTS = {
     "EXT_Q11_GlobalDigitAffinity_Vec": 0.03,
     "EXT_Q12_ArithmeticProgression_Vec": 0.04,
     "EXT_Q13_GlobalConsistencySpectrum_Vec": 0.04,
+    "EXT_M11_Mirror_Sequence_Vec": 0.03,
 }
 
 

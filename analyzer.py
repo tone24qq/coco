@@ -98,6 +98,8 @@ def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
         and "EXT_Q13_GlobalConsistencySpectrum_Vec" not in mods
     ):
         mods.append("EXT_Q13_GlobalConsistencySpectrum_Vec")
+    if "EXT_M11_Mirror_Sequence_Vec" not in mods:
+        mods.append("EXT_M11_Mirror_Sequence_Vec")
     return mods
 
 
