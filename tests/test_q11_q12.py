@@ -33,5 +33,10 @@ def test_select_modules_includes_new():
     mods = analyzer.select_modules(grid, target=5)
     assert "EXT_Q11_GlobalDigitAffinity_Vec" in mods
     assert "EXT_Q12_ArithmeticProgression_Vec" in mods
+    assert "EXT_M12_RestoreOriginalValue_Vec" in mods
+    assert "EXT_Q14_TargetAffinity_Vec" in mods
+    assert "EXT_Q15_GlobalSpread_Vec" in mods
     mods2 = analyzer.select_modules(grid, target=None)
     assert "EXT_Q12_ArithmeticProgression_Vec" in mods2
+    assert "EXT_M12_RestoreOriginalValue_Vec" in mods2
+    assert "EXT_Q15_GlobalSpread_Vec" in mods2
