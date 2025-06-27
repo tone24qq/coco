@@ -77,7 +77,6 @@ class PredictResponse(BaseModel):
 
 class HeatmapRequest(BaseModel):
     grid: List[List[int]]
-    # 原測試傳的是 target_num，我們把它和 k 並列
     k: Optional[int] = None
     target_num: Optional[int] = None
     iterations: int = 1000
@@ -237,12 +236,18 @@ async def predict(req: GridRequest):
 )
 async def heatmap(req: HeatmapRequest):
     try:
-        # 兼容測試傳入的 target_num
+        # CI 加速：如果 FAST_TEST=1，则迭代次数最多 100
+        iters = req.iterations
+        if os.getenv("FAST_TEST", "") == "1":
+            iters = min(iters, 100)
+
+        # 兼容 k / target_num
         effective_k = req.k if req.k is not None else req.target_num
 
-        prob = probability_heatmap(req.grid, effective_k, req.iterations, seed=req.seed)
+        # 调用 heatmap 模块
+        prob = probability_heatmap(req.grid, effective_k, iters, seed=req.seed)
 
-        # 不管哪種分支，先組成一個 dict，再做 sanitize
+        # 根据返回类型组织响应
         if isinstance(prob, dict):
             pm = {str(int(k)): v.tolist() for k, v in prob.items()}
             resp = {"prob_map": pm, "heatmap": None}
@@ -250,9 +255,14 @@ async def heatmap(req: HeatmapRequest):
             resp = {"prob_map": prob.tolist(), "heatmap": None}
         else:
             rendered = render_heatmap(prob, req.output_format)
-            b64 = base64.b64encode(rendered).decode("ascii") if isinstance(rendered, bytes) else rendered
+            b64 = (
+                base64.b64encode(rendered).decode("ascii")
+                if isinstance(rendered, bytes)
+                else rendered
+            )
             resp = {"prob_map": prob.tolist(), "heatmap": b64}
 
+        # 过滤掉所有 NaN/Inf
         safe_resp = sanitize_floats(resp)
         return JSONResponse(content=safe_resp, status_code=200)
 
