@@ -49,14 +49,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+HERE = Path(__file__).parent
+script = HERE / "excel_cleaner_and_formatter.py"
+
 @app.on_event("startup")
 async def on_startup():
     logger.info("📂 on_startup: starting Excel cleaning")
-    subprocess.run([...], check=True)
+    # 用当前 Python 解释器执行清洗脚本
+    subprocess.run([sys.executable, str(script)], check=True)
     logger.info("📂 on_startup: cleaning script finished")
-    # 加载 priors 之后再 log
-    logger.info("📂 on_startup: priors loaded: %s", list(priors.keys()))
-
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
