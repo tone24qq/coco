@@ -14,4 +14,5 @@ hypothesis>=6.100
 pytest-xdist>=3.5
 
 # Optional coverage
+openpyxl
 pytest-cov>=5.0
