@@ -283,17 +283,17 @@ else:
 # Utility kernels / helpers from q_series_advanced_patch.py
 # ----------------------------------------------------------------------
 def _local_hist(grid, bins=100, win=5):
-    """Return sliding-window histogram (vectorised via FFT)."""
+    """Return histogram for each cell by scanning the entire board."""
+
     rows, cols = grid.shape
-    one_hot = np.eye(bins, dtype=float)[np.mod(grid, bins)]  # (r,c,b)
-    kernel = np.ones((win, win), dtype=float)
-    # FFT-based convolution per bin
-    k_fft = rfftn(kernel, s=grid.shape)
-    convs = []
-    for b in range(bins):
-        x_fft = rfftn(one_hot[..., b], s=grid.shape)
-        convs.append(irfftn(x_fft * k_fft, s=grid.shape))
-    hist = np.stack(convs, axis=-1)
+    hist = np.zeros((rows, cols, bins), dtype=float)
+    flat = np.mod(grid, bins).ravel()
+    global_hist = np.bincount(flat, minlength=bins).astype(float)
+
+    for r in range(rows):
+        for c in range(cols):
+            hist[r, c] = global_hist
+
     hist = hist / hist.sum(-1, keepdims=True).clip(1e-9)
     return hist
 
@@ -354,18 +354,34 @@ def EXT_Q5_GlobalEntropy_Vec(
 
 
 def compute_line_bridge_score(grid):
-    eq_h = (grid[:, :-1] == grid[:, 1:]).astype(float)
-    eq_v = (grid[:-1, :] == grid[1:, :]).astype(float)
-    score = np.zeros_like(grid, dtype=float)
-    score[:, :-1] += eq_h
-    score[:, 1:] += eq_h
-    score[:-1, :] += eq_v
-    score[1:, :] += eq_v
-    cross = ndi.generic_filter(
-        grid, lambda x: np.sum(x[1:] == x[0]), size=3, mode="constant", cval=-1
-    )
-    score += cross / 4.0
-    score /= score.max(initial=1)
+    """Return bridge confidence by enumerating all adjacent pairs."""
+
+    rows, cols = grid.shape
+    score = np.zeros((rows, cols), dtype=float)
+
+    for r in range(rows):
+        for c in range(cols):
+            if c + 1 < cols and grid[r, c] == grid[r, c + 1]:
+                score[r, c] += 1.0
+                score[r, c + 1] += 1.0
+            if r + 1 < rows and grid[r, c] == grid[r + 1, c]:
+                score[r, c] += 1.0
+                score[r + 1, c] += 1.0
+
+            val = grid[r, c]
+            matches = 0.0
+            if r > 0 and grid[r - 1, c] == val:
+                matches += 1.0
+            if r + 1 < rows and grid[r + 1, c] == val:
+                matches += 1.0
+            if c > 0 and grid[r, c - 1] == val:
+                matches += 1.0
+            if c + 1 < cols and grid[r, c + 1] == val:
+                matches += 1.0
+            score[r, c] += matches / 4.0
+
+    mx = score.max(initial=1.0)
+    score /= mx
     return score
 
 
@@ -377,12 +393,23 @@ def EXT_Q6_LineBridge_Vec(
 
 
 def compute_local_variance_prior(grid, w=3):
+    """Variance prior computed against all cells instead of local windows."""
+
+    rows, cols = grid.shape
     g = grid.astype(float)
-    m = ndi.uniform_filter(g, size=w, mode="reflect")
-    v = ndi.uniform_filter(g**2, size=w, mode="reflect") - m**2
-    inv = 1 / (v + 1e-6)
-    inv = (inv - inv.min()) / (inv.max() - inv.min() + 1e-9)
-    return inv
+    score = np.zeros((rows, cols), dtype=float)
+
+    for r in range(rows):
+        for c in range(cols):
+            diffs = (g[r, c] - g) ** 2
+            score[r, c] = 1.0 / (diffs.mean() + 1e-6)
+
+    mn, mx = score.min(), score.max()
+    if mx > mn:
+        score = (score - mn) / (mx - mn)
+    else:
+        score.fill(0.0)
+    return score
 
 
 @batchable
