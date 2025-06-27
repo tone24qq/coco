@@ -99,6 +99,8 @@ def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
         mods.append("EXT_M12_RestoreOriginalValue_Vec")
     if "EXT_Q15_GlobalSpread_Vec" not in mods:
         mods.append("EXT_Q15_GlobalSpread_Vec")
+    if "EXT_Q16_NumericalRelationalPattern_Vec" not in mods:
+        mods.append("EXT_Q16_NumericalRelationalPattern_Vec")
     if (
         os.getenv("ENABLE_SPECTRUM", "0") == "1"
         and "EXT_Q13_GlobalConsistencySpectrum_Vec" not in mods
@@ -573,13 +575,20 @@ def predict_scratch_card(
 
     modules = [
         ("EXT_Q1_ProximityEntropy_Vec", "Proximity and entropy scoring"),
-        ("EXT_Q2_PotentialPath_Vec", "Sequence and path scoring"),
         ("EXT_Q3_DiscontinuitySym_Vec", "Discontinuity and symmetry scoring"),
-        ("EXT_Q4_ControlComposite_Vec", "Control and error correction"),
         ("EXT_Q5_GlobalEntropy_Vec", "Global entropy and clustering"),
-        ("EXT_Q6_LineBridge_Vec", "Linearity and bridge connectivity"),
-        ("EXT_Q7_VariancePrior_Vec", "Variance smoothing and prior"),
+        ("EXT_Q14_TargetAffinity_Vec", "Target number affinity"),
+        ("EXT_Q15_GlobalSpread_Vec", "Global spread preference"),
+        ("EXT_Q16_NumericalRelationalPattern_Vec", "Numerical relational patterns"),
     ]
+
+    mod_names = [m for m, _ in modules]
+    weights = np.array([0.2, 0.15, 0.25, 0.2, 0.1, 0.2], dtype=float)
+    score_stack = np.stack(
+        [get_module_score(m, grid_np, target=target_num) for m in mod_names],
+        axis=0,
+    )
+    final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
 
     phase1 = global_iter if global_iter is not None else iterations or 5000
     phase2 = focus_iter if focus_iter is not None else 1000
@@ -606,9 +615,9 @@ def predict_scratch_card(
         rng=np.random.default_rng(),
     )
 
-    # select top-n cells for refinement
+    # select top-n cells for refinement using weighted module scores
     ranked = sorted(
-        ((r, c, max(d.values())) for (r, c), d in prob_map.items()),
+        [(r, c, final_score_map[r, c]) for r, c in blanks],
         key=lambda x: x[2],
         reverse=True,
     )

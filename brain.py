@@ -1083,6 +1083,83 @@ def EXT_Q15_GlobalSpread_Vec(
     return score.astype(np.float32)
 
 
+@batchable
+def EXT_Q16_NumericalRelationalPattern_Vec(
+    grid: np.ndarray, request_id: Optional[str] = "N/A"
+) -> np.ndarray:
+    """Score cells via combined numerical relational patterns."""
+    rows, cols = grid.shape
+    blanks = np.argwhere(grid == -1)
+    if blanks.size == 0:
+        return np.zeros((rows, cols), dtype=float)
+
+    score = np.zeros((rows, cols), dtype=float)
+    for r, c in blanks:
+        mirror = 0.0
+        checks = 0
+        if 0 <= rows - 1 - r < rows:
+            if grid[rows - 1 - r, c] != -1:
+                mirror += 1.0
+            checks += 1
+        if 0 <= cols - 1 - c < cols:
+            if grid[r, cols - 1 - c] != -1:
+                mirror += 1.0
+            checks += 1
+        if 0 <= rows - 1 - r < rows and 0 <= cols - 1 - c < cols:
+            if grid[rows - 1 - r, cols - 1 - c] != -1:
+                mirror += 1.0
+            checks += 1
+        if rows == cols and 0 <= c < rows and 0 <= r < cols:
+            if grid[c, r] != -1:
+                mirror += 1.0
+            checks += 1
+        mirror_score = mirror / float(checks or 1)
+
+        seq_score = 0.0
+        seq_checks = 0
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            nnr, nnc = nr + dr, nc + dc
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
+                seq_checks += 1
+                if 0 <= nnr < rows and 0 <= nnc < cols and grid[nnr, nnc] != -1:
+                    if abs(int(grid[nnr, nnc]) - int(grid[nr, nc])) == 1:
+                        seq_score += 1.0
+        seq_score /= float(seq_checks or 1)
+
+        jump_score = 0.0
+        jump_checks = 0
+        for dr, dc in [(2, 0), (-2, 0), (0, 2), (0, -2)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
+                jump_score += 1.0
+            jump_checks += 1
+        jump_score /= float(jump_checks or 1)
+
+        neighbors = [
+            int(grid[nr, nc])
+            for dr in range(-1, 2)
+            for dc in range(-1, 2)
+            if not (dr == 0 and dc == 0)
+            for nr, nc in [(r + dr, c + dc)]
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1
+        ]
+        tail_score = 0.0
+        unique_score = 0.0
+        if neighbors:
+            tails = [v % 10 for v in neighbors]
+            tail_score = len(set(tails)) / float(len(tails))
+            unique_score = len(set(neighbors)) / float(len(neighbors))
+
+        features = [mirror_score, seq_score, jump_score, tail_score, unique_score]
+        score[r, c] = sum(features) / len(features)
+
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score.astype(np.float32)
+
+
 # ----------------------------------------------------------------------
 # Registration
 # ----------------------------------------------------------------------
@@ -1099,6 +1176,7 @@ mods = {
     "EXT_M12_RestoreOriginalValue_Vec": EXT_M12_RestoreOriginalValue_Vec,
     "EXT_Q14_TargetAffinity_Vec": EXT_Q14_TargetAffinity_Vec,
     "EXT_Q15_GlobalSpread_Vec": EXT_Q15_GlobalSpread_Vec,
+    "EXT_Q16_NumericalRelationalPattern_Vec": EXT_Q16_NumericalRelationalPattern_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -1160,6 +1238,7 @@ AGG_WEIGHTS = {
     "EXT_M12_RestoreOriginalValue_Vec": 0.05,
     "EXT_Q14_TargetAffinity_Vec": 0.05,
     "EXT_Q15_GlobalSpread_Vec": 0.04,
+    "EXT_Q16_NumericalRelationalPattern_Vec": 0.05,
     "EXT_M11_Mirror_Sequence_Vec": -0.03,
 }
 
