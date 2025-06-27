@@ -14,6 +14,8 @@ from scipy.cluster.vq import kmeans2
 
 from modules import global_offset_cooccurrence, neighbor_value_distribution
 
+priors: Dict[int, float] = {}
+
 
 def batchable(fn: Callable) -> Callable:
     """Decorator to allow modules to accept batch or single board input."""
@@ -1039,28 +1041,14 @@ def EXT_Q14_TargetAffinity_Vec(
     grid: np.ndarray,
     *,
     target: Optional[int] = None,
-    radius: int = 2,
+    priors: Optional[Dict[int, float]] = None,
     request_id: Optional[str] = "N/A",
 ) -> np.ndarray:
-    """Score blank cells close to numbers near ``target``."""
-    if target is None:
-        return np.zeros_like(grid, dtype=float)
-    utils = BoardAnalyzerUtils()
+    """Return uniform score based on prior affinity for ``target``."""
+    source = priors if priors is not None else globals().get("priors", {})
+    affinity = source.get(int(target), 0.0) if target is not None else 0.0
     rows, cols = grid.shape
-    score = np.zeros((rows, cols), dtype=float)
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            neigh = utils.get_neighborhood_values(grid, r, c, radius=radius)
-            if not neigh:
-                continue
-            diff = min(abs(v - target) for v in neigh)
-            score[r, c] = 1.0 / (1.0 + diff)
-    mx = score.max(initial=0.0)
-    if mx > 0:
-        score /= mx
-    return score.astype(np.float32)
+    return np.full((rows, cols), float(affinity), dtype=float)
 
 
 @batchable

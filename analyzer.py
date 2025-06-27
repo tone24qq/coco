@@ -563,6 +563,7 @@ def predict_scratch_card(
     top_n: int = 10,
     epsilon: float = 0.05,
     result_top_k: Optional[int] = None,
+    priors: Optional[Dict[int, float]] = None,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -585,7 +586,10 @@ def predict_scratch_card(
     mod_names = [m for m, _ in modules]
     weights = np.array([0.2, 0.15, 0.25, 0.2, 0.1, 0.2], dtype=float)
     score_stack = np.stack(
-        [get_module_score(m, grid_np, target=target_num) for m in mod_names],
+        [
+            get_module_score(m, grid_np, target=target_num, priors=priors)
+            for m in mod_names
+        ],
         axis=0,
     )
     final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
@@ -634,7 +638,10 @@ def predict_scratch_card(
         )
         prob_map.update(refine_map)
 
-    module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+    module_scores = {
+        mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
+        for mod, _ in modules
+    }
     logger.info(
         "module_scores: %s",
         {m: float(np.mean(v)) for m, v in module_scores.items()},
@@ -662,7 +669,10 @@ def predict_scratch_card(
         ]  # 改用 .get()
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
-        module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+        module_scores = {
+            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
+            for mod, _ in modules
+        }
         for pred in rank[:3]:
             reasons = []
             scores = [
@@ -731,7 +741,10 @@ def predict_scratch_card(
             preds = process_grid(best_grid)
             mode = "mcts_unique"
 
-        module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+        module_scores = {
+            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
+            for mod, _ in modules
+        }
         for pred in preds[:3]:
             reasons = []
             scores = [
@@ -770,7 +783,10 @@ def predict_scratch_card(
             }
         )
 
-    module_scores = {mod: get_module_score(mod, grid_np) for mod, _ in modules}
+    module_scores = {
+        mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
+        for mod, _ in modules
+    }
     for pred in preds[:3]:
         reasons = []
         scores = [

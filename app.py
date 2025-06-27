@@ -1,12 +1,13 @@
 import base64
+import json
 import logging
 import math
 import os
-import sys
 import subprocess
-import json
+import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
@@ -15,8 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
+import brain
 # fmt: off
-from analyzer import probability_heatmap, predict_scratch_card, render_heatmap
+from analyzer import predict_scratch_card, probability_heatmap, render_heatmap
+
 # fmt: on
 
 # —— Logging setup —————————————————————————————————————————————————————————————
@@ -47,6 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
@@ -58,6 +62,7 @@ class GridRequest(BaseModel):
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
 
+
 class Prediction(BaseModel):
     row: int
     col: int
@@ -66,9 +71,11 @@ class Prediction(BaseModel):
     reasons: List[str]
     module_scores: Dict[str, float]
 
+
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+
 
 class HeatmapRequest(BaseModel):
     grid: List[List[int]]
@@ -78,9 +85,11 @@ class HeatmapRequest(BaseModel):
     seed: int = 0
     output_format: str = "base64"
 
+
 class HeatmapResponse(BaseModel):
     prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
     heatmap: Optional[str] = None
+
 
 # ==== Startup & ENV parsing =================================================
 startup_time = datetime.utcnow().isoformat() + "Z"
@@ -100,6 +109,7 @@ PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
 # 全局先验概率（来自 Excel 样本）
 priors: Dict[int, float] = {}
 
+
 # ==== Helpers: sanitize floats ===============================================
 def safe_float(x: Any) -> float:
     try:
@@ -110,6 +120,7 @@ def safe_float(x: Any) -> float:
         return 0.0
     return v
 
+
 def sanitize_floats(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: sanitize_floats(v) for k, v in obj.items()}
@@ -119,19 +130,24 @@ def sanitize_floats(obj: Any) -> Any:
         return safe_float(obj)
     return obj
 
+
 # ==== Routes ==============================================================
+
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
     return {"status": "OK", "startup": startup_time}
 
+
 @app.head("/", response_class=PlainTextResponse, status_code=status.HTTP_200_OK)
 async def root_head() -> str:
     return ""
 
+
 @app.get("/debug/ping", response_class=JSONResponse, status_code=200)
 async def ping() -> Dict[str, str]:
     return {"ping": "pong"}
+
 
 @app.post(
     "/predict",
@@ -163,7 +179,14 @@ async def predict(req: GridRequest):
 
         logger.info(
             "Predict | size=%dx%d | target=%s | ph1=%d | ph2=%d | top_k=%d | top_n=%d | eps=%.3f",
-            rows, cols, str(req.target_num), phase1, phase2, top_k, top_n, eps
+            rows,
+            cols,
+            str(req.target_num),
+            phase1,
+            phase2,
+            top_k,
+            top_n,
+            eps,
         )
 
         # 调用核心推理
@@ -176,7 +199,7 @@ async def predict(req: GridRequest):
             top_n=top_n,
             epsilon=eps,
             result_top_k=top_k,
-            priors=priors
+            priors=priors,
         )
 
         # 清洗 full_probabilities
@@ -201,6 +224,7 @@ async def predict(req: GridRequest):
         logger.error("Prediction failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
+
 @app.post(
     "/heatmap",
     response_model=HeatmapResponse,
@@ -209,14 +233,18 @@ async def predict(req: GridRequest):
 )
 async def heatmap(req: HeatmapRequest):
     try:
-        iters = min(req.iterations, 100) if os.getenv("FAST_TEST")=="1" else req.iterations
+        iters = (
+            min(req.iterations, 100)
+            if os.getenv("FAST_TEST") == "1"
+            else req.iterations
+        )
         k_eff = req.k if req.k is not None else req.target_num
         prob = probability_heatmap(req.grid, k_eff, iters, seed=req.seed)
 
         if isinstance(prob, dict):
             pm = {str(int(k)): v.tolist() for k, v in prob.items()}
             resp = {"prob_map": pm, "heatmap": None}
-        elif req.output_format.lower()=="raw":
+        elif req.output_format.lower() == "raw":
             resp = {"prob_map": prob.tolist(), "heatmap": None}
         else:
             img = render_heatmap(prob, req.output_format)
@@ -228,26 +256,34 @@ async def heatmap(req: HeatmapRequest):
         logger.error("Heatmap failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
+
 @app.on_event("startup")
 async def on_startup():
     # 自动清洗 Excel 并加载先验
     try:
         subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
-        with open("output/cleaned_data.json", "r", encoding="utf-8") as f:
-            global priors
-            priors = json.load(f)
+        p = Path("output/cleaned_data.json")
+        global priors
+        if p.exists():
+            priors = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            priors = {}
+        brain.priors = priors
         logger.info("Loaded priors from cleaned_data.json")
     except Exception as e:
         logger.warning("Could not load priors on startup: %s", e)
+
 
 @app.on_event("shutdown")
 async def on_shutdown():
     logger.info("Shutdown complete")
 
+
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
 
 if __name__ == "__main__":
     run_api()

@@ -1,8 +1,11 @@
 import argparse
+import json
 import logging
 import os
+import subprocess
 import sys
-from typing import List
+from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import ray
@@ -23,6 +26,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+
+priors: Dict[int, float] = {}
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +107,13 @@ def main():
     """Main function to run scratch card prediction."""
     args = parse_args()
     try:
+        subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
+        p = Path("output/cleaned_data.json")
+        global priors
+        if p.exists():
+            priors = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            priors = {}
         grid = parse_grid(args.grid)
         iterations = args.iterations
         grid_np = np.array(grid, dtype=np.int64)
@@ -126,6 +138,7 @@ def main():
             top_n=args.top_n,
             epsilon=args.epsilon,
             result_top_k=None,
+            priors=priors,
         )
         ray.shutdown()
 
