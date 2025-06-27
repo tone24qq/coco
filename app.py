@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import math
 import os
 import sys
 from datetime import datetime
@@ -53,7 +54,6 @@ app.add_middleware(
 
 # ==== Schemas ==============================================================
 
-
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
@@ -64,7 +64,6 @@ class GridRequest(BaseModel):
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
 
-
 class Prediction(BaseModel):
     row: int
     col: int
@@ -73,11 +72,9 @@ class Prediction(BaseModel):
     reasons: List[str]
     module_scores: Dict[str, float]
 
-
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
-
 
 class HeatmapRequest(BaseModel):
     grid: List[List[int]]
@@ -86,47 +83,66 @@ class HeatmapRequest(BaseModel):
     seed: int = 0
     output_format: str = "base64"
 
-
 class HeatmapResponse(BaseModel):
     prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
     heatmap: Optional[str] = None
-
 
 # ==== Startup & ENV parsing =================================================
 
 startup_time = datetime.utcnow().isoformat() + "Z"
 
-# 默认环境变量（未指定时回落到这些值）
 os.environ.setdefault("PHASE1_ITERATIONS", "5000")
 os.environ.setdefault("PHASE2_ITERATIONS", "1000")
 os.environ.setdefault("PHASE2_TOP_N", "10")
 os.environ.setdefault("PHASE2_EPSILON", "0.05")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
-# 解析 ENV 到 Python 常量
 PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
 PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
 PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
 PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
 
+# ==== Helper for sanitizing floats ===========================================
+
+def safe_float(x: Any) -> float:
+    """
+    把任何 float / numpy.float / NaN / Inf 轉成合法 Python float
+    NaN、+Inf、-Inf 都會變成 0.0
+    """
+    try:
+        v = float(x)
+    except Exception:
+        return 0.0
+    if math.isnan(v) or math.isinf(v):
+        return 0.0
+    return v
+
+def sanitize_floats(obj: Any) -> Any:
+    """
+    遞迴地把 dict/list 裡所有 float 都跑 safe_float
+    """
+    if isinstance(obj, dict):
+        return {k: sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_floats(v) for v in obj]
+    if isinstance(obj, float):
+        return safe_float(obj)
+    # int, str, etc. 都原樣回傳
+    return obj
 
 # ==== Routes ==============================================================
-
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
     return {"status": "OK", "startup": startup_time}
 
-
 @app.head("/", response_class=PlainTextResponse, status_code=status.HTTP_200_OK)
 async def root_head() -> str:
     return ""
 
-
 @app.get("/debug/ping", response_class=JSONResponse, status_code=200)
 async def ping() -> Dict[str, str]:
     return {"ping": "pong"}
-
 
 @app.post(
     "/predict",
@@ -149,7 +165,7 @@ async def predict(req: GridRequest):
         if any(v < 1 or v > max_val for v in known_vals):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
 
-        # — 日志记录实际使用的两阶段参数 —
+        # — 日志记录使用参数 —
         phase1 = req.iterations or PHASE1_ITER
         phase2 = req.focus_iter or PHASE2_ITER
         top_n = req.top_n or PHASE2_TOP_N
@@ -168,7 +184,7 @@ async def predict(req: GridRequest):
             eps,
         )
 
-        # — 两阶段推理逻辑 —
+        # — 调用核心推理模块 —
         result = predict_scratch_card(
             grid=req.grid,
             target_num=req.target_num,
@@ -197,25 +213,26 @@ async def predict(req: GridRequest):
                     if isinstance(num, (int, float, str))
                     else str(num)
                 )
-                inner[num_key] = float(prob) * 100
+                inner[num_key] = safe_float(prob) * 100
             clean_probs[key_str] = inner
 
         response_payload = {
             "predictions": predictions,
             "full_probabilities": clean_probs,
         }
-        clean_json = json.loads(
-            json.dumps(response_payload, default=lambda x: float(x))
-        )
-        logger.info("✅ Final response payload: %s", clean_json)
-        return JSONResponse(content=clean_json, status_code=200)
+
+        # — 全面 sanitize predictions & full_probabilities —
+        safe_payload = sanitize_floats(response_payload)
+
+        # — 序列化並回傳 —
+        logger.info("✅ Final response payload: %s", safe_payload)
+        return JSONResponse(content=safe_payload, status_code=200)
 
     except Exception as exc:
         logger.error("Prediction failed: %s", exc, exc_info=True)
         raise HTTPException(
             status_code=500, detail="❌ 回傳 JSON 格式異常：" + str(exc)
         ) from exc
-
 
 @app.post(
     "/heatmap",
@@ -241,25 +258,20 @@ async def heatmap(req: HeatmapRequest):
         logger.error("Heatmap generation failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-
 @app.on_event("startup")
 async def warm_up():
     logger.info("Warm-up disabled to speed up startup.")
-
 
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("API shutting down to save resources.")
 
-
 # ==== Launch ===============================================================
-
 
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API server on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
-
 
 if __name__ == "__main__":
     run_api()
