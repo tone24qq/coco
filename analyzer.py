@@ -93,6 +93,12 @@ def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
         mods.append("EXT_Q12_ArithmeticProgression_Vec")
     if target is not None and "EXT_Q11_GlobalDigitAffinity_Vec" not in mods:
         mods.append("EXT_Q11_GlobalDigitAffinity_Vec")
+    if target is not None and "EXT_Q14_TargetAffinity_Vec" not in mods:
+        mods.append("EXT_Q14_TargetAffinity_Vec")
+    if "EXT_M12_RestoreOriginalValue_Vec" not in mods:
+        mods.append("EXT_M12_RestoreOriginalValue_Vec")
+    if "EXT_Q15_GlobalSpread_Vec" not in mods:
+        mods.append("EXT_Q15_GlobalSpread_Vec")
     if (
         os.getenv("ENABLE_SPECTRUM", "0") == "1"
         and "EXT_Q13_GlobalConsistencySpectrum_Vec" not in mods
@@ -551,7 +557,7 @@ def predict_scratch_card(
         return items[:top_k]
 
     logger.info(
-        "Two-phase | phase1=%d, phase2=%d, top_k=%d, top_n=%d, eps=%.2f",
+        "Two-phase | phase1=%d, phase2=%d, top_k=%d, top_n=%d, eps=%.6f",
         phase1,
         phase2,
         top_k,

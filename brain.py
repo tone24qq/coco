@@ -1016,6 +1016,73 @@ def EXT_Q4_ControlComposite_Vec(
     return aggregate_scores(stack, weights, modules)
 
 
+@batchable
+def EXT_M12_RestoreOriginalValue_Vec(
+    grid: np.ndarray,
+    *,
+    original_grid: Optional[np.ndarray] = None,
+    request_id: Optional[str] = "N/A",
+) -> np.ndarray:
+    """Boost cells that were removed from the original grid."""
+    if original_grid is None:
+        return np.zeros_like(grid, dtype=float)
+    mask = (original_grid != -1) & (grid == -1)
+    score = mask.astype(float)
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score.astype(np.float32)
+
+
+@batchable
+def EXT_Q14_TargetAffinity_Vec(
+    grid: np.ndarray,
+    *,
+    target: Optional[int] = None,
+    radius: int = 2,
+    request_id: Optional[str] = "N/A",
+) -> np.ndarray:
+    """Score blank cells close to numbers near ``target``."""
+    if target is None:
+        return np.zeros_like(grid, dtype=float)
+    utils = BoardAnalyzerUtils()
+    rows, cols = grid.shape
+    score = np.zeros((rows, cols), dtype=float)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            neigh = utils.get_neighborhood_values(grid, r, c, radius=radius)
+            if not neigh:
+                continue
+            diff = min(abs(v - target) for v in neigh)
+            score[r, c] = 1.0 / (1.0 + diff)
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score.astype(np.float32)
+
+
+@batchable
+def EXT_Q15_GlobalSpread_Vec(
+    grid: np.ndarray, request_id: Optional[str] = "N/A"
+) -> np.ndarray:
+    """Prefer central blanks to encourage global coverage."""
+    rows, cols = grid.shape
+    blanks = np.argwhere(grid == -1)
+    if blanks.size == 0:
+        return np.zeros((rows, cols), dtype=float)
+    center = ((rows - 1) / 2.0, (cols - 1) / 2.0)
+    score = np.zeros((rows, cols), dtype=float)
+    for r, c in blanks:
+        dist = math.hypot(r - center[0], c - center[1])
+        score[r, c] = 1.0 / (1.0 + dist)
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score.astype(np.float32)
+
+
 # ----------------------------------------------------------------------
 # Registration
 # ----------------------------------------------------------------------
@@ -1029,6 +1096,9 @@ mods = {
     "EXT_Q11_GlobalDigitAffinity_Vec": EXT_Q11_GlobalDigitAffinity_Vec,
     "EXT_Q12_ArithmeticProgression_Vec": EXT_Q12_ArithmeticProgression_Vec,
     "EXT_Q13_GlobalConsistencySpectrum_Vec": EXT_Q13_GlobalConsistencySpectrum_Vec,
+    "EXT_M12_RestoreOriginalValue_Vec": EXT_M12_RestoreOriginalValue_Vec,
+    "EXT_Q14_TargetAffinity_Vec": EXT_Q14_TargetAffinity_Vec,
+    "EXT_Q15_GlobalSpread_Vec": EXT_Q15_GlobalSpread_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -1058,6 +1128,8 @@ FAST_PHASE = [
     "EXT_Q2_PotentialPath_Vec",
     "EXT_Q5_GlobalEntropy_Vec",
     "EXT_Q8_SpatialKL_Vec",
+    "EXT_M12_RestoreOriginalValue_Vec",
+    "EXT_Q15_GlobalSpread_Vec",
 ]
 
 RERANK_PHASE = [
@@ -1066,6 +1138,7 @@ RERANK_PHASE = [
     "EXT_Q7_VariancePrior_Vec",
     "EXT_Q9_MultiScaleEntropy_Vec",
     "EXT_Q10_DistPotential_Vec",
+    "EXT_Q14_TargetAffinity_Vec",
     "EXT_M11_Mirror_Sequence_Vec",
 ]
 
@@ -1084,6 +1157,9 @@ AGG_WEIGHTS = {
     "EXT_Q11_GlobalDigitAffinity_Vec": 0.03,
     "EXT_Q12_ArithmeticProgression_Vec": 0.04,
     "EXT_Q13_GlobalConsistencySpectrum_Vec": 0.04,
+    "EXT_M12_RestoreOriginalValue_Vec": 0.05,
+    "EXT_Q14_TargetAffinity_Vec": 0.05,
+    "EXT_Q15_GlobalSpread_Vec": 0.04,
     "EXT_M11_Mirror_Sequence_Vec": -0.03,
 }
 
