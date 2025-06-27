@@ -9,6 +9,7 @@ def test_new_modules_registered():
         "EXT_M12_RestoreOriginalValue_Vec",
         "EXT_Q14_TargetAffinity_Vec",
         "EXT_Q15_GlobalSpread_Vec",
+        "EXT_Q16_NumericalRelationalPattern_Vec",
     ]:
         assert name in brain.REGISTERED_MODULES_BRAIN
         assert name in brain.AGG_WEIGHTS
@@ -21,7 +22,8 @@ def test_new_module_shapes(make_grid):
     s1 = brain.EXT_M12_RestoreOriginalValue_Vec(grid, original_grid=original)
     s2 = brain.EXT_Q14_TargetAffinity_Vec(grid, target=3)
     s3 = brain.EXT_Q15_GlobalSpread_Vec(grid)
-    for s in (s1, s2, s3):
+    s4 = brain.EXT_Q16_NumericalRelationalPattern_Vec(grid)
+    for s in (s1, s2, s3, s4):
         assert s.shape == grid.shape
         assert np.isfinite(s).all()
 
@@ -33,5 +35,6 @@ def test_select_modules_include_new(make_grid):
         "EXT_M12_RestoreOriginalValue_Vec",
         "EXT_Q14_TargetAffinity_Vec",
         "EXT_Q15_GlobalSpread_Vec",
+        "EXT_Q16_NumericalRelationalPattern_Vec",
     ]:
         assert name in mods
