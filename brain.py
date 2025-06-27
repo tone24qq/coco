@@ -888,65 +888,132 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(
 def EXT_Q1_ProximityEntropy_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A"
 ) -> np.ndarray:
-    """Composite scoring for proximity and entropy."""
-    a2 = get_module_score("EXT_M3_Local_Focus_Vec", grid, request_id=request_id)
-    m1 = get_module_score("EXT_M1_Tail_Pattern_Vec", grid, request_id=request_id)
-    return 0.65 * a2 + 0.35 * m1
+    """Score cells by comparing their distance profile to global distribution."""
+
+    rows, cols = grid.shape
+    known = np.argwhere(grid != -1)
+    if known.size == 0:
+        return np.zeros((rows, cols), dtype=float)
+
+    # Global distance distribution among all revealed cells
+    if known.shape[0] > 1:
+        diff = known[:, None, :] - known[None, :, :]
+        dist_pairs = np.abs(diff).sum(-1)
+        dist_pairs = dist_pairs[np.triu_indices(dist_pairs.shape[0], k=1)]
+        max_d = rows + cols
+        hist_global = np.bincount(dist_pairs.ravel(), minlength=max_d + 1).astype(float)
+    else:
+        max_d = rows + cols
+        hist_global = np.zeros(max_d + 1, dtype=float)
+        hist_global[1] = 1.0
+    hist_global /= hist_global.sum() + 1e-9
+
+    def _cell_hist(r: int, c: int) -> np.ndarray:
+        dists = np.abs(known[:, 0] - r) + np.abs(known[:, 1] - c)
+        h = np.bincount(dists, minlength=max_d + 1).astype(float)
+        return h / (h.sum() + 1e-9)
+
+    score = np.zeros((rows, cols), dtype=float)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            hist_cell = _cell_hist(r, c)
+            kl = np.sum(hist_cell * np.log((hist_cell + 1e-9) / (hist_global + 1e-9)))
+            score[r, c] = 1.0 - kl
+
+    mn, mx = score.min(), score.max()
+    if mx > mn:
+        score = (score - mn) / (mx - mn)
+    else:
+        score.fill(0.0)
+    return score
 
 
 @batchable
 def EXT_Q2_PotentialPath_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A"
 ) -> np.ndarray:
-    """Composite scoring for potential paths and sequences."""
-    m10 = get_module_score("EXT_M10_Sequence_Block_Vec", grid, request_id=request_id)
-    f7 = get_module_score("EXT_F7_Strong_Pattern_Vec", grid, request_id=request_id)
-    return 0.5 * m10 + 0.5 * f7
+    """Score cells by enumerating sequential neighbors across the board."""
+
+    rows, cols = grid.shape
+    score = np.zeros((rows, cols), dtype=float)
+    directions = [
+        (0, 1),
+        (1, 0),
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (0, -1),
+        (-1, 0),
+        (-1, -1),
+    ]
+
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] == -1:
+                continue
+            val = int(grid[r, c])
+            for dr, dc in directions:
+                r2, c2 = r + dr, c + dc
+                if 0 <= r2 < rows and 0 <= c2 < cols and grid[r2, c2] != -1:
+                    if abs(val - int(grid[r2, c2])) == 1:
+                        score[r, c] += 1.0
+                        score[r2, c2] += 1.0
+
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score
 
 
 @batchable
 def EXT_Q3_DiscontinuitySym_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A"
 ) -> np.ndarray:
-    """Composite scoring for discontinuity and symmetry."""
-    gm20 = get_module_score(
-        "EXT_GM20_Skip_Pattern_Confidence_Vec", grid, request_id=request_id
-    )
+    """Score symmetry by scanning all mirror pairs on the board."""
+
     rows, cols = grid.shape
-    sym_score = (
-        0.3
-        if (
-            rows > 1
-            and cols > 1
-            and grid[rows - 1, cols - 1] == grid[0, 0]
-            and grid[rows - 1, cols - 1] != -1
-        )
-        else 0.0
-    )
-    return 0.7 * gm20 + sym_score
+    score = np.zeros((rows, cols), dtype=float)
+
+    for r in range(rows):
+        for c in range(cols):
+            r2, c2 = rows - 1 - r, cols - 1 - c
+            if r > r2 or (r == r2 and c >= c2):
+                continue
+            if grid[r, c] != -1 and grid[r2, c2] != -1 and grid[r, c] == grid[r2, c2]:
+                score[r, c] += 1.0
+                score[r2, c2] += 1.0
+
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score
 
 
 @batchable
 def EXT_Q4_ControlComposite_Vec(
     grid: np.ndarray, target: Optional[int] = None, request_id: Optional[str] = "N/A"
 ) -> np.ndarray:
-    """Composite scoring for control and error correction."""
-    r3 = get_module_score(
-        "EXT_R3_Error_Correction_Vec", grid, target=target, request_id=request_id
-    )
-    other_modules = [
-        m
-        for m in REGISTERED_MODULES_BRAIN
-        if m not in ["EXT_R3_Error_Correction_Vec", "EXT_Q4_ControlComposite_Vec"]
+    """Weighted combination of Q1-Q7 style modules over the whole board."""
+
+    modules = [
+        "EXT_Q1_ProximityEntropy_Vec",
+        "EXT_Q2_PotentialPath_Vec",
+        "EXT_Q3_DiscontinuitySym_Vec",
+        "EXT_Q5_GlobalEntropy_Vec",
+        "EXT_Q6_LineBridge_Vec",
+        "EXT_Q7_VariancePrior_Vec",
     ]
-    mean_score = np.mean(
+    stack = np.stack(
         [
             get_module_score(m, grid, target=target, request_id=request_id)
-            for m in other_modules
+            for m in modules
         ],
         axis=0,
     )
-    return 0.5 * r3 + 0.5 * mean_score
+    weights = np.array([AGG_WEIGHTS.get(m, 1.0) for m in modules], dtype=float)
+    return aggregate_scores(stack, weights, modules)
 
 
 # ----------------------------------------------------------------------

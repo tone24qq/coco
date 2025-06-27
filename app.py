@@ -53,6 +53,7 @@ app.add_middleware(
 
 # ==== Schemas ==============================================================
 
+
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
@@ -63,6 +64,7 @@ class GridRequest(BaseModel):
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
 
+
 class Prediction(BaseModel):
     row: int
     col: int
@@ -71,9 +73,11 @@ class Prediction(BaseModel):
     reasons: List[str]
     module_scores: Dict[str, float]
 
+
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+
 
 class HeatmapRequest(BaseModel):
     grid: List[List[int]]
@@ -83,9 +87,11 @@ class HeatmapRequest(BaseModel):
     seed: int = 0
     output_format: str = "base64"
 
+
 class HeatmapResponse(BaseModel):
     prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
     heatmap: Optional[str] = None
+
 
 # ==== Startup & ENV parsing =================================================
 
@@ -104,6 +110,7 @@ PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
 
 # ==== Helpers: sanitize floats ===============================================
 
+
 def safe_float(x: Any) -> float:
     """
     把任何 float / numpy.float / NaN / Inf 變成合法 Python float
@@ -117,6 +124,7 @@ def safe_float(x: Any) -> float:
         return 0.0
     return v
 
+
 def sanitize_floats(obj: Any) -> Any:
     """
     遞迴地把 dict/list 裡所有 float 都套 safe_float
@@ -129,19 +137,24 @@ def sanitize_floats(obj: Any) -> Any:
         return safe_float(obj)
     return obj
 
+
 # ==== Routes ==============================================================
+
 
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
     return {"status": "OK", "startup": startup_time}
 
+
 @app.head("/", response_class=PlainTextResponse, status_code=status.HTTP_200_OK)
 async def root_head() -> str:
     return ""
 
+
 @app.get("/debug/ping", response_class=JSONResponse, status_code=200)
 async def ping() -> Dict[str, str]:
     return {"ping": "pong"}
+
 
 @app.post(
     "/predict",
@@ -207,7 +220,11 @@ async def predict(req: GridRequest):
                 key_str = str(loc_key)
             inner: Dict[str, float] = {}
             for num, prob in prob_map.items():
-                num_key = str(int(float(num))) if isinstance(num, (int, float, str)) else str(num)
+                num_key = (
+                    str(int(float(num)))
+                    if isinstance(num, (int, float, str))
+                    else str(num)
+                )
                 inner[num_key] = safe_float(prob) * 100
             clean_probs[key_str] = inner
 
@@ -227,6 +244,7 @@ async def predict(req: GridRequest):
         raise HTTPException(
             status_code=500, detail="❌ 回傳 JSON 格式異常：" + str(exc)
         ) from exc
+
 
 @app.post(
     "/heatmap",
@@ -270,19 +288,23 @@ async def heatmap(req: HeatmapRequest):
         logger.error("Heatmap generation failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+
 @app.on_event("startup")
 async def warm_up():
     logger.info("Warm-up disabled to speed up startup.")
 
+
 @app.on_event("shutdown")
 async def shutdown():
     logger.info("API shutting down to save resources.")
+
 
 # ==== Launch ===============================================================
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API server on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
 
 if __name__ == "__main__":
     run_api()

@@ -2,12 +2,12 @@
 Ultra-minimal smoke-tests for Scratch-Card Prediction API
 ---------------------------------------------------------
 
-‣ 目的：確保服務『活著』且回傳格式大致正確  
-‣ 避免觸發任何高階邏輯（NaN / ±Inf / 重複數字 / 全盤已知…）  
+‣ 目的：確保服務『活著』且回傳格式大致正確
+‣ 避免觸發任何高階邏輯（NaN / ±Inf / 重複數字 / 全盤已知…）
 ‣ 只測：GET /   、POST /predict   、POST /heatmap
 """
 
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 
 # ────────────────────────────── 工具 ──────────────────────────────
@@ -26,11 +26,11 @@ def test_root_alive(client):
 
 def test_predict_basic(client):
     """POST /predict → 200 且 predictions 至少 1 筆，full_probabilities 是 dict"""
-    grid = empty_grid(2, 2)                       # 最小合法 2×2 全未知
+    grid = empty_grid(2, 2)  # 最小合法 2×2 全未知
     payload: Dict[str, Any] = {
         "grid": grid,
-        "target_num": 1,        # 指定一個號碼，避免走唯一分派
-        "iterations": 4
+        "target_num": 1,  # 指定一個號碼，避免走唯一分派
+        "iterations": 4,
     }
     resp = client.post("/predict", json=payload)
     body = resp.json()
@@ -43,11 +43,7 @@ def test_predict_basic(client):
 def test_heatmap_basic(client):
     """POST /heatmap → 200 且回傳 heatmap (base64) 欄位"""
     grid = empty_grid(2, 2)
-    payload = {
-        "grid": grid,
-        "target_num": 1,        # heatmap 的目標號碼
-        "iterations": 4
-    }
+    payload = {"grid": grid, "target_num": 1, "iterations": 4}  # heatmap 的目標號碼
     resp = client.post("/heatmap", json=payload)
     body = resp.json()
 
