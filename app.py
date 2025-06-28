@@ -5,9 +5,6 @@ import math
 import os
 import subprocess
 import sys
-import glob
-import zipfile
-from collections import Counter
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -22,6 +19,7 @@ from pydantic import BaseModel
 import brain
 # fmt: off
 from analyzer import predict_scratch_card, probability_heatmap, render_heatmap
+
 # fmt: on
 
 # —— Logging setup —————————————————————————————————————————————————————————————
@@ -54,29 +52,21 @@ app.add_middleware(
 HERE = Path(__file__).parent
 script = HERE / "excel_cleaner_and_formatter.py"
 
-# —— Global variables —————————————————————————————————————————————————————————
-startup_time = datetime.utcnow().isoformat() + "Z"
-priors: Dict[int, float] = {}  # 全局先驗概率
-zip_stats = {
-    "total_zips": 0,  # 掃描到的 ZIP 檔案數
-    "extracted_jsons": 0,  # 解壓出的 JSON 檔案數
-    "loaded_jsons": 0,  # 成功讀取的 JSON 檔案數
-    "failed_jsons": 0,  # 讀取失敗的 JSON 檔案數
-}
 
-# —— Environment variables ————————————————————————————————————————————————————
-os.environ.setdefault("PHASE1_ITERATIONS", "5000")
-os.environ.setdefault("PHASE2_ITERATIONS", "1000")
-os.environ.setdefault("PHASE2_TOP_N", "10")
-os.environ.setdefault("PHASE2_EPSILON", "0.05")
-os.environ.setdefault("LOG_LEVEL", "INFO")
+@app.on_event("startup")
+async def pre_startup():  # FIXME rename to avoid F811 duplicate
+    logger.info("📂 on_startup: starting Excel cleaning")
+    # 用当前 Python 解释器执行清洗脚本
+    subprocess.run([sys.executable, str(script)], check=True)
+    logger.info("📂 on_startup: cleaning script finished")
 
-PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
-PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
-PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
-PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
 
-# —— Schemas ——————————————————————————————————————————————————————————————————
+@app.get("/debug/priors", response_class=JSONResponse)
+async def debug_priors():
+    return priors
+
+
+# ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
     target_num: Optional[int] = None
@@ -88,6 +78,7 @@ class GridRequest(BaseModel):
     result_top_k: Optional[int] = None
     sample_gamma: Optional[float] = None
 
+
 class Prediction(BaseModel):
     row: int
     col: int
@@ -96,9 +87,11 @@ class Prediction(BaseModel):
     reasons: List[str]
     module_scores: Dict[str, float]
 
+
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+
 
 class HeatmapRequest(BaseModel):
     grid: List[List[int]]
@@ -108,11 +101,32 @@ class HeatmapRequest(BaseModel):
     seed: int = 0
     output_format: str = "base64"
 
+
 class HeatmapResponse(BaseModel):
     prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
     heatmap: Optional[str] = None
 
-# —— Helpers ——————————————————————————————————————————————————————————————————
+
+# ==== Startup & ENV parsing =================================================
+startup_time = datetime.utcnow().isoformat() + "Z"
+
+# 默认环境变量
+os.environ.setdefault("PHASE1_ITERATIONS", "5000")
+os.environ.setdefault("PHASE2_ITERATIONS", "1000")
+os.environ.setdefault("PHASE2_TOP_N", "10")
+os.environ.setdefault("PHASE2_EPSILON", "0.05")
+os.environ.setdefault("LOG_LEVEL", "INFO")
+
+PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
+PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
+PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
+PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
+
+# 全局先验概率（来自 Excel 样本）
+priors: Dict[int, float] = {}
+
+
+# ==== Helpers: sanitize floats ===============================================
 def safe_float(x: Any) -> float:
     try:
         v = float(x)
@@ -121,6 +135,7 @@ def safe_float(x: Any) -> float:
     if math.isnan(v) or math.isinf(v):
         return 0.0
     return v
+
 
 def sanitize_floats(obj: Any) -> Any:
     if isinstance(obj, dict):
@@ -131,91 +146,24 @@ def sanitize_floats(obj: Any) -> Any:
         return safe_float(obj)
     return obj
 
-# —— Startup events ———————————————————————————————————————————————————————————
-@app.on_event("startup")
-async def pre_startup():  # FIXME rename to avoid F811 duplicate
-    logger.info("📂 on_startup: starting Excel cleaning")
-    subprocess.run([sys.executable, str(script)], check=True)
-    logger.info("📂 on_startup: cleaning script finished")
 
-@app.on_event("startup")
-async def on_startup():
-    global priors, zip_stats
-    try:
-        # 執行 Excel 清洗
-        subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
+# ==== Routes ==============================================================
 
-        # 處理 samples/*.zip 檔案
-        samples_path = HERE / "samples"
-        samples_path.mkdir(exist_ok=True)  # 確保 samples 資料夾存在
-        zip_files = glob.glob(str(samples_path / "*.zip"))
-        zip_stats["total_zips"] = len(zip_files)
 
-        # 解壓 ZIP 並計數 JSON
-        extract_path = samples_path / "extracted"
-        extract_path.mkdir(exist_ok=True)  # 確保 extracted 資料夾存在
-        json_files = []
-        for zip_file in zip_files:
-            try:
-                with zipfile.ZipFile(zip_file, 'r') as z:
-                    z.extractall(extract_path)
-                json_files.extend(
-                    glob.glob(str(extract_path / "*.json"))
-                )
-            except Exception as e:
-                logger.warning("Failed to extract ZIP %s: %s", zip_file, e)
-        zip_stats["extracted_jsons"] = len(json_files)
-
-        # 讀取 JSON 並計數成功/失敗
-        for json_file in json_files:
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    json.load(f)
-                zip_stats["loaded_jsons"] += 1
-            except Exception as e:
-                zip_stats["failed_jsons"] += 1
-                logger.warning("Failed to load JSON %s: %s", json_file, e)
-
-        # 載入先驗資料
-        p = Path("output/cleaned_data.json")
-        if p.exists():
-            priors = json.loads(p.read_text(encoding="utf-8"))
-        else:
-            priors = {}
-        brain.priors = priors
-
-        # 簡易顯示計數（單行 log）
-        stats_str = (
-            f"Zips: {zip_stats['total_zips']}, "
-            f"Extracted JSONs: {zip_stats['extracted_jsons']}, "
-            f"Loaded JSONs: {zip_stats['loaded_jsons']}, "
-            f"Failed JSONs: {zip_stats['failed_jsons']}"
-        )
-        logger.info("Startup stats | %s", stats_str)
-
-    except Exception as e:
-        logger.warning("Startup failed: %s", e)
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("Shutdown complete")
-
-# —— Routes ——————————————————————————————————————————————————————————————————
 @app.get("/", response_class=JSONResponse, status_code=status.HTTP_200_OK)
 async def root() -> Dict[str, Any]:
     return {"status": "OK", "startup": startup_time}
+
 
 @app.head("/", response_class=PlainTextResponse, status_code=status.HTTP_200_OK)
 async def root_head() -> str:
     return ""
 
+
 @app.get("/debug/ping", response_class=JSONResponse, status_code=200)
 async def ping() -> Dict[str, str]:
     return {"ping": "pong"}
 
-@app.get("/debug/priors", response_class=JSONResponse)
-async def debug_priors():
-    return priors
 
 @app.post(
     "/predict",
@@ -294,6 +242,7 @@ async def predict(req: GridRequest):
         logger.error("Prediction failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
+
 @app.post(
     "/heatmap",
     response_model=HeatmapResponse,
@@ -325,11 +274,34 @@ async def heatmap(req: HeatmapRequest):
         logger.error("Heatmap failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
-# —— Main ————————————————————————————————————————————————————————————————————
+
+@app.on_event("startup")
+async def on_startup():
+    # 自动清洗 Excel 并加载先验
+    try:
+        subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
+        p = Path("output/cleaned_data.json")
+        global priors
+        if p.exists():
+            priors = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            priors = {}
+        brain.priors = priors
+        logger.info("Loaded priors from cleaned_data.json")
+    except Exception as e:
+        logger.warning("Could not load priors on startup: %s", e)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    logger.info("Shutdown complete")
+
+
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
 
 if __name__ == "__main__":
     run_api()
