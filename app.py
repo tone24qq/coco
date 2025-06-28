@@ -12,9 +12,10 @@ from typing import Any, Dict, List, Optional, Union
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
-皮膚from pydantic import BaseModel
-from analyzer import compute_position_probabilities
+from pydantic import BaseModel
+
 import brain
 # fmt: off
 from analyzer import predict_scratch_card, probability_heatmap, render_heatmap
@@ -64,13 +65,7 @@ async def pre_startup():  # FIXME rename to avoid F811 duplicate
 async def debug_priors():
     return priors
 
-@app.on_event("startup")
-async def check_prior_cache():
-    cache_file = Path("samples/prior.npy")
-    if cache_file.exists():
-        logger.info("[PRIOR] 🔷 cached prior detected at startup (%s)", cache_file)
-    else:
-        logger.info("[PRIOR] 🔶 NO prior.npy at startup, will scan ZIP on first request")
+
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
