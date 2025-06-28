@@ -106,33 +106,40 @@ def compute_history_frequency(
     return freq
 
 
+@lru_cache(maxsize=8)
 def compute_position_probabilities(
     samples_dir: str, rows: int, cols: int
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Return per-cell number probabilities from all samples."""
-    counts: Dict[Tuple[int, int], Dict[int, int]] = {
-        (r, c): defaultdict(int) for r in range(rows) for c in range(cols)
-    }
+    counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
     total = 0
     for sample in iter_sample_jsons(samples_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
             continue
         total += 1
-        grid = sample["grid"]
-        for r in range(rows):
-            for c in range(cols):
-                val = int(grid[r][c])
-                counts[(r, c)][val] += 1
+        grid = np.asarray(sample["grid"], dtype=int)
+        mask = (grid >= 1) & (grid <= rows * cols)
+        rr, cc = np.indices(grid.shape)
+        np.add.at(counts, (rr[mask], cc[mask], grid[mask]), 1)
 
-    probs: Dict[Tuple[int, int], Dict[int, float]] = {}
-    for key, d in counts.items():
-        s = sum(d.values()) or 1
-        probs[key] = {int(k): v / s for k, v in d.items()}
+    prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+    for r in range(rows):
+        for c in range(cols):
+            dist = counts[r, c]
+            total_cell = dist.sum()
+            if total_cell:
+                prob_map[(r, c)] = {
+                    n: dist[n] / float(total_cell)
+                    for n in range(1, rows * cols + 1)
+                    if dist[n] > 0
+                }
+            else:
+                prob_map[(r, c)] = {}
 
     logger.info(
         "Position frequencies for %d×%d processed %d samples", rows, cols, total
     )
-    return probs
+    return prob_map
 
 
 # Count-Min Sketch (optimized for low memory)
@@ -768,6 +775,12 @@ def predict_scratch_card(
                     dist[num] /= tot
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("position frequency blend failed: %s", exc)
+
+    # 后置正規化避免混權後機率失真
+    for dist in prob_map.values():
+        total = sum(dist.values()) or 1e-12
+        for k in dist:
+            dist[k] /= total
 
     module_scores = {
         mod: get_module_score(mod, grid_np, priors=priors, target=target_num)

@@ -232,6 +232,7 @@ async def predict(req: GridRequest):
         payload = {
             "predictions": result.get("predictions", []),
             "full_probabilities": clean_probs,
+            "sample_gamma_used": req.sample_gamma or 0.0,
         }
         safe_payload = sanitize_floats(payload)
         logger.info("✅ Response ready")
