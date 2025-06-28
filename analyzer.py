@@ -88,7 +88,6 @@ def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
             logger.error("Failed to load %s: %s", zp.name, exc)
     logger.info("Total loaded: %d zip files, %d JSON", zip_count, json_count)
 
-
 def compute_history_frequency(
     samples_dir: str, target_num: int, rows: int, cols: int
 ) -> np.ndarray:
