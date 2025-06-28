@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import sys
 import zipfile
 from collections import defaultdict
 from functools import lru_cache
@@ -45,6 +46,7 @@ def _native_dict(d):
 
 def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
     """Yield JSON objects from a zip file with basic validation."""
+    count = 0
     with zipfile.ZipFile(zip_path) as zf:
         for name in zf.namelist():
             if not name.endswith(".json"):
@@ -53,7 +55,9 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                 with zf.open(name) as f:
                     data = json.load(f)
             except Exception as exc:  # pragma: no cover - corrupted JSON
-                logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
+                logger.error(
+                    "Failed to read %s:%s: %s", zip_path.name, name, exc
+                )
                 continue
             grid = data.get("grid")
             if not isinstance(grid, list) or not all(
@@ -64,9 +68,13 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
             rows = data.get("rows", len(grid))
             cols = data.get("cols", len(grid[0]) if grid else 0)
             if rows != len(grid) or any(len(r) != cols for r in grid):
-                logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
+                logger.warning(
+                    "Row/col mismatch in %s:%s", zip_path.name, name
+                )
                 continue
+            count += 1
             yield {"rows": rows, "cols": cols, "grid": grid}
+    logger.info("Loaded %s (%d JSON)", zip_path.name, count)
 
 
 def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
@@ -76,7 +84,6 @@ def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
         try:
             for item in _iter_json_from_zip(zp):
                 yield item
-            logger.info("Loaded %s", zp.name)
         except Exception as exc:  # pragma: no cover - broken zip
             logger.error("Failed to load %s: %s", zp.name, exc)
 
@@ -111,6 +118,26 @@ def compute_position_probabilities(
     samples_dir: str, rows: int, cols: int
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Return per-cell number probabilities from all samples."""
+    cached = Path(samples_dir) / "prior.npy"
+    if cached.exists():
+        cube = np.load(cached, mmap_mode="r")
+        if cube.shape[:2] != (rows, cols):
+            logger.warning("Cached prior shape mismatch: %s", cube.shape)
+        else:
+            logger.info("Loaded prior from %s", cached)
+            prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+            for r in range(rows):
+                for c in range(cols):
+                    dist = cube[r, c].astype(float)
+                    total = dist.sum() or 1.0
+                    probs = {
+                        i: dist[i] / total
+                        for i in range(1, dist.size)
+                        if dist[i] > 0
+                    }
+                    prob_map[(r, c)] = probs
+            return prob_map
+
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
     total = 0
     for sample in iter_sample_jsons(samples_dir):
@@ -137,7 +164,10 @@ def compute_position_probabilities(
                 prob_map[(r, c)] = {}
 
     logger.info(
-        "Position frequencies for %d×%d processed %d samples", rows, cols, total
+        "Position frequencies for %d×%d processed %d samples",
+        rows,
+        cols,
+        total,
     )
     return prob_map
 
@@ -145,7 +175,9 @@ def compute_position_probabilities(
 # Count-Min Sketch (optimized for low memory)
 class CountMinSketch:
     def __init__(self, width: int = 1024, depth: int = 1):
-        self.w = max(1024, min(2048, int(8e9 / (depth * 4))))  # 8 GB RAM 動態調整
+        self.w = max(
+            1024, min(2048, int(8e9 / (depth * 4)))
+        )  # 8 GB RAM 動態調整
         self.d = depth
         self.table = np.zeros((depth, self.w), dtype=np.uint32)
         self.seeds = [i * 0x9E3779B1 for i in range(depth)]
@@ -158,7 +190,9 @@ class CountMinSketch:
             self.table[i, self._idx(key, s)] += value
 
     def query(self, key: bytes) -> int:
-        return min(self.table[i, self._idx(key, s)] for i, s in enumerate(self.seeds))
+        return min(
+            self.table[i, self._idx(key, s)] for i, s in enumerate(self.seeds)
+        )
 
 
 def pack_key(cell_idx: int, num: int) -> bytes:
@@ -167,7 +201,9 @@ def pack_key(cell_idx: int, num: int) -> bytes:
 
 # Precompute skip scores with LRU cache
 @lru_cache(maxsize=1024)
-def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarray:
+def precompute_skip_scores(
+    grid_bytes: bytes, rows: int, cols: int
+) -> np.ndarray:
     grid = bytes_to_grid(grid_bytes, (rows, cols))
     return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
 
@@ -180,14 +216,45 @@ def adjust_weights_based_on_history(
     return np.array([history.get(f, 0.0) / total for f in formulas])
 
 
-def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
+def dump_prior(samples_dir: str, outfile: str) -> None:
+    """Aggregate all samples into a prior cube and save as ``outfile``."""
+    cube = None
+    rows = cols = 0
+    for sample in iter_sample_jsons(samples_dir):
+        r, c = sample["rows"], sample["cols"]
+        if cube is None:
+            rows, cols = r, c
+            cube = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
+        if r != rows or c != cols:
+            logger.warning("Skip mismatched sample %s×%s", r, c)
+            continue
+        grid = np.asarray(sample["grid"], dtype=int)
+        mask = (grid >= 1) & (grid <= rows * cols)
+        rr, cc = np.indices(grid.shape)
+        np.add.at(cube, (rr[mask], cc[mask], grid[mask]), 1)
+    if cube is None:
+        logger.error("No valid samples found in %s", samples_dir)
+        return
+    np.save(outfile, cube)
+    logger.info("Prior saved to %s", outfile)
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI helper
+    if len(sys.argv) == 3:
+        dump_prior(sys.argv[1], sys.argv[2])
+
+
+def select_modules(
+    grid: np.ndarray, target: Optional[int] = None
+) -> List[str]:
     """Select up to ``CORE_LIMIT`` modules based on weights and scores."""
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
         mods = list(REGISTERED_MODULES_BRAIN)
     else:
         base_modules = brain.get_core_modules()
         scores = {
-            m: np.mean(get_module_score(m, grid, target=target)) for m in base_modules
+            m: np.mean(get_module_score(m, grid, target=target))
+            for m in base_modules
         }
         mods = sorted(scores, key=scores.get, reverse=True)
 
@@ -241,7 +308,9 @@ def _cached_board(
     return board
 
 
-def fill_unknowns_randomly(grid: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def fill_unknowns_randomly(
+    grid: np.ndarray, rng: np.random.Generator
+) -> np.ndarray:
     """Fill -1 cells in ``grid`` with a random permutation of remaining numbers."""
     g = np.asarray(grid, dtype=int).copy()
     blanks = np.argwhere(g == -1)
@@ -335,7 +404,9 @@ def simulate_full_board(
         axis=0,
     )
     importance_weights = np.where(g == -1, module_scores, 0).flatten()
-    importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
+    importance_weights = importance_weights / (
+        np.sum(importance_weights) + 1e-10
+    )
 
     # Dynamic formula weights based on grid pattern
     history = {"random_entropy": 0.4, "shuffle": 0.3, "tail_cluster": 0.3}
@@ -349,22 +420,30 @@ def simulate_full_board(
     counts = defaultdict(lambda: defaultdict(int))
     focus_set = {tuple(fc) for fc in focus_cells} if focus_cells else None
     other_cells = (
-        [tuple(b) for b in blanks if tuple(b) not in focus_set] if focus_set else []
+        [tuple(b) for b in blanks if tuple(b) not in focus_set]
+        if focus_set
+        else []
     )
 
     while remain > 0:
         batch = min(4000, remain)
-        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights, g)
+        boards = generate_full_boards(
+            rows, cols, batch, rng, formulas, weights, g
+        )
 
         if known.size:
-            mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+            mask = np.all(
+                boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1
+            )
             boards = boards[mask]
             if len(boards) == 0:
                 batch = min(batch * 2, 8000)
                 boards = generate_full_boards(
                     rows, cols, batch, rng, formulas, weights, g
                 )
-                mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
+                mask = np.all(
+                    boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1
+                )
                 boards = boards[mask]
 
         if len(boards) > 0:
@@ -386,7 +465,11 @@ def simulate_full_board(
                 soft_fast /= soft_fast.sum() + 1e-10
                 fast = soft_fast
                 cells_iter = blanks if focus_set is None else focus_set
-                if focus_set is not None and other_cells and rng.random() < epsilon:
+                if (
+                    focus_set is not None
+                    and other_cells
+                    and rng.random() < epsilon
+                ):
                     cells_iter = list(focus_set) + [
                         other_cells[int(rng.integers(len(other_cells)))]
                     ]
@@ -418,7 +501,8 @@ def simulate_full_board(
     ]
     w = np.array([AGG_WEIGHTS[m] for m in mods_rerank])
     stack_rerank = np.stack(
-        [get_module_score(m, g, target=target_num) for m in mods_rerank], axis=0
+        [get_module_score(m, g, target=target_num) for m in mods_rerank],
+        axis=0,
     )
     final_heat = aggregate_scores(stack_rerank, w, mods_rerank)
     soft_heat = np.exp(final_heat / tau)
@@ -441,7 +525,9 @@ def simulate_full_board(
         final_prob_map[(r, c)][num] = final_score
 
     # 來自 probmap_key_patch_v2.txt
-    prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
+    prob_map = {
+        (int(r), int(c)): cell for (r, c), cell in final_prob_map.items()
+    }
 
     # --- 保證所有格都有 entry ------------------------------
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
@@ -466,7 +552,8 @@ def weight_prob_by_modules(
     result = prob_map.copy()
     modules = select_modules(grid, target=target_num)
     module_scores = Parallel(n_jobs=4)(
-        delayed(get_module_score)(mod, grid, target=target_num) for mod in modules
+        delayed(get_module_score)(mod, grid, target=target_num)
+        for mod in modules
     )
     module_scores = np.array(module_scores)
 
@@ -535,7 +622,8 @@ def assign_unique_numbers(
 
 
 def global_unique(
-    prob_map: Dict[Tuple[int, int], Dict[int, float]], blanks: List[Tuple[int, int]]
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    blanks: List[Tuple[int, int]],
 ) -> Dict[Tuple[int, int], Tuple[int, float]]:
     try:
         assignments = assign_unique_numbers(prob_map)
@@ -547,7 +635,9 @@ def global_unique(
         logger.error(f"Global unique assignment failed: {e}")
         assigned, res = set(), {}
         for cell in sorted(
-            blanks, key=lambda p: max(prob_map[p].values() or [0]), reverse=True
+            blanks,
+            key=lambda p: max(prob_map[p].values() or [0]),
+            reverse=True,
         ):
             for n, p in sorted(
                 prob_map[cell].items(), key=lambda x: x[1], reverse=True
@@ -646,7 +736,9 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
     Parallel(n_jobs=4, require="sharedmem")(
         delayed(simulate)(root) for _ in range(iterations // 4)
     )
-    best_child = max(root.children, key=lambda c: c.value / c.visits, default=root)
+    best_child = max(
+        root.children, key=lambda c: c.value / c.visits, default=root
+    )
     return best_child.grid
 
 
@@ -677,7 +769,11 @@ def predict_scratch_card(
     ]  # 來自 probmap_key_patch_v2.txt
 
     if not blanks:
-        return {"mode": "no_blanks", "predictions": [], "full_probabilities": {}}
+        return {
+            "mode": "no_blanks",
+            "predictions": [],
+            "full_probabilities": {},
+        }
 
     modules = [
         ("EXT_Q1_ProximityEntropy_Vec", "Proximity and entropy scoring"),
@@ -685,7 +781,10 @@ def predict_scratch_card(
         ("EXT_Q5_GlobalEntropy_Vec", "Global entropy and clustering"),
         ("EXT_Q14_TargetAffinity_Vec", "Target number affinity"),
         ("EXT_Q15_GlobalSpread_Vec", "Global spread preference"),
-        ("EXT_Q16_NumericalRelationalPattern_Vec", "Numerical relational patterns"),
+        (
+            "EXT_Q16_NumericalRelationalPattern_Vec",
+            "Numerical relational patterns",
+        ),
     ]
 
     mod_names = [m for m, _ in modules]
@@ -700,7 +799,9 @@ def predict_scratch_card(
     final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
     if gamma_history > 0.0 and target_num is not None:
         try:
-            hist = compute_history_frequency(history_dir, target_num, rows, cols)
+            hist = compute_history_frequency(
+                history_dir, target_num, rows, cols
+            )
             if hist.max() > 0:
                 final_score_map += gamma_history * (hist / float(hist.max()))
         except Exception as exc:  # pragma: no cover - history load failures
@@ -750,7 +851,9 @@ def predict_scratch_card(
         key=lambda x: x[2],
         reverse=True,
     )
-    focus_cells = [(r, c) for r, c, _ in ranked[: max(1, min(top_n, len(ranked)))]]
+    focus_cells = [
+        (r, c) for r, c, _ in ranked[: max(1, min(top_n, len(ranked)))]
+    ]
 
     if phase2 > 0:
         refine_map = simulate_full_board(
@@ -807,14 +910,17 @@ def predict_scratch_card(
                 "row": r,
                 "col": c,
                 "candidates": [target_num],
-                "probability": prob_map.get((r, c), {}).get(target_num, 0.0) * 100,
+                "probability": prob_map.get((r, c), {}).get(target_num, 0.0)
+                * 100,
             }
             for r, c in prob_map.keys()
         ]  # 改用 .get()
         rank.sort(key=lambda x: x["probability"], reverse=True)
 
         module_scores = {
-            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
+            mod: get_module_score(
+                mod, grid_np, priors=priors, target=target_num
+            )
             for mod, _ in modules
         }
         for pred in rank[:3]:
@@ -865,7 +971,9 @@ def predict_scratch_card(
                 max(
                     weight_prob_by_modules(  # <<< 你自己已有的函式
                         best_grid,  # - 當前最佳棋盤
-                        {(r, c): prob_map.get((r, c), {})},  # - 只帶單一候選格的機率
+                        {
+                            (r, c): prob_map.get((r, c), {})
+                        },  # - 只帶單一候選格的機率
                     )
                     .get((r, c), {})
                     .values(),  # 取回各模組加權後的機率們
@@ -877,7 +985,12 @@ def predict_scratch_card(
 
         if new_conf <= old_conf * 0.95:
             preds = [
-                {"row": r, "col": c, "candidates": [n], "probability": float(p) * 100}
+                {
+                    "row": r,
+                    "col": c,
+                    "candidates": [n],
+                    "probability": float(p) * 100,
+                }
                 for (r, c), (n, p) in assign.items()
             ]
             mode = "unique"
@@ -886,7 +999,9 @@ def predict_scratch_card(
             mode = "mcts_unique"
 
         module_scores = {
-            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
+            mod: get_module_score(
+                mod, grid_np, priors=priors, target=target_num
+            )
             for mod, _ in modules
         }
         for pred in preds[:3]:
@@ -941,14 +1056,17 @@ def predict_scratch_card(
         for mod, score, desc in top_modules:
             if score > 0.5:
                 reasons.append(f"{desc} (score: {score:.2f})")
-        pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
+        pred["reasons"] = (
+            reasons if reasons else ["No dominant module contribution"]
+        )
         pred["module_scores"] = {
             mod: float(module_scores[mod][pred["row"], pred["col"]])
             for mod, _ in modules
         }
 
     preds.sort(
-        key=lambda x: x["probability"][0] if x["probability"] else 0, reverse=True
+        key=lambda x: x["probability"][0] if x["probability"] else 0,
+        reverse=True,
     )
     return {
         "mode": "top3",
@@ -1019,7 +1137,9 @@ def monte_carlo_prob_map(
     if k is not None:
         counts = np.zeros((rows, cols), dtype=int)
     else:
-        counts = {int(val): np.zeros((rows, cols), dtype=int) for val in remain}
+        counts = {
+            int(val): np.zeros((rows, cols), dtype=int) for val in remain
+        }
 
     for _ in range(max(1, n_iter)):
         sample = rng.permutation(remain)
