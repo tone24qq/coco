@@ -498,7 +498,7 @@ def simulate_full_board(
         final_prob_map[(r, c)][num] = final_score
 
     # 來自 probmap_key_patch_v2.txt
-    prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
+    rel = prob_map
 
     # --- 保證所有格都有 entry ------------------------------
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
