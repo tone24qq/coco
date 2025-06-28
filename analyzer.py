@@ -119,24 +119,49 @@ def compute_position_probabilities(
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Return per-cell number probabilities from all samples."""
     cached = Path(samples_dir) / "prior.npy"
+
+    # ── ① 有快取：直接讀 ──────────────────────────────
     if cached.exists():
+        logger.info("[PRIOR] 🔷 using cached prior from %s", cached)
+
         cube = np.load(cached, mmap_mode="r")
         if cube.shape[:2] != (rows, cols):
             logger.warning("Cached prior shape mismatch: %s", cube.shape)
-        else:
-            logger.info("Loaded prior from %s", cached)
-            prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+        else:                                  # ← shape 正確，組合成字典後就 return
+            result: Dict[Tuple[int, int], Dict[int, float]] = {}
             for r in range(rows):
                 for c in range(cols):
-                    dist = cube[r, c].astype(float)
-                    total = dist.sum() or 1.0
-                    probs = {
-                        i: dist[i] / total
-                        for i in range(1, dist.size)
-                        if dist[i] > 0
+                    dist = cube[r, c][1:]          # index 0 留空，1→數字1
+                    tot = dist.sum() or 1
+                    result[(r, c)] = {
+                        i: float(p) / tot
+                        for i, p in enumerate(dist, start=1) if p > 0
                     }
-                    prob_map[(r, c)] = probs
-            return prob_map
+            return result
+
+    # ── ② 沒快取或 shape 不符：掃 ZIP 重算 ─────────────
+    logger.info("[PRIOR] 🔶 prior.npy not found, scanning ZIP …")
+
+    counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
+    board_cnt = ok_zip = err_zip = 0
+    for ok, sample in iter_sample_jsons(samples_dir):
+        if not ok:
+            err_zip += 1
+            continue
+        ok_zip += 1
+        if sample["rows"] != rows or sample["cols"] != cols:
+            continue
+        board_cnt += 1
+        grid = np.asarray(sample["grid"], dtype=int)
+        mask = (grid >= 1) & (grid <= rows * cols)
+        rr, cc = np.indices(grid.shape)
+        np.add.at(counts, (rr[mask], cc[mask], grid[mask]), 1)
+
+    logger.info(
+        "[PRIOR] ✔ rows=%d cols=%d | boards=%d | zip_ok=%d | zip_err=%d",
+        rows, cols, board_cnt, ok_zip, err_zip
+    )
+
 
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
     total = 0
