@@ -10,7 +10,7 @@ from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
-
+from analyzer import rank_cells_by_prior_and_modules, compute_global_distribution
 import numpy as np
 import xxhash
 from joblib import Parallel, delayed
@@ -943,49 +943,40 @@ def predict_scratch_card(
     logger.info("prob_map top3: %s", top3)
 
     if target_num is not None:
-        for key, p in prob_map.items():
-            prob_map[key] = {target_num: p.get(target_num, 0.0)}
+    # 1) 生成历史先验立方体
+    prior_cube = compute_global_distribution(history_dir, rows, cols)
 
-    if target_num is not None:
-        rank = [
-            {
-                "row": r,
-                "col": c,
-                "candidates": [target_num],
-                "probability": prob_map.get((r, c), {}).get(target_num, 0.0) * 100,
-            }
-            for r, c in prob_map.keys()
-        ]  # 改用 .get()
-        rank.sort(key=lambda x: x["probability"], reverse=True)
+    # 2) 定义要用的 heuristic 模块和对应权重（请根据实际项目配置）
+    modules = [
+        "EXT_Q1_ProximityEntropy_Vec",
+        "EXT_Q3_DiscontinuitySym_Vec",
+        "EXT_Q5_GlobalEntropy_Vec",
+        "EXT_Q14_TargetAffinity_Vec",
+        "EXT_Q15_GlobalSpread_Vec",
+        "EXT_Q16_NumericalRelationalPattern_Vec",
+    ]
+    weights = [0.25, 0.1, 0.3, 0.1, 0.1, 0.15]  # 示例，合计为 1.0
 
-        module_scores = {
-            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
-            for mod, _ in modules
-        }
-        for pred in rank[:3]:
-            reasons = []
-            scores = [
-                (mod, module_scores[mod][pred["row"], pred["col"]], desc)
-                for mod, desc in modules
-            ]
-            top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
-            for mod, score, desc in top_modules:
-                if score > 0.5:
-                    reasons.append(f"{desc} (score: {score:.2f})")
-            pred["reasons"] = (
-                reasons if reasons else ["No dominant module contribution"]
-            )
-            pred["module_scores"] = {
-                mod: float(module_scores[mod][pred["row"], pred["col"]])
-                for mod, _ in modules
-            }
+    # 3) 调用新的排名函数（内部已做归一化 + Top-K）
+    top_cells = rank_cells_by_prior_and_modules(
+        grid_np,
+        prior_cube,
+        modules,
+        weights,
+        target_num=target_num,
+        w_prior=prior_weight,
+    )
 
-        return {
-            "mode": "target",
-            "target": target_num,
-            "predictions": _trim(rank),
-            "full_probabilities": prob_map,
-        }
+    # 4) 格式化输出
+    predictions = [
+        {"row": r, "col": c, "candidates": [target_num], "probability": p}
+        for (r, c, p) in top_cells
+    ]
+    return {
+        "mode": "target",
+        "target": target_num,
+        "predictions": predictions,
+    }
 
     if unique and target_num is None:
         assign = global_unique(prob_map, blanks)
