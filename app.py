@@ -52,15 +52,20 @@ app.add_middleware(
 HERE = Path(__file__).parent
 script = HERE / "excel_cleaner_and_formatter.py"
 
+
 @app.on_event("startup")
-async def on_startup():
+async def pre_startup():  # FIXME rename to avoid F811 duplicate
     logger.info("📂 on_startup: starting Excel cleaning")
     # 用当前 Python 解释器执行清洗脚本
     subprocess.run([sys.executable, str(script)], check=True)
     logger.info("📂 on_startup: cleaning script finished")
+
+
 @app.get("/debug/priors", response_class=JSONResponse)
 async def debug_priors():
     return priors
+
+
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]

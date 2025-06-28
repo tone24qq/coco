@@ -50,13 +50,37 @@ def save_visual_csv(data: List[List[Any]], path: Path) -> None:
 
 
 def to_int_grid(data: List[List[Any]]) -> List[List[int]]:
+    """Convert cleaned cell values to an integer grid.
+
+    Only values in the range ``1..N`` (where ``N`` is ``rows*cols``) are kept
+    and must not repeat. All other cells are set to ``-1``. This prevents
+    stray dates or duplicated numbers from polluting the dataset.
+    """
+
+    rows = len(data)
+    cols = len(data[0]) if rows > 0 else 0
+    max_val = rows * cols
+    seen: set[int] = set()
     result: List[List[int]] = []
+
     for row in data:
-        row_int = [
-            int(v) if isinstance(v, int) or (isinstance(v, str) and v.isdigit()) else -1
-            for v in row
-        ]
+        row_int: List[int] = []
+        for val in row:
+            if isinstance(val, int):
+                num = val
+            elif isinstance(val, str) and val.isdigit():
+                num = int(val)
+            else:
+                num = -1
+
+            if 1 <= num <= max_val and num not in seen:
+                row_int.append(num)
+                seen.add(num)
+            else:
+                row_int.append(-1)
+
         result.append(row_int)
+
     return result
 
 
