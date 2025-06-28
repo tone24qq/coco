@@ -76,6 +76,7 @@ class GridRequest(BaseModel):
     top_n: Optional[int] = None
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
+    sample_gamma: Optional[float] = None
 
 
 class Prediction(BaseModel):
@@ -215,6 +216,7 @@ async def predict(req: GridRequest):
             epsilon=eps,
             result_top_k=top_k,
             priors=priors,
+            sample_gamma=req.sample_gamma or 0.0,
         )
 
         # 清洗 full_probabilities

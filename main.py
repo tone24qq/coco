@@ -83,6 +83,12 @@ def parse_args() -> argparse.Namespace:
         default="png_bytes",
         help="Format for heatmap output",
     )
+    parser.add_argument(
+        "--sample-gamma",
+        type=float,
+        default=0.0,
+        help="Weight for sample-based frequency prior",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +145,7 @@ def main():
             epsilon=args.epsilon,
             result_top_k=None,
             priors=priors,
+            sample_gamma=args.sample_gamma,
         )
         ray.shutdown()
 

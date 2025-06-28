@@ -15,19 +15,10 @@ import xxhash
 from joblib import Parallel, delayed
 
 import brain
-
 # fmt: off
-from brain import (
-    AGG_WEIGHTS,
-    REGISTERED_MODULES_BRAIN,
-    BoardAnalyzerUtils,
-    EXT_GM20_Skip_Pattern_Confidence_Vec,
-    MathUtils,
-    aggregate_scores,
-    bytes_to_grid,
-    get_module_score,
-)
-
+from brain import (AGG_WEIGHTS, REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
+                   EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
+                   aggregate_scores, bytes_to_grid, get_module_score)
 # fmt: on
 from modules import FORMULA_REGISTRY
 
@@ -113,6 +104,35 @@ def compute_history_frequency(
         total,
     )
     return freq
+
+
+def compute_position_probabilities(
+    samples_dir: str, rows: int, cols: int
+) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """Return per-cell number probabilities from all samples."""
+    counts: Dict[Tuple[int, int], Dict[int, int]] = {
+        (r, c): defaultdict(int) for r in range(rows) for c in range(cols)
+    }
+    total = 0
+    for sample in iter_sample_jsons(samples_dir):
+        if sample["rows"] != rows or sample["cols"] != cols:
+            continue
+        total += 1
+        grid = sample["grid"]
+        for r in range(rows):
+            for c in range(cols):
+                val = int(grid[r][c])
+                counts[(r, c)][val] += 1
+
+    probs: Dict[Tuple[int, int], Dict[int, float]] = {}
+    for key, d in counts.items():
+        s = sum(d.values()) or 1
+        probs[key] = {int(k): v / s for k, v in d.items()}
+
+    logger.info(
+        "Position frequencies for %d×%d processed %d samples", rows, cols, total
+    )
+    return probs
 
 
 # Count-Min Sketch (optimized for low memory)
@@ -641,6 +661,7 @@ def predict_scratch_card(
     priors: Optional[Dict[int, float]] = None,
     history_dir: str = "samples",
     gamma_history: float = 0.0,
+    sample_gamma: float = 0.0,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -677,6 +698,19 @@ def predict_scratch_card(
                 final_score_map += gamma_history * (hist / float(hist.max()))
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("history frequency failed: %s", exc)
+
+    if sample_gamma > 0.0:
+        try:
+            pos_probs = compute_position_probabilities(history_dir, rows, cols)
+            sample_map = np.zeros((rows, cols), dtype=float)
+            for (r, c), dist in pos_probs.items():
+                if dist:
+                    sample_map[r, c] = max(dist.values())
+            if sample_map.max() > 0:
+                sample_map /= float(sample_map.max())
+                final_score_map += sample_gamma * sample_map
+        except Exception as exc:  # pragma: no cover - history load failures
+            logger.error("position frequency failed: %s", exc)
 
     phase1 = global_iter if global_iter is not None else iterations or 5000
     phase2 = focus_iter if focus_iter is not None else 1000
@@ -721,6 +755,19 @@ def predict_scratch_card(
             epsilon=epsilon,
         )
         prob_map.update(refine_map)
+
+    if sample_gamma > 0.0:
+        try:
+            pos_probs = compute_position_probabilities(history_dir, rows, cols)
+            for key, dist in prob_map.items():
+                prior = pos_probs.get(key, {})
+                for num in list(dist.keys()):
+                    dist[num] *= 1.0 + sample_gamma * prior.get(num, 0.0)
+                tot = sum(dist.values()) or 1e-10
+                for num in dist:
+                    dist[num] /= tot
+        except Exception as exc:  # pragma: no cover - history load failures
+            logger.error("position frequency blend failed: %s", exc)
 
     module_scores = {
         mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
