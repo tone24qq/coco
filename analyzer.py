@@ -1,21 +1,33 @@
 import base64
 import heapq
+import json
 import logging
 import math
 import os
+import zipfile
 from collections import defaultdict
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 import xxhash
 from joblib import Parallel, delayed
 
 import brain
+
 # fmt: off
-from brain import (AGG_WEIGHTS, REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
-                   EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
-                   aggregate_scores, bytes_to_grid, get_module_score)
+from brain import (
+    AGG_WEIGHTS,
+    REGISTERED_MODULES_BRAIN,
+    BoardAnalyzerUtils,
+    EXT_GM20_Skip_Pattern_Confidence_Vec,
+    MathUtils,
+    aggregate_scores,
+    bytes_to_grid,
+    get_module_score,
+)
+
 # fmt: on
 from modules import FORMULA_REGISTRY
 
@@ -38,6 +50,69 @@ def _native_coord(k):
 
 def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
+
+
+def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
+    """Yield JSON objects from a zip file with basic validation."""
+    with zipfile.ZipFile(zip_path) as zf:
+        for name in zf.namelist():
+            if not name.endswith(".json"):
+                continue
+            try:
+                with zf.open(name) as f:
+                    data = json.load(f)
+            except Exception as exc:  # pragma: no cover - corrupted JSON
+                logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
+                continue
+            grid = data.get("grid")
+            if not isinstance(grid, list) or not all(
+                isinstance(row, list) for row in grid
+            ):
+                logger.warning("Invalid grid in %s:%s", zip_path.name, name)
+                continue
+            rows = data.get("rows", len(grid))
+            cols = data.get("cols", len(grid[0]) if grid else 0)
+            if rows != len(grid) or any(len(r) != cols for r in grid):
+                logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
+                continue
+            yield {"rows": rows, "cols": cols, "grid": grid}
+
+
+def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
+    """Iterate through all JSON samples in ``samples_dir``."""
+    path = Path(samples_dir)
+    for zp in sorted(path.glob("*.zip")):
+        try:
+            for item in _iter_json_from_zip(zp):
+                yield item
+            logger.info("Loaded %s", zp.name)
+        except Exception as exc:  # pragma: no cover - broken zip
+            logger.error("Failed to load %s: %s", zp.name, exc)
+
+
+def compute_history_frequency(
+    samples_dir: str, target_num: int, rows: int, cols: int
+) -> np.ndarray:
+    """Return frequency matrix for ``target_num`` over all samples."""
+    freq = np.zeros((rows, cols), dtype=np.int64)
+    total = 0
+    for sample in iter_sample_jsons(samples_dir):
+        if sample["rows"] != rows or sample["cols"] != cols:
+            continue
+        total += 1
+        grid = sample["grid"]
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == target_num:
+                    freq[r, c] += 1
+    logger.info(
+        "History frequency for %d×%d target=%d processed %d samples",
+        rows,
+        cols,
+        target_num,
+        total,
+    )
+    return freq
 
 
 # Count-Min Sketch (optimized for low memory)
@@ -564,6 +639,8 @@ def predict_scratch_card(
     epsilon: float = 0.05,
     result_top_k: Optional[int] = None,
     priors: Optional[Dict[int, float]] = None,
+    history_dir: str = "samples",
+    gamma_history: float = 0.0,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -593,6 +670,13 @@ def predict_scratch_card(
         axis=0,
     )
     final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
+    if gamma_history > 0.0 and target_num is not None:
+        try:
+            hist = compute_history_frequency(history_dir, target_num, rows, cols)
+            if hist.max() > 0:
+                final_score_map += gamma_history * (hist / float(hist.max()))
+        except Exception as exc:  # pragma: no cover - history load failures
+            logger.error("history frequency failed: %s", exc)
 
     phase1 = global_iter if global_iter is not None else iterations or 5000
     phase2 = focus_iter if focus_iter is not None else 1000
