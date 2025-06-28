@@ -498,7 +498,11 @@ def simulate_full_board(
         final_prob_map[(r, c)][num] = final_score
 
     # 來自 probmap_key_patch_v2.txt
-    rel = prob_map
+    top3 = sorted(
+        ((k, max(v.values())) for k, v in rel.items()),
+        key=lambda x: x[1],
+        reverse=True,
+    )[:topk]
 
     # --- 保證所有格都有 entry ------------------------------
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
