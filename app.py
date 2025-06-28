@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
-
+from analyzer import compute_position_probabilities
 import brain
 # fmt: off
 from analyzer import predict_scratch_card, probability_heatmap, render_heatmap
