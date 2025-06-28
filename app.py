@@ -9,7 +9,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-from analyzer import iter_sample_jsons, build_sample_store
+from analyzer import iter_sample_jsons
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,14 +65,11 @@ async def pre_startup():  # FIXME rename to avoid F811 duplicate
 async def debug_priors():
     return priors
 
-app.on_event("startup")
-async def load_samples():
-    # 如果你用 build_sample_store 的話：
-    build_sample_store("samples", "store.sqlite")
-    # 或者只想跑 iter_sample_jsons 並且印出 ZIP/JSON 數：
+@app.on_event("startup")
+async def load_sample_stats():
     for _ in iter_sample_jsons("samples"):
         pass
-    # 上面的迴圈會觸發 logger.info("Total loaded: ...")
+    # 迭代完就會觸發 analyzer 裡的 logger.info("Total loaded: …")
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
