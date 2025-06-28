@@ -616,11 +616,15 @@ def rank_cells_by_prior_and_modules(
     )
     final = w_prior * prior_k + (1.0 - w_prior) * agg
 
+    mask = grid == -1
+    total = final[mask].sum() or 1.0
+    final[mask] = final[mask] / total
+
     results = [
-        (int(r), int(c), float(final[r, c]))
+        (int(r), int(c), float(final[r, c] * 100.0))
         for r in range(rows)
         for c in range(cols)
-        if grid[r, c] == -1
+        if mask[r, c]
     ]
     results.sort(key=lambda x: x[2], reverse=True)
     return results[:3]

@@ -46,3 +46,34 @@ def test_rank_cells_by_prior_and_modules(tmp_path):
     assert ranks[0][:2] == (0, 0)
     assert len(ranks) == 2
     assert all(grid[r, c] == -1 for r, c, _ in ranks)
+
+
+def test_rank_cells_normalization(tmp_path, monkeypatch):
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    data = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
+    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
+        zf.writestr("a.json", json.dumps(data))
+    cube = analyzer.compute_global_distribution(str(samples), 2, 2)
+
+    grid = np.array([[-1, -1], [3, -1]])
+
+    monkeypatch.setattr(
+        analyzer,
+        "get_module_score",
+        lambda mod, g, target=None: np.ones_like(g, dtype=float),
+    )
+
+    ranks = analyzer.rank_cells_by_prior_and_modules(
+        grid,
+        cube,
+        ["DUMMY"],
+        [1.0],
+        target_num=1,
+        w_prior=0.5,
+    )
+
+    total_prob = sum(p / 100.0 for _, _, p in ranks)
+    assert abs(total_prob - 1.0) < 1e-6
+    assert ranks[0][2] < 100.0
+    assert ranks[0][2] >= ranks[1][2] >= ranks[2][2]
