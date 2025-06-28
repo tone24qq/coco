@@ -272,7 +272,7 @@ async def on_startup():
     # 自动清洗 Excel 并加载先验
     try:
         subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
-        p = Path("output/cleaned_data.json")
+        p = Path("output/cleaned_output.json")
         global priors
         if p.exists():
             priors = json.loads(p.read_text(encoding="utf-8"))
