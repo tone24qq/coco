@@ -1,65 +1,82 @@
+import csv
 import json
 from pathlib import Path
 from typing import Any, Dict, List
+
 from openpyxl import load_workbook
 
-def clean_cell_dynamic(val: Any, max_valid: int) -> int:
-    """
-    清洗單元格：自動依據表格大小設定合法範圍。
-    支援 O→0, I/L→1, B→8。
-    """
-    if val is None:
-        return -1
-    s = str(val).strip().upper()
-    s = s.replace("O", "0").replace("I", "1").replace("L", "1").replace("B", "8")
-    digits = ''.join(ch for ch in s if ch.isdigit())
-    if not digits:
-        return -1
-    num = int(digits)
-    return num if 1 <= num <= max_valid else -1
 
-def clean_sheet(ws) -> (List[List[int]], int):
-    rows, cols = ws.max_row, ws.max_column
-    max_valid = rows * cols
-    cleaned = [
-        [clean_cell_dynamic(cell, max_valid) for cell in row]
-        for row in ws.iter_rows(values_only=True)
-    ]
-    return cleaned, max_valid
+def clean_cell(value: Any) -> Any:
+    """Clean individual cell value according to rules."""
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if not s:
+        return ""
+    s = s.replace("O", "0").replace("I", "1")
+    s_up = s.upper()
+    if s_up.isdigit():
+        return int(s_up)
+    return ""
 
-def flatten(grid: List[List[int]]) -> List[int]:
-    return [n for row in grid for n in row if n > 0]
 
-def analyze_numbers(numbers: List[int], max_valid: int) -> Dict[str, Any]:
-    from collections import Counter
-    counter = Counter(numbers)
-    duplicates = {k: v for k, v in counter.items() if v > 1}
-    missing = [i for i in range(1, max_valid + 1) if i not in counter]
-    return {"total": len(numbers), "unique": len(counter), "duplicates": duplicates, "missing": missing}
+def process_sheet(ws) -> List[List[Any]]:
+    data: List[List[Any]] = []
+    max_row = ws.max_row or 0
+    max_col = ws.max_column or 0
+    for r in range(1, max_row + 1):
+        row: List[Any] = []
+        for c in range(1, max_col + 1):
+            val = ws.cell(row=r, column=c).value
+            row.append(clean_cell(val))
+        data.append(row)
+    return data
 
-def main():
-    samples_dir = Path("samples")
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-    result = {}
 
-    for xlsx in samples_dir.glob("*.xlsx"):
+def save_visual_csv(data: List[List[Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not data:
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            f.write("")
+        return
+    header = [""] + [str(i + 1) for i in range(len(data[0]))]
+    rows = []
+    for idx, row in enumerate(data, start=1):
+        rows.append([str(idx)] + [str(v) if v != "" else "" for v in row])
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
+def to_int_grid(data: List[List[Any]]) -> List[List[int]]:
+    result: List[List[int]] = []
+    for row in data:
+        row_int = [
+            int(v) if isinstance(v, int) or (isinstance(v, str) and v.isdigit()) else -1
+            for v in row
+        ]
+        result.append(row_int)
+    return result
+
+
+def main() -> None:
+    samples = Path("samples")
+    output = Path("output")
+    output.mkdir(exist_ok=True)
+    result: Dict[str, List[List[int]]] = {}
+
+    for xlsx in samples.glob("*.xlsx"):
         wb = load_workbook(xlsx, data_only=True)
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            cleaned_grid, max_valid = clean_sheet(ws)
-            numbers = flatten(cleaned_grid)
-            stats = analyze_numbers(numbers, max_valid)
-            result[f"{xlsx.name}:{sheet_name}"] = {
-                "max_valid": max_valid,
-                "cleaned_grid": cleaned_grid,
-                "stats": stats
-            }
+        for name in wb.sheetnames:
+            ws = wb[name]
+            data = process_sheet(ws)
+            csv_name = f"{xlsx.stem}__{name}_{len(data)}x{len(data[0])}.csv"
+            save_visual_csv(data, output / csv_name)
+            result[f"{xlsx.name}::{name}"] = to_int_grid(data)
+    with open(output / "cleaned_data.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False)
 
-    with (output_dir / "cleaned_output.json").open("w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
-
-    print("✅ 清洗完成，結果輸出至 output/cleaned_output.json")
 
 if __name__ == "__main__":
     main()
