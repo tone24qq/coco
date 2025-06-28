@@ -65,7 +65,13 @@ async def pre_startup():  # FIXME rename to avoid F811 duplicate
 async def debug_priors():
     return priors
 
-
+@app.on_event("startup")
+async def check_prior_cache():
+    cache_file = Path("samples/prior.npy")
+    if cache_file.exists():
+        logger.info("[PRIOR] 🔷 cached prior detected at startup (%s)", cache_file)
+    else:
+        logger.info("[PRIOR] 🔶 NO prior.npy at startup, will scan ZIP on first request")
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
