@@ -944,7 +944,7 @@ def predict_scratch_card(
 
     if target_num is not None:
     # 1) 生成历史先验立方体
-    prior_cube = compute_global_distribution(history_dir, rows, cols)
+        prior_cube = compute_global_distribution(history_dir, rows, cols)
 
     # 2) 定义要用的 heuristic 模块和对应权重（请根据实际项目配置）
     modules = [
