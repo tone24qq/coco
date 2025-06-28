@@ -5,6 +5,7 @@ import math
 import os
 import subprocess
 import sys
+import asyncio
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -65,11 +66,17 @@ async def pre_startup():  # FIXME rename to avoid F811 duplicate
 async def debug_priors():
     return priors
 
-@app.on_event("startup")
-async def load_sample_stats():
+async def _load_samples_background():
+    # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
     for _ in iter_sample_jsons("samples"):
         pass
-    # 迭代完就會觸發 analyzer 裡的 logger.info("Total loaded: …")
+    logger.info("Sample iteration complete (background)")
+
+@app.on_event("startup")
+async def startup_event():
+    # 1) 先綁 port（Uvicorn 自行處理）
+    # 2) 再排程背景任務
+    asyncio.create_task(_load_samples_background())
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
