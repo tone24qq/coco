@@ -144,7 +144,7 @@ def compute_position_probabilities(
 
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
     board_cnt = ok_zip = err_zip = 0
-    for ok, sample in iter_sample_jsons(samples_dir):
+    for ok, sample, *rest in iter_sample_jsons(samples_dir):
         if not ok:
             err_zip += 1
             continue
