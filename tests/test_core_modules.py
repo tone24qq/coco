@@ -12,3 +12,11 @@ def test_get_core_modules_order():
     mods = brain.get_core_modules(limit=6)
     sorted_mods = sorted(brain.AGG_WEIGHTS, key=brain.AGG_WEIGHTS.get, reverse=True)[:6]
     assert mods == sorted_mods
+
+
+def test_get_core_modules_warn_invalid_env(monkeypatch, caplog):
+    monkeypatch.setenv("CORE_LIMIT", "bad")
+    with caplog.at_level("WARNING"):
+        brain.get_core_modules()
+    assert any("Invalid CORE_LIMIT" in r.message for r in caplog.records)
+    monkeypatch.delenv("CORE_LIMIT", raising=False)

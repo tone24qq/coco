@@ -1262,6 +1262,10 @@ def get_core_modules(limit: int | None = None) -> list[str]:
     try:
         limit_env = int(os.getenv("CORE_LIMIT", "8"))
     except ValueError:  # FIXME invalid env value
+        logger.warning(
+            "Invalid CORE_LIMIT '%s', using default 8",
+            os.getenv("CORE_LIMIT"),
+        )
         limit_env = 8
     if limit is None:
         limit = limit_env

@@ -6,7 +6,6 @@ import math
 import os
 import sys
 import zipfile
-from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
