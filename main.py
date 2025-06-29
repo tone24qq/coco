@@ -185,4 +185,5 @@ if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "dump_prior":
         analyzer.dump_prior(sys.argv[2], sys.argv[3])
     else:
-        main()
+        from app import run_api
+         run_api()
