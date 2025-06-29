@@ -23,7 +23,7 @@ from analyzer import (iter_sample_jsons, predict_scratch_card,
                       probability_heatmap, render_heatmap)
 
 # fmt: on
-
+script = Path(__file__).parent / "excel_cleaner_and_formatter.py"
 # —— Logging setup —————————————————————————————————————————————————————————————
 log_handlers = [
     logging.StreamHandler(sys.stdout),
@@ -44,6 +44,20 @@ app = FastAPI(
     version="1.0.0",
     description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
 )
+@app.on_event("startup")
+async def startup_event():
+    # 1) 確認執行的是最新這份
+    resolved = script.resolve()
+    mtime = resolved.stat().st_mtime
+    print(f"[startup] Running clean script: {resolved} (mtime={mtime})")
+
+    # 2) 執行清洗腳本
+    subprocess.run([sys.executable, str(resolved)], check=True)
+
+    # 3) 讀取 clean 後的 priors
+    logger.info("[startup] Loading priors from cleaned_data.json")
+    brain.priors = compute_position_probabilities("samples", ROWS, COLS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -53,15 +67,6 @@ app.add_middleware(
 )
 HERE = Path(__file__).parent
 script = HERE / "excel_cleaner_and_formatter.py"
-
-
-@app.on_event("startup")
-async def pre_startup():  # FIXME rename to avoid F811 duplicate
-    logger.info("📂 on_startup: starting Excel cleaning")
-    # 用当前 Python 解释器执行清洗脚本
-    subprocess.run([sys.executable, str(script)], check=True)
-    logger.info("📂 on_startup: cleaning script finished")
-
 
 @app.get("/debug/priors", response_class=JSONResponse)
 async def debug_priors():
@@ -73,13 +78,6 @@ async def _load_samples_background():
     for _ in iter_sample_jsons("samples"):
         pass
     logger.info("Sample iteration complete (background)")
-
-
-@app.on_event("startup")
-async def startup_event():
-    # 1) 先綁 port（Uvicorn 自行處理）
-    # 2) 再排程背景任務
-    asyncio.create_task(_load_samples_background())
 
 
 # ==== Schemas ==============================================================
