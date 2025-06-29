@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import logging
@@ -5,12 +6,11 @@ import math
 import os
 import subprocess
 import sys
-import asyncio
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-from analyzer import iter_sample_jsons
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +19,8 @@ from pydantic import BaseModel
 
 import brain
 # fmt: off
-from analyzer import predict_scratch_card, probability_heatmap, render_heatmap
+from analyzer import (iter_sample_jsons, predict_scratch_card,
+                      probability_heatmap, render_heatmap)
 
 # fmt: on
 
@@ -66,17 +67,21 @@ async def pre_startup():  # FIXME rename to avoid F811 duplicate
 async def debug_priors():
     return priors
 
+
 async def _load_samples_background():
     # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
     for _ in iter_sample_jsons("samples"):
         pass
     logger.info("Sample iteration complete (background)")
 
+
 @app.on_event("startup")
 async def startup_event():
     # 1) 先綁 port（Uvicorn 自行處理）
     # 2) 再排程背景任務
     asyncio.create_task(_load_samples_background())
+
+
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
     grid: List[List[int]]
