@@ -43,6 +43,7 @@ def test_predict_valid_grid():
     assert "top_predictions" in body
     assert "full_probabilities" in body
     assert isinstance(body["predictions"], list)
+    assert isinstance(body.get("final_recommendations"), list)
 
 
 def test_invalid_duplicate_numbers():

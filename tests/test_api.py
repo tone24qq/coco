@@ -39,6 +39,7 @@ def test_predict_basic(client):
     assert isinstance(body.get("predictions"), list) and len(body["predictions"]) > 0
     assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
+    assert isinstance(body.get("final_recommendations"), list)
 
 
 def test_heatmap_basic(client):

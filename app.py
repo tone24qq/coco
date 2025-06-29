@@ -79,6 +79,8 @@ class GridRequest(BaseModel):
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
     sample_gamma: Optional[float] = None
+    fusion_alpha: Optional[float] = None
+    pseudo_count: Optional[float] = None
 
 
 class Prediction(BaseModel):
@@ -94,6 +96,7 @@ class PredictResponse(BaseModel):
     predictions: List[Prediction]
     top_predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+    final_recommendations: List[Dict[str, Any]]
 
 
 class HeatmapRequest(BaseModel):
@@ -224,6 +227,8 @@ async def predict(req: GridRequest):
             result_top_k=top_k,
             priors=brain.priors_map[key],
             sample_gamma=req.sample_gamma or 0.0,
+            fusion_alpha=req.fusion_alpha or 0.5,
+            pseudo_count=req.pseudo_count or 0.0,
         )
 
         # 清洗 full_probabilities
@@ -241,6 +246,7 @@ async def predict(req: GridRequest):
             "top_predictions": result.get("top_predictions", []),
             "full_probabilities": clean_probs,
             "sample_gamma_used": req.sample_gamma or 0.0,
+            "final_recommendations": result.get("final_recommendations", []),
         }
         safe_payload = sanitize_floats(payload)
         logger.info("✅ Response ready")

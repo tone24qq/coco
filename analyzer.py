@@ -590,6 +590,28 @@ def weight_prob_by_modules(
     return _native_dict(result)
 
 
+def _compute_final_recommendations(
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    module_norm: np.ndarray,
+    target_num: Optional[int],
+    fusion_alpha: float,
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """Return fused ranking of cells based on probabilities and module scores."""
+    recs: List[Dict[str, Any]] = []
+    for (r, c), dist in prob_map.items():
+        if target_num is not None:
+            prob = dist.get(target_num, 0.0)
+        else:
+            prob = max(dist.values()) if dist else 0.0
+        score = fusion_alpha * float(module_norm[r, c]) + (1.0 - fusion_alpha) * float(
+            prob
+        )
+        recs.append({"row": int(r), "col": int(c), "score": score})
+    recs.sort(key=lambda x: x["score"], reverse=True)
+    return recs[:top_k]
+
+
 def rank_cells_by_prior_and_modules(
     grid: np.ndarray,
     prior_cube: np.ndarray,
@@ -812,6 +834,8 @@ def predict_scratch_card(
     history_dir: str = "samples",
     gamma_history: float = 0.0,
     sample_gamma: float = 0.0,
+    fusion_alpha: float = 0.5,
+    pseudo_count: float = 0.0,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -868,6 +892,17 @@ def predict_scratch_card(
                 final_score_map += sample_gamma * sample_map
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("position frequency failed: %s", exc)
+
+    mask = grid_np == -1
+    if mask.any():
+        sub = final_score_map[mask]
+        mn, mx = sub.min(), sub.max()
+        if mx - mn > 1e-9:
+            module_norm = (final_score_map - mn) / (mx - mn + 1e-9)
+        else:
+            module_norm = np.zeros_like(final_score_map)
+    else:
+        module_norm = np.zeros_like(final_score_map)
 
     phase1 = global_iter if global_iter is not None else iterations or 5000
     phase2 = focus_iter if focus_iter is not None else 1000
@@ -926,6 +961,17 @@ def predict_scratch_card(
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("position frequency blend failed: %s", exc)
 
+    if pseudo_count > 0.0 and priors:
+        for key, dist in prob_map.items():
+            prior = priors.get(key, {})
+            all_nums = set(dist) | set(prior)
+            new_d: Dict[int, float] = {}
+            for num in all_nums:
+                p_sim = dist.get(num, 0.0)
+                p_prior = prior.get(num, 0.0)
+                new_d[num] = (p_sim + pseudo_count * p_prior) / (1.0 + pseudo_count)
+            prob_map[key] = new_d
+
     # 后置正規化避免混權後機率失真
     for dist in prob_map.values():
         total = sum(dist.values()) or 1e-12
@@ -950,6 +996,10 @@ def predict_scratch_card(
     if target_num is not None:
         for key, p in prob_map.items():
             prob_map[key] = {target_num: p.get(target_num, 0.0)}
+
+    final_recs = _compute_final_recommendations(
+        prob_map, module_norm, target_num, fusion_alpha, top_k
+    )
 
     if target_num is not None:
         rank = [
@@ -992,6 +1042,7 @@ def predict_scratch_card(
             "predictions": _trim(rank),
             "top_predictions": top_predictions,
             "full_probabilities": prob_map,
+            "final_recommendations": final_recs,
         }
 
     if unique and target_num is None:
@@ -1071,6 +1122,7 @@ def predict_scratch_card(
             "predictions": _trim(preds),
             "top_predictions": top_predictions,
             "full_probabilities": prob_map,
+            "final_recommendations": final_recs,
         }
 
     preds = []
@@ -1116,6 +1168,7 @@ def predict_scratch_card(
         "predictions": _trim(preds),
         "top_predictions": top_predictions,
         "full_probabilities": prob_map,
+        "final_recommendations": final_recs,
     }
 
 
