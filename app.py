@@ -106,11 +106,16 @@ class HeatmapRequest(BaseModel):
     iterations: int = 1000
     seed: int = 0
     output_format: str = "base64"
+    sample_gamma: float = 0.0
 
 
 class HeatmapResponse(BaseModel):
     prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
     heatmap: Optional[str] = None
+    predictions: Optional[List[Prediction]] = None
+    top_predictions: Optional[List[Prediction]] = None
+    full_probabilities: Optional[Dict[str, Dict[str, float]]] = None
+    final_recommendations: Optional[List[Dict[str, Any]]] = None
 
 
 # ==== Startup & ENV parsing =================================================
@@ -271,17 +276,74 @@ async def heatmap(req: HeatmapRequest):
             else req.iterations
         )
         k_eff = req.k if req.k is not None else req.target_num
-        prob = probability_heatmap(req.grid, k_eff, iters, seed=req.seed)
+        prob = probability_heatmap(
+            req.grid,
+            k_eff,
+            iters,
+            seed=req.seed,
+            sample_gamma=req.sample_gamma,
+            history_dir="samples",
+        )
+
+        rows, cols = len(req.grid), len(req.grid[0])
+        key = (rows, cols)
+        if key not in brain.priors_map:
+            brain.priors_map[key] = compute_position_probabilities(
+                "samples", rows, cols
+            )
+
+        pred_result = predict_scratch_card(
+            grid=req.grid,
+            target_num=req.target_num,
+            iterations=PHASE1_ITER,
+            global_iter=None,
+            focus_iter=PHASE2_ITER,
+            top_n=PHASE2_TOP_N,
+            epsilon=PHASE2_EPS,
+            result_top_k=3,
+            priors=brain.priors_map[key],
+            sample_gamma=req.sample_gamma,
+        )
+
+        full_probs = pred_result.get("full_probabilities", {})
+        clean_probs: Dict[str, Dict[str, float]] = {}
+        for loc, prob_map in full_probs.items():
+            loc_key = f"{int(loc[0])},{int(loc[1])}"
+            inner: Dict[str, float] = {}
+            for num, p in prob_map.items():
+                inner[str(int(num))] = safe_float(p) * 100
+            clean_probs[loc_key] = inner
 
         if isinstance(prob, dict):
             pm = {str(int(k)): v.tolist() for k, v in prob.items()}
-            resp = {"prob_map": pm, "heatmap": None}
+            resp = {
+                "prob_map": pm,
+                "heatmap": None,
+                "predictions": pred_result.get("predictions"),
+                "top_predictions": pred_result.get("top_predictions"),
+                "full_probabilities": clean_probs,
+                "final_recommendations": pred_result.get("final_recommendations"),
+            }
         elif req.output_format.lower() == "raw":
-            resp = {"prob_map": prob.tolist(), "heatmap": None}
+            resp = {
+                "prob_map": prob.tolist(),
+                "heatmap": None,
+                "predictions": pred_result.get("predictions"),
+                "top_predictions": pred_result.get("top_predictions"),
+                "full_probabilities": clean_probs,
+                "final_recommendations": pred_result.get("final_recommendations"),
+            }
         else:
             img = render_heatmap(prob, req.output_format)
             b64 = base64.b64encode(img).decode() if isinstance(img, bytes) else img
-            resp = {"prob_map": prob.tolist(), "heatmap": b64}
+            resp = {
+                "prob_map": prob.tolist(),
+                "heatmap": b64,
+                "predictions": pred_result.get("predictions"),
+                "top_predictions": pred_result.get("top_predictions"),
+                "full_probabilities": clean_probs,
+                "final_recommendations": pred_result.get("final_recommendations"),
+            }
 
         return JSONResponse(content=sanitize_floats(resp), status_code=200)
     except Exception as exc:

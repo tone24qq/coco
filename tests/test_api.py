@@ -54,3 +54,7 @@ def test_heatmap_basic(client):
     assert isinstance(heat, str)
     # PNG base64 一定會以 iVBOR 開頭
     assert heat.startswith("iVBOR")
+    assert isinstance(body.get("predictions"), list)
+    assert isinstance(body.get("top_predictions"), list)
+    assert isinstance(body.get("full_probabilities"), dict)
+    assert isinstance(body.get("final_recommendations"), list)

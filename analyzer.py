@@ -1320,17 +1320,51 @@ def probability_heatmap(
     n_iter: int = 6000,
     *,
     seed: int = 0,
+    sample_gamma: float = 0.0,
+    history_dir: str = "samples",
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
-    """Heatmap simulation using :func:`simulate_full_board`."""
+    """Heatmap simulation using :func:`simulate_full_board`.
+
+    Parameters
+    ----------
+    grid : List[List[int]] or np.ndarray
+        Board matrix with ``-1`` for unknown cells.
+    k : int or None
+        Target number to estimate.
+    n_iter : int
+        Simulation iterations.
+    seed : int
+        RNG seed for reproducibility.
+    sample_gamma : float
+        Weight for prior probabilities derived from ``history_dir``.
+    history_dir : str
+        Directory containing sample ``*.zip`` files.
+    """
 
     rng = np.random.default_rng(seed)
     grid_np = np.asarray(grid, dtype=int)
     prob_map_dict = simulate_full_board(grid_np, k, n_iter=n_iter, rng=rng)
 
+    if sample_gamma > 0.0 and k is not None:
+        try:
+            pos_probs = compute_position_probabilities(history_dir, *grid_np.shape)
+        except Exception as exc:  # pragma: no cover - history load failures
+            logger.error("heatmap prior load failed: %s", exc)
+            pos_probs = {}
+    else:
+        pos_probs = {}
+
     if k is not None:
         out = np.zeros_like(grid_np, dtype=float)
         for (r, c), cell in prob_map_dict.items():
-            out[r, c] = cell.get(k, 0.0)
+            val = cell.get(k, 0.0)
+            if pos_probs:
+                val = (1.0 - sample_gamma) * val + sample_gamma * pos_probs.get(
+                    (r, c), {}
+                ).get(k, 0.0)
+            out[r, c] = val
+        if out.max() > 0:
+            out = out / float(out.max())
         return out
 
     numbers = {n for cell in prob_map_dict.values() for n in cell}
