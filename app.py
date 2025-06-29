@@ -20,6 +20,7 @@ from analyzer import (compute_position_probabilities, iter_sample_jsons,
                       render_heatmap)
 
 # fmt: on
+brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
 
 # —— Logging setup —————————————————————————————————————————————————————————————
 log_handlers = [
@@ -52,7 +53,7 @@ app.add_middleware(
 
 @app.get("/debug/priors", response_class=JSONResponse)
 async def debug_priors():
-    return priors
+    return brain.priors_map
 
 
 async def _load_samples_background():
@@ -64,11 +65,6 @@ async def _load_samples_background():
 
 @app.on_event("startup")
 async def startup_event():
-    logging.info("[startup] Computing priors from samples ZIPs …")
-    global priors
-    priors = compute_position_probabilities("samples", ROWS, COLS)
-    brain.priors = priors
-    logging.info(f"[startup] Priors computed for {ROWS}×{COLS} grid")
     asyncio.create_task(_load_samples_background())
 
 
@@ -122,18 +118,11 @@ os.environ.setdefault("PHASE2_ITERATIONS", "1000")
 os.environ.setdefault("PHASE2_TOP_N", "10")
 os.environ.setdefault("PHASE2_EPSILON", "0.05")
 os.environ.setdefault("LOG_LEVEL", "INFO")
-os.environ.setdefault("GRID_ROWS", "8")
-os.environ.setdefault("GRID_COLS", "10")
 
 PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
 PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
 PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
 PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
-ROWS = int(os.getenv("GRID_ROWS", 8))
-COLS = int(os.getenv("GRID_COLS", 10))
-
-# 全局先验概率
-priors: Dict[Tuple[int, int], Dict[int, float]] = {}
 
 
 # ==== Helpers: sanitize floats ===============================================
@@ -196,6 +185,13 @@ async def predict(req: GridRequest):
         if any(v < 1 or v > max_val for v in known):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
 
+        key = (rows, cols)
+        if key not in brain.priors_map:
+            logging.info(f"[predict] Computing priors for {rows}×{cols}…")
+            brain.priors_map[key] = compute_position_probabilities(
+                "samples", rows, cols
+            )
+
         # 参数
         phase1 = req.iterations or PHASE1_ITER
         phase2 = req.focus_iter or PHASE2_ITER
@@ -225,7 +221,7 @@ async def predict(req: GridRequest):
             top_n=top_n,
             epsilon=eps,
             result_top_k=top_k,
-            priors=priors,
+            priors=brain.priors_map[key],
             sample_gamma=req.sample_gamma or 0.0,
         )
 

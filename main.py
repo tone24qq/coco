@@ -2,7 +2,6 @@ import argparse
 import json
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List
@@ -114,7 +113,6 @@ def main():
     """Main function to run scratch card prediction."""
     args = parse_args()
     try:
-        subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
         p = Path("output/cleaned_data.json")
         global priors
         if p.exists():
