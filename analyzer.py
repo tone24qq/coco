@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 import xxhash
 from joblib import Parallel, delayed
+from numba import njit
 
 import brain
 # fmt: off
@@ -331,7 +332,8 @@ def _cached_board(
 
 
 def fill_unknowns_randomly(grid: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Fill -1 cells in ``grid`` with a random permutation of remaining numbers."""
+    """Fill ``-1`` cells with a random permutation of remaining numbers."""
+
     g = np.asarray(grid, dtype=int).copy()
     blanks = np.argwhere(g == -1)
     if blanks.size == 0:
@@ -378,6 +380,24 @@ def generate_full_boards(
     return boards
 
 
+# JIT-accelerated count update for board batches
+@njit
+def _update_counts(
+    counts: np.ndarray,
+    board: np.ndarray,
+    br: np.ndarray,
+    bc: np.ndarray,
+    idxs: np.ndarray,
+    num_map: np.ndarray,
+    weights: np.ndarray,
+) -> None:
+    for i in range(br.size):
+        num = board[br[i], bc[i]]
+        idx_num = num_map[num]
+        if idx_num >= 0:
+            counts[idxs[i], idx_num] += weights[br[i], bc[i]]
+
+
 def simulate_full_board(
     grid: np.ndarray,
     target_num: Optional[int],
@@ -386,6 +406,8 @@ def simulate_full_board(
     *,
     focus_cells: Optional[List[Tuple[int, int]]] = None,
     epsilon: float = 0.0,
+    threshold: float = 1e-3,
+    check_interval: int = 500,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with optional focus and ε-exploration."""
     logger.info(
@@ -435,7 +457,14 @@ def simulate_full_board(
     formulas = ("random_entropy", "shuffle", "tail_cluster")
     weights = adjust_weights_based_on_history(history, formulas)
     remain = n_iter
-    counts = defaultdict(lambda: defaultdict(int))
+    counts = np.zeros((blanks.shape[0], rows * cols + 1), dtype=float)
+    num_map = -np.ones(rows * cols + 1, dtype=np.int32)
+    for j, n in enumerate(range(1, rows * cols + 1)):
+        num_map[n] = j
+    br, bc = blanks[:, 0].astype(np.int32), blanks[:, 1].astype(np.int32)
+    blank_index = {(int(r), int(c)): i for i, (r, c) in enumerate(blanks)}
+    prev_probs = np.zeros_like(counts)
+    batch_progress = 0
     focus_set = {tuple(fc) for fc in focus_cells} if focus_cells else None
     other_cells = (
         [tuple(b) for b in blanks if tuple(b) not in focus_set] if focus_set else []
@@ -479,20 +508,47 @@ def simulate_full_board(
                     cells_iter = list(focus_set) + [
                         other_cells[int(rng.integers(len(other_cells)))]
                     ]
-                for r, c in cells_iter:
-                    idx = r * cols + c
-                    if rng.random() < importance_weights[idx]:
-                        num = board[r, c]
-                        counts[(r, c)][num] += fast[r, c]
-                        if target_num is not None and num == target_num:
-                            counts[(r, c)][num] += 2 * fast[r, c]
+                weights_cell = fast
+                indices = np.array(
+                    [blank_index[(int(r), int(c))] for r, c in cells_iter],
+                    dtype=np.int32,
+                )
+                br_sel = br[indices]
+                bc_sel = bc[indices]
+                idxc_all = br_sel * cols + bc_sel
+                mask_sel = rng.random(indices.size) < importance_weights[idxc_all]
+                if mask_sel.any():
+                    _update_counts(
+                        counts,
+                        board,
+                        br_sel[mask_sel],
+                        bc_sel[mask_sel],
+                        indices[mask_sel],
+                        num_map,
+                        weights_cell,
+                    )
         remain -= batch
+        batch_progress += batch
+        if batch_progress >= check_interval:
+            totals = counts.sum(axis=1, keepdims=True)
+            totals[totals == 0] = 1
+            probs = counts / totals
+            delta = np.abs(probs - prev_probs).sum()
+            if delta < threshold:
+                break
+            prev_probs = probs.copy()
+            batch_progress = 0
 
+    totals = counts.sum(axis=1)
     prob_map = {}
-    for r, c in [tuple(b) for b in blanks]:
-        total = sum(counts[(r, c)].values()) or 1e-10
-        probs = {n: max(counts[(r, c)][n] / total, 1e-10) for n in legal_all}
-        prob_map[(r, c)] = probs
+    for idx, (r, c) in enumerate(blanks):
+        total = totals[idx] or 1e-10
+        cell: Dict[int, float] = {}
+        for n in legal_all:
+            j = num_map[n]
+            if j >= 0:
+                cell[n] = max(counts[idx, j] / total, 1e-10)
+        prob_map[(int(r), int(c))] = cell
 
     # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
     tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
@@ -1233,10 +1289,13 @@ def monte_carlo_prob_map(
 
     if k is not None:
         counts = np.zeros((rows, cols), dtype=int)
+        prev = np.zeros_like(counts, dtype=float)
     else:
         counts = {int(val): np.zeros((rows, cols), dtype=int) for val in remain}
+        prev = {int(val): np.zeros((rows, cols), dtype=float) for val in remain}
 
-    for _ in range(max(1, n_iter)):
+    actual_iter = 0
+    for it in range(1, max(1, n_iter) + 1):
         sample = rng.permutation(remain)
         board = g.copy()
         board[blank_idx] = sample[: blanks.shape[0]]
@@ -1244,18 +1303,38 @@ def monte_carlo_prob_map(
         if k is not None:
             hits = board == k
             counts += hits.astype(int)
+            if it % 500 == 0:
+                curr = counts.astype(float) / float(it)
+                delta = np.abs(curr - prev).sum()
+                if delta < 1e-3:
+                    break
+                prev = curr.copy()
         else:
             for val in remain:
                 counts[int(val)] += (board == val).astype(int)
+            if it % 500 == 0:
+                converged = True
+                for val in remain:
+                    curr = counts[int(val)].astype(float) / float(it)
+                    delta = np.abs(curr - prev[int(val)]).sum()
+                    if delta >= 1e-3:
+                        converged = False
+                    prev[int(val)] = curr
+                if converged:
+                    break
+        actual_iter = it
 
     if k is not None:
-        prob = counts.astype(float) / float(n_iter)
+        if actual_iter == 0:
+            actual_iter = n_iter
+        prob = counts.astype(float) / float(actual_iter)
         prob[g != -1] = 0.0
         return prob
 
     prob_all: Dict[int, np.ndarray] = {}
     for val, mat in counts.items():
-        arr = mat.astype(float) / float(n_iter)
+        iters = actual_iter if actual_iter else n_iter
+        arr = mat.astype(float) / float(iters)
         arr[g != -1] = 0.0
         prob_all[int(val)] = arr
     return prob_all
