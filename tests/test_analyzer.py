@@ -79,3 +79,10 @@ def test_assign_unique_numbers_simple():
     mapping = analyzer.assign_unique_numbers(prob_map)
     assert set(mapping.keys()) == {1, 2, 3}
     assert len(set(mapping.values())) == len(mapping)
+
+
+def test_probabilities_not_uniform():
+    grid = [[1, 2], [3, -1]]
+    prob_map = simulate_full_board(grid, None, n_iter=20)
+    cell = prob_map[(1, 1)]
+    assert len(cell) == 1 and next(iter(cell.values())) == 1.0
