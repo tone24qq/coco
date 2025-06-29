@@ -1,15 +1,11 @@
 import asyncio
 import base64
-import json
 import logging
 import math
 import os
-import subprocess
-import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
@@ -19,14 +15,15 @@ from pydantic import BaseModel
 
 import brain
 # fmt: off
-from analyzer import (iter_sample_jsons, predict_scratch_card,
-                      probability_heatmap, render_heatmap)
+from analyzer import (compute_position_probabilities, iter_sample_jsons,
+                      predict_scratch_card, probability_heatmap,
+                      render_heatmap)
 
 # fmt: on
 
 # —— Logging setup —————————————————————————————————————————————————————————————
 log_handlers = [
-    logging.StreamHandler(sys.stdout),
+    logging.StreamHandler(),
     RotatingFileHandler(
         "app.log", mode="a", encoding="utf-8", maxBytes=5_000_000, backupCount=3
     ),
@@ -51,16 +48,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-HERE = Path(__file__).parent
-script = HERE / "excel_cleaner_and_formatter.py"
-
-
-@app.on_event("startup")
-async def pre_startup():  # FIXME rename to avoid F811 duplicate
-    logger.info("📂 on_startup: starting Excel cleaning")
-    # 用当前 Python 解释器执行清洗脚本
-    subprocess.run([sys.executable, str(script)], check=True)
-    logger.info("📂 on_startup: cleaning script finished")
 
 
 @app.get("/debug/priors", response_class=JSONResponse)
@@ -77,8 +64,11 @@ async def _load_samples_background():
 
 @app.on_event("startup")
 async def startup_event():
-    # 1) 先綁 port（Uvicorn 自行處理）
-    # 2) 再排程背景任務
+    logging.info("[startup] Computing priors from samples ZIPs …")
+    global priors
+    priors = compute_position_probabilities("samples", ROWS, COLS)
+    brain.priors = priors
+    logging.info(f"[startup] Priors computed for {ROWS}×{COLS} grid")
     asyncio.create_task(_load_samples_background())
 
 
@@ -132,14 +122,18 @@ os.environ.setdefault("PHASE2_ITERATIONS", "1000")
 os.environ.setdefault("PHASE2_TOP_N", "10")
 os.environ.setdefault("PHASE2_EPSILON", "0.05")
 os.environ.setdefault("LOG_LEVEL", "INFO")
+os.environ.setdefault("GRID_ROWS", "8")
+os.environ.setdefault("GRID_COLS", "10")
 
 PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
 PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
 PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
 PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
+ROWS = int(os.getenv("GRID_ROWS", 8))
+COLS = int(os.getenv("GRID_COLS", 10))
 
-# 全局先验概率（来自 Excel 样本）
-priors: Dict[int, float] = {}
+# 全局先验概率
+priors: Dict[Tuple[int, int], Dict[int, float]] = {}
 
 
 # ==== Helpers: sanitize floats ===============================================
@@ -289,23 +283,6 @@ async def heatmap(req: HeatmapRequest):
     except Exception as exc:
         logger.error("Heatmap failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.on_event("startup")
-async def on_startup():
-    # 自动清洗 Excel 并加载先验
-    try:
-        subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
-        p = Path("output/cleaned_data.json")
-        global priors
-        if p.exists():
-            priors = json.loads(p.read_text(encoding="utf-8"))
-        else:
-            priors = {}
-        brain.priors = priors
-        logger.info("Loaded priors from cleaned_data.json")
-    except Exception as e:
-        logger.warning("Could not load priors on startup: %s", e)
 
 
 @app.on_event("shutdown")
