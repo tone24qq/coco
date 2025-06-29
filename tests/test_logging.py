@@ -4,6 +4,7 @@ import zipfile
 
 import analyzer
 
+
 def test_iter_sample_jsons_logging(tmp_path, caplog):
     samples = tmp_path / "samples"
     samples.mkdir()
@@ -14,6 +15,7 @@ def test_iter_sample_jsons_logging(tmp_path, caplog):
         list(analyzer.iter_sample_jsons(str(samples)))
     # 這裡改成抓實際出現的 log 關鍵字
     assert any("Loaded a.zip" in r.message for r in caplog.records)
+
 
 def test_top3_logging(caplog):
     grid = [[-1, -1], [-1, -1]]

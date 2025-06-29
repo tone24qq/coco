@@ -60,12 +60,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Phase-2 focused iteration count",
     )
-    parser.add_argument(
-        "--top-n", type=int, default=10, help="Top cells to refine"
-    )
-    parser.add_argument(
-        "--epsilon", type=float, default=0.05, help="Exploration rate"
-    )
+    parser.add_argument("--top-n", type=int, default=10, help="Top cells to refine")
+    parser.add_argument("--epsilon", type=float, default=0.05, help="Exploration rate")
     parser.add_argument(
         "--target", type=int, default=None, help="Target number to predict"
     )
@@ -107,9 +103,7 @@ def parse_grid(grid_str: str) -> List[List[int]]:
             raise ValueError("Grid must be a 2D matrix")
         r, c = grid_np.shape
         if r < 2 or c < 2:
-            raise ValueError(
-                "Grid must be at least 2x2 with consistent row length"
-            )
+            raise ValueError("Grid must be at least 2x2 with consistent row length")
         return grid_np.tolist()
     except ValueError as e:
         logging.error(f"Invalid grid format: {e}")
@@ -120,9 +114,7 @@ def main():
     """Main function to run scratch card prediction."""
     args = parse_args()
     try:
-        subprocess.run(
-            ["python", "excel_cleaner_and_formatter.py"], check=True
-        )
+        subprocess.run(["python", "excel_cleaner_and_formatter.py"], check=True)
         p = Path("output/cleaned_data.json")
         global priors
         if p.exists():
@@ -181,9 +173,7 @@ def main():
             logging.info(
                 f"Cell ({pred['row']}, {pred['col']}): {pred['candidates']} with probability {pred['probability']:.2f}%"
             )
-        logging.info(
-            "Full probabilities available in result['full_probabilities']"
-        )
+        logging.info("Full probabilities available in result['full_probabilities']")
         logging.info("Complete!")
         return result
     except (ValueError, Exception) as e:
