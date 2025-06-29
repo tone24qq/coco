@@ -5,7 +5,74 @@
 > Last-Updated: **2025-06-25**
 
 本文件說明 `app.py`, `main.py`, `analyzer.py`, `brain.py`, `modules.py` 之間的 _Agent_ 切分與責任。低耦合、高內聚的代理設計能讓你 **快速替換演算法**，同時維持 API/CLI 介面不變。
+# AGENTS 使用與擴充規範（AGENTS.md）
 
+本專案採模組化與可維護設計，所有預測邏輯基於啟發式演算法、歷史樣本統計、模擬推論。為保障主體邏輯清晰、穩定與可測試，請遵守以下規範：
+
+---
+
+## 🧾 允許修改的檔案範圍
+
+預設允許修改以下五個主流程模組：
+
+- `main.py`
+- `app.py`
+- `analyzer.py`
+- `brain.py`
+- `modules.py`
+
+以及所有測試相關檔案：
+
+- `tests/` 目錄下的檔案
+
+---
+
+## ✳️ 附加允許（必要時擴充）
+
+若有明確功能需求，可**額外新增或修改最多 5 個 Python 檔案**（不含 tests），例如：
+
+- `ml_predictor.py`、`grid_utils.py`、`agent_adapter.py` 等工具模組  
+- 新增模組需保持與主流程邏輯一致，且命名清楚、結構單一
+
+請避免破壞原始模組註冊與呼叫架構，如需大幅改動請先提議經審核通過。
+
+---
+
+## 🔒 套件依賴限制（Dependency Policy）
+
+本專案依賴如下輕量套件：
+
+- `numpy`, `scipy`, `xxhash`, `joblib`, `ray`
+- `fastapi`, `uvicorn`, `pydantic`, `openpyxl`, `numba`
+
+禁止新增下列大型套件：
+
+- `pandas`, `scikit-learn`, `torch`, `transformers`, `keras`, `tensorflow` 等  
+- **LightGBM** 可在外部訓練後將模型輸出為檔案，但不可於 repo 中安裝或使用其 `sklearn` wrapper 介面
+
+---
+
+## 📌 模型整合建議
+
+如需整合機器學習邏輯：
+
+1. 請於本地完成模型訓練與驗證，產出純檔案模型（例如 .txt/.bin）
+2. 於允許範圍內實作 `@register_formula("ml_model")` 並將推論邏輯包裝進內部模組
+3. 禁止在 repo 中引入外部 ML framework 或自動訓練流程
+
+---
+
+## 🧪 測試要求
+
+所有新增模組必須提供對應測試，並保證：
+
+- 不引入外部依賴或隱含副作用
+- 通過現有 CI 測試與 lint 檢查
+- 維持主流程的穩定性與介面一致性
+
+---
+
+如需進一步擴充範圍或討論技術整合，請事前提出修改計畫供審核。
 ---
 
 ## 1. System Bird-Eye
