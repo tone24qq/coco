@@ -355,32 +355,29 @@ def EXT_Q5_GlobalEntropy_Vec(
     return np.full(grid.shape, 0.6 * entropy + 0.4 * heat_score, dtype=float)
 
 
-def compute_line_bridge_score(grid):
+def compute_line_bridge_score(grid: np.ndarray) -> np.ndarray:
     """Return bridge confidence by enumerating all adjacent pairs."""
 
     rows, cols = grid.shape
     score = np.zeros((rows, cols), dtype=float)
 
-    for r in range(rows):
-        for c in range(cols):
-            if c + 1 < cols and grid[r, c] == grid[r, c + 1]:
-                score[r, c] += 1.0
-                score[r, c + 1] += 1.0
-            if r + 1 < rows and grid[r, c] == grid[r + 1, c]:
-                score[r, c] += 1.0
-                score[r + 1, c] += 1.0
+    # horizontal and vertical matching pairs
+    right_eq = (
+        (grid[:, :-1] != -1) & (grid[:, 1:] != -1) & (grid[:, :-1] == grid[:, 1:])
+    )
+    down_eq = (grid[:-1, :] != -1) & (grid[1:, :] != -1) & (grid[:-1, :] == grid[1:, :])
 
-            val = grid[r, c]
-            matches = 0.0
-            if r > 0 and grid[r - 1, c] == val:
-                matches += 1.0
-            if r + 1 < rows and grid[r + 1, c] == val:
-                matches += 1.0
-            if c > 0 and grid[r, c - 1] == val:
-                matches += 1.0
-            if c + 1 < cols and grid[r, c + 1] == val:
-                matches += 1.0
-            score[r, c] += matches / 4.0
+    score[:, :-1] += right_eq
+    score[:, 1:] += right_eq
+    score[:-1, :] += down_eq
+    score[1:, :] += down_eq
+
+    matches = np.zeros_like(grid, dtype=float)
+    matches[:, 1:] += right_eq
+    matches[:, :-1] += right_eq
+    matches[1:, :] += down_eq
+    matches[:-1, :] += down_eq
+    score += matches / 4.0
 
     mx = score.max(initial=1.0)
     score /= mx
@@ -940,7 +937,8 @@ def EXT_Q2_PotentialPath_Vec(
 
     rows, cols = grid.shape
     score = np.zeros((rows, cols), dtype=float)
-    directions = [
+    valid = grid != -1
+    dirs = [
         (0, 1),
         (1, 0),
         (1, 1),
@@ -951,17 +949,17 @@ def EXT_Q2_PotentialPath_Vec(
         (-1, -1),
     ]
 
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] == -1:
-                continue
-            val = int(grid[r, c])
-            for dr, dc in directions:
-                r2, c2 = r + dr, c + dc
-                if 0 <= r2 < rows and 0 <= c2 < cols and grid[r2, c2] != -1:
-                    if abs(val - int(grid[r2, c2])) == 1:
-                        score[r, c] += 1.0
-                        score[r2, c2] += 1.0
+    for dr, dc in dirs:
+        r1 = slice(max(0, -dr), rows - max(0, dr))
+        c1 = slice(max(0, -dc), cols - max(0, dc))
+        r2 = slice(max(0, dr), rows - max(0, -dr))
+        c2 = slice(max(0, dc), cols - max(0, -dc))
+
+        a = grid[r1, c1]
+        b = grid[r2, c2]
+        m = valid[r1, c1] & valid[r2, c2] & (np.abs(a - b) == 1)
+        score[r1, c1] += m
+        score[r2, c2] += m
 
     mx = score.max(initial=0.0)
     if mx > 0:
@@ -978,14 +976,14 @@ def EXT_Q3_DiscontinuitySym_Vec(
     rows, cols = grid.shape
     score = np.zeros((rows, cols), dtype=float)
 
-    for r in range(rows):
-        for c in range(cols):
-            r2, c2 = rows - 1 - r, cols - 1 - c
-            if r > r2 or (r == r2 and c >= c2):
-                continue
-            if grid[r, c] != -1 and grid[r2, c2] != -1 and grid[r, c] == grid[r2, c2]:
-                score[r, c] += 1.0
-                score[r2, c2] += 1.0
+    rr, cc = np.indices((rows, cols))
+    r2 = rows - 1 - rr
+    c2 = cols - 1 - cc
+    pair_mask = (rr < r2) | ((rr == r2) & (cc < c2))
+    valid = (grid != -1) & (grid[r2, c2] != -1)
+    match = valid & (grid == grid[r2, c2]) & pair_mask
+    score += match
+    score += match[::-1, ::-1]
 
     mx = score.max(initial=0.0)
     if mx > 0:
@@ -1331,7 +1329,5 @@ def aggregate_scores(
     weights_normalized = weights / (weights.sum() + 1e-10)
     final = np.tensordot(weights_normalized, stack_z, axes=(0, 0))
     if names:
-        contrib = (weights_normalized[:, None, None] * stack_z).mean(axis=(1, 2))
-        for n, w, c in zip(names, weights_normalized, contrib):
-            logger.info("aggregate | %s | w=%.3f | contrib=%.3f", n, w, float(c))
+        pass
     return final
