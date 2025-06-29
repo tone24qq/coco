@@ -355,6 +355,13 @@ def generate_full_boards(
     grid: np.ndarray,
 ) -> np.ndarray:
     """Generate batch of complete boards using weighted formulas with importance sampling."""
+    logger.debug(
+        "generate_full_boards rows=%d cols=%d batch=%d formulas=%s",
+        rows,
+        cols,
+        batch,
+        formulas,
+    )
     valid = [f for f in formulas if f in FORMULA_REGISTRY]
     if not valid:
         raise ValueError("No valid formulas available")
@@ -600,6 +607,12 @@ def rank_cells_by_prior_and_modules(
     w_prior: float = 0.5,
 ) -> List[Tuple[int, int, float]]:
     """Return top-3 unknown cells ranked by fused prior and module scores."""
+    logger.debug(
+        "rank_cells_by_prior_and_modules target=%s modules=%s w_prior=%.2f",
+        target_num,
+        modules,
+        w_prior,
+    )
 
     rows, cols = grid.shape
     if prior_cube.shape[:2] != (rows, cols):

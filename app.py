@@ -188,6 +188,7 @@ async def ping() -> Dict[str, str]:
     status_code=200,
 )
 async def predict(req: GridRequest):
+    logger.debug("/predict called with iterations=%s", req.iterations)
     try:
         # 格式校验
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
@@ -315,6 +316,9 @@ async def on_shutdown():
 
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
+    # Clean cached bytecode and restart any lingering uvicorn instances
+    subprocess.run("find . -name '*.pyc' -delete", shell=True, check=False)
+    subprocess.run(["pkill", "-f", "uvicorn"], check=False)
     logger.info("Starting API on port %d", port)
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
