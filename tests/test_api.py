@@ -58,3 +58,19 @@ def test_heatmap_basic(client):
     assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
     assert isinstance(body.get("final_recommendations"), list)
+
+
+def test_heatmap_json(client):
+    """POST /heatmap with output_format=json → prob_map JSON"""
+    grid = empty_grid(2, 2)
+    payload = {"grid": grid, "target_num": 1, "iterations": 4, "output_format": "json"}
+    resp = client.post("/heatmap", json=payload)
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert isinstance(body.get("prob_map"), list)
+    assert body.get("heatmap") is None
+    assert isinstance(body.get("predictions"), list)
+    assert isinstance(body.get("top_predictions"), list)
+    assert isinstance(body.get("full_probabilities"), dict)
+    assert isinstance(body.get("final_recommendations"), list)

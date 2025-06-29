@@ -5,7 +5,7 @@ import math
 import os
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
@@ -105,8 +105,8 @@ class HeatmapRequest(BaseModel):
     target_num: Optional[int] = None
     iterations: int = 1000
     seed: int = 0
-    output_format: str = "base64"
-    sample_gamma: float = 0.0
+    output_format: Literal["base64", "raw", "json"] = "base64"
+    sample_gamma: Optional[float] = None
 
 
 class HeatmapResponse(BaseModel):
@@ -281,7 +281,7 @@ async def heatmap(req: HeatmapRequest):
             k_eff,
             iters,
             seed=req.seed,
-            sample_gamma=req.sample_gamma,
+            sample_gamma=req.sample_gamma or 0.0,
             history_dir="samples",
         )
 
@@ -302,7 +302,7 @@ async def heatmap(req: HeatmapRequest):
             epsilon=PHASE2_EPS,
             result_top_k=3,
             priors=brain.priors_map[key],
-            sample_gamma=req.sample_gamma,
+            sample_gamma=req.sample_gamma or 0.0,
         )
 
         full_probs = pred_result.get("full_probabilities", {})
@@ -324,7 +324,7 @@ async def heatmap(req: HeatmapRequest):
                 "full_probabilities": clean_probs,
                 "final_recommendations": pred_result.get("final_recommendations"),
             }
-        elif req.output_format.lower() == "raw":
+        elif req.output_format.lower() in ("raw", "json"):
             resp = {
                 "prob_map": prob.tolist(),
                 "heatmap": None,
@@ -332,6 +332,7 @@ async def heatmap(req: HeatmapRequest):
                 "top_predictions": pred_result.get("top_predictions"),
                 "full_probabilities": clean_probs,
                 "final_recommendations": pred_result.get("final_recommendations"),
+                "sample_gamma_used": req.sample_gamma or 0.0,
             }
         else:
             img = render_heatmap(prob, req.output_format)
