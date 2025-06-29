@@ -1113,20 +1113,33 @@ def predict_scratch_card(
     }
 
 
-def process_grid(grid):
+def process_grid(grid: np.ndarray) -> List[Dict[str, Any]]:
+    """Return prediction list for remaining blanks using module weighting."""
+
     blanks = np.argwhere(grid == -1)
-    preds = []
+    if blanks.size == 0:
+        return []
+
+    base_map: Dict[Tuple[int, int], Dict[int, float]] = {}
     for r, c in blanks:
         legal_vals = analyzer_utils.get_legal_values_for_placement(grid)
-        max_prob = max(legal_vals) if legal_vals else 1
-        preds.append(
-            {
-                "row": int(r),
-                "col": int(c),
-                "candidates": [int(max_prob)],
-                "probability": 100.0 if grid[r, c] != -1 else 50.0,
-            }
+        pred_val = (
+            int(grid[r, c])
+            if grid[r, c] != -1
+            else (max(legal_vals) if legal_vals else 1)
         )
+        base_map[(int(r), int(c))] = {pred_val: 1.0}
+
+    weighted = weight_prob_by_modules(grid, base_map)
+    total = sum(next(iter(d.values())) for d in weighted.values()) or 1e-10
+
+    preds = []
+    for (r, c), dist in weighted.items():
+        num, score = next(iter(dist.items()))
+        prob = score / total * 100.0
+        preds.append({"row": r, "col": c, "candidates": [num], "probability": prob})
+
+    preds.sort(key=lambda x: x["probability"], reverse=True)
     return preds
 
 
