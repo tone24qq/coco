@@ -590,6 +590,41 @@ def weight_prob_by_modules(
     return _native_dict(result)
 
 
+def fuse_prob_with_scores(
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    module_map: np.ndarray,
+    *,
+    blanks: List[Tuple[int, int]],
+    alpha: float = 0.5,
+    pseudo_count: float = 1.0,
+) -> List[Tuple[int, int, float]]:
+    """Fuse module scores with probability map and return ranked cells."""
+
+    if not blanks:
+        return []
+
+    rows, cols = module_map.shape
+    ms = module_map.astype(float)
+    ms_min, ms_max = ms.min(), ms.max()
+    if ms_max > ms_min:
+        ms = (ms - ms_min) / (ms_max - ms_min)
+    else:
+        ms.fill(0.5)
+
+    p_best = np.zeros((rows, cols), dtype=float)
+    for (r, c), dist in prob_map.items():
+        if dist:
+            p_best[r, c] = max(dist.values())
+
+    uniform = 1.0 / float(len(blanks))
+    p_smooth = (p_best + pseudo_count * uniform) / (1.0 + pseudo_count)
+    final = alpha * ms + (1.0 - alpha) * p_smooth
+
+    ranking = [(int(r), int(c), float(final[r, c])) for r, c in blanks]
+    ranking.sort(key=lambda x: x[2], reverse=True)
+    return ranking
+
+
 def rank_cells_by_prior_and_modules(
     grid: np.ndarray,
     prior_cube: np.ndarray,
@@ -812,6 +847,8 @@ def predict_scratch_card(
     history_dir: str = "samples",
     gamma_history: float = 0.0,
     sample_gamma: float = 0.0,
+    fusion_alpha: float = 0.5,
+    pseudo_count: float = 1.0,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -947,6 +984,14 @@ def predict_scratch_card(
     )[:3]
     logger.info("prob_map top3: %s", top3)
 
+    fused_rank = fuse_prob_with_scores(
+        prob_map,
+        final_score_map,
+        blanks=blanks,
+        alpha=fusion_alpha,
+        pseudo_count=pseudo_count,
+    )
+
     if target_num is not None:
         for key, p in prob_map.items():
             prob_map[key] = {target_num: p.get(target_num, 0.0)}
@@ -992,6 +1037,9 @@ def predict_scratch_card(
             "predictions": _trim(rank),
             "top_predictions": top_predictions,
             "full_probabilities": prob_map,
+            "final_recommendations": [
+                {"row": r, "col": c, "score": s} for r, c, s in fused_rank[:top_k]
+            ],
         }
 
     if unique and target_num is None:
@@ -1071,6 +1119,9 @@ def predict_scratch_card(
             "predictions": _trim(preds),
             "top_predictions": top_predictions,
             "full_probabilities": prob_map,
+            "final_recommendations": [
+                {"row": r, "col": c, "score": s} for r, c, s in fused_rank[:top_k]
+            ],
         }
 
     preds = []
@@ -1116,6 +1167,9 @@ def predict_scratch_card(
         "predictions": _trim(preds),
         "top_predictions": top_predictions,
         "full_probabilities": prob_map,
+        "final_recommendations": [
+            {"row": r, "col": c, "score": s} for r, c, s in fused_rank[:top_k]
+        ],
     }
 
 

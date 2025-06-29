@@ -42,6 +42,7 @@ def test_predict_valid_grid():
     assert "predictions" in body
     assert "top_predictions" in body
     assert "full_probabilities" in body
+    assert "final_recommendations" in body
     assert isinstance(body["predictions"], list)
 
 

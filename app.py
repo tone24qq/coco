@@ -79,6 +79,7 @@ class GridRequest(BaseModel):
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
     sample_gamma: Optional[float] = None
+    fusion_alpha: Optional[float] = None
 
 
 class Prediction(BaseModel):
@@ -90,10 +91,17 @@ class Prediction(BaseModel):
     module_scores: Dict[str, float]
 
 
+class CellScore(BaseModel):
+    row: int
+    col: int
+    score: float
+
+
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     top_predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
+    final_recommendations: List[CellScore]
 
 
 class HeatmapRequest(BaseModel):
@@ -199,9 +207,14 @@ async def predict(req: GridRequest):
         top_n = req.top_n or PHASE2_TOP_N
         eps = req.epsilon or PHASE2_EPS
         top_k = req.result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+        fusion_alpha = (
+            req.fusion_alpha
+            if req.fusion_alpha is not None
+            else float(os.getenv("FUSION_ALPHA", "0.5"))
+        )
 
         logger.info(
-            "Predict | size=%dx%d | target=%s | ph1=%d | ph2=%d | top_k=%d | top_n=%d | eps=%.3f",
+            "Predict | size=%dx%d | target=%s | ph1=%d | ph2=%d | top_k=%d | top_n=%d | eps=%.3f | alpha=%.2f",
             rows,
             cols,
             str(req.target_num),
@@ -210,6 +223,7 @@ async def predict(req: GridRequest):
             top_k,
             top_n,
             eps,
+            fusion_alpha,
         )
 
         # 调用核心推理
@@ -224,6 +238,7 @@ async def predict(req: GridRequest):
             result_top_k=top_k,
             priors=brain.priors_map[key],
             sample_gamma=req.sample_gamma or 0.0,
+            fusion_alpha=fusion_alpha,
         )
 
         # 清洗 full_probabilities
@@ -240,6 +255,7 @@ async def predict(req: GridRequest):
             "predictions": result.get("predictions", []),
             "top_predictions": result.get("top_predictions", []),
             "full_probabilities": clean_probs,
+            "final_recommendations": result.get("final_recommendations", []),
             "sample_gamma_used": req.sample_gamma or 0.0,
         }
         safe_payload = sanitize_floats(payload)
