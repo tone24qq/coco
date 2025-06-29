@@ -40,6 +40,7 @@ def test_predict_valid_grid():
     assert res.status_code == 200
     body = res.json()
     assert "predictions" in body
+    assert "top_predictions" in body
     assert "full_probabilities" in body
     assert isinstance(body["predictions"], list)
 

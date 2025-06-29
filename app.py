@@ -92,6 +92,7 @@ class Prediction(BaseModel):
 
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
+    top_predictions: List[Prediction]
     full_probabilities: Dict[str, Dict[str, float]]
 
 
@@ -237,6 +238,7 @@ async def predict(req: GridRequest):
 
         payload = {
             "predictions": result.get("predictions", []),
+            "top_predictions": result.get("top_predictions", []),
             "full_probabilities": clean_probs,
             "sample_gamma_used": req.sample_gamma or 0.0,
         }

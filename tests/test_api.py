@@ -37,6 +37,7 @@ def test_predict_basic(client):
 
     assert resp.status_code == 200
     assert isinstance(body.get("predictions"), list) and len(body["predictions"]) > 0
+    assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
 
 

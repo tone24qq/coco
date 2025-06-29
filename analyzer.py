@@ -985,10 +985,12 @@ def predict_scratch_card(
                 for mod, _ in modules
             }
 
+        top_predictions = rank[:3]
         return {
             "mode": "target",
             "target": target_num,
             "predictions": _trim(rank),
+            "top_predictions": top_predictions,
             "full_probabilities": prob_map,
         }
 
@@ -1063,9 +1065,11 @@ def predict_scratch_card(
             }
 
         preds.sort(key=lambda x: x["probability"], reverse=True)
+        top_predictions = preds[:3]
         return {
             "mode": mode,
             "predictions": _trim(preds),
+            "top_predictions": top_predictions,
             "full_probabilities": prob_map,
         }
 
@@ -1106,9 +1110,11 @@ def predict_scratch_card(
         key=lambda x: x["probability"][0] if x["probability"] else 0,
         reverse=True,
     )
+    top_predictions = preds[:3]
     return {
         "mode": "top3",
         "predictions": _trim(preds),
+        "top_predictions": top_predictions,
         "full_probabilities": prob_map,
     }
 
