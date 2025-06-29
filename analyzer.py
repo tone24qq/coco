@@ -523,12 +523,17 @@ def simulate_full_board(
         for num in probs
     ]
     top_k = heapq.nlargest(topk, candidates, key=lambda x: x[2])
-    final_prob_map = {}
-    for r, c, fast_score, num in top_k:
-        final_score = float(soft_heat[r, c])
-        if (r, c) not in final_prob_map:
-            final_prob_map[(r, c)] = {}
-        final_prob_map[(r, c)][num] = final_score
+    final_prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+    for r, c, _, num in top_k:
+        base = prob_map[(r, c)].get(num, 0.0)
+        final_score = float(soft_heat[r, c]) * base
+        cell = final_prob_map.setdefault((r, c), {})
+        cell[num] = final_score
+
+    for cell, dist in final_prob_map.items():
+        total = sum(dist.values()) or 1e-10
+        for n in dist:
+            dist[n] /= total
 
     # 來自 probmap_key_patch_v2.txt
     prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
