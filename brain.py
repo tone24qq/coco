@@ -948,22 +948,33 @@ def EXT_Q1_ProximityEntropy_Vec(
 
 @batchable
 def EXT_Q2_PotentialPath_Vec(
-    grid: np.ndarray, request_id: Optional[str] = "N/A"
+    grid: np.ndarray,
+    *,
+    target: Optional[int] = None,
+    priors: Optional[Dict[Tuple[int, int], Dict[int, float]]] = None,
+    w_adj: float = 0.3,
+    threshold: float = 0.05,
+    request_id: Optional[str] = "N/A",
 ) -> np.ndarray:
-    """Score cells by enumerating sequential neighbors across the board."""
+    """Score cells by enumerating sequential neighbors across the board.
+
+    The score activates only when a cell has sequential numbers in at least two
+    directions or is surrounded entirely by unknown cells. The entire map is
+    zeroed if the global prior frequency for ``target`` does not exceed
+    ``threshold``.
+    """
 
     rows, cols = grid.shape
-    score = np.zeros((rows, cols), dtype=float)
     valid = grid != -1
+    score = np.zeros((rows, cols), dtype=float)
+    counts = np.zeros((rows, cols), dtype=float)
+    known_neighbors = np.zeros((rows, cols), dtype=int)
+
     dirs = [
         (0, 1),
         (1, 0),
-        (1, 1),
-        (1, -1),
-        (-1, 1),
         (0, -1),
         (-1, 0),
-        (-1, -1),
     ]
 
     for dr, dc in dirs:
@@ -974,14 +985,28 @@ def EXT_Q2_PotentialPath_Vec(
 
         a = grid[r1, c1]
         b = grid[r2, c2]
-        m = valid[r1, c1] & valid[r2, c2] & (np.abs(a - b) == 1)
-        score[r1, c1] += m
-        score[r2, c2] += m
+        pair_valid = valid[r1, c1] & valid[r2, c2]
+        seq = pair_valid & (np.abs(a - b) == 1)
+        counts[r1, c1] += seq
+        counts[r2, c2] += seq
+        known_neighbors[r1, c1] += valid[r2, c2]
+        known_neighbors[r2, c2] += valid[r1, c1]
+
+    activate = (counts >= 2) | (known_neighbors == 0)
+    score = np.where(activate, counts, 0.0)
+
+    if target is not None and priors:
+        freq = sum(d.get(target, 0.0) for d in priors.values()) / (len(priors) or 1)
+        if freq <= threshold:
+            return np.zeros((rows, cols), dtype=float)
 
     mx = score.max(initial=0.0)
     if mx > 0:
-        score /= mx
-    return score
+        score = (score / mx) * float(w_adj)
+    else:
+        score.fill(0.0)
+
+    return score.astype(np.float32)
 
 
 @batchable

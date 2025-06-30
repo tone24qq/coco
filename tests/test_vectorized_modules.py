@@ -3,33 +3,35 @@ import numpy as np
 import brain
 
 
-def ref_q2(grid: np.ndarray) -> np.ndarray:
+def ref_q2(
+    grid: np.ndarray, *, w_adj: float = 1.0, threshold: float = 0.0
+) -> np.ndarray:
     rows, cols = grid.shape
-    score = np.zeros((rows, cols), dtype=float)
-    dirs = [
-        (0, 1),
-        (1, 0),
-        (1, 1),
-        (1, -1),
-        (-1, 1),
-        (0, -1),
-        (-1, 0),
-        (-1, -1),
-    ]
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] == -1:
-                continue
-            val = int(grid[r, c])
-            for dr, dc in dirs:
-                r2, c2 = r + dr, c + dc
-                if 0 <= r2 < rows and 0 <= c2 < cols and grid[r2, c2] != -1:
-                    if abs(val - int(grid[r2, c2])) == 1:
-                        score[r, c] += 1.0
-                        score[r2, c2] += 1.0
+    valid = grid != -1
+    counts = np.zeros((rows, cols), dtype=float)
+    known = np.zeros((rows, cols), dtype=int)
+    dirs = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    for dr, dc in dirs:
+        r1 = slice(max(0, -dr), rows - max(0, dr))
+        c1 = slice(max(0, -dc), cols - max(0, dc))
+        r2 = slice(max(0, dr), rows - max(0, -dr))
+        c2 = slice(max(0, dc), cols - max(0, -dc))
+        a = grid[r1, c1]
+        b = grid[r2, c2]
+        mask = valid[r1, c1] & valid[r2, c2] & (np.abs(a - b) == 1)
+        counts[r1, c1] += mask
+        counts[r2, c2] += mask
+        known[r1, c1] += valid[r2, c2]
+        known[r2, c2] += valid[r1, c1]
+    active = (counts >= 2) | (known == 0)
+    score = np.where(active, counts, 0.0)
+    if threshold > 0:
+        return np.zeros_like(score)
     mx = score.max(initial=0.0)
     if mx > 0:
-        score /= mx
+        score = (score / mx) * w_adj
+    else:
+        score.fill(0.0)
     return score
 
 
@@ -85,7 +87,10 @@ def _make_grid(r: int, c: int) -> np.ndarray:
 
 def test_q2_vectorized_matches_reference():
     g = _make_grid(5, 6)
-    assert np.allclose(brain.EXT_Q2_PotentialPath_Vec(g), ref_q2(g))
+    assert np.allclose(
+        brain.EXT_Q2_PotentialPath_Vec(g, w_adj=1.0, threshold=0.0),
+        ref_q2(g, w_adj=1.0, threshold=0.0),
+    )
 
 
 def test_q3_vectorized_matches_reference():
@@ -96,3 +101,15 @@ def test_q3_vectorized_matches_reference():
 def test_q6_vectorized_matches_reference():
     g = _make_grid(5, 5)
     assert np.allclose(brain.EXT_Q6_LineBridge_Vec(g), ref_q6(g))
+
+
+def test_q2_threshold_blocks_score():
+    g = np.array([[1, 2], [3, -1]])
+    priors = {
+        (0, 0): {1: 0.1},
+        (0, 1): {2: 0.1},
+        (1, 0): {3: 0.1},
+        (1, 1): {},
+    }
+    out = brain.EXT_Q2_PotentialPath_Vec(g, target=1, priors=priors, threshold=0.5)
+    assert np.all(out == 0)
