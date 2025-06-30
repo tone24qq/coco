@@ -1251,7 +1251,7 @@ RERANK_PHASE = [
 ]
 
 # Static weights for module aggregation
-AGG_WEIGHTS = {
+DEFAULT_AGG_WEIGHTS = {
     "EXT_Q1_ProximityEntropy_Vec": 0.20,
     "EXT_Q2_PotentialPath_Vec": 0.15,
     "EXT_Q3_DiscontinuitySym_Vec": 0.10,
@@ -1274,9 +1274,37 @@ AGG_WEIGHTS = {
 }
 
 
+def _read_performance(file_path: str) -> Dict[str, float]:
+    """Return mapping of module to accuracy from performance file."""
+    acc: Dict[str, float] = {}
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.strip().split()
+                if len(parts) < 2:
+                    continue
+                try:
+                    acc[parts[0]] = float(parts[1])
+                except ValueError:
+                    continue
+    return acc
+
+
 def _load_weights() -> Dict[str, float]:
-    """Return normalized weights with ENV overrides."""
-    w = AGG_WEIGHTS.copy()
+    """Return normalized weights with performance and ENV overrides."""
+    w = DEFAULT_AGG_WEIGHTS.copy()
+
+    perf_file = os.getenv("PERFORMANCE_FILE", "module_performance.txt")
+    perf = _read_performance(perf_file)
+    if perf:
+        total = sum(perf.get(m, 0.0) for m in w)
+        if total > 0:
+            norm = {m: perf.get(m, 0.0) / total for m in w}
+            min_w = float(os.getenv("MIN_WEIGHT", "0.05"))
+            floored = {k: max(v, min_w) for k, v in norm.items()}
+            total_f = sum(floored.values()) or 1.0
+            w = {k: floored[k] / total_f for k in w}
+
     for name in w:
         env_key = f"WEIGHT_{name.split('_')[1]}"
         env_val = os.getenv(env_key)
@@ -1285,6 +1313,7 @@ def _load_weights() -> Dict[str, float]:
                 w[name] = float(env_val)
             except ValueError:
                 logger.warning("Invalid weight for %s: %s", env_key, env_val)
+
     total = sum(w.values())
     if not math.isclose(total, 1.0, rel_tol=1e-3):
         logger.info("Normalizing module weights (sum %.3f)", total)
@@ -1368,12 +1397,24 @@ def get_module_score(
 def aggregate_scores(
     stack: np.ndarray, weights: np.ndarray, names: Optional[list[str]] | None = None
 ) -> np.ndarray:
-    """Normalize score maps then combine via weighted sum."""
+    """Normalize score maps then combine via dynamic weighted sum."""
     mu = stack.mean(axis=(1, 2), keepdims=True)
     sigma = stack.std(axis=(1, 2), keepdims=True) + 1e-6
     stack_z = (stack - mu) / sigma
-    weights_normalized = weights / (weights.sum() + 1e-10)
-    final = np.tensordot(weights_normalized, stack_z, axes=(0, 0))
+
+    weights = np.asarray(weights, dtype=float)
+    base = weights / (weights.sum() + 1e-10)
+
+    conf = stack_z.max(axis=(1, 2)) - stack_z.mean(axis=(1, 2))
+    conf = np.clip(conf, 0.0, None)
+    if conf.sum() > 0:
+        conf /= conf.sum()
+        alpha = float(os.getenv("WEIGHT_ALPHA", "0.8"))
+        weights = alpha * base + (1.0 - alpha) * conf
+    else:
+        weights = base
+
+    final = np.tensordot(weights, stack_z, axes=(0, 0))
     if names:
         pass
     return final
