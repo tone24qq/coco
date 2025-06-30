@@ -1511,6 +1511,7 @@ def probability_heatmap(
     seed: int = 0,
     sample_gamma: float = 0.0,
     history_dir: str = "samples",
+    nearest_weight: float = 0.0,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
 
@@ -1555,6 +1556,11 @@ def probability_heatmap(
                     k, 0.0
                 )
             out[r, c] = val
+        if nearest_weight > 0:
+            from modules import nearest_value_affinity
+
+            near = nearest_value_affinity(grid_np, k, tolerance=1, radius=1)
+            out = (1.0 - nearest_weight) * out + nearest_weight * near
         if out.max() > 0:
             out = out / float(out.max())
         return out
