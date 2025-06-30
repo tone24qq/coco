@@ -20,5 +20,5 @@ def test_predict_random_board(r, c):
 
     board = np.arange(1, r * c + 1, dtype=int).reshape(r, c)
     board[r // 2, c // 2] = -1
-    result = predict_scratch_card(board.tolist(), iterations=8)
+    result = predict_scratch_card(board.tolist(), iterations=8, unique=False)
     assert "predictions" in result

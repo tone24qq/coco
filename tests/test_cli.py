@@ -14,6 +14,8 @@ def test_cli_quick_exit(tmp_path):
             grid_str,
             "--iterations",
             "4",
+            "--target",
+            "4",
         ],
         capture_output=True,
         text=True,
