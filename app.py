@@ -13,8 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-import brain
 # fmt: off
+import analyzer
+import brain
 from analyzer import (compute_position_probabilities, iter_sample_jsons,
                       predict_scratch_card, probability_heatmap,
                       render_heatmap)
@@ -66,6 +67,7 @@ async def _load_samples_background():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(_load_samples_background())
+    analyzer.load_global_pos_freq("samples")
 
 
 # ==== Schemas ==============================================================

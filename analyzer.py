@@ -34,6 +34,29 @@ logger = logging.getLogger(__name__)
 math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
 
+# Global position prior cache
+_POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
+
+
+def load_global_pos_freq(samples_dir: str) -> None:
+    """Load global position frequency tensor from samples_dir if available."""
+    path = Path(samples_dir) / "pos_freq.npz"
+    try:
+        if path.exists():
+            arr = np.load(path)["freq"]
+            _POS_FREQ_CACHE[str(path)] = arr.astype(float)
+            logger.info("Loaded global position freq from %s", path)
+    except Exception as exc:  # pragma: no cover - corrupted file
+        logger.error("failed to load %s: %s", path, exc)
+
+
+def _get_global_pos_freq(samples_dir: str) -> Optional[np.ndarray]:
+    path = Path(samples_dir) / "pos_freq.npz"
+    key = str(path)
+    if key not in _POS_FREQ_CACHE and path.exists():
+        load_global_pos_freq(samples_dir)
+    return _POS_FREQ_CACHE.get(key)
+
 
 # 來自 probmap_key_patch_v2.txt
 def _native_coord(k):
@@ -113,7 +136,24 @@ def compute_history_frequency(
 def compute_position_probabilities(
     samples_dir: str, rows: int, cols: int
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """Return per-cell number probabilities from all samples."""
+    """Return per-cell number probabilities from history samples."""
+    global_freq = _get_global_pos_freq(samples_dir)
+    if global_freq is not None:
+        buckets = global_freq.shape[1]
+        prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+        for r in range(rows):
+            for c in range(cols):
+                u = r / (rows - 1) if rows > 1 else 0.0
+                v = c / (cols - 1) if cols > 1 else 0.0
+                i = min(int(u * buckets), buckets - 1)
+                j = min(int(v * buckets), buckets - 1)
+                dist = global_freq[:, i, j].astype(float)
+                dist = dist[: rows * cols + 1]
+                tot = dist.sum() or 1.0
+                probs = {k: dist[k] / tot for k in range(1, dist.size) if dist[k] > 0}
+                prob_map[(r, c)] = probs
+        return prob_map
+
     cached = Path(samples_dir) / "prior.npy"
     if cached.exists():
         cube = np.load(cached, mmap_mode="r")
