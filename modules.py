@@ -189,6 +189,7 @@ def neighbor_value_distribution(
     target: Optional[int] = None,
     tolerance: int = 1,
     radius: int = 1,
+    nearest_k: int = 0,
 ) -> np.ndarray:
     """Score hidden cells based on nearby values.
 
@@ -226,6 +227,18 @@ def neighbor_value_distribution(
 
     mask_hidden = boards == -1
     mask_near = (boards != -1) & (np.abs(boards - target) <= tolerance)
+    # 回退：若找不到任意符合 tolerance 的位置，則使用最近的 `nearest_k` 個值
+    if not mask_near.any() and nearest_k > 0:
+        for i, board in enumerate(boards):
+            if (np.abs(board - target) <= tolerance).any():
+                continue
+            known = np.unique(board[board != -1])
+            if known.size:
+                idx = np.argsort(np.abs(known - target))[:nearest_k]
+                near_k = known[idx]
+                mask_near[i] = np.isin(board, near_k)
+            else:
+                mask_near[i] = False
     dist = ndi.distance_transform_edt(~mask_near)
     kernel = np.ones((2 * radius + 1, 2 * radius + 1), dtype=float)
     mask_float = mask_near.astype(float)
@@ -240,3 +253,40 @@ def neighbor_value_distribution(
     base = 0.6 * (1 - dist_norm) + 0.4 * counts_norm
     score = mask_hidden.astype(float) * base
     return score[0] if single else score
+
+
+def nearest_value_affinity(
+    grid: np.ndarray,
+    target: Optional[int],
+    *,
+    k: int = 3,
+    tolerance: int = 1,
+    radius: int = 1,
+) -> np.ndarray:
+    """Return normalized affinity heatmap using :func:`neighbor_value_distribution`.
+
+    Parameters
+    ----------
+    grid : np.ndarray
+        Board matrix with ``-1`` for unknown cells.
+    target : int
+        Target number to search around.
+    k : int, optional
+        Number of nearest values to fall back to when no cells match ``tolerance``.
+    tolerance : int, optional
+        Acceptable absolute difference from ``target``. Defaults to ``1``.
+    radius : int, optional
+        Neighborhood radius for local counting. Defaults to ``1``.
+    """
+
+    score = neighbor_value_distribution(
+        grid,
+        target=target,
+        tolerance=tolerance,
+        radius=radius,
+        nearest_k=k,
+    )
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score = score / float(mx)
+    return score

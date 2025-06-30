@@ -1,6 +1,6 @@
 import numpy as np
 
-from modules import global_offset_cooccurrence
+from modules import global_offset_cooccurrence, neighbor_value_distribution
 
 
 def test_global_offset_cooccurrence_batch():
@@ -20,3 +20,13 @@ def test_global_offset_cooccurrence_single():
     out = global_offset_cooccurrence(board, target=1, offsets=[1])
     assert out.shape == board.shape
     assert np.all(out >= 0)
+
+
+def test_neighbor_value_distribution_fallback():
+    board = np.array([[4, 10], [5, -1]])
+    base = neighbor_value_distribution(board, target=7, tolerance=1, radius=1)
+    near = neighbor_value_distribution(
+        board, target=7, tolerance=1, radius=1, nearest_k=1
+    )
+    assert near.shape == board.shape
+    assert not np.allclose(base, near)

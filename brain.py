@@ -710,6 +710,25 @@ def EXT_M1_Tail_Pattern_Vec(
     return scores
 
 
+def compute_nearest_value_heatmap(grid, *, target, cooc_prob, k):
+    rows, cols = grid.shape
+    coords = np.argwhere(grid != -1)
+    values = grid[grid != -1].astype(int)
+    order = np.argsort(np.abs(values - target))[:k]
+    heat = np.zeros((rows, cols), dtype=float)
+    for (r, c), val in zip(coords[order], values[order]):
+        for off, mapping in cooc_prob.items():
+            p = mapping.get(val, {}).get(target)
+            if p is None:
+                continue
+            nr, nc = r + off[0], c + off[1]
+            if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] == -1:
+                heat[nr, nc] += p
+    if heat.sum() > 0:
+        heat /= heat.sum()
+    return heat
+
+
 @batchable
 def EXT_M3_Local_Focus_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A"
@@ -960,6 +979,8 @@ def EXT_X_CRFInference(
     lambda_unary: float = 1.0,
     lambda_pairwise: float = 1.0,
     iterations: int = 5,
+    nearest_k: int = 0,
+    alpha_local: float = 0.3,
     request_id: Optional[str] = "N/A",
 ) -> np.ndarray:
     """Approximate CRF inference combining unary and pairwise potentials."""
@@ -970,6 +991,17 @@ def EXT_X_CRFInference(
 
     if heatmap_scores is None:
         heatmap_scores = EXT_Q5_GlobalEntropy_Vec(grid, request_id=request_id)
+
+    if nearest_k > 0 and target is not None and cooc_prob:
+        local = compute_nearest_value_heatmap(
+            grid, target=target, cooc_prob=cooc_prob, k=nearest_k
+        )
+        if heatmap_scores.ndim == 2:
+            heatmap_scores = (1 - alpha_local) * heatmap_scores + alpha_local * local
+        else:
+            heatmap_scores[..., target] = (1 - alpha_local) * heatmap_scores[
+                ..., target
+            ] + alpha_local * local
 
     if heatmap_scores.ndim == 2:
         unary = np.exp(lambda_unary * heatmap_scores)[..., None]

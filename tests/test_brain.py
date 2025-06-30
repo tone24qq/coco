@@ -33,3 +33,25 @@ def test_aggregate_scores_basic():
     out = brain.aggregate_scores(stack, weights, ["A", "B"])
     assert out.shape == (2, 2)
     assert np.all(np.isfinite(out))
+
+
+def test_compute_nearest_value_heatmap_basic():
+    grid = np.array([[1, -1], [2, 3]])
+    cooc = {(-1, 1): {2: {2: 1.0}}}
+    heat = brain.compute_nearest_value_heatmap(grid, target=2, cooc_prob=cooc, k=1)
+    assert heat.shape == grid.shape
+    assert np.isclose(heat.sum(), 1.0)
+
+
+def test_crf_nearest_value_integration():
+    grid = np.array([[1, -1], [2, 3]])
+    cooc = {(-1, 1): {1: {2: 1.0}}}
+    out = brain.EXT_X_CRFInference(
+        grid,
+        target=2,
+        cooc_prob=cooc,
+        nearest_k=1,
+        alpha_local=0.5,
+    )
+    assert out.shape == (grid.shape[0], grid.shape[1], grid.size + 1)
+    assert np.allclose(out.sum(axis=2)[grid == -1], 1.0, atol=1e-6)

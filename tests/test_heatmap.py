@@ -49,3 +49,12 @@ def test_probability_heatmap_raw():
     arr = render_heatmap(prob, "raw")
     assert isinstance(arr, np.ndarray)
     assert arr.shape == grid.shape
+
+
+def test_probability_heatmap_nearest_weight():
+    grid = np.array([[1, -1], [2, -1]])
+    prob = probability_heatmap(grid, 3, n_iter=8, seed=1, nearest_weight=1.0)
+    from modules import nearest_value_affinity
+
+    near = nearest_value_affinity(grid, 3)
+    assert np.allclose(prob, near)
