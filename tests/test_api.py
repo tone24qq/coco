@@ -74,3 +74,25 @@ def test_heatmap_json(client):
     assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
     assert isinstance(body.get("final_recommendations"), list)
+
+
+def test_predict_1_based_top_left(client):
+    grid = [[-1, 2], [3, 4]]
+    payload = {"grid": grid, "target_num": 1, "iterations": 2}
+    resp = client.post("/predict", json=payload)
+    body = resp.json()
+    pred = body["predictions"][0]
+    assert pred["row"] == 1
+    assert pred["col"] == 1
+    assert "1,1" in body["full_probabilities"]
+
+
+def test_predict_1_based_bottom_right(client):
+    grid = [[1, 2], [3, -1]]
+    payload = {"grid": grid, "target_num": 4, "iterations": 2}
+    resp = client.post("/predict", json=payload)
+    body = resp.json()
+    pred = body["predictions"][0]
+    assert pred["row"] == 2
+    assert pred["col"] == 2
+    assert "2,2" in body["full_probabilities"]

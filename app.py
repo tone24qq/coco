@@ -155,6 +155,32 @@ def sanitize_floats(obj: Any) -> Any:
     return obj
 
 
+def _to_1_based(preds: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Convert row/col fields in predictions to 1-based indexing."""
+    if not preds:
+        return []
+    result = []
+    for p in preds:
+        p = p.copy()
+        if "row" in p:
+            p["row"] = int(p["row"]) + 1
+        if "col" in p:
+            p["col"] = int(p["col"]) + 1
+        result.append(p)
+    return result
+
+
+def _full_probs_to_1_based(
+    probs: Dict[Tuple[int, int], Dict[int, float]],
+) -> Dict[str, Dict[str, float]]:
+    converted: Dict[str, Dict[str, float]] = {}
+    for (r, c), pmap in probs.items():
+        key = f"{int(r) + 1},{int(c) + 1}"
+        inner = {str(int(num)): safe_float(p) * 100 for num, p in pmap.items()}
+        converted[key] = inner
+    return converted
+
+
 # ==== Routes ==============================================================
 
 
@@ -236,22 +262,19 @@ async def predict(req: GridRequest):
             pseudo_count=req.pseudo_count or 0.0,
         )
 
-        # 清洗 full_probabilities
         full_probs = result.get("full_probabilities", {})
-        clean_probs: Dict[str, Dict[str, float]] = {}
-        for loc, prob_map in full_probs.items():
-            key = f"{int(loc[0])},{int(loc[1])}"
-            inner: Dict[str, float] = {}
-            for num, p in prob_map.items():
-                inner[str(int(num))] = safe_float(p) * 100
-            clean_probs[key] = inner
+        clean_probs = _full_probs_to_1_based(full_probs)
+
+        preds = _to_1_based(result.get("predictions"))
+        tops = _to_1_based(result.get("top_predictions"))
+        recs = _to_1_based(result.get("final_recommendations"))
 
         payload = {
-            "predictions": result.get("predictions", []),
-            "top_predictions": result.get("top_predictions", []),
+            "predictions": preds,
+            "top_predictions": tops,
             "full_probabilities": clean_probs,
             "sample_gamma_used": req.sample_gamma or 0.0,
-            "final_recommendations": result.get("final_recommendations", []),
+            "final_recommendations": recs,
         }
         safe_payload = sanitize_floats(payload)
         logger.info("✅ Response ready")
@@ -306,32 +329,30 @@ async def heatmap(req: HeatmapRequest):
         )
 
         full_probs = pred_result.get("full_probabilities", {})
-        clean_probs: Dict[str, Dict[str, float]] = {}
-        for loc, prob_map in full_probs.items():
-            loc_key = f"{int(loc[0])},{int(loc[1])}"
-            inner: Dict[str, float] = {}
-            for num, p in prob_map.items():
-                inner[str(int(num))] = safe_float(p) * 100
-            clean_probs[loc_key] = inner
+        clean_probs = _full_probs_to_1_based(full_probs)
+
+        preds = _to_1_based(pred_result.get("predictions"))
+        tops = _to_1_based(pred_result.get("top_predictions"))
+        recs = _to_1_based(pred_result.get("final_recommendations"))
 
         if isinstance(prob, dict):
             pm = {str(int(k)): v.tolist() for k, v in prob.items()}
             resp = {
                 "prob_map": pm,
                 "heatmap": None,
-                "predictions": pred_result.get("predictions"),
-                "top_predictions": pred_result.get("top_predictions"),
+                "predictions": preds,
+                "top_predictions": tops,
                 "full_probabilities": clean_probs,
-                "final_recommendations": pred_result.get("final_recommendations"),
+                "final_recommendations": recs,
             }
         elif req.output_format.lower() in ("raw", "json"):
             resp = {
                 "prob_map": prob.tolist(),
                 "heatmap": None,
-                "predictions": pred_result.get("predictions"),
-                "top_predictions": pred_result.get("top_predictions"),
+                "predictions": preds,
+                "top_predictions": tops,
                 "full_probabilities": clean_probs,
-                "final_recommendations": pred_result.get("final_recommendations"),
+                "final_recommendations": recs,
                 "sample_gamma_used": req.sample_gamma or 0.0,
             }
         else:
@@ -340,10 +361,10 @@ async def heatmap(req: HeatmapRequest):
             resp = {
                 "prob_map": prob.tolist(),
                 "heatmap": b64,
-                "predictions": pred_result.get("predictions"),
-                "top_predictions": pred_result.get("top_predictions"),
+                "predictions": preds,
+                "top_predictions": tops,
                 "full_probabilities": clean_probs,
-                "final_recommendations": pred_result.get("final_recommendations"),
+                "final_recommendations": recs,
             }
 
         return JSONResponse(content=sanitize_floats(resp), status_code=200)
