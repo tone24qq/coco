@@ -346,6 +346,25 @@ def fill_unknowns_randomly(grid: np.ndarray, rng: np.random.Generator) -> np.nda
     return g
 
 
+def fill_masked_randomly(
+    grid: np.ndarray, mask: np.ndarray, rng: np.random.Generator
+) -> np.ndarray:
+    """Fill cells marked by ``mask`` with a permutation of remaining numbers."""
+
+    g = np.asarray(grid, dtype=int).copy()
+    mask_arr = np.asarray(mask, dtype=bool)
+    blanks = np.argwhere(mask_arr)
+    if blanks.size == 0:
+        return g
+
+    rows, cols = g.shape
+    all_vals = np.arange(1, rows * cols + 1)
+    remain = np.setdiff1d(all_vals, g[~mask_arr], assume_unique=True)
+    rng.shuffle(remain)
+    g[blanks[:, 0], blanks[:, 1]] = remain[: blanks.shape[0]]
+    return g
+
+
 def generate_full_boards(
     rows: int,
     cols: int,
@@ -397,6 +416,25 @@ def _update_counts(
             counts[idxs[i], idx_num] += weights[br[i], bc[i]]
 
 
+@njit
+def _update_counts_jit(
+    counts: np.ndarray,
+    boards: np.ndarray,
+    br: np.ndarray,
+    bc: np.ndarray,
+    idxs: np.ndarray,
+    num_map: np.ndarray,
+    weights: np.ndarray,
+) -> None:
+    for b in range(boards.shape[0]):
+        board = boards[b]
+        for i in range(br.size):
+            num = board[br[i], bc[i]]
+            idx_num = num_map[num]
+            if idx_num >= 0:
+                counts[idxs[i], idx_num] += weights[br[i], bc[i]]
+
+
 def simulate_full_board(
     grid: np.ndarray,
     target_num: Optional[int],
@@ -407,6 +445,8 @@ def simulate_full_board(
     epsilon: float = 0.0,
     threshold: float = 1e-3,
     check_interval: int = 500,
+    mask: Optional[np.ndarray] = None,
+    _internal: bool = False,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with optional focus and ε-exploration."""
     logger.info(
@@ -419,17 +459,20 @@ def simulate_full_board(
 
     g = np.asarray(grid, dtype=np.int16)
     rows, cols = g.shape
-    blanks = np.argwhere(g == -1)
-    known = np.argwhere(g != -1)
-    known_vals = g[g != -1]
-    legal_all = analyzer_utils.get_legal_values_for_placement(g)
+    mask_arr = np.asarray(mask, dtype=bool) if mask is not None else (g == -1)
+    blanks = np.argwhere(mask_arr)
+    known = np.argwhere(~mask_arr)
+    known_vals = g[~mask_arr]
+    grid_gen = g.copy()
+    grid_gen[mask_arr] = -1
+    legal_all = analyzer_utils.get_legal_values_for_placement(grid_gen)
 
     if target_num is not None:
         count_map = np.zeros((rows, cols), dtype=int)
         for _ in range(max(1, n_iter)):
-            filled = fill_unknowns_randomly(g, rng)
-            mask = filled == target_num
-            count_map += mask.astype(int)
+            filled = fill_masked_randomly(g, mask_arr, rng)
+            mask_hit = filled == target_num
+            count_map += mask_hit.astype(int)
 
         prob_map = {}
         for r, c in blanks:
@@ -444,7 +487,7 @@ def simulate_full_board(
         [get_module_score(mod, g, target=target_num) for mod in modules],
         axis=0,
     )
-    importance_weights = np.where(g == -1, module_scores, 0).flatten()
+    importance_weights = np.where(mask_arr, module_scores, 0).flatten()
     importance_weights = importance_weights / (np.sum(importance_weights) + 1e-10)
 
     # Dynamic formula weights based on grid pattern
@@ -468,10 +511,13 @@ def simulate_full_board(
     other_cells = (
         [tuple(b) for b in blanks if tuple(b) not in focus_set] if focus_set else []
     )
+    early_stop = False
 
     while remain > 0:
         batch = min(4000, remain)
-        boards = generate_full_boards(rows, cols, batch, rng, formulas, weights, g)
+        boards = generate_full_boards(
+            rows, cols, batch, rng, formulas, weights, grid_gen
+        )
 
         if known.size:
             mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
@@ -479,7 +525,7 @@ def simulate_full_board(
             if len(boards) == 0:
                 batch = min(batch * 2, 8000)
                 boards = generate_full_boards(
-                    rows, cols, batch, rng, formulas, weights, g
+                    rows, cols, batch, rng, formulas, weights, grid_gen
                 )
                 mask = np.all(boards[:, known[:, 0], known[:, 1]] == known_vals, axis=1)
                 boards = boards[mask]
@@ -517,9 +563,9 @@ def simulate_full_board(
                 idxc_all = br_sel * cols + bc_sel
                 mask_sel = rng.random(indices.size) < importance_weights[idxc_all]
                 if mask_sel.any():
-                    _update_counts(
+                    _update_counts_jit(
                         counts,
-                        board,
+                        board[np.newaxis, :],
                         br_sel[mask_sel],
                         bc_sel[mask_sel],
                         indices[mask_sel],
@@ -534,6 +580,7 @@ def simulate_full_board(
             probs = counts / totals
             delta = np.abs(probs - prev_probs).sum()
             if delta < threshold:
+                early_stop = True
                 break
             prev_probs = probs.copy()
             batch_progress = 0
@@ -547,7 +594,28 @@ def simulate_full_board(
             j = num_map[n]
             if j >= 0:
                 cell[n] = max(counts[idx, j] / total, 1e-10)
+
         prob_map[(int(r), int(c))] = cell
+
+    if early_stop and not _internal and blanks.size > 0:
+        change = np.abs((counts / (totals[:, None] + 1e-10)) - prev_probs).sum(axis=1)
+        m = max(1, int(0.2 * blanks.shape[0]))
+        idx_top = np.argsort(change)[-m:]
+        focus = [tuple(map(int, blanks[i])) for i in idx_top]
+        refine = simulate_full_board(
+            g,
+            target_num,
+            n_iter=max(1, int(n_iter * 0.2)),
+            rng=rng,
+            focus_cells=focus,
+            epsilon=epsilon,
+            threshold=threshold,
+            check_interval=check_interval,
+            mask=mask_arr,
+            _internal=True,
+        )
+        for cell in focus:
+            prob_map[cell] = refine.get(cell, prob_map.get(cell, {}))
 
     # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
     tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
@@ -935,7 +1003,10 @@ def predict_scratch_card(
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("history frequency failed: %s", exc)
 
-    if sample_gamma > 0.0:
+    mask_ratio = float(np.mean(grid_np == -1))
+    gamma = sample_gamma * (1.0 + mask_ratio)
+
+    if gamma > 0.0:
         try:
             pos_probs = compute_position_probabilities(history_dir, rows, cols)
             sample_map = np.zeros((rows, cols), dtype=float)
@@ -944,7 +1015,7 @@ def predict_scratch_card(
                     sample_map[r, c] = max(dist.values())
             if sample_map.max() > 0:
                 sample_map /= float(sample_map.max())
-                final_score_map += sample_gamma * sample_map
+                final_score_map += gamma * sample_map
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("position frequency failed: %s", exc)
 
@@ -1003,18 +1074,18 @@ def predict_scratch_card(
         )
         prob_map.update(refine_map)
 
-    if sample_gamma > 0.0:
+    if gamma > 0.0:
         try:
             pos_probs = compute_position_probabilities(history_dir, rows, cols)
             for key, dist in prob_map.items():
                 prior = pos_probs.get(key, {})
                 for num in list(dist.keys()):
-                    dist[num] *= 1.0 + sample_gamma * prior.get(num, 0.0)
+                    dist[num] *= 1.0 + gamma * prior.get(num, 0.0)
                 tot = sum(dist.values()) or 1e-10
                 for num in dist:
                     dist[num] /= tot
         except Exception as exc:  # pragma: no cover - history load failures
-            logger.error("position frequency blend failed: %s", exc)
+            logger.error("position probability blend failed: %s", exc)
 
     if pseudo_count > 0.0 and priors:
         for key, dist in prob_map.items():
@@ -1423,7 +1494,10 @@ def probability_heatmap(
     grid_np = np.asarray(grid, dtype=int)
     prob_map_dict = simulate_full_board(grid_np, k, n_iter=n_iter, rng=rng)
 
-    if sample_gamma > 0.0 and k is not None:
+    mask_ratio = float(np.mean(grid_np == -1))
+    gamma = sample_gamma * (1.0 + mask_ratio)
+
+    if gamma > 0.0 and k is not None:
         try:
             pos_probs = compute_position_probabilities(history_dir, *grid_np.shape)
         except Exception as exc:  # pragma: no cover - history load failures
@@ -1437,9 +1511,9 @@ def probability_heatmap(
         for (r, c), cell in prob_map_dict.items():
             val = cell.get(k, 0.0)
             if pos_probs:
-                val = (1.0 - sample_gamma) * val + sample_gamma * pos_probs.get(
-                    (r, c), {}
-                ).get(k, 0.0)
+                val = (1.0 - gamma) * val + gamma * pos_probs.get((r, c), {}).get(
+                    k, 0.0
+                )
             out[r, c] = val
         if out.max() > 0:
             out = out / float(out.max())
