@@ -421,6 +421,23 @@ def EXT_Q7_VariancePrior_Vec(
 
 
 @batchable
+def EXT_Q17_RowColBias_Vec(
+    grid: np.ndarray, request_id: Optional[str] = "N/A"
+) -> np.ndarray:
+    """Prefer rows/cols with more blanks using vectorized counts."""
+
+    known = grid != -1
+    row_missing = (~known).sum(axis=1).astype(float)[:, None]
+    col_missing = (~known).sum(axis=0).astype(float)[None, :]
+    score = row_missing + col_missing
+    score[known] = 0
+    mx = score.max(initial=0.0)
+    if mx > 0:
+        score /= mx
+    return score.astype(np.float32)
+
+
+@batchable
 def EXT_Q8_SpatialKL_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A", win=5
 ) -> np.ndarray:
@@ -1163,6 +1180,7 @@ mods = {
     "EXT_Q14_TargetAffinity_Vec": EXT_Q14_TargetAffinity_Vec,
     "EXT_Q15_GlobalSpread_Vec": EXT_Q15_GlobalSpread_Vec,
     "EXT_Q16_NumericalRelationalPattern_Vec": EXT_Q16_NumericalRelationalPattern_Vec,
+    "EXT_Q17_RowColBias_Vec": EXT_Q17_RowColBias_Vec,
     "EXT_M1_Tail_Pattern_Vec": EXT_M1_Tail_Pattern_Vec,
     "EXT_M3_Local_Focus_Vec": EXT_M3_Local_Focus_Vec,
     "EXT_M10_Sequence_Block_Vec": EXT_M10_Sequence_Block_Vec,
@@ -1191,6 +1209,7 @@ FAST_PHASE = [
     "EXT_Q1_ProximityEntropy_Vec",
     "EXT_Q2_PotentialPath_Vec",
     "EXT_Q5_GlobalEntropy_Vec",
+    "EXT_Q17_RowColBias_Vec",
     "EXT_Q8_SpatialKL_Vec",
     "EXT_M12_RestoreOriginalValue_Vec",
     "EXT_Q15_GlobalSpread_Vec",
@@ -1225,6 +1244,7 @@ AGG_WEIGHTS = {
     "EXT_Q14_TargetAffinity_Vec": 0.05,
     "EXT_Q15_GlobalSpread_Vec": 0.04,
     "EXT_Q16_NumericalRelationalPattern_Vec": 0.05,
+    "EXT_Q17_RowColBias_Vec": 0.03,
     "EXT_M11_Mirror_Sequence_Vec": -0.03,
 }
 
