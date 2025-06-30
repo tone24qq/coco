@@ -11,6 +11,7 @@ def test_new_modules_registered():
         "EXT_Q15_GlobalSpread_Vec",
         "EXT_Q16_NumericalRelationalPattern_Vec",
         "EXT_Q17_RowColBias_Vec",
+        "EXT_X_CRFInference",
     ]:
         assert name in brain.REGISTERED_MODULES_BRAIN
         assert name in brain.AGG_WEIGHTS
@@ -25,9 +26,12 @@ def test_new_module_shapes(make_grid):
     s3 = brain.EXT_Q15_GlobalSpread_Vec(grid)
     s4 = brain.EXT_Q16_NumericalRelationalPattern_Vec(grid)
     s5 = brain.EXT_Q17_RowColBias_Vec(grid)
+    s6 = brain.EXT_X_CRFInference(grid)
     for s in (s1, s2, s3, s4, s5):
         assert s.shape == grid.shape
         assert np.isfinite(s).all()
+    assert s6.shape == (grid.shape[0], grid.shape[1], grid.size + 1)
+    assert np.allclose(s6.sum(axis=2)[grid == -1], 1.0, atol=1e-6)
 
 
 def test_select_modules_include_new(make_grid):

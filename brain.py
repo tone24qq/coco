@@ -1,10 +1,13 @@
 import inspect
+import json
 import logging
 import math
 import os
 import random
+import zipfile
 from collections import Counter, defaultdict
 from functools import lru_cache, wraps
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -35,6 +38,53 @@ def safe_call(func: Callable, *args: Any, **kwargs: Any) -> Any:
     sig = inspect.signature(inspect.unwrap(func))
     allowed = {k: v for k, v in kwargs.items() if k in sig.parameters}
     return func(*args, **allowed)
+
+
+def build_neighbor_cooccurrence(samples_dir: str) -> dict:
+    """Return raw neighbor co-occurrence counts from sample JSON files."""
+    offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    cooc: dict[tuple[int, int], dict[int, dict[int, int]]] = {
+        off: defaultdict(lambda: defaultdict(int)) for off in offsets
+    }
+
+    path = Path(samples_dir)
+    for zp in sorted(path.glob("*.zip")):
+        try:
+            with zipfile.ZipFile(zp) as zf:
+                for name in zf.namelist():
+                    if not name.endswith(".json"):
+                        continue
+                    data = json.loads(zf.read(name))
+                    grid = np.asarray(data["grid"], dtype=int)
+                    rows, cols = grid.shape
+                    for r in range(rows):
+                        for c in range(cols):
+                            v1 = int(grid[r, c])
+                            if v1 <= 0:
+                                continue
+                            for dr, dc in offsets:
+                                nr, nc = r + dr, c + dc
+                                if 0 <= nr < rows and 0 <= nc < cols:
+                                    v2 = int(grid[nr, nc])
+                                    if v2 > 0:
+                                        cooc[(dr, dc)][v1][v2] += 1
+        except Exception as exc:  # pragma: no cover - corrupted sample
+            logger.error("Failed to load %s: %s", zp, exc)
+    return cooc
+
+
+def normalize_cooccurrence(
+    cooc: dict[tuple[int, int], dict[int, dict[int, int]]],
+) -> dict[tuple[int, int], dict[int, dict[int, float]]]:
+    """Normalize co-occurrence counts to conditional probabilities."""
+    prob: dict[tuple[int, int], dict[int, dict[int, float]]] = {}
+    for off, d1 in cooc.items():
+        prob[off] = {}
+        for v1, d2 in d1.items():
+            total = sum(d2.values())
+            if total:
+                prob[off][v1] = {v2: cnt / float(total) for v2, cnt in d2.items()}
+    return prob
 
 
 # Logging configuration
@@ -901,6 +951,102 @@ def EXT_GM20_Skip_Pattern_Confidence_Vec(
 
 
 @batchable
+def EXT_X_CRFInference(
+    grid: np.ndarray,
+    *,
+    target: Optional[int] = None,
+    heatmap_scores: Optional[np.ndarray] = None,
+    cooc_prob: Optional[Dict[Tuple[int, int], Dict[int, Dict[int, float]]]] = None,
+    lambda_unary: float = 1.0,
+    lambda_pairwise: float = 1.0,
+    iterations: int = 5,
+    request_id: Optional[str] = "N/A",
+) -> np.ndarray:
+    """Approximate CRF inference combining unary and pairwise potentials."""
+
+    grid = np.asarray(grid, dtype=int)
+    rows, cols = grid.shape
+    max_val = rows * cols
+
+    if heatmap_scores is None:
+        heatmap_scores = EXT_Q5_GlobalEntropy_Vec(grid, request_id=request_id)
+
+    if heatmap_scores.ndim == 2:
+        unary = np.exp(lambda_unary * heatmap_scores)[..., None]
+        unary = np.broadcast_to(unary, (rows, cols, max_val + 1))
+    else:
+        unary = np.exp(lambda_unary * heatmap_scores)
+        if unary.shape != (rows, cols, max_val + 1):
+            unary = np.broadcast_to(unary, (rows, cols, max_val + 1))
+
+    phi = unary.astype(float)
+    for r in range(rows):
+        for c in range(cols):
+            val = int(grid[r, c])
+            if val != -1 and 0 < val <= max_val:
+                phi[r, c, :] = 0.0
+                phi[r, c, val] = 1.0
+
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    opp = [1, 0, 3, 2]
+    messages = np.ones((rows, cols, 4, max_val + 1), dtype=float)
+    messages /= max_val
+    for r in range(rows):
+        for c in range(cols):
+            for d, (dr, dc) in enumerate(dirs):
+                nr, nc = r + dr, c + dc
+                if not (0 <= nr < rows and 0 <= nc < cols):
+                    messages[r, c, d] = 0.0
+
+    psi_tables = {}
+    for off in dirs:
+        table = np.ones((max_val + 1, max_val + 1), dtype=float)
+        if cooc_prob and off in cooc_prob:
+            for k, dv in cooc_prob[off].items():
+                if k <= max_val:
+                    for val2, prob in dv.items():
+                        if val2 <= max_val:
+                            table[k, val2] = math.exp(lambda_pairwise * prob)
+        psi_tables[off] = table
+
+    for _ in range(max(1, iterations)):
+        new_messages = np.zeros_like(messages)
+        for r in range(rows):
+            for c in range(cols):
+                for d, (dr, dc) in enumerate(dirs):
+                    nr, nc = r + dr, c + dc
+                    if not (0 <= nr < rows and 0 <= nc < cols):
+                        continue
+                    tmp = phi[r, c].copy()
+                    for dd, (dr2, dc2) in enumerate(dirs):
+                        nr2, nc2 = r + dr2, c + dc2
+                        if dd == opp[d] or not (0 <= nr2 < rows and 0 <= nc2 < cols):
+                            continue
+                        tmp *= messages[nr2, nc2, opp[dd]]
+                    msg = psi_tables[(dr, dc)].T @ tmp
+                    s = msg.sum()
+                    if s > 0:
+                        msg /= s
+                    new_messages[r, c, d] = msg
+        messages = new_messages
+
+    beliefs = np.zeros((rows, cols, max_val + 1), dtype=float)
+    for r in range(rows):
+        for c in range(cols):
+            b = phi[r, c].copy()
+            for d, (dr, dc) in enumerate(dirs):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    b *= messages[nr, nc, opp[d]]
+            s = b.sum()
+            if s > 0:
+                b /= s
+            beliefs[r, c] = b
+
+    return beliefs
+
+
+@batchable
 def EXT_Q1_ProximityEntropy_Vec(
     grid: np.ndarray, request_id: Optional[str] = "N/A"
 ) -> np.ndarray:
@@ -1213,6 +1359,7 @@ mods = {
     "EXT_F7_Strong_Pattern_Vec": EXT_F7_Strong_Pattern_Vec,
     "EXT_M11_Mirror_Sequence_Vec": EXT_M11_Mirror_Sequence_Vec,
     "EXT_GM20_Skip_Pattern_Confidence_Vec": EXT_GM20_Skip_Pattern_Confidence_Vec,
+    "EXT_X_CRFInference": EXT_X_CRFInference,
     "EXT_Q1_ProximityEntropy_Vec": EXT_Q1_ProximityEntropy_Vec,
     "EXT_Q2_PotentialPath_Vec": EXT_Q2_PotentialPath_Vec,
     "EXT_Q3_DiscontinuitySym_Vec": EXT_Q3_DiscontinuitySym_Vec,
@@ -1270,6 +1417,7 @@ DEFAULT_AGG_WEIGHTS = {
     "EXT_Q15_GlobalSpread_Vec": 0.04,
     "EXT_Q16_NumericalRelationalPattern_Vec": 0.05,
     "EXT_Q17_RowColBias_Vec": 0.03,
+    "EXT_X_CRFInference": 0.04,
     "EXT_M11_Mirror_Sequence_Vec": -0.03,
 }
 

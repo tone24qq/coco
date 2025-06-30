@@ -14,7 +14,11 @@ def test_module_shapes(make_grid):
     grid = np.array(make_grid(8, 10))
     for fn in MODULE_FNS:
         out = fn(grid, target=42) if "target" in fn.__code__.co_varnames else fn(grid)
-        assert out.shape == grid.shape
+        if fn.__name__ == "EXT_X_CRFInference":
+            assert out.shape == (grid.shape[0], grid.shape[1], grid.size + 1)
+            assert np.allclose(out.sum(axis=2)[grid == -1], 1.0, atol=1e-6)
+        else:
+            assert out.shape == grid.shape
         assert np.isfinite(out).all(), f"{fn.__name__} 出現 NaN/Inf"
 
 
