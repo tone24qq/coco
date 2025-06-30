@@ -1,16 +1,7 @@
-import json
-import logging
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from scipy import ndimage as ndi
-
-# Logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()],
-)
 
 # Formula registry for Monte Carlo simulation
 FORMULA_REGISTRY: Dict[
@@ -140,42 +131,6 @@ def gen_tail_cluster(
     board[low_idx] = low_nums
     board[high_idx] = high_nums
     return board.reshape(rows, cols)
-
-
-class AdaptiveWeights:
-    """Manages dynamic weight adjustments for formulas based on performance."""
-
-    def __init__(self, initial_weights: Dict[str, float]):
-        self.weights = initial_weights.copy()
-        self.history: Dict[str, float] = {
-            name: 0.0 for name in initial_weights
-        }  # noqa: E501
-        self.total_trials = 0
-
-    def update(
-        self, success_rate: float, module_scores: Dict[str, float]
-    ) -> None:  # noqa: E501
-        """Update weights based on success rate and module scores."""
-        self.total_trials += 1
-        for name in self.weights:
-            score = module_scores.get(name, success_rate)
-            hist = self.history[name] * (self.total_trials - 1) + score
-            self.history[name] = hist / self.total_trials
-            self.weights[name] = max(
-                0.1,
-                min(0.9, self.history[name] * 1.05),
-            )
-        total = sum(self.weights.values()) or 1e-10
-        for name in self.weights:
-            self.weights[name] /= total
-
-    def save_history(self, path: str) -> None:
-        """Save weight history to file."""
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, ensure_ascii=False)
-        except OSError as e:
-            logging.error(f"Failed to save weights history: {e}")
 
 
 def global_offset_cooccurrence(

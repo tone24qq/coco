@@ -3,7 +3,7 @@ import base64
 import logging
 import math
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
@@ -121,7 +121,7 @@ class HeatmapResponse(BaseModel):
 
 
 # ==== Startup & ENV parsing =================================================
-startup_time = datetime.utcnow().isoformat() + "Z"
+startup_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 # 默认环境变量
 os.environ.setdefault("PHASE1_ITERATIONS", "5000")

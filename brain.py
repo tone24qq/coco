@@ -1277,12 +1277,13 @@ def get_core_modules(limit: int | None = None) -> list[str]:
     The limit defaults to the ``CORE_LIMIT`` environment variable (8) and is
     clamped to the range 5–10.
     """
+    limit_env_str = os.getenv("CORE_LIMIT", "8")
     try:
-        limit_env = int(os.getenv("CORE_LIMIT", "8"))
+        limit_env = int(limit_env_str)
     except ValueError:  # FIXME invalid env value
         logger.warning(
             "Invalid CORE_LIMIT '%s', using default 8",
-            os.getenv("CORE_LIMIT"),
+            limit_env_str,
         )
         limit_env = 8
     if limit is None:
