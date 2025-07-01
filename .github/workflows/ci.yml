@@ -1,31 +1,28 @@
 # .github/workflows/ci.yml
 name: CI
 
-# ① 什麼情況會跑
 on:
-  push:           # 推到 main 分支時跑
-    branches: [main]
-  pull_request:   # PR 也跑，確保合併前乾淨；包括從 Draft → Ready 這一步
-    branches: [main]
+  push:                # 任何分支推送時都跑
+    branches: ['*']
+  pull_request:        # 任何分支發起 PR、包括 Draft→Ready 都跑
+    branches: ['*']
     types: [opened, synchronize, ready_for_review]
-  workflow_dispatch: {}      # 手動點按鈕
-  schedule:                  # 每天凌晨 03:00 UTC（＝台灣 11:00）跑一次壓力測
-    - cron: '0 3 * * *'
+  workflow_dispatch: {}      # 手動觸發
+  schedule:                  # 定期排程跑一次壓力測
+    - cron: '0 3 * * *'      # 每天 03:00 UTC（台灣 11:00）
 
-# ② 共用環境變數
 env:
   PIP_CACHE_DIR: ~/.cache/pip
-  FAST_TEST: "1"               # app.py 裡讀這個就能把 iterations 降到 32
+  FAST_TEST: "1"             # app.py 可讀取此變數以縮短迭代次數
 
 jobs:
 
-##############################################################################
-# 1️⃣  Lint & Unit（最關鍵；失敗就停）
-##############################################################################
+  ##############################################################################
+  # 1️⃣  Lint & Unit + Reliability Tests（最關鍵；失敗就停）
+  ##############################################################################
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 30
     strategy:
       matrix:
         python-version: ['3.11', '3.12']
@@ -37,11 +34,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PIP_CACHE_DIR }}
-          key:  ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Setup Python ${{ matrix.python-version }}
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -58,9 +55,17 @@ jobs:
           ruff check .
           mypy . --strict
 
-      - name: Run unit + quick tests only
+      - name: Run unit & quick tests
         run: |
           pytest -q -n auto -m "not slow" --cov=./ --cov-report=xml
+
+      - name: Run reliability convergence tests
+        run: |
+          pytest -q tests/test_reliable_accuracy.py
+
+      - name: Run 1000-runs reliability test
+        run: |
+          pytest -q -m slow tests/test_reliability_1000.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -69,18 +74,20 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
-##############################################################################
-# 2️⃣  Property / Slow tests（可選；僅 schedule 或手動觸發時跑）
-##############################################################################
-  property-tests:
-    needs: test                # 確保基本測試過了才跑
+  ##############################################################################
+  # 2️⃣  Extended / Slow / Stress tests（僅 schedule 或手動觸發時跑）
+  ##############################################################################
+  slow-and-stress:
+    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -93,15 +100,25 @@ jobs:
         run: |
           pytest -q -m slow --durations=20
 
-##############################################################################
-# 3️⃣  Deploy to Render（在 main 分支 push 或 PR Ready 時觸發）
-##############################################################################
+      - name: Run infinite stress test
+        run: |
+          # 如果你把 run_infinite_test 寫在 tests/reliability_utils.py
+          python - << 'EOF'
+import tests.reliability_utils as ru
+ru.run_infinite_test()
+EOF
+
+  ##############################################################################
+  # 3️⃣  Deploy to Render（合併到 main 且 PR Ready 時才觸發）
+  ##############################################################################
   deploy:
     needs: test
     runs-on: ubuntu-latest
     if: >
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' && github.event.action == 'ready_for_review' && github.ref == 'refs/heads/main')
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'ready_for_review' &&
+       github.base_ref == 'main')
     steps:
       - name: Trigger Render deploy
         run: |
