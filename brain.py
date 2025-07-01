@@ -18,25 +18,6 @@ def safe_call(func: Callable, *args: Any, **kwargs: Any) -> Any:
     return func(*args, **allowed)
 
 
-class MathUtils:
-    """Minimal math utilities."""
-
-    def normalize_value(
-        self, value: float, min_val: float, max_val: float, clamp: bool = True
-    ) -> float:
-        if math.isclose(max_val, min_val, rel_tol=1e-9):
-            return (
-                0.5
-                if math.isclose(value, min_val, rel_tol=1e-9)
-                else (0.0 if value < min_val else 1.0)
-            )
-        norm = (value - min_val) / (max_val - min_val + 1e-10)
-        return max(0.0, min(1.0, norm)) if clamp else norm
-
-    def manhattan_distance(self, p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
-        return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
-
-
 class BoardAnalyzerUtils:
     """Simple board utilities."""
 

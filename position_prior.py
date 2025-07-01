@@ -40,9 +40,3 @@ def build_position_prior(samples_dir: str, outfile: str, buckets: int = 20) -> N
     freq = counts.astype(float) / totals
     np.savez_compressed(outfile, freq=freq)
     logger.info("position prior saved to %s", outfile)
-
-
-def load_position_prior(path: str) -> np.ndarray:
-    """Load position prior tensor from ``path``."""
-    arr = np.load(path)["freq"]
-    return np.asarray(arr, dtype=float)

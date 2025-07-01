@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
-import xxhash
 from joblib import Parallel, delayed
 from numba import njit
 
@@ -25,14 +24,12 @@ from brain import (
     AGG_WEIGHTS,
     REGISTERED_MODULES_BRAIN,
     BoardAnalyzerUtils,
-    MathUtils,
     aggregate_scores,
-    bytes_to_grid,
     get_module_score,
 )
 # fmt: on
 # isort: on
-from modules import FORMULA_REGISTRY, detect_skip_patterns, generate_unique_grid
+from modules import FORMULA_REGISTRY, generate_unique_grid
 
 # Logger configuration
 logging.basicConfig(
@@ -42,7 +39,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-math_utils = MathUtils()
 analyzer_utils = BoardAnalyzerUtils()
 
 # Global position prior cache
@@ -318,36 +314,6 @@ def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.nd
     return probs
 
 
-# Count-Min Sketch (optimized for low memory)
-class CountMinSketch:
-    def __init__(self, width: int = 1024, depth: int = 1):
-        self.w = max(1024, min(2048, int(8e9 / (depth * 4))))  # 8 GB RAM 動態調整
-        self.d = depth
-        self.table = np.zeros((depth, self.w), dtype=np.uint32)
-        self.seeds = [i * 0x9E3779B1 for i in range(depth)]
-
-    def _idx(self, key: bytes, seed: int) -> int:
-        return xxhash.xxh32(key, seed=seed).intdigest() % self.w
-
-    def update(self, key: bytes, value: int = 1):
-        for i, s in enumerate(self.seeds):
-            self.table[i, self._idx(key, s)] += value
-
-    def query(self, key: bytes) -> int:
-        return min(self.table[i, self._idx(key, s)] for i, s in enumerate(self.seeds))
-
-
-def pack_key(cell_idx: int, num: int) -> bytes:
-    return (cell_idx << 16 | num).to_bytes(4, "little")
-
-
-# Precompute skip scores with LRU cache
-@lru_cache(maxsize=1024)
-def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarray:
-    grid = bytes_to_grid(grid_bytes, (rows, cols))
-    return detect_skip_patterns(grid)
-
-
 def adjust_weights_based_on_history(
     history: Dict[str, float], formulas: Tuple[str, ...]
 ) -> np.ndarray:
@@ -397,50 +363,6 @@ def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
     return sorted(scores, key=scores.get, reverse=True)
 
 
-@lru_cache(maxsize=500000)
-def _cached_board(
-    mask_key: str, seed: int, r: int, c: int, kv_bytes: bytes, idx_bytes: bytes
-):
-    """Return a unique 1-D board (length r*c) with known cells filled."""
-    rng = np.random.default_rng(seed)
-    n = r * c
-    perm = rng.permutation(n) + 1
-
-    idx = np.frombuffer(idx_bytes, dtype=np.int32)
-    if idx.size == 0:
-        return perm.astype(np.int16)
-
-    vals = np.frombuffer(kv_bytes, dtype=np.int32)
-    if idx.size != vals.size:
-        return perm.astype(np.int16)
-
-    # Remove known values from permutation to avoid duplicates
-    mask = np.isin(perm, vals, invert=True)
-    remaining = perm[mask]
-
-    board = np.empty(n, dtype=np.int16)
-    board[idx] = vals
-    unknown_idx = np.setdiff1d(np.arange(n), idx, assume_unique=True)
-    board[unknown_idx] = remaining[: unknown_idx.size]
-    return board
-
-
-def fill_unknowns_randomly(grid: np.ndarray, rng: np.random.Generator) -> np.ndarray:
-    """Fill ``-1`` cells with a random permutation of remaining numbers."""
-
-    g = np.asarray(grid, dtype=int).copy()
-    blanks = np.argwhere(g == -1)
-    if blanks.size == 0:
-        return g
-
-    rows, cols = g.shape
-    all_vals = np.arange(1, rows * cols + 1)
-    remain = np.setdiff1d(all_vals, g[g != -1], assume_unique=True)
-    rng.shuffle(remain)
-    g[blanks[:, 0], blanks[:, 1]] = remain[: blanks.shape[0]]
-    return g
-
-
 def fill_masked_randomly(
     grid: np.ndarray, mask: np.ndarray, rng: np.random.Generator
 ) -> np.ndarray:
@@ -479,17 +401,14 @@ def generate_full_boards(
     )
     weights = weights / (weights.sum() + 1e-10)
     boards = np.empty((batch, rows, cols), dtype=np.int16)
-    known_vals = grid.ravel()
-    known_mask = (grid != -1).ravel()
-    kv_bytes = known_vals.tobytes()
-    idx_bytes = known_mask.nonzero()[0].astype(np.int32).tobytes()
-    mask = xxhash.xxh64(kv_bytes + idx_bytes).hexdigest()
-    seed = rng.integers(0, 0xFFFF)
+    known_mask = grid == -1
+    known_vals = grid[~known_mask]
     for i in range(batch):
-        board1d = _cached_board(
-            mask, seed & 0xFFFF, rows, cols, kv_bytes, idx_bytes
-        ).reshape(rows, cols)
-        boards[i] = board1d
+        choice = rng.choice(valid, p=weights)
+        base = FORMULA_REGISTRY[choice](rows, cols, rng)
+        board = np.asarray(base, dtype=np.int16)
+        board[~known_mask] = known_vals
+        boards[i] = board
     return boards
 
 
