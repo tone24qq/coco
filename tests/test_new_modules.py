@@ -5,7 +5,20 @@ import brain
 
 
 def test_modules_registered():
-    for name in ["focus", "skip", "diff", "mirror", "conn", "tail", "affinity"]:
+    names = [
+        "focus",
+        "skip",
+        "diff",
+        "mirror",
+        "conn",
+        "tail",
+        "affinity",
+        "gradient_affinity",
+        "row_col_bias",
+        "row_col_frequency_score",
+        "entropy_spread_score",
+    ]
+    for name in names:
         assert name in brain.REGISTERED_MODULES_BRAIN
         assert name in brain.AGG_WEIGHTS
 

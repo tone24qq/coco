@@ -460,6 +460,91 @@ def target_affinity(grid: np.ndarray, *, target: Optional[int] = None) -> np.nda
     return nearest_value_affinity(grid, target, k=3, tolerance=1, radius=1)
 
 
+@register_strategy("gradient_affinity", weight=0.1)
+def gradient_affinity(grid: np.ndarray) -> np.ndarray:
+    """Score blanks based on local gradient continuity."""
+
+    arr = np.asarray(grid, dtype=float)
+    rows, cols = arr.shape
+    score = np.zeros_like(arr, dtype=float)
+    for i in range(rows):
+        for j in range(cols):
+            if arr[i, j] != -1:
+                continue
+            vals = []
+            if 0 < j < cols - 1 and arr[i, j - 1] != -1 and arr[i, j + 1] != -1:
+                vals.append(abs(arr[i, j + 1] - arr[i, j - 1]))
+            if 0 < i < rows - 1 and arr[i - 1, j] != -1 and arr[i + 1, j] != -1:
+                vals.append(abs(arr[i + 1, j] - arr[i - 1, j]))
+            if vals:
+                score[i, j] = sum(vals) / len(vals)
+    if score.max() > 0:
+        score /= float(score.max())
+    return score
+
+
+@register_strategy("row_col_bias", weight=0.1)
+def row_col_bias(grid: np.ndarray) -> np.ndarray:
+    """Bias hidden cells by row/column known counts."""
+
+    arr = np.asarray(grid)
+    mask = arr != -1
+    row_ratio = mask.sum(axis=1) / arr.shape[1]
+    col_ratio = mask.sum(axis=0) / arr.shape[0]
+    base = (1.0 - row_ratio)[:, None] + (1.0 - col_ratio)[None, :]
+    base[arr != -1] = 0.0
+    mn, mx = base.min(), base.max()
+    if mx > mn:
+        base = (base - mn) / (mx - mn)
+    return base.astype(float)
+
+
+@register_strategy("row_col_frequency_score", weight=0.1)
+def row_col_frequency_score(
+    grid: np.ndarray, *, target: Optional[int] = None
+) -> np.ndarray:
+    """Score cells using target proximity frequency in rows and columns."""
+
+    if target is None:
+        return np.zeros_like(grid, dtype=float)
+    arr = np.asarray(grid, dtype=float)
+    diff = np.abs(arr - float(target))
+    diff[arr == -1] = np.nan
+    row_score = np.nanmean(1.0 / (1.0 + diff), axis=1)
+    col_score = np.nanmean(1.0 / (1.0 + diff), axis=0)
+    score = row_score[:, None] + col_score[None, :]
+    score[arr != -1] = 0.0
+    mn, mx = np.nanmin(score), np.nanmax(score)
+    if mx > mn:
+        score = (score - mn) / (mx - mn)
+    return np.nan_to_num(score, nan=0.0)
+
+
+@register_strategy("entropy_spread_score", weight=0.1)
+def entropy_spread_score(grid: np.ndarray) -> np.ndarray:
+    """Shannon entropy of neighbor digit tails."""
+
+    arr = np.asarray(grid)
+    rows, cols = arr.shape
+    score = np.zeros_like(arr, dtype=float)
+    for i in range(rows):
+        for j in range(cols):
+            if arr[i, j] != -1:
+                continue
+            r0, r1 = max(0, i - 1), min(rows, i + 2)
+            c0, c1 = max(0, j - 1), min(cols, j + 2)
+            neigh = arr[r0:r1, c0:c1]
+            vals = neigh[neigh != -1] % 10
+            if vals.size:
+                _, counts = np.unique(vals, return_counts=True)
+                probs = counts / counts.sum()
+                ent = -(probs * np.log2(probs)).sum()
+                score[i, j] = ent
+    if score.max() > 0:
+        score /= float(score.max())
+    return score
+
+
 DEFAULT_WEIGHTS = {name: strat.weight for name, strat in STRATEGY_REGISTRY.items()}
 
 

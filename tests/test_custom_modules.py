@@ -9,6 +9,10 @@ from modules import (
     detect_skip_patterns,
     fuse_scores,
     sequence_tail_analyzer,
+    gradient_affinity,
+    row_col_bias,
+    row_col_frequency_score,
+    entropy_spread_score,
 )
 
 
@@ -61,6 +65,30 @@ def test_sequence_tail_analyzer_shape():
     assert out.shape == grid.shape
 
 
+def test_gradient_affinity_shape():
+    grid = _sample_grid()
+    out = gradient_affinity(grid)
+    assert out.shape == grid.shape
+
+
+def test_row_col_bias_shape():
+    grid = _sample_grid()
+    out = row_col_bias(grid)
+    assert out.shape == grid.shape
+
+
+def test_row_col_frequency_shape():
+    grid = _sample_grid()
+    out = row_col_frequency_score(grid, target=5)
+    assert out.shape == grid.shape
+
+
+def test_entropy_spread_score_shape():
+    grid = _sample_grid()
+    out = entropy_spread_score(grid)
+    assert out.shape == grid.shape
+
+
 def test_fuse_scores_basic():
     grid = _sample_grid()
     scores = {
@@ -70,6 +98,10 @@ def test_fuse_scores_basic():
         "mirror": detect_mirror_sequences(grid),
         "conn": connectivity_heatmap(grid),
         "tail": sequence_tail_analyzer(grid),
+        "gradient_affinity": gradient_affinity(grid),
+        "row_col_bias": row_col_bias(grid),
+        "row_col_frequency_score": row_col_frequency_score(grid, target=5),
+        "entropy_spread_score": entropy_spread_score(grid),
     }
     fused = fuse_scores(scores, grid)
     assert fused.shape == grid.shape
