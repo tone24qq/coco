@@ -1,31 +1,23 @@
-# .github/workflows/ci.yml
 name: CI
 
-# ① 什麼情況會跑
 on:
-  push:           # 推到 main 分支時跑
+  push:
     branches: [main]
-  pull_request:   # PR 也跑，確保合併前乾淨；包括從 Draft → Ready 這一步
+  pull_request:
     branches: [main]
     types: [opened, synchronize, ready_for_review]
-  workflow_dispatch: {}      # 手動點按鈕
-  schedule:                  # 每天凌晨 03:00 UTC（＝台灣 11:00）跑一次壓力測
-    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 3 * * *'  # 每天 03:00 UTC
 
-# ② 共用環境變數
 env:
   PIP_CACHE_DIR: ~/.cache/pip
-  FAST_TEST: "1"               # app.py 裡讀這個就能把 iterations 降到 32
+  FAST_TEST: "1"
 
 jobs:
-
-##############################################################################
-# 1️⃣  Lint & Unit（最關鍵；失敗就停）
-##############################################################################
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     strategy:
       matrix:
         python-version: ['3.11', '3.12']
@@ -37,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.PIP_CACHE_DIR }}
-          key:  ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
 
@@ -58,9 +50,15 @@ jobs:
           ruff check .
           mypy . --strict
 
-      - name: Run unit + quick tests only
+      - name: Run unit + reliability tests
         run: |
-          pytest -q -n auto -m "not slow" --cov=./ --cov-report=xml
+          # 自動跑 tests/ 目錄下所有 test_*.py
+          pytest -q -n auto --cov=./ --cov-report=xml
+
+      - name: Run convergence tests (script)
+        run: |
+          # 如果你的 reliable_accuracy_test_suite.py 放在專案根目錄
+          python reliable_accuracy_test_suite.py
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -69,31 +67,28 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
-##############################################################################
-# 2️⃣  Property / Slow tests（可選；僅 schedule 或手動觸發時跑）
-##############################################################################
   property-tests:
-    needs: test                # 確保基本測試過了才跑
+    needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 45
-
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: |
           pip install -r requirements.txt
           pip install pytest hypothesis
-
       - name: Run slow tests
         run: |
           pytest -q -m slow --durations=20
 
-##############################################################################
-# 3️⃣  Deploy to Render（在 main 分支 push 或 PR Ready 時觸發）
-##############################################################################
-  
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Render
+        run: |
+          echo "Deploying..."
