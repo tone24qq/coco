@@ -1,12 +1,7 @@
-import warnings
-
 import numpy as np
 
 import analyzer
-import brain
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-np.seterr(all="ignore")
+import modules
 
 
 def random_board(rng, r, c):
@@ -16,21 +11,18 @@ def random_board(rng, r, c):
     return board
 
 
-def test_q13_basic():
+def test_connectivity_heatmap_basic():
     rng = np.random.default_rng(0)
     for _ in range(3):
         r = int(rng.integers(4, 8))
         c = int(rng.integers(4, 8))
         grid = random_board(rng, r, c)
-        s = brain.EXT_Q13_GlobalConsistencySpectrum_Vec(grid)
+        s = modules.connectivity_heatmap(grid)
         assert s.shape == grid.shape
-        assert np.all(s[grid != -1] == 0)
-        assert 0.0 <= float(s.max()) <= 1.0
+        assert np.all(s[grid != -1] >= 0)
 
 
-def test_select_modules_includes_q13(monkeypatch):
+def test_select_modules_include_conn():
     grid = np.array([[1, -1], [2, 3]])
-    monkeypatch.setenv("ENABLE_SPECTRUM", "1")
     mods = analyzer.select_modules(grid, target=None)
-    assert "EXT_Q13_GlobalConsistencySpectrum_Vec" in mods
-    monkeypatch.delenv("ENABLE_SPECTRUM", raising=False)
+    assert "conn" in mods

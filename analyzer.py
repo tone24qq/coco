@@ -17,12 +17,20 @@ from joblib import Parallel, delayed
 from numba import njit
 
 import brain
+
 # fmt: off
-from brain import (AGG_WEIGHTS, REGISTERED_MODULES_BRAIN, BoardAnalyzerUtils,
-                   EXT_GM20_Skip_Pattern_Confidence_Vec, MathUtils,
-                   aggregate_scores, bytes_to_grid, get_module_score)
+from brain import (
+    AGG_WEIGHTS,
+    REGISTERED_MODULES_BRAIN,
+    BoardAnalyzerUtils,
+    MathUtils,
+    aggregate_scores,
+    bytes_to_grid,
+    get_module_score,
+)
+
 # fmt: on
-from modules import FORMULA_REGISTRY
+from modules import FORMULA_REGISTRY, detect_skip_patterns
 
 # Logger configuration
 logging.basicConfig(
@@ -335,7 +343,7 @@ def pack_key(cell_idx: int, num: int) -> bytes:
 @lru_cache(maxsize=1024)
 def precompute_skip_scores(grid_bytes: bytes, rows: int, cols: int) -> np.ndarray:
     grid = bytes_to_grid(grid_bytes, (rows, cols))
-    return EXT_GM20_Skip_Pattern_Confidence_Vec(grid)
+    return detect_skip_patterns(grid)
 
 
 def adjust_weights_based_on_history(
@@ -377,34 +385,14 @@ if __name__ == "__main__":  # pragma: no cover - CLI helper
 def select_modules(grid: np.ndarray, target: Optional[int] = None) -> List[str]:
     """Select up to ``CORE_LIMIT`` modules based on weights and scores."""
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
-        mods = list(REGISTERED_MODULES_BRAIN)
-    else:
-        base_modules = brain.get_core_modules()
-        scores = {
-            m: np.mean(get_module_score(m, grid, target=target)) for m in base_modules
-        }
-        mods = sorted(scores, key=scores.get, reverse=True)
+        return list(REGISTERED_MODULES_BRAIN)
 
-    if "EXT_Q12_ArithmeticProgression_Vec" not in mods:
-        mods.append("EXT_Q12_ArithmeticProgression_Vec")
-    if target is not None and "EXT_Q11_GlobalDigitAffinity_Vec" not in mods:
-        mods.append("EXT_Q11_GlobalDigitAffinity_Vec")
-    if target is not None and "EXT_Q14_TargetAffinity_Vec" not in mods:
-        mods.append("EXT_Q14_TargetAffinity_Vec")
-    if "EXT_M12_RestoreOriginalValue_Vec" not in mods:
-        mods.append("EXT_M12_RestoreOriginalValue_Vec")
-    if "EXT_Q15_GlobalSpread_Vec" not in mods:
-        mods.append("EXT_Q15_GlobalSpread_Vec")
-    if "EXT_Q16_NumericalRelationalPattern_Vec" not in mods:
-        mods.append("EXT_Q16_NumericalRelationalPattern_Vec")
-    if (
-        os.getenv("ENABLE_SPECTRUM", "0") == "1"
-        and "EXT_Q13_GlobalConsistencySpectrum_Vec" not in mods
-    ):
-        mods.append("EXT_Q13_GlobalConsistencySpectrum_Vec")
-    if "EXT_M11_Mirror_Sequence_Vec" not in mods:
-        mods.append("EXT_M11_Mirror_Sequence_Vec")
-    return mods
+    base_modules = brain.get_core_modules()
+    scores = {
+        m: float(np.mean(get_module_score(m, grid, target=target)))
+        for m in base_modules
+    }
+    return sorted(scores, key=scores.get, reverse=True)
 
 
 @lru_cache(maxsize=500000)
@@ -637,13 +625,7 @@ def simulate_full_board(
 
         if len(boards) > 0:
             for board in boards:
-                mods_fast = [
-                    "EXT_Q1_ProximityEntropy_Vec",
-                    "EXT_Q2_PotentialPath_Vec",
-                    "EXT_Q5_GlobalEntropy_Vec",
-                    "EXT_Q6_LineBridge_Vec",
-                    "EXT_Q7_VariancePrior_Vec",
-                ]
+                mods_fast = ["focus", "skip", "diff"]
                 stack_fast = np.stack(
                     [get_module_score(m, board) for m in mods_fast], axis=0
                 )
@@ -724,15 +706,7 @@ def simulate_full_board(
 
     # Two-phase scoring: Re-rank top K candidates with Borda or Soft-Max
     tau = float(os.getenv("TAU_SOFTMAX", "0.3"))
-    mods_rerank = [
-        "EXT_Q1_ProximityEntropy_Vec",
-        "EXT_Q2_PotentialPath_Vec",
-        "EXT_Q3_DiscontinuitySym_Vec",
-        "EXT_Q4_ControlComposite_Vec",
-        "EXT_Q5_GlobalEntropy_Vec",
-        "EXT_Q6_LineBridge_Vec",
-        "EXT_Q7_VariancePrior_Vec",
-    ]
+    mods_rerank = ["focus", "skip", "diff", "mirror", "conn", "tail"]
     w = np.array([AGG_WEIGHTS[m] for m in mods_rerank])
     stack_rerank = np.stack(
         [get_module_score(m, g, target=target_num) for m in mods_rerank],
@@ -1079,19 +1053,16 @@ def predict_scratch_card(
         }
 
     modules = [
-        ("EXT_Q1_ProximityEntropy_Vec", "Proximity and entropy scoring"),
-        ("EXT_Q3_DiscontinuitySym_Vec", "Discontinuity and symmetry scoring"),
-        ("EXT_Q5_GlobalEntropy_Vec", "Global entropy and clustering"),
-        ("EXT_Q14_TargetAffinity_Vec", "Target number affinity"),
-        ("EXT_Q15_GlobalSpread_Vec", "Global spread preference"),
-        (
-            "EXT_Q16_NumericalRelationalPattern_Vec",
-            "Numerical relational patterns",
-        ),
+        ("focus", "3x3 known density"),
+        ("skip", "Skip pattern detection"),
+        ("diff", "Difference trend"),
+        ("mirror", "Mirror sequence detection"),
+        ("conn", "Connectivity heatmap"),
+        ("tail", "Tail analyzer"),
     ]
 
     mod_names = [m for m, _ in modules]
-    weights = np.array([0.2, 0.15, 0.25, 0.2, 0.1, 0.2], dtype=float)
+    weights = np.array([AGG_WEIGHTS[m] for m in mod_names], dtype=float)
     score_stack = np.stack(
         [
             get_module_score(m, grid_np, target=target_num, priors=priors)

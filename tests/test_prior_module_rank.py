@@ -34,7 +34,7 @@ def test_rank_cells_by_prior_and_modules(tmp_path):
     _make_samples(samples)
     cube = analyzer.compute_global_distribution(str(samples), 2, 2)
     grid = np.array([[-1, 2], [3, -1]])
-    mods = ["EXT_Q1_ProximityEntropy_Vec"]
+    mods = ["focus"]
     ranks = analyzer.rank_cells_by_prior_and_modules(
         grid,
         cube,

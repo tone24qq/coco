@@ -25,5 +25,5 @@ def test_get_core_modules_warn_invalid_env(monkeypatch, caplog):
 def test_get_core_modules_invalid_env_default(monkeypatch):
     monkeypatch.setenv("CORE_LIMIT", "bad")
     mods = brain.get_core_modules()
-    assert len(mods) == 8
+    assert len(mods) == 6
     monkeypatch.delenv("CORE_LIMIT", raising=False)

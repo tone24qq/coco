@@ -1,8 +1,14 @@
 import numpy as np
 
-from modules import (compute_difference_trend, compute_focus_score,
-                     connectivity_heatmap, detect_mirror_sequences,
-                     detect_skip_patterns, fuse_scores, sequence_tail_analyzer)
+from modules import (
+    compute_difference_trend,
+    compute_focus_score,
+    connectivity_heatmap,
+    detect_mirror_sequences,
+    detect_skip_patterns,
+    fuse_scores,
+    sequence_tail_analyzer,
+)
 
 
 def _sample_grid():
