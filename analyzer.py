@@ -6,6 +6,7 @@ import math
 import os
 import sys
 import zipfile
+from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
@@ -92,7 +93,14 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                 logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
                 continue
             count += 1
-            yield {"rows": rows, "cols": cols, "grid": grid}
+            item = {
+                "rows": rows,
+                "cols": cols,
+                "grid": grid,
+                "target_num": data.get("target_num"),
+                "mode": data.get("mode"),
+            }
+            yield item
     logger.info("Loaded %s (%d JSON)", zip_path.name, count)
 
 
@@ -130,6 +138,63 @@ def compute_history_frequency(
         total,
     )
     return freq
+
+
+def compute_position_distribution(
+    samples_dir: str,
+    rows: int,
+    cols: int,
+    *,
+    mode: Optional[str] = None,
+) -> Dict[Tuple[int, int], Dict[int, int]]:
+    """Return per-cell number frequency counts from history samples."""
+    stats: Dict[Tuple[int, int], Dict[int, int]] = {
+        (r, c): defaultdict(int) for r in range(rows) for c in range(cols)
+    }
+    total = 0
+    for sample in iter_sample_jsons(samples_dir):
+        if sample["rows"] != rows or sample["cols"] != cols:
+            continue
+        if mode and sample.get("mode") != mode:
+            continue
+        total += 1
+        grid = np.asarray(sample["grid"], dtype=int)
+        for r in range(rows):
+            for c in range(cols):
+                k = int(grid[r, c])
+                stats[(r, c)][k] += 1
+    logger.info(
+        "Position distribution for %d×%d processed %d samples%s",
+        rows,
+        cols,
+        total,
+        f" mode={mode}" if mode else "",
+    )
+    return {k: dict(v) for k, v in stats.items()}
+
+
+def predict_number(
+    grid_with_blank: List[List[int]] | np.ndarray,
+    stats: Dict[Tuple[int, int], Dict[int, int]],
+) -> List[Tuple[Tuple[int, int], int, float]]:
+    """Predict numbers for blanks in ``grid_with_blank`` using precomputed stats."""
+    grid = np.asarray(grid_with_blank, dtype=int)
+    rows, cols = grid.shape
+    used = {int(v) for v in grid.ravel() if v != -1}
+    all_nums = set(range(1, rows * cols + 1))
+    remain = all_nums - used
+    predictions: List[Tuple[Tuple[int, int], int, float]] = []
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] == -1:
+                dist = stats.get((r, c), {})
+                total = sum(dist.get(n, 0) for n in remain) or 1
+                for n in sorted(remain):
+                    freq = dist.get(n, 0)
+                    score = float(freq) / float(total)
+                    predictions.append(((r, c), n, score))
+    predictions.sort(key=lambda x: x[2], reverse=True)
+    return predictions
 
 
 @lru_cache(maxsize=8)
