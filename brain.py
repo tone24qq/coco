@@ -7,14 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from modules import DEFAULT_WEIGHTS as DEFAULT_AGG_WEIGHTS
-from modules import (
-    compute_difference_trend,
-    compute_focus_score,
-    connectivity_heatmap,
-    detect_mirror_sequences,
-    detect_skip_patterns,
-    sequence_tail_analyzer,
-)
+from modules import STRATEGY_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +65,7 @@ def bytes_to_grid(grid_bytes: bytes, shape):
 
 
 REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray], np.ndarray]] = {
-    "focus": compute_focus_score,
-    "skip": detect_skip_patterns,
-    "diff": compute_difference_trend,
-    "mirror": detect_mirror_sequences,
-    "conn": connectivity_heatmap,
-    "tail": sequence_tail_analyzer,
+    name: strat.func for name, strat in STRATEGY_REGISTRY.items()
 }
 
 

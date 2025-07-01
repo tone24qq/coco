@@ -1,3 +1,4 @@
+# isort: skip_file
 import numpy as np
 
 from modules import (

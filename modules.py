@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -9,6 +10,27 @@ FORMULA_REGISTRY: Dict[
     str,
     Callable[[int, int, np.random.Generator], np.ndarray],
 ] = {}
+
+
+@dataclass
+class ModuleStrategy:
+    """Container for a scoring module."""
+
+    func: Callable[[np.ndarray], np.ndarray]
+    weight: float
+
+
+STRATEGY_REGISTRY: Dict[str, ModuleStrategy] = {}
+
+
+def register_strategy(name: str, *, weight: float) -> Callable[[Callable], Callable]:
+    """Decorator to register a scoring strategy."""
+
+    def _decorator(fn: Callable) -> Callable:
+        STRATEGY_REGISTRY[name] = ModuleStrategy(fn, weight)
+        return fn
+
+    return _decorator
 
 
 def generate_unique_grid(
@@ -293,6 +315,7 @@ def nearest_value_affinity(
     return score
 
 
+@register_strategy("focus", weight=0.2)
 def compute_focus_score(grid: np.ndarray) -> np.ndarray:
     """Compute density of known cells in 3x3 neighborhood."""
     mask = (grid != -1).astype(int)
@@ -306,6 +329,7 @@ def compute_focus_score(grid: np.ndarray) -> np.ndarray:
     return result
 
 
+@register_strategy("skip", weight=0.15)
 def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     """Detect arithmetic skip patterns along rows and columns."""
     M, N = grid.shape
@@ -335,6 +359,7 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     return score
 
 
+@register_strategy("diff", weight=0.15)
 def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     """Infer values based on local difference trend."""
     M, N = grid.shape
@@ -350,6 +375,7 @@ def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     return score
 
 
+@register_strategy("mirror", weight=0.2)
 def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     """Check horizontal and vertical mirror symmetry."""
     M, N = grid.shape
@@ -375,6 +401,7 @@ def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
     return score
 
 
+@register_strategy("conn", weight=0.15)
 def connectivity_heatmap(grid: np.ndarray) -> np.ndarray:
     """Distance weighted sum of known numbers."""
     M, N = grid.shape
@@ -392,6 +419,7 @@ def connectivity_heatmap(grid: np.ndarray) -> np.ndarray:
     return score
 
 
+@register_strategy("tail", weight=0.15)
 def sequence_tail_analyzer(grid: np.ndarray) -> np.ndarray:
     """Analyze digit tails frequency weighted by distance."""
     M, N = grid.shape
@@ -423,14 +451,16 @@ def sequence_tail_analyzer(grid: np.ndarray) -> np.ndarray:
     return score
 
 
-DEFAULT_WEIGHTS = {
-    "focus": 0.2,
-    "skip": 0.15,
-    "diff": 0.15,
-    "mirror": 0.2,
-    "conn": 0.15,
-    "tail": 0.15,
-}
+@register_strategy("affinity", weight=0.15)
+def target_affinity(grid: np.ndarray, *, target: Optional[int] = None) -> np.ndarray:
+    """Affinity based on nearest value distribution."""
+
+    if target is None:
+        return np.zeros_like(grid, dtype=float)
+    return nearest_value_affinity(grid, target, k=3, tolerance=1, radius=1)
+
+
+DEFAULT_WEIGHTS = {name: strat.weight for name, strat in STRATEGY_REGISTRY.items()}
 
 
 def fuse_scores(

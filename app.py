@@ -16,13 +16,9 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    iter_sample_jsons,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities, iter_sample_jsons,
+                      predict_scratch_card, probability_heatmap,
+                      render_heatmap)
 
 # fmt: on
 brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}

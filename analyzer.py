@@ -1,3 +1,4 @@
+# isort: skip_file
 import base64
 import heapq
 import json
@@ -19,6 +20,7 @@ from numba import njit
 import brain
 
 # fmt: off
+# isort: off
 from brain import (
     AGG_WEIGHTS,
     REGISTERED_MODULES_BRAIN,
@@ -28,9 +30,9 @@ from brain import (
     bytes_to_grid,
     get_module_score,
 )
-
 # fmt: on
-from modules import FORMULA_REGISTRY, detect_skip_patterns
+# isort: on
+from modules import FORMULA_REGISTRY, detect_skip_patterns, generate_unique_grid
 
 # Logger configuration
 logging.basicConfig(
@@ -1611,3 +1613,40 @@ def probability_heatmap(
         for n, p in cell.items():
             result[int(n)][r, c] = p
     return result
+
+
+def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
+    """Return top-1 accuracy over randomly generated boards."""
+
+    rng = np.random.default_rng(seed)
+    hits = 0
+    trials = 0
+    for _ in range(num_trials):
+        rows = int(rng.integers(4, 21))
+        cols = int(rng.integers(5, 21))
+        full = generate_unique_grid(rows, cols, rng=rng)
+        mask = rng.random((rows, cols)) < 0.5
+        board = full.copy()
+        board[mask] = -1
+        blanks = np.argwhere(board == -1)
+        if blanks.size == 0:
+            continue
+        r, c = blanks[rng.integers(len(blanks))]
+        target = int(full[r, c])
+        board[r, c] = -1
+        res = predict_scratch_card(
+            board.tolist(),
+            target_num=target,
+            iterations=20,
+            global_iter=10,
+            focus_iter=5,
+            top_n=5,
+            epsilon=0.1,
+        )
+        preds = res.get("predictions", [])
+        trials += 1
+        if preds and preds[0]["row"] == r and preds[0]["col"] == c:
+            hits += 1
+    if trials == 0:
+        return 0.0
+    return hits / float(trials)
