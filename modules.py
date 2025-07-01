@@ -2,6 +2,7 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from scipy import ndimage as ndi
+from scipy.signal import convolve2d
 
 # Formula registry for Monte Carlo simulation
 FORMULA_REGISTRY: Dict[
@@ -290,3 +291,161 @@ def nearest_value_affinity(
     if mx > 0:
         score = score / float(mx)
     return score
+
+
+def compute_focus_score(grid: np.ndarray) -> np.ndarray:
+    """Compute density of known cells in 3x3 neighborhood."""
+    mask = (grid != -1).astype(int)
+    kernel = np.ones((3, 3), dtype=int)
+    raw = convolve2d(mask, kernel, mode="same", boundary="fill", fillvalue=0)
+    result = np.zeros_like(raw, dtype=float)
+    result[grid == -1] = raw[grid == -1]
+    mn, mx = result.min(), result.max()
+    if mx > mn:
+        result = (result - mn) / (mx - mn)
+    return result
+
+
+def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
+    """Detect arithmetic skip patterns along rows and columns."""
+    M, N = grid.shape
+    score = np.zeros_like(grid, dtype=float)
+    for i in range(M):
+        idx = np.where(grid[i] != -1)[0]
+        if idx.size < 2:
+            continue
+        start, end = idx[0], idx[-1]
+        for j in range(start, N):
+            if grid[i, j] == -1:
+                score[i, j] = 1
+        for j in range(end, -1, -1):
+            if grid[i, j] == -1:
+                score[i, j] = 1
+    for j in range(N):
+        idx = np.where(grid[:, j] != -1)[0]
+        if idx.size < 2:
+            continue
+        start, end = idx[0], idx[-1]
+        for i2 in range(start, M):
+            if grid[i2, j] == -1:
+                score[i2, j] = 1
+        for i2 in range(end, -1, -1):
+            if grid[i2, j] == -1:
+                score[i2, j] = 1
+    return score
+
+
+def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
+    """Infer values based on local difference trend."""
+    M, N = grid.shape
+    score = np.zeros_like(grid, dtype=float)
+    for i in range(M):
+        for j in range(N):
+            if grid[i, j] != -1:
+                continue
+            if j >= 2 and grid[i, j - 1] != -1 and grid[i, j - 2] != -1:
+                score[i, j] = max(score[i, j], 1)
+            if i >= 2 and grid[i - 1, j] != -1 and grid[i - 2, j] != -1:
+                score[i, j] = max(score[i, j], 1)
+    return score
+
+
+def detect_mirror_sequences(grid: np.ndarray) -> np.ndarray:
+    """Check horizontal and vertical mirror symmetry."""
+    M, N = grid.shape
+    score = np.zeros_like(grid, dtype=float)
+    for i in range(M):
+        for j in range(N):
+            if grid[i, j] != -1:
+                continue
+            max_k = min(j, N - j - 1)
+            for k in range(1, max_k + 1):
+                left, right = grid[i, j - k], grid[i, j + k]
+                if left != -1 and right != -1 and left == right:
+                    score[i, j] = 1
+                    break
+            if score[i, j] == 1:
+                continue
+            max_k2 = min(i, M - i - 1)
+            for k in range(1, max_k2 + 1):
+                up, down = grid[i - k, j], grid[i + k, j]
+                if up != -1 and down != -1 and up == down:
+                    score[i, j] = 1
+                    break
+    return score
+
+
+def connectivity_heatmap(grid: np.ndarray) -> np.ndarray:
+    """Distance weighted sum of known numbers."""
+    M, N = grid.shape
+    score = np.zeros_like(grid, dtype=float)
+    known = np.argwhere(grid != -1)
+    if known.size == 0:
+        return score
+    for i in range(M):
+        for j in range(N):
+            if grid[i, j] != -1:
+                continue
+            d = known - np.array([i, j])
+            dist = np.sqrt((d[:, 0] ** 2) + (d[:, 1] ** 2))
+            score[i, j] = np.sum(1.0 / (dist + 1e-6))
+    return score
+
+
+def sequence_tail_analyzer(grid: np.ndarray) -> np.ndarray:
+    """Analyze digit tails frequency weighted by distance."""
+    M, N = grid.shape
+    score = np.zeros_like(grid, dtype=float)
+    known = np.argwhere(grid != -1)
+    if known.size == 0:
+        return score
+    tail_pos = {t: [] for t in range(10)}
+    for r, c in known:
+        t = int(grid[r, c] % 10)
+        tail_pos[t].append((r, c))
+    tail_counts = {t: len(tail_pos[t]) for t in range(10)}
+    for i in range(M):
+        for j in range(N):
+            if grid[i, j] != -1:
+                continue
+            best = 0.0
+            for t in range(10):
+                pos = tail_pos[t]
+                if not pos:
+                    continue
+                coords = np.array(pos)
+                dists = np.abs(coords - np.array([i, j])).sum(axis=1)
+                min_d = np.min(dists)
+                s = tail_counts[t] / (min_d + 1e-6)
+                if s > best:
+                    best = s
+            score[i, j] = best
+    return score
+
+
+DEFAULT_WEIGHTS = {
+    "focus": 0.2,
+    "skip": 0.15,
+    "diff": 0.15,
+    "mirror": 0.2,
+    "conn": 0.15,
+    "tail": 0.15,
+}
+
+
+def fuse_scores(
+    gridscores: Dict[str, np.ndarray],
+    grid: np.ndarray,
+    weights: Dict[str, float] | None = None,
+) -> np.ndarray:
+    """Fuse score arrays from multiple modules."""
+    if weights is None:
+        weights = DEFAULT_WEIGHTS
+    final = np.zeros_like(grid, dtype=float)
+    for name, arr in gridscores.items():
+        final += weights.get(name, 0.0) * arr
+    final[grid != -1] = 0
+    mn, mx = final.min(), final.max()
+    if mx > mn:
+        final = (final - mn) / (mx - mn)
+    return final
