@@ -83,6 +83,7 @@ class GridRequest(BaseModel):
     sample_gamma: Optional[float] = None
     fusion_alpha: Optional[float] = None
     pseudo_count: Optional[float] = None
+    exclude_filled: bool = True
 
 
 class Prediction(BaseModel):
@@ -262,6 +263,7 @@ async def predict(req: GridRequest):
             sample_gamma=req.sample_gamma or 0.0,
             fusion_alpha=req.fusion_alpha or 0.5,
             pseudo_count=req.pseudo_count or 0.0,
+            exclude_filled=req.exclude_filled,
         )
 
         full_probs = result.get("full_probabilities", {})
@@ -328,6 +330,7 @@ async def heatmap(req: HeatmapRequest):
             result_top_k=3,
             priors=brain.priors_map[key],
             sample_gamma=req.sample_gamma or 0.0,
+            exclude_filled=True,
         )
 
         full_probs = pred_result.get("full_probabilities", {})

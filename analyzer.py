@@ -959,6 +959,7 @@ def predict_scratch_card(
     sample_gamma: float = 0.0,
     fusion_alpha: float = 0.5,
     pseudo_count: float = 0.0,
+    exclude_filled: bool = False,
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -1100,6 +1101,11 @@ def predict_scratch_card(
         total = sum(dist.values()) or 1e-12
         for k in dist:
             dist[k] /= total
+
+    if exclude_filled:
+        prob_map = {
+            (r, c): dist for (r, c), dist in prob_map.items() if grid_np[r, c] == -1
+        }
 
     module_scores = {
         mod: get_module_score(mod, grid_np, priors=priors, target=target_num)

@@ -96,3 +96,13 @@ def test_predict_1_based_bottom_right(client):
     assert pred["row"] == 2
     assert pred["col"] == 2
     assert "2,2" in body["full_probabilities"]
+
+
+def test_predict_excludes_filled_cells(client):
+    grid = [[1, -1], [-1, 4]]
+    payload = {"grid": grid, "target_num": 3, "iterations": 2}
+    resp = client.post("/predict", json=payload)
+    body = resp.json()
+    coords = {(p["row"], p["col"]) for p in body["predictions"]}
+    assert (1, 1) not in coords
+    assert (2, 2) not in coords
