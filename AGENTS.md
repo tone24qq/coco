@@ -391,4 +391,4 @@ Run convergence validation (used in CI):
 pytest tests/test_accuracy_converges.py
 ```
 
-
+以上皆為示範 不一定有實際吻合的功能 模組名稱 計算方式 任何方法 皆為示例
