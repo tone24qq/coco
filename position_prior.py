@@ -1,34 +1,29 @@
 import logging
-from pathlib import Path
 
 import numpy as np
 
-from analyzer import iter_sample_jsons
+from analyzer import sample_excel_boards
 
 logger = logging.getLogger(__name__)
 
 
-def build_position_prior(samples_dir: str, outfile: str, buckets: int = 20) -> None:
-    """Build global position prior from ``samples_dir`` and save to ``outfile``."""
-    path = Path(samples_dir)
-    # first pass to determine max digit
-    max_digit = 0
-    for sample in iter_sample_jsons(str(path)):
-        grid = np.asarray(sample["grid"], dtype=int)
-        if grid.size:
-            max_digit = max(max_digit, int(grid.max()))
-    if max_digit == 0:
-        raise ValueError("no valid samples found")
-
+def build_position_prior(
+    rows: int,
+    cols: int,
+    outfile: str,
+    buckets: int = 20,
+    *,
+    n_synth: int = 1000,
+    seed: int = 0
+) -> None:
+    """Build global position prior from synthetic boards and save to ``outfile``."""
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    max_digit = rows * cols
     counts = np.zeros((max_digit + 1, buckets, buckets), dtype=np.int64)
-    for sample in iter_sample_jsons(str(path)):
-        grid = np.asarray(sample["grid"], dtype=int)
-        rows, cols = sample["rows"], sample["cols"]
+    for board in boards:
         for r in range(rows):
             for c in range(cols):
-                k = int(grid[r, c])
-                if k <= 0:
-                    continue
+                k = int(board[r, c])
                 u = r / (rows - 1) if rows > 1 else 0.0
                 v = c / (cols - 1) if cols > 1 else 0.0
                 i = min(int(u * buckets), buckets - 1)

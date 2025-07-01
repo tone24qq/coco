@@ -182,7 +182,8 @@ def main():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == "dump_prior":
-        analyzer.dump_prior(sys.argv[2], sys.argv[3])
+    if len(sys.argv) == 5 and sys.argv[1] == "dump_prior":
+        r, c = int(sys.argv[2]), int(sys.argv[3])
+        analyzer.dump_prior(r, c, sys.argv[4])
     else:
         main()

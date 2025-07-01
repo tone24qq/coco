@@ -1,35 +1,14 @@
-import json
-import zipfile
-
 import analyzer
 
 
-def _make_samples(tmp_path):
-    samples = tmp_path / "samples"
-    samples.mkdir()
-    data1 = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]], "mode": "excel"}
-    data2 = {"rows": 2, "cols": 2, "grid": [[2, 1], [3, 4]], "mode": "shuffle"}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("a.json", json.dumps(data1))
-        zf.writestr("b.json", json.dumps(data2))
-    return samples
+def test_compute_position_distribution():
+    stats = analyzer.compute_position_distribution("", 2, 2, n_synth=10, seed=0)
+    assert sum(stats[(0, 0)].values()) == 10
+    assert all(sum(v.values()) == 10 for v in stats.values())
 
 
-def test_compute_position_distribution(tmp_path):
-    samples = _make_samples(tmp_path)
-    stats = analyzer.compute_position_distribution(str(samples), 2, 2)
-    assert stats[(0, 0)][1] == 1
-    assert stats[(0, 0)][2] == 1
-    stats_excel = analyzer.compute_position_distribution(
-        str(samples), 2, 2, mode="excel"
-    )
-    assert stats_excel[(0, 0)][1] == 1
-    assert 2 not in stats_excel[(0, 0)]
-
-
-def test_predict_number(tmp_path):
-    samples = _make_samples(tmp_path)
-    stats = analyzer.compute_position_distribution(str(samples), 2, 2)
+def test_predict_number():
+    stats = analyzer.compute_position_distribution("", 2, 2, n_synth=10, seed=0)
     grid = [[-1, 2], [3, 4]]
     preds = analyzer.predict_number(grid, stats)
     assert preds

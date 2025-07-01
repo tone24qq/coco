@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import logging
 import math
@@ -16,9 +15,8 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities, iter_sample_jsons,
-                      predict_scratch_card, probability_heatmap,
-                      render_heatmap)
+from analyzer import (compute_position_probabilities, predict_scratch_card,
+                      probability_heatmap, render_heatmap)
 
 # fmt: on
 brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
@@ -57,16 +55,8 @@ async def debug_priors():
     return brain.priors_map
 
 
-async def _load_samples_background():
-    # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
-    for _ in iter_sample_jsons("samples"):
-        pass
-    logger.info("Sample iteration complete (background)")
-
-
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(_load_samples_background())
     analyzer.load_global_pos_freq("samples")
 
 

@@ -1,15 +1,13 @@
 import base64
 import heapq
-import json
 import logging
 import math
 import os
 import sys
-import zipfile
-from collections import defaultdict
+from collections import Counter
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import xxhash
@@ -68,74 +66,84 @@ def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
 
 
-def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
-    """Yield JSON objects from a zip file with basic validation."""
-    count = 0
-    with zipfile.ZipFile(zip_path) as zf:
-        for name in zf.namelist():
-            if not name.endswith(".json"):
-                continue
-            try:
-                with zf.open(name) as f:
-                    data = json.load(f)
-            except Exception as exc:  # pragma: no cover - corrupted JSON
-                logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
-                continue
-            grid = data.get("grid")
-            if not isinstance(grid, list) or not all(
-                isinstance(row, list) for row in grid
-            ):
-                logger.warning("Invalid grid in %s:%s", zip_path.name, name)
-                continue
-            rows = data.get("rows", len(grid))
-            cols = data.get("cols", len(grid[0]) if grid else 0)
-            if rows != len(grid) or any(len(r) != cols for r in grid):
-                logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
-                continue
-            count += 1
-            item = {
-                "rows": rows,
-                "cols": cols,
-                "grid": grid,
-                "target_num": data.get("target_num"),
-                "mode": data.get("mode"),
-            }
-            yield item
-    logger.info("Loaded %s (%d JSON)", zip_path.name, count)
+def sample_excel_boards(
+    rows: int, cols: int, n_synth: int, seed: int = 0
+) -> np.ndarray:
+    """Generate ``n_synth`` full boards as uniform permutations."""
+    rng = np.random.default_rng(seed)
+    base = np.arange(1, rows * cols + 1)
+    boards = np.empty((n_synth, rows, cols), dtype=int)
+    for i in range(n_synth):
+        boards[i] = rng.permutation(base).reshape(rows, cols)
+    return boards
 
 
-def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
-    """Iterate through all JSON samples in ``samples_dir``."""
-    path = Path(samples_dir)
-    for zp in sorted(path.glob("*.zip")):
-        try:
-            for item in _iter_json_from_zip(zp):
-                yield item
-        except Exception as exc:  # pragma: no cover - broken zip
-            logger.error("Failed to load %s: %s", zp.name, exc)
+def filter_by_target_position(
+    boards: np.ndarray, target: int, pos: Tuple[int, int]
+) -> np.ndarray:
+    """Return boards where ``target`` is located at ``pos``."""
+    r, c = pos
+    return boards[boards[:, r, c] == target]
+
+
+def compute_conditional_stats(
+    filtered_boards: np.ndarray,
+) -> Dict[Tuple[int, int], Counter]:
+    """Count occurrences of each number in each cell."""
+    _, rows, cols = filtered_boards.shape
+    stats = {(r, c): Counter() for r in range(rows) for c in range(cols)}
+    for board in filtered_boards:
+        for r in range(rows):
+            for c in range(cols):
+                stats[(r, c)][int(board[r, c])] += 1
+    return stats
+
+
+def normalize_stats(
+    stats: Dict[Tuple[int, int], Counter],
+) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """Normalize counters to probability distributions."""
+    priors: Dict[Tuple[int, int], Dict[int, float]] = {}
+    for cell, counter in stats.items():
+        total = sum(counter.values()) or 1
+        priors[cell] = {num: cnt / total for num, cnt in counter.items()}
+    return priors
+
+
+def get_conditional_priors_for_all_positions(
+    rows: int, cols: int, target: int, n_synth: int, seed: int = 0
+) -> Dict[Tuple[int, int], Dict[Tuple[int, int], Dict[int, float]]]:
+    """Return conditional priors for every possible target position."""
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    result: Dict[Tuple[int, int], Dict[Tuple[int, int], Dict[int, float]]] = {}
+    for r in range(rows):
+        for c in range(cols):
+            subset = filter_by_target_position(boards, target, (r, c))
+            if subset.size == 0:
+                continue
+            stats = compute_conditional_stats(subset)
+            result[(r, c)] = normalize_stats(stats)
+    return result
 
 
 def compute_history_frequency(
-    samples_dir: str, target_num: int, rows: int, cols: int
+    samples_dir: str,
+    target_num: int,
+    rows: int,
+    cols: int,
+    *,
+    n_synth: int = 1000,
+    seed: int = 0,
 ) -> np.ndarray:
-    """Return frequency matrix for ``target_num`` over all samples."""
-    freq = np.zeros((rows, cols), dtype=np.int64)
-    total = 0
-    for sample in iter_sample_jsons(samples_dir):
-        if sample["rows"] != rows or sample["cols"] != cols:
-            continue
-        total += 1
-        grid = sample["grid"]
-        for r in range(rows):
-            for c in range(cols):
-                if grid[r][c] == target_num:
-                    freq[r, c] += 1
+    """Return frequency matrix for ``target_num`` using synthetic boards."""
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    freq = (boards == target_num).sum(axis=0)
     logger.info(
-        "History frequency for %d×%d target=%d processed %d samples",
+        "History frequency for %d×%d target=%d generated %d boards",
         rows,
         cols,
         target_num,
-        total,
+        n_synth,
     )
     return freq
 
@@ -146,28 +154,23 @@ def compute_position_distribution(
     cols: int,
     *,
     mode: Optional[str] = None,
+    n_synth: int = 1000,
+    seed: int = 0,
 ) -> Dict[Tuple[int, int], Dict[int, int]]:
-    """Return per-cell number frequency counts from history samples."""
-    stats: Dict[Tuple[int, int], Dict[int, int]] = {
-        (r, c): defaultdict(int) for r in range(rows) for c in range(cols)
+    """Return per-cell number frequency counts from synthetic boards."""
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    stats: Dict[Tuple[int, int], Counter] = {
+        (r, c): Counter() for r in range(rows) for c in range(cols)
     }
-    total = 0
-    for sample in iter_sample_jsons(samples_dir):
-        if sample["rows"] != rows or sample["cols"] != cols:
-            continue
-        if mode and sample.get("mode") != mode:
-            continue
-        total += 1
-        grid = np.asarray(sample["grid"], dtype=int)
+    for board in boards:
         for r in range(rows):
             for c in range(cols):
-                k = int(grid[r, c])
-                stats[(r, c)][k] += 1
+                stats[(r, c)][int(board[r, c])] += 1
     logger.info(
-        "Position distribution for %d×%d processed %d samples%s",
+        "Position distribution for %d×%d generated %d boards%s",
         rows,
         cols,
-        total,
+        n_synth,
         f" mode={mode}" if mode else "",
     )
     return {k: dict(v) for k, v in stats.items()}
@@ -199,9 +202,14 @@ def predict_number(
 
 @lru_cache(maxsize=8)
 def compute_position_probabilities(
-    samples_dir: str, rows: int, cols: int
+    samples_dir: str,
+    rows: int,
+    cols: int,
+    *,
+    n_synth: int = 1000,
+    seed: int = 0,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
-    """Return per-cell number probabilities from history samples."""
+    """Return per-cell number probabilities from synthetic boards."""
     global_freq = _get_global_pos_freq(samples_dir)
     if global_freq is not None:
         buckets = global_freq.shape[1]
@@ -219,34 +227,11 @@ def compute_position_probabilities(
                 prob_map[(r, c)] = probs
         return prob_map
 
-    cached = Path(samples_dir) / "prior.npy"
-    if cached.exists():
-        cube = np.load(cached, mmap_mode="r")
-        if cube.shape[:2] != (rows, cols):
-            logger.warning("Cached prior shape mismatch: %s", cube.shape)
-        else:
-            logger.info("Loaded prior from %s", cached)
-            prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
-            for r in range(rows):
-                for c in range(cols):
-                    dist = cube[r, c].astype(float)
-                    total = dist.sum() or 1.0
-                    probs = {
-                        i: dist[i] / total for i in range(1, dist.size) if dist[i] > 0
-                    }
-                    prob_map[(r, c)] = probs
-            return prob_map
-
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
-    total = 0
-    for sample in iter_sample_jsons(samples_dir):
-        if sample["rows"] != rows or sample["cols"] != cols:
-            continue
-        total += 1
-        grid = np.asarray(sample["grid"], dtype=int)
-        mask = (grid >= 1) & (grid <= rows * cols)
-        rr, cc = np.indices(grid.shape)
-        np.add.at(counts, (rr[mask], cc[mask], grid[mask]), 1)
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    rr, cc = np.indices((rows, cols))
+    for b in boards:
+        np.add.at(counts, (rr, cc, b), 1)
 
     prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
     for r in range(rows):
@@ -263,47 +248,32 @@ def compute_position_probabilities(
                 prob_map[(r, c)] = {}
 
     logger.info(
-        "Position frequencies for %d×%d processed %d samples",
+        "Position frequencies for %d×%d generated %d boards",
         rows,
         cols,
-        total,
+        n_synth,
     )
     return prob_map
 
 
 @lru_cache(maxsize=8)
-def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.ndarray:
-    """Return per-cell number probability cube from history samples."""
-    cached = Path(samples_dir) / "prior.npy"
-    if cached.exists():
-        cube = np.load(cached, mmap_mode="r")
-        if cube.shape[:2] != (rows, cols):
-            logger.warning("Cached prior shape mismatch: %s", cube.shape)
-        else:
-            logger.info("Loaded prior cube from %s", cached)
-            totals = cube.sum(axis=2, keepdims=True)
-            totals[totals == 0] = 1
-            return cube.astype(float) / totals
-
+def compute_global_distribution(
+    samples_dir: str, rows: int, cols: int, *, n_synth: int = 1000, seed: int = 0
+) -> np.ndarray:
+    """Return per-cell number probability cube from synthetic boards."""
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
-    total = 0
-    for sample in iter_sample_jsons(samples_dir):
-        if sample["rows"] != rows or sample["cols"] != cols:
-            continue
-        total += 1
-        grid = np.asarray(sample["grid"], dtype=int)
-        mask = (grid >= 1) & (grid <= rows * cols)
-        rr, cc = np.indices(grid.shape)
-        np.add.at(counts, (rr[mask], cc[mask], grid[mask]), 1)
-
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    rr, cc = np.indices((rows, cols))
+    for b in boards:
+        np.add.at(counts, (rr, cc, b), 1)
     totals = counts.sum(axis=2, keepdims=True)
     totals[totals == 0] = 1
     probs = counts.astype(float) / totals
     logger.info(
-        "Global distribution for %d×%d processed %d samples",
+        "Global distribution for %d×%d generated %d boards",
         rows,
         cols,
-        total,
+        n_synth,
     )
     return probs
 
@@ -346,25 +316,15 @@ def adjust_weights_based_on_history(
     return np.array([history.get(f, 0.0) / total for f in formulas])
 
 
-def dump_prior(samples_dir: str, outfile: str) -> None:
-    """Aggregate all samples into a prior cube and save as ``outfile``."""
-    cube = None
-    rows = cols = 0
-    for sample in iter_sample_jsons(samples_dir):
-        r, c = sample["rows"], sample["cols"]
-        if cube is None:
-            rows, cols = r, c
-            cube = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
-        if r != rows or c != cols:
-            logger.warning("Skip mismatched sample %s×%s", r, c)
-            continue
-        grid = np.asarray(sample["grid"], dtype=int)
-        mask = (grid >= 1) & (grid <= rows * cols)
-        rr, cc = np.indices(grid.shape)
-        np.add.at(cube, (rr[mask], cc[mask], grid[mask]), 1)
-    if cube is None:
-        logger.error("No valid samples found in %s", samples_dir)
-        return
+def dump_prior(
+    rows: int, cols: int, outfile: str, *, n_synth: int = 1000, seed: int = 0
+) -> None:
+    """Aggregate synthetic boards into a prior cube and save as ``outfile``."""
+    boards = sample_excel_boards(rows, cols, n_synth, seed)
+    cube = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
+    rr, cc = np.indices((rows, cols))
+    for b in boards:
+        np.add.at(cube, (rr, cc, b), 1)
     np.save(outfile, cube)
     logger.info("Prior saved to %s", outfile)
 
