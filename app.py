@@ -1,10 +1,13 @@
 import asyncio
 import base64
+import json
 import logging
 import math
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import uvicorn
@@ -19,7 +22,6 @@ import brain
 from analyzer import (compute_position_probabilities, iter_sample_jsons,
                       predict_scratch_card, probability_heatmap,
                       render_heatmap)
-from position_prior import build_position_prior_map
 
 # fmt: on
 brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
@@ -37,6 +39,61 @@ logging.basicConfig(
     handlers=log_handlers,
 )
 logger = logging.getLogger(__name__)
+
+# —— Priors config ———————————————————————————————————————————————————————————
+PRIORS_PATH = Path("assets/priors_combined.json")
+_IO_POOL = ThreadPoolExecutor(max_workers=1)
+
+
+def _read_priors_file() -> Dict[Tuple[int, int], Dict[int, float]]:
+    raw = json.loads(PRIORS_PATH.read_text())
+    return {tuple(map(int, k.split("x"))): v for k, v in raw.items()}
+
+
+def _build_default_prior() -> Dict[Tuple[int, int], Dict[int, float]]:
+    from analyzer import compute_position_probabilities
+
+    logging.warning("[priors] Local file missing; fallback to on-the-fly build 10x12…")
+    return {(10, 12): compute_position_probabilities("samples", 10, 12)}
+
+
+async def load_priors_async() -> Dict[Tuple[int, int], Dict[int, float]]:
+    loop = asyncio.get_running_loop()
+    if PRIORS_PATH.exists():
+        return await loop.run_in_executor(_IO_POOL, _read_priors_file)
+    return await loop.run_in_executor(None, _build_default_prior)
+
+
+def find_closest_prior_key(
+    shape: Tuple[int, int], candidates: Dict[Tuple[int, int], Any]
+) -> Tuple[int, int]:
+    rows, cols = shape
+
+    def score(k: Tuple[int, int]) -> Tuple[int, float]:
+        kr, kc = k
+        cells_diff = abs((kr * kc) - (rows * cols))
+        aspect_diff = abs((kr / kc) - (rows / cols))
+        return (cells_diff, aspect_diff)
+
+    return min(candidates, key=score)
+
+
+def get_prior_for_shape(rows: int, cols: int) -> Dict[int, float]:
+    priors_map = brain.priors_map or {}
+    if not priors_map:
+        return {}
+    key = find_closest_prior_key((rows, cols), priors_map)
+    return priors_map.get(key, {})
+
+
+async def warm_up() -> None:
+    logging.info("[warm-up] Loading priors…")
+    priors = await load_priors_async()
+    brain.priors_map.clear()
+    brain.priors_map.update(priors)
+    logging.info(f"[warm-up] Loaded {len(priors)} shapes")
+    await _load_samples_background()
+
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
 app = FastAPI(
@@ -79,13 +136,9 @@ async def _load_samples_background():
 
 
 @app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(_load_samples_background())
+async def startup_event() -> None:
     analyzer.load_global_pos_freq("samples")
-    try:
-        brain.priors_map = build_position_prior_map("samples")
-    except Exception as exc:  # pragma: no cover - optional failure
-        logger.error("position prior build failed: %s", exc)
+    asyncio.create_task(warm_up())
 
 
 # ==== Schemas ==============================================================
@@ -243,11 +296,11 @@ async def predict(req: GridRequest):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
 
         key = (rows, cols)
-        if key not in brain.priors_map:
+        priors = get_prior_for_shape(rows, cols)
+        if not priors:
             logging.info(f"[predict] Computing priors for {rows}×{cols}…")
-            brain.priors_map[key] = compute_position_probabilities(
-                "samples", rows, cols
-            )
+            priors = compute_position_probabilities("samples", rows, cols)
+            brain.priors_map[key] = priors
 
         # 参数
         phase1 = req.iterations or PHASE1_ITER
@@ -278,7 +331,7 @@ async def predict(req: GridRequest):
             top_n=top_n,
             epsilon=eps,
             result_top_k=top_k,
-            priors=brain.priors_map[key],
+            priors=priors,
             sample_gamma=req.sample_gamma or 0.0,
             fusion_alpha=req.fusion_alpha or 0.5,
             pseudo_count=req.pseudo_count or 0.0,
@@ -333,10 +386,10 @@ async def heatmap(req: HeatmapRequest):
 
         rows, cols = len(req.grid), len(req.grid[0])
         key = (rows, cols)
-        if key not in brain.priors_map:
-            brain.priors_map[key] = compute_position_probabilities(
-                "samples", rows, cols
-            )
+        priors = get_prior_for_shape(rows, cols)
+        if not priors:
+            priors = compute_position_probabilities("samples", rows, cols)
+            brain.priors_map[key] = priors
 
         pred_result = predict_scratch_card(
             grid=req.grid,
@@ -347,7 +400,7 @@ async def heatmap(req: HeatmapRequest):
             top_n=PHASE2_TOP_N,
             epsilon=PHASE2_EPS,
             result_top_k=3,
-            priors=brain.priors_map[key],
+            priors=priors,
             sample_gamma=req.sample_gamma or 0.0,
         )
 
