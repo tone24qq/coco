@@ -86,3 +86,16 @@ def test_probabilities_not_uniform():
     prob_map = simulate_full_board(grid, None, n_iter=20)
     cell = prob_map[(1, 1)]
     assert len(cell) == 1 and next(iter(cell.values())) == 1.0
+
+
+def test_predict_always_excludes_filled_cells():
+    grid = [[1, -1], [-1, 4]]
+    res = analyzer.predict_scratch_card(
+        grid,
+        target_num=3,
+        iterations=4,
+        exclude_filled=False,
+    )
+    coords = {(p["row"], p["col"]) for p in res["predictions"]}
+    assert (0, 0) not in coords
+    assert (1, 1) not in coords

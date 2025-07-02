@@ -96,11 +96,6 @@ def parse_args() -> argparse.Namespace:
         help="Weight for sample-based frequency prior",
     )
     parser.add_argument(
-        "--exclude-filled",
-        action="store_true",
-        help="Exclude already filled cells from predictions",
-    )
-    parser.add_argument(
         "--strategy",
         type=str,
         choices=["legacy", "modern"],
@@ -163,7 +158,6 @@ def main():
             result_top_k=args.top_k,
             priors=priors,
             sample_gamma=args.sample_gamma,
-            exclude_filled=args.exclude_filled,
             strategy=args.strategy,
         )
         ray.shutdown()
