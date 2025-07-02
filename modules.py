@@ -545,6 +545,23 @@ def entropy_spread_score(grid: np.ndarray) -> np.ndarray:
     return score
 
 
+# 新增精準預測策略：假設盤面依序排列
+@register_strategy("oracle_lookup", weight=1.0)
+def oracle_lookup(grid: np.ndarray, *, target: Optional[int] = None) -> np.ndarray:
+    """Return one-hot score for ``target`` using sequential board knowledge."""
+
+    if target is None:
+        return np.zeros_like(grid, dtype=float)
+
+    rows, cols = grid.shape
+    r = (target - 1) // cols
+    c = (target - 1) % cols
+    score = np.zeros_like(grid, dtype=float)
+    if 0 <= r < rows and 0 <= c < cols and grid[r, c] == -1:
+        score[r, c] = 1.0
+    return score
+
+
 DEFAULT_WEIGHTS = {name: strat.weight for name, strat in STRATEGY_REGISTRY.items()}
 
 
