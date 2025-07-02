@@ -9,6 +9,8 @@ Ultra-minimal smoke-tests for Scratch-Card Prediction API
 
 from typing import Any, Dict, List
 
+import analyzer
+
 
 # ────────────────────────────── 工具 ──────────────────────────────
 def empty_grid(rows: int, cols: int) -> List[List[int]]:
@@ -74,6 +76,18 @@ def test_heatmap_json(client):
     assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
     assert isinstance(body.get("final_recommendations"), list)
+
+
+def test_debug_number_distribution(client, monkeypatch):
+    def fake(*_a, **_k):
+        return {1: {(0, 0): 2}}
+
+    monkeypatch.setattr(analyzer, "compute_number_distribution", fake)
+    resp = client.get("/debug/number_distribution?rows=2&cols=2")
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert body["1"]["1,1"] == 2
 
 
 def test_predict_1_based_top_left(client):

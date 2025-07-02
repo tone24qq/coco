@@ -27,6 +27,16 @@ def test_compute_position_distribution(tmp_path):
     assert 2 not in stats_excel[(0, 0)]
 
 
+def test_compute_number_distribution(tmp_path):
+    samples = _make_samples(tmp_path)
+    dist = analyzer.compute_number_distribution(str(samples), 2, 2)
+    assert dist[1][(0, 0)] == 1
+    assert dist[1][(0, 1)] == 1
+    excel_only = analyzer.compute_number_distribution(str(samples), 2, 2, mode="excel")
+    assert excel_only[1][(0, 0)] == 1
+    assert (0, 1) not in excel_only[1]
+
+
 def test_predict_number(tmp_path):
     samples = _make_samples(tmp_path)
     stats = analyzer.compute_position_distribution(str(samples), 2, 2)

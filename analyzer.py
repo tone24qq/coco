@@ -179,6 +179,37 @@ def compute_position_distribution(
     return {k: dict(v) for k, v in stats.items()}
 
 
+def compute_number_distribution(
+    samples_dir: str,
+    rows: int,
+    cols: int,
+    *,
+    mode: Optional[str] = None,
+) -> Dict[int, Dict[Tuple[int, int], int]]:
+    """Return per-number position frequency counts from history samples."""
+    stats: Dict[int, Dict[Tuple[int, int], int]] = defaultdict(lambda: defaultdict(int))
+    total = 0
+    for sample in iter_sample_jsons(samples_dir):
+        if sample["rows"] != rows or sample["cols"] != cols:
+            continue
+        if mode and sample.get("mode") != mode:
+            continue
+        total += 1
+        grid = np.asarray(sample["grid"], dtype=int)
+        for r in range(rows):
+            for c in range(cols):
+                k = int(grid[r, c])
+                stats[k][(r, c)] += 1
+    logger.info(
+        "Number distribution for %d×%d processed %d samples%s",
+        rows,
+        cols,
+        total,
+        f" mode={mode}" if mode else "",
+    )
+    return {n: dict(pos) for n, pos in stats.items()}
+
+
 def predict_number(
     grid_with_blank: List[List[int]] | np.ndarray,
     stats: Dict[Tuple[int, int], Dict[int, int]],

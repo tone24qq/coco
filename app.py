@@ -57,6 +57,19 @@ async def debug_priors():
     return brain.priors_map
 
 
+@app.get("/debug/number_distribution", response_class=JSONResponse)
+async def debug_number_distribution(
+    rows: int, cols: int, mode: Optional[str] = None
+) -> Dict[str, Dict[str, int]]:
+    """Return per-number position counts for the given board size."""
+    dist = analyzer.compute_number_distribution("samples", rows, cols, mode=mode)
+    result = {
+        str(n): {f"{r + 1},{c + 1}": int(cnt) for (r, c), cnt in pos.items()}
+        for n, pos in dist.items()
+    }
+    return result
+
+
 async def _load_samples_background():
     # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
     for _ in iter_sample_jsons("samples"):
