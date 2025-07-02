@@ -156,6 +156,47 @@ def gen_tail_cluster(
     return board.reshape(rows, cols)
 
 
+def generate_excel_style_card(
+    rows: int, cols: int, rng: Optional[np.random.Generator] = None
+) -> np.ndarray:
+    """Return an ``rows x cols`` grid filled with unique numbers."""
+
+    if rng is None:
+        rng = np.random.default_rng()
+    n = rows * cols
+    values = rng.choice(np.arange(1, n + 1), size=n, replace=False)
+    return values.reshape((rows, cols))
+
+
+def locate_target_by_partial_grid(
+    grid: List[List[int]], target: int
+) -> Tuple[int, int]:
+    """Predict the target's location from a partially hidden grid.
+
+    This implementation falls back to a random choice among unknown cells
+    when the target is hidden. It therefore does **not** guarantee high
+    accuracy but returns a valid coordinate.
+    """
+
+    arr = np.asarray(grid, dtype=int)
+    if arr.ndim != 2:
+        raise ValueError("grid must be a 2D array")
+
+    idx = np.argwhere(arr == target)
+    if idx.size:
+        r, c = idx[0]
+        return int(r), int(c)
+
+    hidden = np.argwhere(arr == -1)
+    if hidden.size == 0:
+        raise ValueError("target not found and no hidden cells available")
+
+    rng = np.random.default_rng()
+    choice = int(rng.integers(len(hidden)))
+    r, c = hidden[choice]
+    return int(r), int(c)
+
+
 def global_offset_cooccurrence(
     boards: np.ndarray,
     target: Optional[int] = None,
