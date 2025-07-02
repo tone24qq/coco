@@ -21,6 +21,7 @@ def test_modules_registered():
     for name in names:
         assert name in brain.REGISTERED_MODULES_BRAIN
         assert name in brain.AGG_WEIGHTS
+    assert "modern" in brain.REGISTERED_MODULES
 
 
 def test_module_shapes(make_grid):

@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Dict, Tuple
 
 import numpy as np
 
@@ -40,3 +41,20 @@ def build_position_prior(samples_dir: str, outfile: str, buckets: int = 20) -> N
     freq = counts.astype(float) / totals
     np.savez_compressed(outfile, freq=freq)
     logger.info("position prior saved to %s", outfile)
+
+
+def build_position_prior_map(
+    samples_dir: str, buckets: int = 20
+) -> Dict[Tuple[int, int], Dict[Tuple[int, int], Dict[int, float]]]:
+    """Return per-board position probability maps for all sample sizes."""
+    from analyzer import compute_position_probabilities
+
+    dims: set[Tuple[int, int]] = set()
+    for sample in iter_sample_jsons(str(samples_dir)):
+        dims.add((sample["rows"], sample["cols"]))
+
+    priors: Dict[Tuple[int, int], Dict[Tuple[int, int], Dict[int, float]]] = {}
+    for rows, cols in sorted(dims):
+        priors[(rows, cols)] = compute_position_probabilities(samples_dir, rows, cols)
+    logger.info("position prior map built for %d board sizes", len(priors))
+    return priors

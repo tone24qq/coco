@@ -19,6 +19,7 @@ import brain
 from analyzer import (compute_position_probabilities, iter_sample_jsons,
                       predict_scratch_card, probability_heatmap,
                       render_heatmap)
+from position_prior import build_position_prior_map
 
 # fmt: on
 brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
@@ -81,6 +82,10 @@ async def _load_samples_background():
 async def startup_event():
     asyncio.create_task(_load_samples_background())
     analyzer.load_global_pos_freq("samples")
+    try:
+        brain.priors_map = build_position_prior_map("samples")
+    except Exception as exc:  # pragma: no cover - optional failure
+        logger.error("position prior build failed: %s", exc)
 
 
 # ==== Schemas ==============================================================
@@ -97,6 +102,7 @@ class GridRequest(BaseModel):
     fusion_alpha: Optional[float] = None
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
+    strategy: Literal["legacy", "modern"] = "legacy"
 
 
 class Prediction(BaseModel):
@@ -277,6 +283,7 @@ async def predict(req: GridRequest):
             fusion_alpha=req.fusion_alpha or 0.5,
             pseudo_count=req.pseudo_count or 0.0,
             exclude_filled=req.exclude_filled,
+            strategy=req.strategy,
         )
 
         full_probs = result.get("full_probabilities", {})

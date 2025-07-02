@@ -120,3 +120,11 @@ def test_predict_excludes_filled_cells(client):
     coords = {(p["row"], p["col"]) for p in body["predictions"]}
     assert (1, 1) not in coords
     assert (2, 2) not in coords
+
+
+def test_predict_strategy_modern(client):
+    grid = [[1, -1], [2, -1]]
+    payload = {"grid": grid, "strategy": "modern"}
+    resp = client.post("/predict", json=payload)
+    assert resp.status_code == 200
+    assert "final_recommendations" in resp.json()

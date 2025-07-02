@@ -991,6 +991,7 @@ def predict_scratch_card(
     fusion_alpha: float = 0.5,
     pseudo_count: float = 0.0,
     exclude_filled: bool = False,
+    strategy: str = "legacy",
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
@@ -1160,6 +1161,11 @@ def predict_scratch_card(
     final_recs = _compute_final_recommendations(
         prob_map, module_norm, target_num, fusion_alpha, top_k
     )
+    if strategy == "modern":
+        try:
+            final_recs = brain.REGISTERED_MODULES["modern"](grid, target_num)[:top_k]
+        except Exception as exc:  # pragma: no cover - unexpected failure
+            logger.error("modern predictor failed: %s", exc)
 
     if target_num is not None:
         rank = [

@@ -6,8 +6,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+import modern_predictor
 from modules import DEFAULT_WEIGHTS as DEFAULT_AGG_WEIGHTS
-from modules import STRATEGY_REGISTRY
+from modules import STRATEGY_REGISTRY, fuse_scores
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ def bytes_to_grid(grid_bytes: bytes, shape):
 
 REGISTERED_MODULES_BRAIN: Dict[str, Callable[[np.ndarray], np.ndarray]] = {
     name: strat.func for name, strat in STRATEGY_REGISTRY.items()
+}
+
+# predictor registry for ranking strategies
+REGISTERED_MODULES: Dict[str, Callable] = {
+    "modern": modern_predictor.predict_location,
+    "legacy": fuse_scores,
 }
 
 

@@ -60,6 +60,12 @@ def parse_args() -> argparse.Namespace:
         help="Phase-2 focused iteration count",
     )
     parser.add_argument("--top-n", type=int, default=10, help="Top cells to refine")
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Number of top candidates to output",
+    )
     parser.add_argument("--epsilon", type=float, default=0.05, help="Exploration rate")
     parser.add_argument(
         "--target", type=int, default=None, help="Target number to predict"
@@ -93,6 +99,13 @@ def parse_args() -> argparse.Namespace:
         "--exclude-filled",
         action="store_true",
         help="Exclude already filled cells from predictions",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        choices=["legacy", "modern"],
+        default="legacy",
+        help="Prediction ranking strategy",
     )
     return parser.parse_args()
 
@@ -147,10 +160,11 @@ def main():
             focus_iter=args.focus_iter,
             top_n=args.top_n,
             epsilon=args.epsilon,
-            result_top_k=None,
+            result_top_k=args.top_k,
             priors=priors,
             sample_gamma=args.sample_gamma,
             exclude_filled=args.exclude_filled,
+            strategy=args.strategy,
         )
         ray.shutdown()
 
