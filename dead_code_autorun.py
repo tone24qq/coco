@@ -12,14 +12,11 @@ Usage:
 import argparse
 import importlib
 import inspect
-import os
-import runpy
-import sys
 from pathlib import Path
 from types import ModuleType
 from typing import List
 
-from vulture import Vulture  #  [oai_citation:0‡github.com](https://github.com/jendrikseipp/vulture?utm_source=chatgpt.com)
+from vulture import Vulture
 
 #######################
 # 1. 參數與常數
@@ -36,7 +33,7 @@ ROOT = Path(args.root).resolve()
 # 2. 跑 Vulture 找死碼
 #######################
 v = Vulture()
-v.scavenge([str(ROOT)])             # 把整個樹丟進去掃   [oai_citation:1‡stackoverflow.com](https://stackoverflow.com/questions/59123415/running-vulture-from-a-python-script?utm_source=chatgpt.com)
+v.scavenge([str(ROOT)])  # 把整個樹丟進去掃
 unused_items = [
     item for item in v.get_unused_code(min_confidence=args.confidence)
     if item.typ in {"function", "class", "method"}
@@ -50,6 +47,7 @@ def path_to_module(path: Path) -> str:
     rel = path.relative_to(ROOT).with_suffix("")
     return ".".join(rel.parts)
 
+
 def safe_call(obj):
     """只呼叫「零必填參數」的可呼叫物件；其餘回傳待補資訊"""
     if not callable(obj):
@@ -57,7 +55,8 @@ def safe_call(obj):
     sig = inspect.signature(obj)
     params = sig.parameters.values()
     mandatory = [
-        p for p in params
+        p
+        for p in params
         if p.default is inspect._empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
     ]
     if mandatory:
@@ -106,4 +105,4 @@ for item in unused_items:
 report_path = ROOT / "dead_code_report.md"
 report_path.write_text("\n".join(report_lines), encoding="utf-8")
 print(f"✅  完成！結果已寫入 {report_path.relative_to(ROOT)}")
-print(f"   未自動可呼叫者，請人工檢查參數或評估刪除 / 寫測試。")
+print("   未自動可呼叫者，請人工檢查參數或評估刪除 / 寫測試。")
