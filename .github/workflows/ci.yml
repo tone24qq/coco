@@ -9,17 +9,18 @@ on:
     types: [opened, synchronize, ready_for_review]
   workflow_dispatch: {}
   schedule:
-    - cron: '0 3 * * *'  # 每天 03:00 UTC（台灣 11:00）
+    - cron: '0 3 * * *'   # 每天 03:00 UTC（台灣 11:00）
 
 env:
   PIP_CACHE_DIR: ~/.cache/pip
-  FAST_TEST: "1"  # app.py 可讀此變數以縮短迭代次數
+  FAST_TEST: "1"          # app.py 可讀此變數以縮短迭代次數
+  # 若你要私有下載隱藏測資，請在 GitHub Settings → Secrets 加入 SECRET_ZIP_URL
+  SECRET_ZIP_URL: ${{ secrets.SECRET_ZIP_URL }}
 
+##############################################################################
+# 1️⃣  Lint / Unit / Reliability / Quality Gate
+##############################################################################
 jobs:
-
-  ##############################################################################
-  # 1️⃣ Lint & Unit + Reliability Tests（PR/Push 都跑；Fail Fast）
-  ##############################################################################
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -47,12 +48,27 @@ jobs:
         run: |
           pip install -U pip
           pip install -r requirements.txt
+          # CI 需要的額外工具
           pip install ruff mypy pytest hypothesis pytest-xdist pytest-cov
+
+      # ▒▒▒ 下載隱藏測資（若 SECRET_ZIP_URL 有設值） ▒▒▒
+      - name: Download secret cases
+        if: env.SECRET_ZIP_URL != ''
+        run: |
+          mkdir -p evaluation
+          curl -sSL "$SECRET_ZIP_URL" -o evaluation/secret_cases.zip
 
       - name: Ruff & MyPy
         run: |
           ruff check .
           mypy . --strict
+
+      # ▒▒▒ Quality Gate：命中率 ≥93%、單次 <100 ms ▒▒▒
+      - name: Quality Gate
+        run: |
+          python quality_gate.py \
+            --zip evaluation/secret_cases.zip \
+            --n-random 1000
 
       - name: Run unit & quick tests
         run: |
@@ -73,9 +89,9 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  ##############################################################################
-  # 2️⃣ Extended / Slow / Stress tests（Schedule 或手動觸發時跑）
-  ##############################################################################
+##############################################################################
+# 2️⃣  Extended / Slow / Stress tests（排程或手動觸發才跑）
+##############################################################################
   slow-and-stress:
     needs: test
     runs-on: ubuntu-latest
