@@ -4,6 +4,8 @@ import base64
 import logging
 import math
 import os
+import gzip          # ← 新增
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
