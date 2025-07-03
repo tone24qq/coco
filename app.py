@@ -1,6 +1,6 @@
 import asyncio
+import atexit
 import base64
-import json
 import logging
 import math
 import os
@@ -19,9 +19,13 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities, iter_sample_jsons,
-                      predict_scratch_card, probability_heatmap,
-                      render_heatmap)
+from analyzer import (
+    compute_position_probabilities,
+    iter_sample_jsons,
+    predict_scratch_card,
+    probability_heatmap,
+    render_heatmap,
+)
 
 # fmt: on
 brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
@@ -41,13 +45,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # —— Priors config ———————————————————————————————————————————————————————————
-PRIORS_PATH = Path("assets/priors_combined.json")
+PRIORS_PATH = Path("assets/priors_combined.json.gz")
 _IO_POOL = ThreadPoolExecutor(max_workers=1)
+atexit.register(_IO_POOL.shutdown)
 
 
 def _read_priors_file() -> Dict[Tuple[int, int], Dict[int, float]]:
-    raw = json.loads(PRIORS_PATH.read_text())
-    return {tuple(map(int, k.split("x"))): v for k, v in raw.items()}
+    import gzip
+
+    import orjson
+
+    blob = gzip.decompress(PRIORS_PATH.read_bytes())
+    data = orjson.loads(blob)
+    return {tuple(map(int, k.split("x"))): v for k, v in data.items()}
 
 
 def _build_default_prior() -> Dict[Tuple[int, int], Dict[int, float]]:
