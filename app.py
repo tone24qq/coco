@@ -50,14 +50,18 @@ _IO_POOL = ThreadPoolExecutor(max_workers=1)
 atexit.register(_IO_POOL.shutdown)
 
 
-def _read_priors_file() -> Dict[Tuple[int, int], Dict[int, float]]:
-    import gzip
+def _read_priors_file() -> dict[str, dict]:
+    data: bytes = PRIORS_PATH.read_bytes()
 
-    import orjson
+    # 檢查 gzip 魔術數 0x1f 0x8b
+    is_gzip = len(data) >= 2 and data[:2] == b"\x1f\x8b"
+    if is_gzip:
+        try:
+            data = gzip.decompress(data)
+        except gzip.BadGzipFile:  # 保險起見，仍 fallback
+            pass
 
-    blob = gzip.decompress(PRIORS_PATH.read_bytes())
-    data = orjson.loads(blob)
-    return {tuple(map(int, k.split("x"))): v for k, v in data.items()}
+    return json.loads(data.decode("utf-8"))
 
 
 def _build_default_prior() -> Dict[Tuple[int, int], Dict[int, float]]:
