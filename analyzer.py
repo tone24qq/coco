@@ -1,7 +1,7 @@
 # isort: skip_file
 import base64
 import heapq
-import json
+import orjson
 import logging
 import math
 import os
@@ -83,7 +83,7 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                 continue
             try:
                 with zf.open(name) as f:
-                    data = json.load(f)
+                    data = orjson.loads(f.read())
             except Exception as exc:  # pragma: no cover - corrupted JSON
                 logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
                 continue
