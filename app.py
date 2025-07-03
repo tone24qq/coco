@@ -1,11 +1,12 @@
 import asyncio
 import atexit
 import base64
+import gzip
+import json
 import logging
 import math
 import os
-import gzip          # ← 新增
-import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -51,19 +52,28 @@ PRIORS_PATH = Path("assets/priors_combined.json.gz")
 _IO_POOL = ThreadPoolExecutor(max_workers=1)
 atexit.register(_IO_POOL.shutdown)
 
+_DIM_RE = re.compile(r"^\s*(\d+)\s*x\s*(\d+)\s*$")
 
-def _read_priors_file() -> dict[str, dict]:
-    data: bytes = PRIORS_PATH.read_bytes()
-
-    # 檢查 gzip 魔術數 0x1f 0x8b
-    is_gzip = len(data) >= 2 and data[:2] == b"\x1f\x8b"
-    if is_gzip:
+def _read_priors_file() -> dict[tuple[int, int], dict]:
+    raw: bytes = PRIORS_PATH.read_bytes()
+    if raw[:2] == b"\x1f\x8b":          # gzip magic
         try:
-            data = gzip.decompress(data)
-        except gzip.BadGzipFile:  # 保險起見，仍 fallback
+            raw = gzip.decompress(raw)
+        except gzip.BadGzipFile:
             pass
 
-    return json.loads(data.decode("utf-8"))
+    obj = json.loads(raw.decode("utf-8"))
+
+    priors: dict[tuple[int, int], dict] = {}
+    for k, v in obj.items():
+        if isinstance(k, str):
+            m = _DIM_RE.match(k)
+            if m:
+                priors[(int(m.group(1)), int(m.group(2)))] = v
+                continue
+        # fallback：保留原鍵
+        priors[k] = v
+    return priors
 
 
 def _build_default_prior() -> Dict[Tuple[int, int], Dict[int, float]]:
