@@ -58,3 +58,10 @@ def test_invalid_small_grid():
     res = client.post("/predict", json=payload)
     assert res.status_code == 500
     assert "at least 2x2" in res.json()["detail"].lower()
+
+
+def test_target_num_out_of_range():
+    grid = [[1, -1], [3, 4]]
+    payload = {"grid": grid, "target_num": 5}
+    res = client.post("/predict", json=payload)
+    assert res.status_code == 400

@@ -1,7 +1,6 @@
 import asyncio
 import atexit
 import base64
-import gzip
 import json
 import logging
 import math
@@ -27,7 +26,7 @@ from analyzer import (compute_position_probabilities, iter_sample_jsons,
                       render_heatmap)
 
 # fmt: on
-brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+brain.priors_map: Dict[str, Dict[int, float]] = {}
 
 # —— Logging setup —————————————————————————————————————————————————————————————
 log_handlers = [
@@ -44,56 +43,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # —— Priors config ———————————————————————————————————————————————————————————
-PRIORS_PATH = Path("assets/priors_combined.json.gz")
+PRIORS_DIR = Path("assets")
 _IO_POOL = ThreadPoolExecutor(max_workers=1)
 atexit.register(_IO_POOL.shutdown)
 
-_DIM_RE = re.compile(r"^\s*(\d+)\s*x\s*(\d+)\s*$")
+_DIM_RE = re.compile(r"^(\d+)x(\d+)$")
 
 
-def _read_priors_file() -> dict[tuple[int, int], dict]:
-    raw: bytes = PRIORS_PATH.read_bytes()
-    if raw[:2] == b"\x1f\x8b":  # gzip magic
+def _load_priors_files() -> Dict[str, Dict[int, float]]:
+    priors: Dict[str, Dict[int, float]] = {}
+    for path in PRIORS_DIR.glob("priors_*.json"):
         try:
-            raw = gzip.decompress(raw)
-        except gzip.BadGzipFile:
-            pass
-
-    obj = json.loads(raw.decode("utf-8"))
-
-    priors: dict[tuple[int, int], dict] = {}
-    for k, v in obj.items():
-        if isinstance(k, str):
-            m = _DIM_RE.match(k)
-            if m:
-                priors[(int(m.group(1)), int(m.group(2)))] = v
-                continue
-        # fallback：保留原鍵
-        priors[k] = v
+            priors[path.stem.replace("priors_", "")] = json.loads(path.read_text())
+        except Exception as exc:  # pragma: no cover - corrupted JSON
+            logger.error("Failed to load %s: %s", path, exc)
+    if not priors:
+        priors["10x12"] = compute_position_probabilities("samples", 10, 12)
     return priors
 
 
-def _build_default_prior() -> Dict[Tuple[int, int], Dict[int, float]]:
-    from analyzer import compute_position_probabilities
-
-    logging.warning("[priors] Local file missing; fallback to on-the-fly build 10x12…")
-    return {(10, 12): compute_position_probabilities("samples", 10, 12)}
-
-
-async def load_priors_async() -> Dict[Tuple[int, int], Dict[int, float]]:
+async def load_priors_async() -> Dict[str, Dict[int, float]]:
     loop = asyncio.get_running_loop()
-    if PRIORS_PATH.exists():
-        return await loop.run_in_executor(_IO_POOL, _read_priors_file)
-    return await loop.run_in_executor(None, _build_default_prior)
+    return await loop.run_in_executor(_IO_POOL, _load_priors_files)
 
 
-def find_closest_prior_key(
-    shape: Tuple[int, int], candidates: Dict[Tuple[int, int], Any]
-) -> Tuple[int, int]:
+def find_closest_prior_key(shape: Tuple[int, int], candidates: Dict[str, Any]) -> str:
     rows, cols = shape
 
-    def score(k: Tuple[int, int]) -> Tuple[int, float]:
-        kr, kc = k
+    def score(key: str) -> Tuple[int, float]:
+        m = _DIM_RE.match(key)
+        if not m:
+            return (float("inf"), float("inf"))
+        kr, kc = int(m.group(1)), int(m.group(2))
         cells_diff = abs((kr * kc) - (rows * cols))
         aspect_diff = abs((kr / kc) - (rows / cols))
         return (cells_diff, aspect_diff)
@@ -115,6 +96,7 @@ async def warm_up() -> None:
     brain.priors_map.clear()
     brain.priors_map.update(priors)
     logging.info(f"[warm-up] Loaded {len(priors)} shapes")
+    logger.debug("Loaded priors sizes: %s", list(brain.priors_map.keys()))
     await _load_samples_background()
 
 
@@ -305,7 +287,8 @@ async def ping() -> Dict[str, str]:
 )
 async def predict(req: GridRequest):
     try:
-        # 格式校验
+        logger.debug("Loaded priors sizes: %s", list(brain.priors_map.keys()))
+        # 格式校驗
         if not req.grid or not all(isinstance(row, list) for row in req.grid):
             raise ValueError("Invalid grid format: expected List[List[int]].")
         rows, cols = len(req.grid), len(req.grid[0])
@@ -317,11 +300,16 @@ async def predict(req: GridRequest):
             raise ValueError("Grid contains duplicate numbers")
         if any(v < 1 or v > max_val for v in known):
             raise ValueError(f"Numbers must be between 1 and {max_val}")
+        if req.target_num is not None and not (1 <= req.target_num <= max_val):
+            raise HTTPException(
+                status_code=400,
+                detail=f"target_num must be between 1 and {max_val}",
+            )
 
-        key = (rows, cols)
-        priors = get_prior_for_shape(rows, cols)
-        if not priors:
-            logging.info(f"[predict] Computing priors for {rows}×{cols}…")
+        key = f"{rows}x{cols}"
+        priors = brain.priors_map.get(key)
+        if priors is None:
+            logger.warning("No priors for %s, computing on-the-fly", key)
             priors = compute_position_probabilities("samples", rows, cols)
             brain.priors_map[key] = priors
 
@@ -379,6 +367,8 @@ async def predict(req: GridRequest):
         logger.info("✅ Response ready")
         return JSONResponse(content=safe_payload, status_code=200)
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Prediction failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -408,9 +398,10 @@ async def heatmap(req: HeatmapRequest):
         )
 
         rows, cols = len(req.grid), len(req.grid[0])
-        key = (rows, cols)
-        priors = get_prior_for_shape(rows, cols)
-        if not priors:
+        key = f"{rows}x{cols}"
+        priors = brain.priors_map.get(key)
+        if priors is None:
+            logger.warning("No priors for %s, computing on-the-fly", key)
             priors = compute_position_probabilities("samples", rows, cols)
             brain.priors_map[key] = priors
 
@@ -467,6 +458,8 @@ async def heatmap(req: HeatmapRequest):
             }
 
         return JSONResponse(content=sanitize_floats(resp), status_code=200)
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.error("Heatmap failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
