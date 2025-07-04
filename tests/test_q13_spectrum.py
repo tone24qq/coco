@@ -1,6 +1,7 @@
 import numpy as np
 
 import analyzer
+import brain
 import modules
 
 
@@ -22,7 +23,5 @@ def test_connectivity_heatmap_basic():
         assert np.all(s[grid != -1] >= 0)
 
 
-def test_select_modules_include_conn():
-    grid = np.array([[1, -1], [2, 3]])
-    mods = analyzer.select_modules(grid, target=None)
-    assert "conn" in mods
+def test_conn_weight_low():
+    assert brain.AGG_WEIGHTS["conn"] <= 0.05

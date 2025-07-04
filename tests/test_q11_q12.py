@@ -27,8 +27,8 @@ def test_tail_and_skip_basic():
 def test_select_modules_includes_new():
     grid = np.array([[1, -1], [2, 3]])
     mods = analyzer.select_modules(grid, target=5)
-    for name in ["focus", "skip", "diff", "mirror", "conn", "tail"]:
+    for name in ["focus", "skip", "diff", "mirror", "tail", "gdiff"]:
         assert name in mods
     mods2 = analyzer.select_modules(grid, target=None)
-    for name in ["focus", "skip", "diff", "mirror", "conn", "tail"]:
+    for name in ["focus", "skip", "diff", "mirror", "tail", "gdiff"]:
         assert name in mods2

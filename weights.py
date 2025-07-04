@@ -10,6 +10,7 @@ BASE_WEIGHTS = {
     "tail": 0.01,  # Sequence Tail  ← 已大幅降低
     "diff": 0.05,  # Difference Trend
     "mirror": 0.05,  # Mirror Pattern
+    "gdiff": 0.0,  # Global arithmetic difference
 }
 
 # ======  (2)  給 linear-fusion / legacy 用的權重表  ====================
@@ -40,4 +41,14 @@ def _env_override(env_key: str, key: str, table: dict = BASE_WEIGHTS):
 _env_override("CONN_W", "conn")
 _env_override("FOCUS_W", "focus")
 _env_override("TAIL_W", "tail")
+# ======================================================================
+
+# Read centralized weight configuration if available
+try:  # noqa: WPS501
+    from weights_config import WEIGHTS as USER_WEIGHTS
+
+    BASE_WEIGHTS.update(USER_WEIGHTS)
+    AGG_WEIGHTS.update(USER_WEIGHTS)
+except Exception:
+    pass
 # ======================================================================

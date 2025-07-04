@@ -10,6 +10,14 @@ import modern_predictor
 from modules import STRATEGY_REGISTRY, fuse_scores
 from weights import AGG_WEIGHTS as DEFAULT_AGG_WEIGHTS
 
+# Apply centralized weight overrides if present
+try:  # noqa: WPS501
+    from weights_config import WEIGHTS as USER_WEIGHTS
+
+    DEFAULT_AGG_WEIGHTS.update(USER_WEIGHTS)
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 

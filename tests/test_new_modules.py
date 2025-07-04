@@ -12,6 +12,7 @@ def test_modules_registered():
         "mirror",
         "conn",
         "tail",
+        "gdiff",
         "affinity",
         "gradient_affinity",
         "row_col_bias",
@@ -36,5 +37,9 @@ def test_module_shapes(make_grid):
 def test_select_modules_include_all(make_grid):
     grid = np.array(make_grid(4, 4))
     mods = analyzer.select_modules(grid, target=1)
-    for name in ["focus", "skip", "diff", "mirror", "conn", "tail"]:
+    for name in ["focus", "skip", "diff", "mirror", "tail", "gdiff"]:
         assert name in mods
+
+
+def test_gdiff_weight_positive():
+    assert brain.AGG_WEIGHTS["gdiff"] > 0

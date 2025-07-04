@@ -621,3 +621,54 @@ try:  # noqa: WPS501
     fuse_scores_vect = _apv.fuse_scores_vect
 except Exception:  # pragma: no cover - optional dependency
     pass
+
+# ------------------------------------------------------------------
+# 新模組：全域 1~N 等差分析 (full_range_arith_score)
+# ------------------------------------------------------------------
+from math import sqrt
+
+
+def _divisors(n: int) -> list[int]:
+    out = []
+    for i in range(1, int(sqrt(n)) + 1):
+        if n % i == 0:
+            out.extend([i, n // i])
+    return sorted(set(out))
+
+
+def full_range_arith_score(grid: np.ndarray) -> np.ndarray:
+    arr = np.asarray(grid, dtype=int)
+    rows, cols = arr.shape
+    N = rows * cols
+
+    filled = arr[arr != -1]
+    if filled.size < 3:
+        return np.zeros_like(arr, dtype=float)
+
+    covers = []
+    divs = _divisors(N - 1)
+    for d in divs:
+        covers.append(((filled - 1) % d == 0).mean())
+    d_star = divs[int(np.argmax(covers))]
+    if max(covers) < 0.3:
+        return np.zeros_like(arr, dtype=float)
+
+    missing = set(range(1, N + 1)) - set(filled)
+    missing_in_prog = {x for x in missing if (x - 1) % d_star == 0}
+    if not missing_in_prog:
+        return np.zeros_like(arr, dtype=float)
+
+    score = np.zeros_like(arr, dtype=float)
+    score[arr == -1] = len(missing_in_prog) / len(missing)
+    return score
+
+
+register_strategy("gdiff", weight=0.0)(full_range_arith_score)
+
+# 讀取集中式權重
+try:  # noqa: WPS501
+    from weights_config import WEIGHTS as USER_WEIGHTS
+
+    BASE_WEIGHTS.update(USER_WEIGHTS)
+except Exception:
+    pass
