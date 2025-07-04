@@ -12,8 +12,10 @@ from modules import (
     detect_mirror_sequences,
     detect_skip_patterns,
     entropy_spread_score,
+    full_range_arith_score,
     gradient_affinity,
     row_col_bias,
+    row_col_frequency_score,
     sequence_tail_analyzer,
     target_affinity,
 )
@@ -31,7 +33,9 @@ from modules import (
         target_affinity,
         gradient_affinity,
         row_col_bias,
+        row_col_frequency_score,
         entropy_spread_score,
+        full_range_arith_score,
     ],
 )
 def test_function_is_callable(fn):

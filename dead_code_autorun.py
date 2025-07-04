@@ -23,9 +23,7 @@ from vulture import Vulture
 #######################
 parser = argparse.ArgumentParser()
 parser.add_argument("--root", default=".", help="專案根資料夾")
-parser.add_argument(
-    "--confidence", type=int, default=80, help="Vulture 最低信心分數"
-)
+parser.add_argument("--confidence", type=int, default=80, help="Vulture 最低信心分數")
 args = parser.parse_args()
 ROOT = Path(args.root).resolve()
 
@@ -35,9 +33,11 @@ ROOT = Path(args.root).resolve()
 v = Vulture()
 v.scavenge([str(ROOT)])  # 把整個樹丟進去掃
 unused_items = [
-    item for item in v.get_unused_code(min_confidence=args.confidence)
+    item
+    for item in v.get_unused_code(min_confidence=args.confidence)
     if item.typ in {"function", "class", "method"}
 ]
+
 
 #######################
 # 3. 工具函式
@@ -57,7 +57,8 @@ def safe_call(obj):
     mandatory = [
         p
         for p in params
-        if p.default is inspect._empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        if p.default is inspect._empty
+        and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
     ]
     if mandatory:
         return f"skip (requires {len(mandatory)} arg)"
@@ -66,6 +67,7 @@ def safe_call(obj):
         return f"OK → {result!r}"
     except Exception as exc:
         return f"ERROR: {exc.__class__.__name__}: {exc}"
+
 
 #######################
 # 4. 一一 import & 測試
