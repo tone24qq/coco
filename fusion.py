@@ -12,7 +12,7 @@ import numpy as np
 BASE_WEIGHTS: Dict[str, float] = {
     "conn": 0.4,
     "focus": 0.3,
-    "tail": 0.3,
+    "tail": 0.01,
     "diff": 0.0,
     "mirror": 0.0,
 }
