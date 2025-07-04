@@ -179,6 +179,7 @@ class GridRequest(BaseModel):
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
     strategy: Literal["legacy", "modern"] = "legacy"
+    rank_method: Literal["linear", "dynamic", "borda"] = "linear"
 
 
 class Prediction(BaseModel):
@@ -358,6 +359,7 @@ async def predict(req: GridRequest):
             sample_gamma=req.sample_gamma or 0.0,
             fusion_alpha=req.fusion_alpha or 0.5,
             pseudo_count=req.pseudo_count or 0.0,
+            rank_method=req.rank_method,
             strategy=req.strategy,
         )
 

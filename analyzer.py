@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 from joblib import Parallel, delayed
 from numba import njit
+from fusion import borda_rank, fuse_scores_dynamic
 
 import brain
 
@@ -991,6 +992,7 @@ def predict_scratch_card(
     fusion_alpha: float = 0.5,
     pseudo_count: float = 0.0,
     exclude_filled: bool = True,
+    rank_method: str = "linear",
     strategy: str = "legacy",
 ) -> Dict[str, Any]:
     grid_np = np.array(grid, dtype=np.int64)
@@ -1017,14 +1019,37 @@ def predict_scratch_card(
 
     mod_names = [m for m, _ in modules]
     weights = np.array([AGG_WEIGHTS[m] for m in mod_names], dtype=float)
-    score_stack = np.stack(
-        [
-            get_module_score(m, grid_np, target=target_num, priors=priors)
-            for m in mod_names
-        ],
-        axis=0,
-    )
-    final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
+    module_maps = {
+        m: get_module_score(m, grid_np, target=target_num, priors=priors)
+        for m in mod_names
+    }
+    score_stack = np.stack([module_maps[m] for m in mod_names], axis=0)
+    if rank_method == "dynamic":
+        try:
+            from fusion import fuse_scores_dynamic_grid  # type: ignore
+
+            final_score_map = fuse_scores_dynamic_grid(score_stack, mod_names)
+        except Exception:  # pragma: no cover - optional vectorized fallback
+            final_score_map = np.zeros_like(grid_np, dtype=float)
+            for r in range(rows):
+                for c in range(cols):
+                    if grid_np[r, c] != -1:
+                        continue
+                    cell = {
+                        m: float(score_stack[i, r, c]) for i, m in enumerate(mod_names)
+                    }
+                    final_score_map[r, c] = fuse_scores_dynamic(cell)
+    elif rank_method == "borda":
+        ranked = borda_rank(module_maps, top_n=len(blanks))  # 直接用 blanks 數量
+        final_score_map = np.zeros_like(grid_np, dtype=float)
+        for (r, c), sc in ranked:
+            final_score_map[r, c] = float(sc)
+        if final_score_map.max() > 0:
+            final_score_map /= float(final_score_map.max())
+    else:
+        final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
+    # 任一方法結束後，確保填滿格歸零
+    final_score_map[grid_np != -1] = 0.0
     if gamma_history > 0.0 and target_num is not None:
         try:
             hist = compute_history_frequency(history_dir, target_num, rows, cols)
@@ -1162,7 +1187,9 @@ def predict_scratch_card(
     )
     if strategy == "modern":
         try:
-            final_recs = brain.REGISTERED_MODULES["modern"](grid, target_num)[:top_k]
+            final_recs = brain.REGISTERED_MODULES["modern"](
+                grid, target_num, rank_method=rank_method
+            )[:top_k]
         except Exception as exc:  # pragma: no cover - unexpected failure
             logger.error("modern predictor failed: %s", exc)
 

@@ -102,6 +102,13 @@ def parse_args() -> argparse.Namespace:
         default="legacy",
         help="Prediction ranking strategy",
     )
+    parser.add_argument(
+        "--rank-method",
+        type=str,
+        choices=["linear", "dynamic", "borda"],
+        default="linear",
+        help="Score fusion method",
+    )
     return parser.parse_args()
 
 
@@ -158,6 +165,7 @@ def main():
             result_top_k=args.top_k,
             priors=priors,
             sample_gamma=args.sample_gamma,
+            rank_method=args.rank_method,
             strategy=args.strategy,
         )
         ray.shutdown()
