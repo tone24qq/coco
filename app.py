@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 logger.info("Loaded modules from %s", modules.__file__)
 logger.info("gdiff registered: %s", 'gdiff' in modules.STRATEGY_REGISTRY)
 logger.info("conn weight = %.3f", weights.AGG_WEIGHTS.get('conn', -1))
+import logging
+logging.getLogger(__name__).info("Loaded weights_config! gdiff=%s conn=%s",
+AGG_WEIGHTS.get("gdiff"), AGG_WEIGHTS.get("conn"))
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
