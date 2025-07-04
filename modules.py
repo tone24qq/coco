@@ -400,7 +400,7 @@ def detect_skip_patterns(grid: np.ndarray) -> np.ndarray:
     return score
 
 
-@register_strategy("diff", weight=0.15)
+@register_strategy("diff", weight=0.01)
 def compute_difference_trend(grid: np.ndarray) -> np.ndarray:
     """Infer values based on local difference trend."""
     M, N = grid.shape
@@ -460,7 +460,7 @@ def connectivity_heatmap(grid: np.ndarray) -> np.ndarray:
     return score
 
 
-@register_strategy("tail", weight=0.15)
+@register_strategy("tail", weight=0.01)
 def sequence_tail_analyzer(grid: np.ndarray) -> np.ndarray:
     """Analyze digit tails frequency weighted by distance."""
     M, N = grid.shape
