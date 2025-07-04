@@ -5,6 +5,8 @@ import numpy as np
 from scipy import ndimage as ndi
 from scipy.signal import convolve2d
 
+from weights import BASE_WEIGHTS
+
 # Formula registry for Monte Carlo simulation
 FORMULA_REGISTRY: Dict[
     str,
@@ -586,9 +588,6 @@ def entropy_spread_score(grid: np.ndarray) -> np.ndarray:
     return score
 
 
-DEFAULT_WEIGHTS = {name: strat.weight for name, strat in STRATEGY_REGISTRY.items()}
-
-
 def fuse_scores(
     gridscores: Dict[str, np.ndarray],
     grid: np.ndarray,
@@ -596,7 +595,7 @@ def fuse_scores(
 ) -> np.ndarray:
     """Fuse score arrays from multiple modules."""
     if weights is None:
-        weights = DEFAULT_WEIGHTS
+        weights = BASE_WEIGHTS
     final = np.zeros_like(grid, dtype=float)
     for name, arr in gridscores.items():
         final += weights.get(name, 0.0) * arr

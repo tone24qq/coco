@@ -21,7 +21,6 @@ import brain
 # fmt: off
 # isort: off
 from brain import (
-    AGG_WEIGHTS,
     REGISTERED_MODULES_BRAIN,
     BoardAnalyzerUtils,
     aggregate_scores,
@@ -30,6 +29,7 @@ from brain import (
 # fmt: on
 # isort: on
 from modules import FORMULA_REGISTRY, generate_unique_grid
+from weights import AGG_WEIGHTS
 
 # Logger configuration
 logging.basicConfig(

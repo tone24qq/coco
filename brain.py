@@ -7,8 +7,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 import modern_predictor
-from modules import DEFAULT_WEIGHTS as DEFAULT_AGG_WEIGHTS
 from modules import STRATEGY_REGISTRY, fuse_scores
+from weights import AGG_WEIGHTS as DEFAULT_AGG_WEIGHTS
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,8 @@ def _read_performance(file_path: str) -> Dict[str, float]:
 
 
 def _load_weights() -> Dict[str, float]:
-    w = DEFAULT_AGG_WEIGHTS.copy()
+    w = {name: strat.weight for name, strat in STRATEGY_REGISTRY.items()}
+    w.update(DEFAULT_AGG_WEIGHTS)
     perf_file = os.getenv("PERFORMANCE_FILE", "module_performance.txt")
     perf = _read_performance(perf_file)
     if perf:
