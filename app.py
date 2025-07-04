@@ -7,20 +7,11 @@ import logging
 import math
 import os
 import re
-import logging, modules, weights
-logger = logging.getLogger(__name__)
-logger.info("Loaded modules from %s", modules.__file__)
-logger.info("gdiff registered: %s", 'gdiff' in modules.STRATEGY_REGISTRY)
-logger.info("conn weight = %.3f", weights.AGG_WEIGHTS.get('conn', -1))
-import logging
-logging.getLogger(__name__).info("Loaded weights_config! gdiff=%s conn=%s",
-AGG_WEIGHTS.get("gdiff"), AGG_WEIGHTS.get("conn"))
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
-
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
