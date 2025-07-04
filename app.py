@@ -22,13 +22,9 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    iter_sample_jsons,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities, iter_sample_jsons,
+                      predict_scratch_card, probability_heatmap,
+                      render_heatmap)
 
 # fmt: on
 brain.priors_map: Dict[Tuple[int, int], Dict[int, float]] = {}
@@ -54,9 +50,10 @@ atexit.register(_IO_POOL.shutdown)
 
 _DIM_RE = re.compile(r"^\s*(\d+)\s*x\s*(\d+)\s*$")
 
+
 def _read_priors_file() -> dict[tuple[int, int], dict]:
     raw: bytes = PRIORS_PATH.read_bytes()
-    if raw[:2] == b"\x1f\x8b":          # gzip magic
+    if raw[:2] == b"\x1f\x8b":  # gzip magic
         try:
             raw = gzip.decompress(raw)
         except gzip.BadGzipFile:

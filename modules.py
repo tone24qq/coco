@@ -605,3 +605,20 @@ def fuse_scores(
     if mx > mn:
         final = (final - mn) / (mx - mn)
     return final
+
+
+# Load vectorized implementations which override default strategies
+try:  # noqa: WPS501
+    import advanced_patterns_vect as _apv  # noqa: F401
+
+    compute_focus_score = _apv.compute_focus_score  # noqa: F811
+    detect_skip_patterns = _apv.detect_skip_patterns  # noqa: F811
+    compute_difference_trend = _apv.compute_difference_trend  # noqa: F811
+    detect_mirror_sequences = _apv.detect_mirror_sequences  # noqa: F811
+    connectivity_heatmap = _apv.connectivity_heatmap  # noqa: F811
+    sequence_tail_analyzer = _apv.sequence_tail_analyzer  # noqa: F811
+    diagonal_consistency_score = _apv.diagonal_consistency_score  # noqa: F811
+    row_col_bias = _apv.row_col_bias  # noqa: F811
+    fuse_scores_vect = _apv.fuse_scores_vect
+except Exception:  # pragma: no cover - optional dependency
+    pass
