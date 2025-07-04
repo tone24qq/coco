@@ -7,6 +7,11 @@ import logging
 import math
 import os
 import re
+import logging, modules, weights
+logger = logging.getLogger(__name__)
+logger.info("Loaded modules from %s", modules.__file__)
+logger.info("gdiff registered: %s", 'gdiff' in modules.STRATEGY_REGISTRY)
+logger.info("conn weight = %.3f", weights.AGG_WEIGHTS.get('conn', -1))
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
