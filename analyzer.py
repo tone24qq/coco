@@ -1021,7 +1021,12 @@ def predict_scratch_card(
     final_score_map = neighbor_compatibility_score(grid_np, dist)
 
     top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
-    ranked = rank_candidates_by_neighbor(grid_np, dist, blanks)[:top_k]
+    rings = BoardAnalyzerUtils.ring_index(*grid_np.shape)
+    ranked_all = sorted(
+        blanks,
+        key=lambda pos: (rings[pos], -final_score_map[pos]),
+    )
+    ranked = ranked_all[:top_k]
 
     preds = [
         {"row": r, "col": c, "score": float(final_score_map[r, c])} for r, c in ranked

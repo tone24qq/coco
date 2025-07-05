@@ -81,6 +81,16 @@ class BoardAnalyzerUtils:
         arr[blanks[:, 0], blanks[:, 1]] = legal[: blanks.shape[0]]
         return arr
 
+    @staticmethod
+    def ring_index(rows: int, cols: int) -> np.ndarray:
+        """Return each cell's distance from the outer frame (0=outermost)."""
+
+        return np.fromfunction(
+            lambda r, c: np.minimum.reduce([r, c, rows - 1 - r, cols - 1 - c]),
+            (rows, cols),
+            dtype=int,
+        )
+
 
 DTYPE_DEFAULT = np.int32
 ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize

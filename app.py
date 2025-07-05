@@ -12,6 +12,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+import numpy as np
 import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -333,8 +334,11 @@ async def predict(req: GridRequest):
         )
 
         # 调用核心推理
+        grid_np = np.asarray(req.grid, dtype=object)
+        # 正規化空格：0 / "" 皆視為 -1
+        grid_norm = np.where(grid_np <= 0, -1, grid_np).tolist()
         result = predict_scratch_card(
-            grid=req.grid,
+            grid=grid_norm,
             target_num=req.target_num,
             iterations=phase1,
             global_iter=req.global_iter,
@@ -405,8 +409,10 @@ async def heatmap(req: HeatmapRequest):
             priors = compute_position_probabilities("samples", rows, cols)
             brain.priors_map[key] = priors
 
+        grid_np = np.asarray(req.grid, dtype=object)
+        grid_norm = np.where(grid_np <= 0, -1, grid_np).tolist()
         pred_result = predict_scratch_card(
-            grid=req.grid,
+            grid=grid_norm,
             target_num=req.target_num,
             iterations=PHASE1_ITER,
             global_iter=None,

@@ -10,6 +10,7 @@ Ultra-minimal smoke-tests for Scratch-Card Prediction API
 from typing import Any, Dict, List
 
 import analyzer
+from modules import generate_excel_style_card
 
 
 # ────────────────────────────── 工具 ──────────────────────────────
@@ -126,3 +127,11 @@ def test_predict_strategy_modern(client):
     resp = client.post("/predict", json=payload)
     assert resp.status_code == 200
     assert "final_recommendations" in resp.json()
+
+
+def test_no_open_cells_in_top3(client):
+    grid = generate_excel_style_card(8, 10).tolist()
+    grid[0][0] = -1
+    body = client.post("/predict", json={"grid": grid, "target_num": 1}).json()
+    top3 = {(p["row"] - 1, p["col"] - 1) for p in body["top_predictions"]}
+    assert all(grid[r][c] == -1 for r, c in top3)
