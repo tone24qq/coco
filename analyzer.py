@@ -993,351 +993,41 @@ def predict_scratch_card(
     exclude_filled: bool = True,
     strategy: str = "legacy",
 ) -> Dict[str, Any]:
+
     grid_np = np.array(grid, dtype=np.int64)
     rows, cols = grid_np.shape
-    blanks = [
-        tuple(map(int, b)) for b in np.argwhere(grid_np == -1)
-    ]  # 來自 probmap_key_patch_v2.txt
+    blanks = [tuple(map(int, b)) for b in np.argwhere(grid_np == -1)]
 
     if not blanks:
         return {
             "mode": "no_blanks",
             "predictions": [],
+            "top_predictions": [],
             "full_probabilities": {},
+            "final_recommendations": [],
         }
 
-    modules = [
-        ("gdiff", "Global arithmetic difference"),  # 新增：全盤等差
-        ("focus", "3x3 known density"),
-        ("skip", "Skip pattern detection"),
-        ("diff", "Difference trend"),
-        ("mirror", "Mirror sequence detection"),
-        ("conn", "Connectivity heatmap"),
-        ("tail", "Tail analyzer"),
-        ("row_col_frequency_score", "Row/Col frequency"),
-        ("entropy_spread_score", "Entropy spread"),
-        ("diag", "Diagonal consistency"),
+    from neighbor_stats import (
+        compute_neighbor_distribution,
+        neighbor_compatibility_score,
+    )
+
+    dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=10000)
+    final_score_map = neighbor_compatibility_score(grid_np, dist)
+
+    top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+    ranked = sorted(blanks, key=lambda pos: final_score_map[pos], reverse=True)[:top_k]
+
+    preds = [
+        {"row": r, "col": c, "score": float(final_score_map[r, c])} for r, c in ranked
     ]
 
-    mod_names = [m for m, _ in modules]
-    weights = np.array([AGG_WEIGHTS[m] for m in mod_names], dtype=float)
-    score_stack = np.stack(
-        [
-            get_module_score(m, grid_np, target=target_num, priors=priors)
-            for m in mod_names
-        ],
-        axis=0,
-    )
-    final_score_map = (weights[:, None, None] * score_stack).sum(axis=0)
-    if gamma_history > 0.0 and target_num is not None:
-        try:
-            hist = compute_history_frequency(history_dir, target_num, rows, cols)
-            if hist.max() > 0:
-                final_score_map += gamma_history * (hist / float(hist.max()))
-        except Exception as exc:  # pragma: no cover - history load failures
-            logger.error("history frequency failed: %s", exc)
-
-    mask_ratio = float(np.mean(grid_np == -1))
-    gamma = sample_gamma * (1.0 + mask_ratio)
-
-    if gamma > 0.0:
-        try:
-            pos_probs = compute_position_probabilities(history_dir, rows, cols)
-            sample_map = np.zeros((rows, cols), dtype=float)
-            for (r, c), dist in pos_probs.items():
-                if dist:
-                    sample_map[r, c] = max(dist.values())
-            if sample_map.max() > 0:
-                sample_map /= float(sample_map.max())
-                final_score_map += gamma * sample_map
-        except Exception as exc:  # pragma: no cover - history load failures
-            logger.error("position frequency failed: %s", exc)
-
-    mask = grid_np == -1
-    if mask.any():
-        sub = final_score_map[mask]
-        mn, mx = sub.min(), sub.max()
-        if mx - mn > 1e-9:
-            module_norm = (final_score_map - mn) / (mx - mn + 1e-9)
-        else:
-            module_norm = np.zeros_like(final_score_map)
-    else:
-        module_norm = np.zeros_like(final_score_map)
-
-    phase1 = global_iter if global_iter is not None else iterations or 5000
-    phase2 = focus_iter if focus_iter is not None else 1000
-    top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
-
-    def _trim(items: List[Any]) -> List[Any]:
-        if top_k is None or top_k <= 0 or top_k >= len(items):
-            return items
-        return items[:top_k]
-
-    logger.info(
-        "Two-phase | phase1=%d, phase2=%d, top_k=%d, top_n=%d, eps=%.6f",
-        phase1,
-        phase2,
-        top_k,
-        top_n,
-        epsilon,
-    )
-
-    prob_map = simulate_full_board(
-        grid_np,
-        target_num,
-        n_iter=phase1,
-        rng=np.random.default_rng(),
-    )
-
-    # select top-n cells for refinement using weighted module scores
-    ranked = sorted(
-        [(r, c, final_score_map[r, c]) for r, c in blanks],
-        key=lambda x: x[2],
-        reverse=True,
-    )
-    focus_cells = [(r, c) for r, c, _ in ranked[: max(1, min(top_n, len(ranked)))]]
-
-    if phase2 > 0:
-        refine_map = simulate_full_board(
-            grid_np,
-            target_num,
-            n_iter=phase2,
-            rng=np.random.default_rng(),
-            focus_cells=focus_cells,
-            epsilon=epsilon,
-        )
-        prob_map.update(refine_map)
-
-    if gamma > 0.0:
-        try:
-            pos_probs = compute_position_probabilities(history_dir, rows, cols)
-            for key, dist in prob_map.items():
-                prior = pos_probs.get(key, {})
-                for num in list(dist.keys()):
-                    dist[num] *= 1.0 + gamma * prior.get(num, 0.0)
-                tot = sum(dist.values()) or 1e-10
-                for num in dist:
-                    dist[num] /= tot
-        except Exception as exc:  # pragma: no cover - history load failures
-            logger.error("position probability blend failed: %s", exc)
-
-    if pseudo_count > 0.0 and priors:
-        for key, dist in prob_map.items():
-            prior = priors.get(key, {})
-            all_nums = set(dist) | set(prior)
-            new_d: Dict[int, float] = {}
-            for num in all_nums:
-                p_sim = dist.get(num, 0.0)
-                p_prior = prior.get(num, 0.0)
-                new_d[num] = (p_sim + pseudo_count * p_prior) / (1.0 + pseudo_count)
-            prob_map[key] = new_d
-
-    # 后置正規化避免混權後機率失真
-    for dist in prob_map.values():
-        total = sum(dist.values()) or 1e-12
-        for k in dist:
-            dist[k] /= total
-
-    prob_map = {
-        (r, c): dist for (r, c), dist in prob_map.items() if grid_np[r, c] == -1
-    }
-
-    module_scores = {
-        mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
-        for mod, _ in modules
-    }
-    logger.info(
-        "module_scores: %s",
-        {m: float(np.mean(v)) for m, v in module_scores.items()},
-    )
-    top3 = sorted(
-        ((k, max(v.values())) for k, v in prob_map.items()),
-        key=lambda x: x[1],
-        reverse=True,
-    )[:3]
-    logger.info("prob_map top3: %s", top3)
-
-    if target_num is not None:
-        for key, p in prob_map.items():
-            prob_map[key] = {target_num: p.get(target_num, 0.0)}
-
-    final_recs = _compute_final_recommendations(
-        prob_map, module_norm, target_num, fusion_alpha, top_k
-    )
-    if strategy == "modern":
-        try:
-            final_recs = brain.REGISTERED_MODULES["modern"](grid, target_num)[:top_k]
-        except Exception as exc:  # pragma: no cover - unexpected failure
-            logger.error("modern predictor failed: %s", exc)
-
-    if target_num is not None:
-        rank = [
-            {
-                "row": r,
-                "col": c,
-                "candidates": [target_num],
-                "probability": prob_map.get((r, c), {}).get(target_num, 0.0) * 100,
-            }
-            for r, c in prob_map.keys()
-        ]  # 改用 .get()
-        rank.sort(key=lambda x: x["probability"], reverse=True)
-
-        module_scores = {
-            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
-            for mod, _ in modules
-        }
-        for pred in rank[:3]:
-            reasons = []
-            scores = [
-                (mod, module_scores[mod][pred["row"], pred["col"]], desc)
-                for mod, desc in modules
-            ]
-            top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
-            for mod, score, desc in top_modules:
-                if score > 0.5:
-                    reasons.append(f"{desc} (score: {score:.2f})")
-            pred["reasons"] = (
-                reasons if reasons else ["No dominant module contribution"]
-            )
-            pred["module_scores"] = {
-                mod: float(module_scores[mod][pred["row"], pred["col"]])
-                for mod, _ in modules
-            }
-
-        top_predictions = rank[:3]
-        return {
-            "mode": "target",
-            "target": target_num,
-            "predictions": _trim(rank),
-            "top_predictions": top_predictions,
-            "full_probabilities": prob_map,
-            "final_recommendations": final_recs,
-        }
-
-    if unique and target_num is None:
-        assign = global_unique(prob_map, blanks)
-        best_grid = mcts(grid_np, iterations=1000)
-
-        # -------------------------------
-        # 重新計算信心度 (old_conf / new_conf)
-        # -------------------------------
-        # prob_map : Dict[(row, col), Dict[num, prob]]
-        # best_grid: Numpy 2-D array or similar
-        # candidates: List[(row, col)]
-        # 1️⃣ 先找整張表目前“最高”的機率 (baseline)
-        old_conf = max(
-            p
-            for _, cell_probs in prob_map.items()
-            for p in cell_probs.values()  # 逐格取出內部 dict  # 逐個號碼機率
-        )
-
-        # 2️⃣ 嘗試把每個候選格 (r,c) 掛回去後，重新加權 → 看能否誕生更高機率
-        new_conf = max(
-            [
-                max(
-                    weight_prob_by_modules(  # <<< 你自己已有的函式
-                        best_grid,  # - 當前最佳棋盤
-                        {(r, c): prob_map.get((r, c), {})},  # - 只帶單一候選格的機率
-                    )
-                    .get((r, c), {})
-                    .values(),  # 取回各模組加權後的機率們
-                    default=0,  # ← dict 為空時避免 ValueError
-                )
-                for (r, c) in blanks  # 逐一測試所有候選格
-            ]
-        )
-
-        if new_conf <= old_conf * 0.95:
-            preds = [
-                {
-                    "row": r,
-                    "col": c,
-                    "candidates": [n],
-                    "probability": float(p) * 100,
-                }
-                for (r, c), (n, p) in assign.items()
-            ]
-            mode = "unique"
-        else:
-            preds = process_grid(best_grid)
-            mode = "mcts_unique"
-
-        module_scores = {
-            mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
-            for mod, _ in modules
-        }
-        for pred in preds[:3]:
-            reasons = []
-            scores = [
-                (mod, module_scores[mod][pred["row"], pred["col"]], desc)
-                for mod, desc in modules
-            ]
-            top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
-            for mod, score, desc in top_modules:
-                if score > 0.5:
-                    reasons.append(f"{desc} (score: {score:.2f})")
-            pred["reasons"] = (
-                reasons if reasons else ["No dominant module contribution"]
-            )
-            pred["module_scores"] = {
-                mod: float(module_scores[mod][pred["row"], pred["col"]])
-                for mod, _ in modules
-            }
-
-        preds.sort(key=lambda x: x["probability"], reverse=True)
-        top_predictions = preds[:3]
-        return {
-            "mode": mode,
-            "predictions": _trim(preds),
-            "top_predictions": top_predictions,
-            "full_probabilities": prob_map,
-            "final_recommendations": final_recs,
-        }
-
-    preds = []
-    for (r, c), dist in prob_map.items():
-        top3 = sorted(dist.items(), key=lambda x: x[1], reverse=True)[:3]
-        nums, probs = zip(*top3) if top3 else ([], [])
-        preds.append(
-            {
-                "row": r,
-                "col": c,
-                "candidates": list(nums),
-                "probability": [p * 100 for p in probs],
-            }
-        )
-
-    module_scores = {
-        mod: get_module_score(mod, grid_np, priors=priors, target=target_num)
-        for mod, _ in modules
-    }
-    for pred in preds[:3]:
-        reasons = []
-        scores = [
-            (mod, module_scores[mod][pred["row"], pred["col"]], desc)
-            for mod, desc in modules
-        ]
-        top_modules = sorted(scores, key=lambda x: x[1], reverse=True)[:3]
-        for mod, score, desc in top_modules:
-            if score > 0.5:
-                reasons.append(f"{desc} (score: {score:.2f})")
-        pred["reasons"] = reasons if reasons else ["No dominant module contribution"]
-        pred["module_scores"] = {
-            mod: float(module_scores[mod][pred["row"], pred["col"]])
-            for mod, _ in modules
-        }
-
-    preds.sort(
-        key=lambda x: x["probability"][0] if x["probability"] else 0,
-        reverse=True,
-    )
-    top_predictions = preds[:3]
     return {
-        "mode": "top3",
-        "predictions": _trim(preds),
-        "top_predictions": top_predictions,
-        "full_probabilities": prob_map,
-        "final_recommendations": final_recs,
+        "mode": "neighbor",
+        "predictions": preds,
+        "top_predictions": preds,
+        "full_probabilities": {},
+        "final_recommendations": [],
     }
 
 
