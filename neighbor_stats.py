@@ -4,7 +4,11 @@ from typing import Dict
 
 import numpy as np
 
-__all__ = ["compute_neighbor_distribution", "neighbor_compatibility_score"]
+__all__ = [
+    "compute_neighbor_distribution",
+    "neighbor_compatibility_score",
+    "rank_candidates_by_neighbor",
+]
 
 
 @functools.lru_cache(maxsize=128)
@@ -89,3 +93,19 @@ def neighbor_compatibility_score(
     score *= levels_inv
     mx = score.max(initial=0.0)
     return score / mx if mx > 0 else score
+
+
+def rank_candidates_by_neighbor(
+    grid: np.ndarray,
+    dist: Dict[int, float],
+    blanks: list[tuple[int, int]],
+) -> list[tuple[int, int]]:
+    """Rank blank cells by :func:`neighbor_compatibility_score`."""
+
+    # blanks 由呼叫端保證只含 BLANK_VAL
+    if not blanks:
+        return []
+
+    score_map = neighbor_compatibility_score(grid, dist)
+    ranked = sorted(blanks, key=lambda pos: score_map[pos], reverse=True)
+    return ranked

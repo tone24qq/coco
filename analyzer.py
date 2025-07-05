@@ -994,9 +994,13 @@ def predict_scratch_card(
     strategy: str = "legacy",
 ) -> Dict[str, Any]:
 
-    grid_np = np.array(grid, dtype=np.int64)
+    BLANK_VAL = -1
+    # Keep object dtype first to avoid coercing values like "0" or "" to 0
+    grid_np = np.asarray(grid, dtype=object)
+    grid_np = np.where(grid_np == BLANK_VAL, BLANK_VAL, grid_np).astype(np.int64)
     rows, cols = grid_np.shape
-    blanks = [tuple(map(int, b)) for b in np.argwhere(grid_np == -1)]
+
+    blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
 
     if not blanks:
         return {
@@ -1010,13 +1014,14 @@ def predict_scratch_card(
     from neighbor_stats import (
         compute_neighbor_distribution,
         neighbor_compatibility_score,
+        rank_candidates_by_neighbor,
     )
 
     dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=10000)
     final_score_map = neighbor_compatibility_score(grid_np, dist)
 
     top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
-    ranked = sorted(blanks, key=lambda pos: final_score_map[pos], reverse=True)[:top_k]
+    ranked = rank_candidates_by_neighbor(grid_np, dist, blanks)[:top_k]
 
     preds = [
         {"row": r, "col": c, "score": float(final_score_map[r, c])} for r, c in ranked
