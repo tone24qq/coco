@@ -43,3 +43,16 @@ def test_select_modules_include_all(make_grid):
 
 def test_gdiff_weight_positive():
     assert brain.AGG_WEIGHTS["gdiff"] > 0
+
+
+def test_gdiff_in_legacy_scores():
+    grid = [[1, 2, 3], [4, -1, 6], [7, 8, 9]]
+    result = analyzer.predict_scratch_card(
+        grid,
+        iterations=0,
+        global_iter=1,
+        focus_iter=0,
+        unique=False,
+    )
+    first = result["predictions"][0]
+    assert "gdiff" in first["module_scores"]

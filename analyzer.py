@@ -1007,12 +1007,16 @@ def predict_scratch_card(
         }
 
     modules = [
+        ("gdiff", "Global arithmetic difference"),  # 新增：全盤等差
         ("focus", "3x3 known density"),
         ("skip", "Skip pattern detection"),
         ("diff", "Difference trend"),
         ("mirror", "Mirror sequence detection"),
         ("conn", "Connectivity heatmap"),
         ("tail", "Tail analyzer"),
+        ("row_col_frequency_score", "Row/Col frequency"),
+        ("entropy_spread_score", "Entropy spread"),
+        ("diag", "Diagonal consistency"),
     ]
 
     mod_names = [m for m, _ in modules]

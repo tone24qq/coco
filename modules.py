@@ -625,7 +625,7 @@ except Exception:  # pragma: no cover - optional dependency
 # ------------------------------------------------------------------
 # 新模組：全域 1~N 等差分析 (full_range_arith_score)
 # ------------------------------------------------------------------
-from math import sqrt
+from math import sqrt  # noqa: E402
 
 
 def _divisors(n: int) -> list[int]:

@@ -1,6 +1,5 @@
 import numpy as np
 
-import analyzer
 import brain
 import modules
 
