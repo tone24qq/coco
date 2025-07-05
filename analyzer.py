@@ -1014,8 +1014,7 @@ def predict_scratch_card(
     from neighbor_stats import (
         compute_neighbor_distribution,
         neighbor_compatibility_score,
-        rank_candidates_by_neighbor,
-    )
+)
 
     dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=10000)
     final_score_map = neighbor_compatibility_score(grid_np, dist)
