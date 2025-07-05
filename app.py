@@ -149,7 +149,7 @@ async def startup_event() -> None:
 
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
-    grid: List[List[int]]
+    grid: List[List[Union[int, str]]]
     target_num: Optional[int] = None
     iterations: Optional[int] = None
     global_iter: Optional[int] = None
@@ -181,7 +181,7 @@ class PredictResponse(BaseModel):
 
 
 class HeatmapRequest(BaseModel):
-    grid: List[List[int]]
+    grid: List[List[Union[int, str]]]
     k: Optional[int] = None
     target_num: Optional[int] = None
     iterations: int = 1000
@@ -296,7 +296,12 @@ async def predict(req: GridRequest):
         if rows < 2 or cols < 2:
             raise ValueError("Grid must be at least 2x2")
         max_val = rows * cols
-        known = [v for row in req.grid for v in row if v != -1]
+        known = []
+        for row in req.grid:
+            for v in row:
+                if v in (-1, 0, ""):
+                    continue
+                known.append(int(v))
         if len(known) != len(set(known)):
             raise ValueError("Grid contains duplicate numbers")
         if any(v < 1 or v > max_val for v in known):
@@ -336,7 +341,8 @@ async def predict(req: GridRequest):
         # 调用核心推理
         grid_np = np.asarray(req.grid, dtype=object)
         # 正規化空格：0 / "" 皆視為 -1
-        grid_norm = np.where(grid_np <= 0, -1, grid_np).tolist()
+        is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
+        grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
         result = predict_scratch_card(
             grid=grid_norm,
             target_num=req.target_num,
@@ -392,8 +398,12 @@ async def heatmap(req: HeatmapRequest):
             else req.iterations
         )
         k_eff = req.k if req.k is not None else req.target_num
+        grid_np = np.asarray(req.grid, dtype=object)
+        is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
+        grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
+
         prob = probability_heatmap(
-            req.grid,
+            grid_norm,
             k_eff,
             iters,
             seed=req.seed,
@@ -409,8 +419,6 @@ async def heatmap(req: HeatmapRequest):
             priors = compute_position_probabilities("samples", rows, cols)
             brain.priors_map[key] = priors
 
-        grid_np = np.asarray(req.grid, dtype=object)
-        grid_norm = np.where(grid_np <= 0, -1, grid_np).tolist()
         pred_result = predict_scratch_card(
             grid=grid_norm,
             target_num=req.target_num,

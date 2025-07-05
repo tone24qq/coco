@@ -135,3 +135,14 @@ def test_no_open_cells_in_top3(client):
     body = client.post("/predict", json={"grid": grid, "target_num": 1}).json()
     top3 = {(p["row"] - 1, p["col"] - 1) for p in body["top_predictions"]}
     assert all(grid[r][c] == -1 for r, c in top3)
+
+
+def test_blank_types_predict_and_heatmap(client):
+    grid = [[-1, 0], ["", -1]]
+    resp_p = client.post("/predict", json={"grid": grid, "target_num": 1})
+    assert resp_p.status_code == 200
+    resp_h = client.post(
+        "/heatmap",
+        json={"grid": grid, "target_num": 1, "iterations": 4, "output_format": "json"},
+    )
+    assert resp_h.status_code == 200
