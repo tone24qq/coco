@@ -30,6 +30,8 @@ from brain import (
 # isort: on
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
+from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
+from csp_solver import heuristic_csp_sampling
 
 # Logger configuration
 logging.basicConfig(
@@ -1011,13 +1013,33 @@ def predict_scratch_card(
             "final_recommendations": [],
         }
 
-    from neighbor_stats import (
-        compute_neighbor_distribution,
-        neighbor_compatibility_score,
+    dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=10000)
+    nbr_score = neighbor_compatibility_score(grid_np, dist)
+
+    nbr_probs = {(int(r), int(c)): float(nbr_score[r, c]) for r, c in blanks}
+    csp_probs = heuristic_csp_sampling(
+        grid_np.tolist(),
+        target_num,
+        nbr_probs,
+        samples=iterations or 2000,
+        enforce_rowcol=True,
     )
 
-    dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=10000)
-    final_score_map = neighbor_compatibility_score(grid_np, dist)
+    scores_uniform = False
+    if blanks:
+        first = nbr_score[blanks[0]]
+        scores_uniform = np.allclose([nbr_score[pos] for pos in blanks], first)
+
+    final_score_map = np.zeros_like(grid_np, dtype=float)
+    if scores_uniform:
+        for (r, c), p in csp_probs.items():
+            final_score_map[r, c] = p
+    else:
+        alpha = 0.7
+        for r, c in blanks:
+            final_score_map[r, c] += alpha * nbr_probs.get((r, c), 0.0)
+        for (r, c), p in csp_probs.items():
+            final_score_map[r, c] += (1 - alpha) * p
 
     top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
     rings = BoardAnalyzerUtils.ring_index(*grid_np.shape)
