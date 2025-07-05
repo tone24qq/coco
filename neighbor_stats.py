@@ -16,7 +16,16 @@ def compute_neighbor_distribution(
         return {}
 
     cnt: Counter[int] = Counter()
-    deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    deltas = [
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ]
     rng = np.random.default_rng()
     for _ in range(n_sims):
         arr = np.arange(1, rows * cols + 1)
@@ -37,7 +46,24 @@ def neighbor_compatibility_score(
     """Score each blank cell by compatibility with neighbor distribution."""
     rows, cols = grid.shape
     score = np.zeros((rows, cols), dtype=float)
-    deltas = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    deltas = [
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ]
+
+    ranked_values = [
+        v for v, _ in sorted(dist.items(), key=lambda kv: kv[1], reverse=True)
+    ]
+    max_level = len(ranked_values) + 1
+
+    levels = np.full((rows, cols), max_level, dtype=float)
+
     for r in range(rows):
         for c in range(cols):
             if grid[r, c] != -1:
@@ -48,5 +74,18 @@ def neighbor_compatibility_score(
                 if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
                     prod *= dist.get(grid[nr, nc], 1e-6)
             score[r, c] = prod
+
+            for idx, val in enumerate(ranked_values):
+                if any(
+                    0 <= r + dr < rows
+                    and 0 <= c + dc < cols
+                    and grid[r + dr, c + dc] == val
+                    for dr, dc in deltas
+                ):
+                    levels[r, c] = idx + 1
+                    break
+
+    levels_inv = 1.0 / levels
+    score *= levels_inv
     mx = score.max(initial=0.0)
     return score / mx if mx > 0 else score
