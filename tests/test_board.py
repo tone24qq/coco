@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 
+import brain
 from modules import generate_unique_grid
 
 
@@ -29,3 +30,12 @@ def test_generate_unique_grid_multi_hidden():
     assert grid[0, 0] == -1 and grid[1, 1] == -1
     values = [v for v in grid.ravel() if v != -1]
     assert len(values) == len(set(values))
+
+
+def test_fill_blanks_with_remaining_numbers():
+    util = brain.BoardAnalyzerUtils()
+    grid = np.array([[1, -1], [3, -1]])
+    filled = util.fill_blanks_with_remaining_numbers(grid, rng=np.random.default_rng(0))
+    assert -1 not in filled
+    assert len(np.unique(filled)) == 4
+    assert set(filled.ravel()) == {1, 2, 3, 4}

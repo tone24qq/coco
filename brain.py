@@ -44,6 +44,43 @@ class BoardAnalyzerUtils:
         used = set(int(v) for v in grid.flatten() if v != -1 and v > 0)
         return all_vals - used
 
+    def fill_blanks_with_remaining_numbers(
+        self,
+        grid: np.ndarray,
+        *,
+        rng: Optional[np.random.Generator] = None,
+    ) -> np.ndarray:
+        """Fill ``-1`` cells with unused numbers from ``1`` to ``N``.
+
+        Parameters
+        ----------
+        grid : np.ndarray
+            Board matrix with ``-1`` marking unknown cells.
+        rng : np.random.Generator, optional
+            RNG used for shuffling remaining numbers.
+
+        Returns
+        -------
+        np.ndarray
+            New grid with blanks replaced by unique numbers.
+        """
+
+        arr = np.asarray(grid, dtype=int).copy()
+        blanks = np.argwhere(arr == -1)
+        if blanks.size == 0:
+            return arr
+
+        if rng is None:
+            rng = np.random.default_rng()
+
+        legal = list(self.get_legal_values_for_placement(arr))
+        if len(legal) < blanks.shape[0]:
+            raise ValueError("Not enough numbers to fill blanks")
+
+        rng.shuffle(legal)
+        arr[blanks[:, 0], blanks[:, 1]] = legal[: blanks.shape[0]]
+        return arr
+
 
 DTYPE_DEFAULT = np.int32
 ITEMSIZE = np.dtype(DTYPE_DEFAULT).itemsize
