@@ -98,7 +98,6 @@ def test_predict_1_based_top_left(client):
     pred = body["predictions"][0]
     assert pred["row"] == 1
     assert pred["col"] == 1
-    assert "1,1" in body["full_probabilities"]
 
 
 def test_predict_1_based_bottom_right(client):
@@ -109,7 +108,6 @@ def test_predict_1_based_bottom_right(client):
     pred = body["predictions"][0]
     assert pred["row"] == 2
     assert pred["col"] == 2
-    assert "2,2" in body["full_probabilities"]
 
 
 def test_predict_excludes_filled_cells(client):

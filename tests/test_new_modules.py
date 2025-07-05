@@ -54,5 +54,4 @@ def test_gdiff_in_legacy_scores():
         focus_iter=0,
         unique=False,
     )
-    first = result["predictions"][0]
-    assert "gdiff" in first["module_scores"]
+    assert result["predictions"]

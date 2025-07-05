@@ -182,11 +182,15 @@ def main():
                     logging.info("Heatmap base64 saved to heatmap.txt")
         logging.info("Prediction results:")
         for pred in result["predictions"]:
-            r = int(pred["row"]) + 1
-            c = int(pred["col"]) + 1
-            logging.info(
-                f"Cell ({r}, {c}): {pred['candidates']} with probability {pred['probability']:.2f}%"
-            )
+            r = int(pred.get("row", 0)) + 1
+            c = int(pred.get("col", 0)) + 1
+            if "probability" in pred:
+                msg = f"Cell ({r}, {c}) prob {pred['probability']:.2f}%"
+            elif "score" in pred:
+                msg = f"Cell ({r}, {c}) score {pred['score']:.4f}"
+            else:
+                msg = f"Cell ({r}, {c})"
+            logging.info(msg)
         logging.info("Full probabilities available in result['full_probabilities']")
         logging.info("Complete!")
         return result
