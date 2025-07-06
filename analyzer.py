@@ -190,7 +190,8 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                         continue
                     count += 1
                     yield {"rows": rows, "cols": cols, "grid": board}
-    logger.info("Loaded %s (%d JSON)", zip_path.name, count)
+    # 中文 log：啟動時顯示已載入的樣本檔名與筆數
+    logger.info("已載入 %s，共 %d 筆樣本", zip_path.name, count)
 
 
 def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
@@ -386,11 +387,11 @@ def compute_position_probabilities(
             return prob_map
 
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
-    total = 0
+    used_count = 0
     for sample in iter_sample_jsons(samples_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
             continue
-        total += 1
+        used_count += 1
         grid = np.asarray(sample["grid"], dtype=int)
         mask = (grid >= 1) & (grid <= rows * cols)
         rr, cc = np.indices(grid.shape)
@@ -410,11 +411,12 @@ def compute_position_probabilities(
             else:
                 prob_map[(r, c)] = {}
 
+    # 中文 log：顯示本次統計實際用到的樣本筆數
     logger.info(
-        "Position frequencies for %d×%d processed %d samples",
+        "當前計算位置機率使用樣本數：%d 筆（盤面尺寸 %dx%d）",
+        used_count,
         rows,
         cols,
-        total,
     )
     return prob_map
 
@@ -1519,6 +1521,7 @@ def probability_heatmap(
     sample_gamma: float = 0.0,
     history_dir: str = "samples",
     nearest_weight: float = 0.0,
+    fusion_alpha: float = 1.0,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
 
@@ -1538,6 +1541,8 @@ def probability_heatmap(
         Directory containing sample ``*.zip`` files.
     nearest_weight : float
         Blend ratio for :func:`nearest_value_affinity` heatmap.
+    fusion_alpha : float
+        Weight for simulated results when mixing with history samples.
     """
 
     rng = np.random.default_rng(seed)
@@ -1555,6 +1560,13 @@ def probability_heatmap(
             pos_probs = {}
     else:
         pos_probs = {}
+
+    # 中文 log：顯示融合參數與實際使用的樣本比例
+    logger.info(
+        "融合中：sample_gamma=%.2f（樣本佔比），fusion_alpha=%.2f（模擬佔比）",
+        sample_gamma,
+        fusion_alpha,
+    )
 
     if k is not None:
         out = np.zeros_like(grid_np, dtype=float)
