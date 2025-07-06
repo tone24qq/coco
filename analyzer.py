@@ -1185,6 +1185,7 @@ def predict_scratch_card(
     pseudo_count: float = 0.0,
     exclude_filled: bool = True,
     strategy: str = "legacy",
+    disable_fallback: bool = False,
 ) -> Dict[str, Any]:
 
     BLANK_VAL = -1
@@ -1197,41 +1198,46 @@ def predict_scratch_card(
 
     known_coords = [tuple(b) for b in np.argwhere(grid_np > 0)]
     use_heatmap_only = False
-    if len(known_coords) <= 3:
-        has_adj = False
-        for r, c in known_coords:
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < rows and 0 <= nc < cols and grid_np[nr, nc] > 0:
-                        has_adj = True
-                        break
-                if has_adj:
-                    break
-        if not has_adj:
-            use_heatmap_only = True
-
-    if not use_heatmap_only and target_num is not None:
-        target_cells = [pos for pos in known_coords if grid_np[pos] == target_num]
-        if not target_cells:
-            use_heatmap_only = True
-        else:
-            has_target_neighbor = False
-            for r, c in target_cells:
+    if not disable_fallback:
+        if len(known_coords) <= 3:
+            has_adj = False
+            for r, c in known_coords:
                 for dr in (-1, 0, 1):
                     for dc in (-1, 0, 1):
                         if dr == 0 and dc == 0:
                             continue
                         nr, nc = r + dr, c + dc
                         if 0 <= nr < rows and 0 <= nc < cols and grid_np[nr, nc] > 0:
-                            has_target_neighbor = True
+                            has_adj = True
                             break
-                    if has_target_neighbor:
+                    if has_adj:
                         break
-            if not has_target_neighbor:
+            if not has_adj:
                 use_heatmap_only = True
+
+        if not use_heatmap_only and target_num is not None:
+            target_cells = [pos for pos in known_coords if grid_np[pos] == target_num]
+            if not target_cells:
+                use_heatmap_only = True
+            else:
+                has_target_neighbor = False
+                for r, c in target_cells:
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            if dr == 0 and dc == 0:
+                                continue
+                            nr, nc = r + dr, c + dc
+                            if (
+                                0 <= nr < rows
+                                and 0 <= nc < cols
+                                and grid_np[nr, nc] > 0
+                            ):
+                                has_target_neighbor = True
+                                break
+                        if has_target_neighbor:
+                            break
+                if not has_target_neighbor:
+                    use_heatmap_only = True
 
     if not blanks:
         return {

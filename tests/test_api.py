@@ -10,7 +10,6 @@ Ultra-minimal smoke-tests for Scratch-Card Prediction API
 from typing import Any, Dict, List
 
 import numpy as np
-
 import pytest
 
 import analyzer
@@ -139,6 +138,18 @@ def test_predict_strategy_modern(client):
     resp = client.post("/predict", json=payload)
     assert resp.status_code == 200
     assert "final_recommendations" in resp.json()
+
+
+def test_predict_disable_fallback(client):
+    grid = [
+        [5, -1, 1],
+        [-1, -1, 2],
+        [3, -1, 4],
+    ]
+    payload = {"grid": grid, "target_num": 5, "disable_fallback": True}
+    resp = client.post("/predict", json=payload)
+    assert resp.status_code == 200
+    assert resp.json().get("strategy") != "heatmap_only"
 
 
 def test_no_open_cells_in_top3(client):

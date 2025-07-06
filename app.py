@@ -163,6 +163,7 @@ class GridRequest(BaseModel):
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
     strategy: Literal["legacy", "modern"] = "legacy"
+    disable_fallback: Optional[bool] = False
 
 
 class Prediction(BaseModel):
@@ -191,6 +192,7 @@ class HeatmapRequest(BaseModel):
     output_format: Literal["base64", "raw", "json"] = "base64"
     sample_gamma: Optional[float] = None
     fusion_alpha: Optional[float] = None
+    disable_fallback: Optional[bool] = False
 
 
 class HeatmapResponse(BaseModel):
@@ -375,6 +377,7 @@ async def predict(req: GridRequest):
             fusion_alpha=req.fusion_alpha or 0.5,
             pseudo_count=req.pseudo_count or 0.0,
             strategy=req.strategy,
+            disable_fallback=req.disable_fallback or False,
         )
 
         if req.target_num is not None:
@@ -468,6 +471,7 @@ async def heatmap(req: HeatmapRequest):
             result_top_k=3,
             priors=priors,
             sample_gamma=req.sample_gamma or 0.0,
+            disable_fallback=req.disable_fallback or False,
         )
 
         fusion_alpha = req.fusion_alpha or 0.7

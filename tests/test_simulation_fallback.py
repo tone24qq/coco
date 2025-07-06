@@ -60,3 +60,25 @@ def test_target_with_diagonal_neighbor_not_heatmap_only(monkeypatch):
     assert result.get("strategy") != "heatmap_only"
     if called["n"]:
         assert called.get("iter") != 10000
+
+
+def test_disable_fallback_overrides(monkeypatch):
+    grid = [
+        [5, -1, 1],
+        [-1, -1, 2],
+        [3, -1, 4],
+    ]
+    called = {"n": 0}
+
+    def fake_heatmap(g, k, n_iter=500, **_):
+        called["n"] += 1
+        called["iter"] = n_iter
+        return np.zeros_like(g, dtype=float)
+
+    monkeypatch.setattr(analyzer, "probability_heatmap", fake_heatmap)
+    result = analyzer.predict_scratch_card(
+        grid, target_num=5, iterations=4, disable_fallback=True
+    )
+    assert result.get("strategy") != "heatmap_only"
+    if called["n"]:
+        assert called.get("iter") != 10000
