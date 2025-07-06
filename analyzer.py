@@ -811,6 +811,31 @@ def fuse_predictions_with_heatmap(
     return recs[:top_k]
 
 
+def fuse_score_matrices(
+    predict_scores: np.ndarray,
+    heatmap_prob_map: np.ndarray,
+    *,
+    fusion_alpha: float = 0.5,
+    top_k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Fuse two full-size score matrices and return top ranked cells."""
+
+    if predict_scores.shape != heatmap_prob_map.shape:
+        raise ValueError("score map and heatmap must have the same shape")
+
+    rows, cols = predict_scores.shape
+    recs: List[Dict[str, Any]] = []
+    for r in range(rows):
+        for c in range(cols):
+            pred = float(predict_scores[r, c])
+            prob = float(heatmap_prob_map[r, c])
+            score = fusion_alpha * pred + (1.0 - fusion_alpha) * prob
+            recs.append({"row": r, "col": c, "final_score": score})
+
+    recs.sort(key=lambda x: x["final_score"], reverse=True)
+    return recs[:top_k]
+
+
 def rank_cells_by_prior_and_modules(
     grid: np.ndarray,
     prior_cube: np.ndarray,

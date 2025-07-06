@@ -9,6 +9,8 @@ Ultra-minimal smoke-tests for Scratch-Card Prediction API
 
 from typing import Any, Dict, List
 
+import pytest
+
 import analyzer
 from modules import generate_excel_style_card
 
@@ -150,3 +152,23 @@ def test_blank_types_predict_and_heatmap(client):
         json={"grid": grid, "target_num": 1, "iterations": 4, "output_format": "json"},
     )
     assert resp_h.status_code == 200
+
+
+def test_fuse_basic(client):
+    pred = [[0.9, 0.1], [0.2, 0.4]]
+    heat = [[0.5, 0.8], [0.3, 0.6]]
+    payload = {
+        "predict_scores": pred,
+        "heatmap_prob_map": heat,
+        "alpha": 0.5,
+        "top_n": 2,
+    }
+    resp = client.post("/fuse", json=payload)
+    body = resp.json()
+
+    assert resp.status_code == 200
+    assert isinstance(body, list)
+    assert len(body) == 2
+    assert body[0]["row"] == 1
+    assert body[0]["col"] == 1
+    assert body[0]["final_score"] == pytest.approx(0.7)

@@ -23,9 +23,9 @@ from pydantic import BaseModel
 import analyzer
 import brain
 from analyzer import (compute_position_probabilities,
-                      fuse_predictions_with_heatmap, iter_sample_jsons,
-                      predict_scratch_card, probability_heatmap,
-                      render_heatmap)
+                      fuse_predictions_with_heatmap, fuse_score_matrices,
+                      iter_sample_jsons, predict_scratch_card,
+                      probability_heatmap, render_heatmap)
 
 # fmt: on
 brain.priors_map: Dict[str, Dict[int, float]] = {}
@@ -199,6 +199,20 @@ class HeatmapResponse(BaseModel):
     top_predictions: Optional[List[Prediction]] = None
     full_probabilities: Optional[Dict[str, Dict[str, float]]] = None
     final_recommendations: Optional[List[Dict[str, Any]]] = None
+
+
+class FusionRequest(BaseModel):
+    predict_scores: List[List[float]]
+    heatmap_prob_map: List[List[float]]
+    alpha: Optional[float] = 0.5
+    top_n: int = 5
+    target_num: Optional[int] = None
+
+
+class FusionResult(BaseModel):
+    row: int
+    col: int
+    final_score: float
 
 
 # ==== Startup & ENV parsing =================================================
@@ -504,6 +518,37 @@ async def heatmap(req: HeatmapRequest):
         raise
     except Exception as exc:
         logger.error("Heatmap failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post(
+    "/fuse",
+    response_model=List[FusionResult],
+    response_class=JSONResponse,
+    status_code=200,
+)
+async def fuse(req: FusionRequest):
+    try:
+        pred_arr = np.asarray(req.predict_scores, dtype=float)
+        heat_arr = np.asarray(req.heatmap_prob_map, dtype=float)
+        if pred_arr.shape != heat_arr.shape:
+            raise HTTPException(
+                status_code=400,
+                detail="predict_scores and heatmap_prob_map must have the same shape",
+            )
+        alpha = req.alpha if req.alpha is not None else 0.5
+        fused = fuse_score_matrices(
+            pred_arr,
+            heat_arr,
+            fusion_alpha=alpha,
+            top_k=req.top_n,
+        )
+        recs = _to_1_based(fused)
+        return JSONResponse(content=sanitize_floats(recs), status_code=200)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Fusion failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
