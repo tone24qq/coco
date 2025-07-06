@@ -1188,6 +1188,8 @@ def predict_scratch_card(
     force_legacy: bool = False,
     exclude_filled: bool = True,
     strategy: str = "legacy",
+    use_neighbor_lock: bool = False,
+    neighbor_threshold: float = 0.0,
 ) -> Dict[str, Any]:
 
     BLANK_VAL = -1
@@ -1197,6 +1199,28 @@ def predict_scratch_card(
     rows, cols = grid_np.shape
 
     blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
+
+    if use_neighbor_lock and target_num is not None:
+        try:
+            (r_sel, c_sel), sc = neighbor_lock_or_fuse(
+                grid_np,
+                target_num,
+                phase1=iterations or 6000,
+                samples_dir=history_dir,
+                sample_gamma=sample_gamma or 0.9,
+                fusion_alpha=fusion_alpha or 0.1,
+                threshold=neighbor_threshold,
+            )
+            return {
+                "mode": "neighbor_lock",
+                "strategy": "neighbor_lock",
+                "predictions": [{"row": r_sel, "col": c_sel, "score": sc}],
+                "top_predictions": [{"row": r_sel, "col": c_sel, "score": sc}],
+                "full_probabilities": {},
+                "final_recommendations": [],
+            }
+        except Exception as exc:  # pragma: no cover - fallback on error
+            logger.error("neighbor_lock failed: %s", exc)
 
     known_coords = [tuple(b) for b in np.argwhere(grid_np > 0)]
     use_heatmap_only = False
@@ -1633,3 +1657,63 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
     if trials == 0:
         return 0.0
     return hits / float(trials)
+
+
+def neighbor_lock_or_fuse(
+    grid: np.ndarray,
+    target_num: int,
+    *,
+    phase1: int = 6000,
+    samples_dir: str = "samples",
+    sample_gamma: float = 0.9,
+    fusion_alpha: float = 0.1,
+    threshold: float = 0.0,
+) -> Tuple[Tuple[int, int], float]:
+    """Return cell selection using neighbor lock then sample+simulation fusion."""
+
+    blanks = [tuple(p) for p in np.argwhere(grid == -1)]
+    if not blanks:
+        raise ValueError("no blanks available")
+
+    dist = compute_neighbor_distribution(grid.shape[0], grid.shape[1], target_num)
+    nbr_score = neighbor_compatibility_score(grid, dist)
+    neighbors = [(pos, nbr_score[pos]) for pos in blanks if nbr_score[pos] > threshold]
+
+    logger.info(
+        "[neighbor_lock] blanks=%d, candidates=%d, max_score=%.3f",
+        len(blanks),
+        len(neighbors),
+        max([s for _, s in neighbors], default=0.0),
+    )
+
+    if neighbors:
+        pos, score_n = max(neighbors, key=lambda x: x[1])
+        logger.info("使用鄰居鎖定，選定位置 %s，鄰居相容度 %.3f", pos, score_n)
+        return (int(pos[0]), int(pos[1])), float(score_n)
+
+    logger.info(
+        "無鄰居候選，使用樣本+模擬融合：sample_gamma=%.2f, fusion_alpha=%.2f",
+        sample_gamma,
+        fusion_alpha,
+    )
+
+    try:
+        prior_map = compute_position_probabilities(samples_dir, *grid.shape)
+    except Exception as exc:  # pragma: no cover - IO errors
+        logger.error("prior load failed: %s", exc)
+        prior_map = {}
+    sim_map = simulate_full_board(grid, target_num, n_iter=phase1)
+
+    prior_scores = {pos: prior_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}
+    sim_scores = {pos: sim_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}
+
+    max_p = max(prior_scores.values()) or 1.0
+    max_s = max(sim_scores.values()) or 1.0
+    final_scores = {
+        pos: sample_gamma * (prior_scores[pos] / max_p)
+        + fusion_alpha * (sim_scores[pos] / max_s)
+        for pos in blanks
+    }
+
+    pos, val = max(final_scores.items(), key=lambda x: x[1])
+    return (int(pos[0]), int(pos[1])), float(val)
