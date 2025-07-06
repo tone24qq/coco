@@ -126,3 +126,14 @@ def test_predict_passes_sample_gamma(monkeypatch):
 
     assert captured["gamma"] == 0.7
     assert captured["history_dir"] == "foo"
+
+
+def test_apply_uniqueness_penalty():
+    pm = {
+        (0, 0): {1: 0.6, 2: 0.4},
+        (0, 1): {1: 0.5},
+    }
+    out = analyzer.apply_uniqueness_penalty(pm, strength=1.0)
+    assert out[(0, 0)][1] < pm[(0, 0)][1]
+    assert out[(0, 0)][2] < pm[(0, 0)][2]
+    assert out[(0, 1)][1] == pm[(0, 1)][1]

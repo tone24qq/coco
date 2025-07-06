@@ -76,6 +76,26 @@ def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
 
 
+def apply_uniqueness_penalty(
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    strength: float = 0.5,
+) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """Penalize cells used by multiple numbers to encourage variety."""
+
+    if strength <= 0:
+        return prob_map
+
+    result: Dict[Tuple[int, int], Dict[int, float]] = {}
+    for cell, dist in prob_map.items():
+        count = len(dist)
+        if count > 1:
+            factor = 1.0 / (1.0 + strength * (count - 1))
+            result[cell] = {n: p * factor for n, p in dist.items()}
+        else:
+            result[cell] = dist.copy()
+    return result
+
+
 def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
     """Yield JSON objects from a zip file with basic validation."""
     count = 0
@@ -693,6 +713,8 @@ def simulate_full_board(
 
     # 來自 probmap_key_patch_v2.txt
     prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
+
+    prob_map = apply_uniqueness_penalty(prob_map)
 
     # --- 保證所有格都有 entry ------------------------------
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
