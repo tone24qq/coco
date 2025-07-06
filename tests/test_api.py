@@ -9,6 +9,8 @@ Ultra-minimal smoke-tests for Scratch-Card Prediction API
 
 from typing import Any, Dict, List
 
+import numpy as np
+
 import pytest
 
 import analyzer
@@ -173,6 +175,22 @@ def test_fuse_basic(client):
     assert resp.status_code == 200
     assert isinstance(body, list)
     assert len(body) == 2
-    assert body[0]["row"] == 1
-    assert body[0]["col"] == 1
-    assert body[0]["final_score"] == pytest.approx(0.7)
+
+    def softmax(arr):
+        ex = np.exp(arr - np.max(arr))
+        return ex / ex.sum()
+
+    pred_s = softmax(np.array(pred))
+    heat_s = softmax(np.array(heat))
+    final = 0.5 * pred_s + 0.5 * heat_s
+    top_flat = final.ravel().argsort()[::-1][:2]
+    rows, cols = np.unravel_index(top_flat, final.shape)
+    expected = [
+        {"row": int(r) + 1, "col": int(c) + 1, "final_score": float(final[r, c])}
+        for r, c in zip(rows, cols)
+    ]
+
+    for res, exp in zip(body, expected):
+        assert res["row"] == exp["row"]
+        assert res["col"] == exp["col"]
+        assert res["final_score"] == pytest.approx(exp["final_score"])

@@ -907,17 +907,23 @@ def fuse_predictions_with_heatmap(
     """
 
     rows, cols = heatmap.shape
-    score_map = {
-        (int(p.get("row")), int(p.get("col"))): float(p.get("score", 0.0))
-        for p in predictions
-    }
+    pred_mat = np.zeros((rows, cols), dtype=float)
+    for p in predictions:
+        r = int(p.get("row"))
+        c = int(p.get("col"))
+        pred_mat[r, c] = float(p.get("score", 0.0))
+
+    def _softmax(arr: np.ndarray) -> np.ndarray:
+        ex = np.exp(arr - np.max(arr))
+        return ex / np.sum(ex)
+
+    pred_norm = _softmax(pred_mat)
+    heat_norm = _softmax(heatmap)
+    final = fusion_alpha * pred_norm + (1.0 - fusion_alpha) * heat_norm
     recs: List[Dict[str, Any]] = []
     for r in range(rows):
         for c in range(cols):
-            pred_score = score_map.get((r, c), 0.0)
-            prob = float(heatmap[r, c])
-            final = fusion_alpha * pred_score + (1.0 - fusion_alpha) * prob
-            recs.append({"row": r, "col": c, "final_score": final})
+            recs.append({"row": r, "col": c, "final_score": float(final[r, c])})
     recs.sort(key=lambda x: x["final_score"], reverse=True)
     return recs[:top_k]
 
@@ -935,13 +941,19 @@ def fuse_score_matrices(
         raise ValueError("score map and heatmap must have the same shape")
 
     rows, cols = predict_scores.shape
+
+    def _softmax(arr: np.ndarray) -> np.ndarray:
+        ex = np.exp(arr - np.max(arr))
+        return ex / np.sum(ex)
+
+    pred_norm = _softmax(predict_scores)
+    heat_norm = _softmax(heatmap_prob_map)
+    final = fusion_alpha * pred_norm + (1.0 - fusion_alpha) * heat_norm
+
     recs: List[Dict[str, Any]] = []
     for r in range(rows):
         for c in range(cols):
-            pred = float(predict_scores[r, c])
-            prob = float(heatmap_prob_map[r, c])
-            score = fusion_alpha * pred + (1.0 - fusion_alpha) * prob
-            recs.append({"row": r, "col": c, "final_score": score})
+            recs.append({"row": r, "col": c, "final_score": float(final[r, c])})
 
     recs.sort(key=lambda x: x["final_score"], reverse=True)
     return recs[:top_k]
@@ -1208,18 +1220,16 @@ def predict_scratch_card(
         else:
             has_target_neighbor = False
             for r, c in target_cells:
-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nr, nc = r + dr, c + dc
-                    if (
-                        0 <= nr < rows
-                        and 0 <= nc < cols
-                        and grid_np[nr, nc] > 0
-                        and (nr, nc) not in target_cells
-                    ):
-                        has_target_neighbor = True
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < rows and 0 <= nc < cols and grid_np[nr, nc] > 0:
+                            has_target_neighbor = True
+                            break
+                    if has_target_neighbor:
                         break
-                if has_target_neighbor:
-                    break
             if not has_target_neighbor:
                 use_heatmap_only = True
 
