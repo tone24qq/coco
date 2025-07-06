@@ -42,6 +42,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Directory for precomputed priors
+PRIORS_DIR = Path("priors")
+_PRIOR_CACHE: Dict[tuple[int, int], np.ndarray] = {}
+
 analyzer_utils = BoardAnalyzerUtils()
 
 # Global position prior cache
@@ -200,29 +204,57 @@ def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
             logger.error("Failed to load %s: %s", zp.name, exc)
 
 
-def compute_history_frequency(
-    samples_dir: str, target_num: int, rows: int, cols: int
+def _compute_target_prior(
+    samples_dir: str, rows: int, cols: int, target_num: Optional[int] = None
 ) -> np.ndarray:
-    """Return frequency matrix for ``target_num`` over all samples."""
-    freq = np.zeros((rows, cols), dtype=np.int64)
-    total = 0
+    """Compute target position frequency normalized as probabilities."""
+    counts = np.zeros((rows, cols), dtype=np.int64)
     for sample in iter_sample_jsons(samples_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
             continue
-        total += 1
+        n = sample.get("target_num") if target_num is None else target_num
+        if n is None:
+            continue
         grid = sample["grid"]
         for r in range(rows):
             for c in range(cols):
-                if grid[r][c] == target_num:
-                    freq[r, c] += 1
-    logger.info(
-        "History frequency for %d×%d target=%d processed %d samples",
-        rows,
-        cols,
-        target_num,
-        total,
-    )
-    return freq
+                if grid[r][c] == n:
+                    counts[r, c] += 1
+    total = counts.sum() or 1
+    return counts.astype(float) / float(total)
+
+
+def load_priors(rows: int, cols: int, samples_dir: str = "samples") -> np.ndarray:
+    """Load precomputed prior matrix or compute on demand."""
+    key = (rows, cols)
+    if key in _PRIOR_CACHE:
+        return _PRIOR_CACHE[key]
+
+    path = PRIORS_DIR / f"{rows}x{cols}.npy"
+    if path.exists():
+        arr = np.load(path)
+        _PRIOR_CACHE[key] = arr
+        return arr
+
+    logger.warning("prior %s not found, computing from samples", path)
+    arr = _compute_target_prior(samples_dir, rows, cols)
+    _PRIOR_CACHE[key] = arr
+    return arr
+
+
+def compute_history_frequency(
+    samples_dir: str, target_num: int, rows: int, cols: int
+) -> np.ndarray:
+    """Return probability matrix from precomputed priors if available."""
+    path = PRIORS_DIR / f"{rows}x{cols}.npy"
+    if path.exists():
+        logger.info("Loaded prior from %s", path)
+        return np.load(path)
+
+    logger.warning("Prior %s missing, computing on-the-fly", path)
+    arr = _compute_target_prior(samples_dir, rows, cols, target_num)
+    _PRIOR_CACHE[(rows, cols)] = arr
+    return arr
 
 
 def compute_position_distribution(

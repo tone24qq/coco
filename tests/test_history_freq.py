@@ -1,6 +1,8 @@
 import json
 import zipfile
 
+import numpy as np
+
 import analyzer
 
 
@@ -16,9 +18,20 @@ def test_compute_history_frequency(tmp_path):
 
     freq = analyzer.compute_history_frequency(str(samples), 2, 2, 2)
     assert freq.shape == (2, 2)
-    assert freq[0, 0] == 1
-    assert freq[0, 1] == 2
-    assert freq[1, 1] == 1
+    assert abs(freq[0, 0] - 0.25) < 1e-6
+    assert abs(freq[0, 1] - 0.5) < 1e-6
+    assert abs(freq[1, 1] - 0.25) < 1e-6
+
+
+def test_compute_history_frequency_precomputed(tmp_path, monkeypatch):
+    prior_dir = tmp_path / "priors"
+    prior_dir.mkdir()
+    arr = np.array([[0.1, 0.9], [0.0, 0.0]])
+    np.save(prior_dir / "2x2.npy", arr)
+    monkeypatch.setattr(analyzer, "PRIORS_DIR", prior_dir)
+    analyzer._PRIOR_CACHE.clear()
+    freq = analyzer.compute_history_frequency(str(tmp_path / "samples"), 2, 2, 2)
+    assert np.allclose(freq, arr)
 
 
 def test_predict_with_history(tmp_path):
