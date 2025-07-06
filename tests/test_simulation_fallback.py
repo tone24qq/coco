@@ -1,0 +1,19 @@
+import numpy as np
+
+import analyzer
+
+
+def test_predict_uses_simulation_when_neighbors_sparse(monkeypatch):
+    grid = [
+        [-1, -1],
+        [-1, 4],
+    ]
+    called = {"n": 0}
+
+    def fake_heatmap(g, k, n_iter=500, **_):
+        called["n"] += 1
+        return np.zeros_like(g, dtype=float)
+
+    monkeypatch.setattr(analyzer, "probability_heatmap", fake_heatmap)
+    analyzer.predict_scratch_card(grid, target_num=1, iterations=4)
+    assert called["n"] == 1

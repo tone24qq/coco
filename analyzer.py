@@ -1026,13 +1026,32 @@ def predict_scratch_card(
     )
 
     scores_uniform = False
+    neighbor_counts = []
     if blanks:
         scores = np.array([nbr_score[pos] for pos in blanks], dtype=float)
-        scores_uniform = (np.ptp(scores) < epsilon)
+        scores_uniform = np.ptp(scores) < epsilon
+        for r, c in blanks:
+            cnt = 0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (
+                        0 <= nr < rows
+                        and 0 <= nc < cols
+                        and grid_np[nr, nc] != BLANK_VAL
+                    ):
+                        cnt += 1
+            neighbor_counts.append(cnt)
+
     final_score_map = np.zeros_like(grid_np, dtype=float)
-    if scores_uniform:
-        for (r, c), p in csp_probs.items():
-            final_score_map[r, c] = p
+    if target_num is not None and (
+        scores_uniform or (neighbor_counts and max(neighbor_counts) <= 1)
+    ):
+        heat = probability_heatmap(grid_np, target_num, n_iter=iterations or 500)
+        for r, c in blanks:
+            final_score_map[r, c] = float(heat[r, c])
     else:
         alpha = 0.7
         for r, c in blanks:
