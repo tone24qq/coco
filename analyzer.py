@@ -1027,9 +1027,8 @@ def predict_scratch_card(
 
     scores_uniform = False
     if blanks:
-        first = nbr_score[blanks[0]]
-        scores_uniform = np.allclose([nbr_score[pos] for pos in blanks], first)
-
+scores = np.array([nbr_score[pos] for pos in blanks], dtype=float)
+scores_uniform = (scores.ptp() < epsilon)
     final_score_map = np.zeros_like(grid_np, dtype=float)
     if scores_uniform:
         for (r, c), p in csp_probs.items():
