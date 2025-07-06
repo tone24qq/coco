@@ -1156,7 +1156,7 @@ def predict_scratch_card(
         heat = probability_heatmap(
             grid_np,
             target_num,
-            n_iter=iterations or 10000,
+            n_iter=10000,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
         )
