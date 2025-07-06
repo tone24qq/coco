@@ -99,3 +99,30 @@ def test_predict_always_excludes_filled_cells():
     coords = {(p["row"], p["col"]) for p in res["predictions"]}
     assert (0, 0) not in coords
     assert (1, 1) not in coords
+
+
+def test_predict_passes_sample_gamma(monkeypatch):
+    captured = {}
+
+    def fake_heatmap(*args, sample_gamma=0.0, history_dir="samples", **kwargs):
+        captured["gamma"] = sample_gamma
+        captured["history_dir"] = history_dir
+        grid = np.asarray(args[0])
+        return np.zeros_like(grid, dtype=float)
+
+    monkeypatch.setattr(analyzer, "probability_heatmap", fake_heatmap)
+
+    grid = [[-1, -1], [-1, -1]]
+    analyzer.predict_scratch_card(
+        grid,
+        target_num=1,
+        iterations=2,
+        global_iter=1,
+        focus_iter=1,
+        epsilon=1.0,
+        sample_gamma=0.7,
+        history_dir="foo",
+    )
+
+    assert captured["gamma"] == 0.7
+    assert captured["history_dir"] == "foo"

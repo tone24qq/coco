@@ -167,6 +167,8 @@ def main():
                 grid_np,
                 args.heatmap_k if args.heatmap_k != -1 else None,
                 args.heatmap_iter,
+                sample_gamma=args.sample_gamma,
+                history_dir="samples",
             )
             if isinstance(prob, dict):
                 logging.info("Full probability maps computed (no image)")

@@ -1049,7 +1049,13 @@ def predict_scratch_card(
     if target_num is not None and (
         scores_uniform or (neighbor_counts and max(neighbor_counts) <= 1)
     ):
-        heat = probability_heatmap(grid_np, target_num, n_iter=iterations or 500)
+        heat = probability_heatmap(
+            grid_np,
+            target_num,
+            n_iter=iterations or 500,
+            sample_gamma=sample_gamma,
+            history_dir=history_dir,
+        )
         for r, c in blanks:
             final_score_map[r, c] = float(heat[r, c])
     else:
