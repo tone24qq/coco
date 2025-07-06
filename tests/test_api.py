@@ -37,6 +37,7 @@ def test_predict_basic(client):
         "grid": grid,
         "target_num": 1,  # 指定一個號碼，避免走唯一分派
         "iterations": 4,
+        "use_neighbor_lock": False,
     }
     resp = client.post("/predict", json=payload)
     body = resp.json()

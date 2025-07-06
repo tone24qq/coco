@@ -1702,6 +1702,11 @@ def neighbor_lock_or_fuse(
     except Exception as exc:  # pragma: no cover - IO errors
         logger.error("prior load failed: %s", exc)
         prior_map = {}
+    used = len(prior_map)
+    logger.info(
+        "回退融合：從歷史樣本載入 %d 個格子位置的機率分布",
+        used,
+    )
     sim_map = simulate_full_board(grid, target_num, n_iter=phase1)
 
     prior_scores = {pos: prior_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}

@@ -92,8 +92,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-gamma",
         type=float,
-        default=0.0,
+        default=0.9,
         help="Weight for sample-based frequency prior",
+    )
+    parser.add_argument(
+        "--use-neighbor-lock",
+        action="store_true",
+        default=True,
+        help="Enable neighbor lock strategy",
     )
     parser.add_argument(
         "--strategy",
@@ -158,6 +164,7 @@ def main():
             result_top_k=args.top_k,
             priors=priors,
             sample_gamma=args.sample_gamma,
+            use_neighbor_lock=args.use_neighbor_lock,
             fusion_alpha=None,
             force_legacy=False,
             strategy=args.strategy,

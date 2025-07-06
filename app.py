@@ -158,7 +158,8 @@ class GridRequest(BaseModel):
     top_n: Optional[int] = None
     epsilon: Optional[float] = None
     result_top_k: Optional[int] = None
-    sample_gamma: Optional[float] = None
+    sample_gamma: Optional[float] = 0.9
+    use_neighbor_lock: bool = True
     fusion_alpha: Optional[float] = None
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
@@ -189,7 +190,8 @@ class HeatmapRequest(BaseModel):
     iterations: int = 1000
     seed: int = 0
     output_format: Literal["base64", "raw", "json"] = "base64"
-    sample_gamma: Optional[float] = None
+    sample_gamma: Optional[float] = 0.9
+    use_neighbor_lock: bool = True
     fusion_alpha: Optional[float] = None
 
 
@@ -381,7 +383,8 @@ async def predict(req: GridRequest):
             epsilon=eps,
             result_top_k=top_k,
             priors=priors,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=req.sample_gamma or 0.9,
+            use_neighbor_lock=req.use_neighbor_lock,
             fusion_alpha=req.fusion_alpha,
             force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
@@ -394,7 +397,7 @@ async def predict(req: GridRequest):
                 grid_norm,
                 req.target_num,
                 hm_iter,
-                sample_gamma=req.sample_gamma or 0.0,
+                sample_gamma=req.sample_gamma or 0.9,
                 history_dir="samples",
             )
             fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
@@ -417,7 +420,7 @@ async def predict(req: GridRequest):
             "predictions": preds,
             "top_predictions": tops,
             "full_probabilities": clean_probs,
-            "sample_gamma_used": req.sample_gamma or 0.0,
+            "sample_gamma_used": req.sample_gamma or 0.9,
             "final_recommendations": recs,
             "top_recommendations": top_recs,
             "strategy": result.get("strategy"),
@@ -456,7 +459,7 @@ async def heatmap(req: HeatmapRequest):
             k_eff,
             iters,
             seed=req.seed,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=req.sample_gamma or 0.9,
             history_dir="samples",
         )
 
@@ -478,7 +481,8 @@ async def heatmap(req: HeatmapRequest):
             epsilon=PHASE2_EPS,
             result_top_k=3,
             priors=priors,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=req.sample_gamma or 0.9,
+            use_neighbor_lock=req.use_neighbor_lock,
         )
 
         fusion_alpha = req.fusion_alpha or 0.7
@@ -519,7 +523,7 @@ async def heatmap(req: HeatmapRequest):
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
                 "top_recommendations": top_recs,
-                "sample_gamma_used": req.sample_gamma or 0.0,
+                "sample_gamma_used": req.sample_gamma or 0.9,
                 "strategy": pred_result.get("strategy"),
             }
         else:
