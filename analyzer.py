@@ -134,6 +134,33 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                 yield item
                 continue
 
+            # 新增：裸 list 也要拆成單張 board
+            if isinstance(data, list):
+                if not data:
+                    continue
+                first = data[0]
+                if not (
+                    isinstance(first, list) and all(isinstance(r, list) for r in first)
+                ):
+                    logger.warning(
+                        "Top-level list not boards in %s:%s", zip_path.name, name
+                    )
+                    continue
+                rows, cols = len(first), len(first[0])
+                for board in data:
+                    if (
+                        isinstance(board, list)
+                        and len(board) == rows
+                        and all(isinstance(r, list) and len(r) == cols for r in board)
+                    ):
+                        count += 1
+                        yield {"rows": rows, "cols": cols, "grid": board}
+                    else:
+                        logger.warning(
+                            "Invalid board in list %s:%s", zip_path.name, name
+                        )
+                continue
+
             for key, boards_list in data.items():
                 match = re.match(r"^(\d+)x(\d+)$", key)
                 if not match:
