@@ -361,6 +361,16 @@ async def predict(req: GridRequest):
         # 正規化空格：0 / "" 皆視為 -1
         is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
         grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
+        force_legacy = False
+        if "strategy" in req.model_fields_set and req.strategy == "legacy":
+            force_legacy = True
+        if (
+            "fusion_alpha" in req.model_fields_set
+            and req.fusion_alpha is not None
+            and req.fusion_alpha > 0
+        ):
+            force_legacy = True
+
         result = predict_scratch_card(
             grid=grid_norm,
             target_num=req.target_num,
@@ -372,7 +382,8 @@ async def predict(req: GridRequest):
             result_top_k=top_k,
             priors=priors,
             sample_gamma=req.sample_gamma or 0.0,
-            fusion_alpha=req.fusion_alpha or 0.5,
+            fusion_alpha=req.fusion_alpha,
+            force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
             strategy=req.strategy,
         )
@@ -386,7 +397,7 @@ async def predict(req: GridRequest):
                 sample_gamma=req.sample_gamma or 0.0,
                 history_dir="samples",
             )
-            fusion_alpha = req.fusion_alpha or 0.7
+            fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
             result["final_recommendations"] = fuse_predictions_with_heatmap(
                 heat,
                 result.get("top_predictions", []),

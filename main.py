@@ -158,6 +158,8 @@ def main():
             result_top_k=args.top_k,
             priors=priors,
             sample_gamma=args.sample_gamma,
+            fusion_alpha=None,
+            force_legacy=False,
             strategy=args.strategy,
         )
         ray.shutdown()

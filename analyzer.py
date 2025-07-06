@@ -1181,8 +1181,9 @@ def predict_scratch_card(
     history_dir: str = "samples",
     gamma_history: float = 0.0,
     sample_gamma: float = 0.0,
-    fusion_alpha: float = 0.5,
+    fusion_alpha: Optional[float] = None,
     pseudo_count: float = 0.0,
+    force_legacy: bool = False,
     exclude_filled: bool = True,
     strategy: str = "legacy",
 ) -> Dict[str, Any]:
@@ -1232,6 +1233,9 @@ def predict_scratch_card(
                         break
             if not has_target_neighbor:
                 use_heatmap_only = True
+
+    if force_legacy:
+        use_heatmap_only = False
 
     if not blanks:
         return {
@@ -1607,6 +1611,8 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
             focus_iter=5,
             top_n=5,
             epsilon=0.1,
+            fusion_alpha=None,
+            force_legacy=False,
         )
         preds = res.get("predictions", [])
         trials += 1

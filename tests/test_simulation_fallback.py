@@ -60,3 +60,22 @@ def test_target_with_diagonal_neighbor_not_heatmap_only(monkeypatch):
     assert result.get("strategy") != "heatmap_only"
     if called["n"]:
         assert called.get("iter") != 10000
+
+
+def test_force_legacy_overrides_heatmap(monkeypatch):
+    grid = [
+        [-1, -1],
+        [-1, 4],
+    ]
+    monkeypatch.setattr(
+        analyzer,
+        "probability_heatmap",
+        lambda *a, **k: np.zeros((2, 2), dtype=float),
+    )
+    result = analyzer.predict_scratch_card(
+        grid,
+        target_num=1,
+        iterations=4,
+        force_legacy=True,
+    )
+    assert result.get("strategy") != "heatmap_only"
