@@ -175,4 +175,6 @@ def test_fuse_basic(client):
     assert len(body) == 2
     assert body[0]["row"] == 1
     assert body[0]["col"] == 1
-    assert body[0]["final_score"] == pytest.approx(0.7)
+    assert body[0]["final_score"] == pytest.approx(0.3128836, rel=1e-6)
+    assert body[1]["row"] == 2
+    assert body[1]["col"] == 2

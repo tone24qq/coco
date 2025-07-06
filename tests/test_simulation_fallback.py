@@ -40,3 +40,21 @@ def test_heatmap_only_when_target_isolated(monkeypatch):
     assert called["n"] == 1
     assert called.get("iter") == 10000
     assert result.get("strategy") == "heatmap_only"
+
+
+def test_diagonal_neighbor_no_heatmap_only(monkeypatch):
+    grid = [
+        [5, -1],
+        [-1, 1],
+    ]
+    called = {"n": 0}
+
+    def fake_heatmap(g, k, n_iter=500, **_):
+        called["n"] += 1
+        called["iter"] = n_iter
+        return np.zeros_like(g, dtype=float)
+
+    monkeypatch.setattr(analyzer, "probability_heatmap", fake_heatmap)
+    result = analyzer.predict_scratch_card(grid, target_num=5, iterations=4)
+    assert called.get("iter") == 4
+    assert result.get("strategy") != "heatmap_only"

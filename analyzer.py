@@ -907,15 +907,26 @@ def fuse_predictions_with_heatmap(
     """
 
     rows, cols = heatmap.shape
-    score_map = {
-        (int(p.get("row")), int(p.get("col"))): float(p.get("score", 0.0))
-        for p in predictions
-    }
+    pred_mat = np.zeros_like(heatmap, dtype=float)
+    for item in predictions:
+        r, c = int(item.get("row", -1)), int(item.get("col", -1))
+        if 0 <= r < rows and 0 <= c < cols:
+            pred_mat[r, c] = float(item.get("score", 0.0))
+
+    def _softmax(mat: np.ndarray) -> np.ndarray:
+        flat = mat.ravel().astype(float)
+        exp = np.exp(flat - flat.max())
+        res = exp / (exp.sum() + 1e-12)
+        return res.reshape(mat.shape)
+
+    pred_norm = _softmax(pred_mat)
+    heat_norm = _softmax(heatmap)
+
     recs: List[Dict[str, Any]] = []
     for r in range(rows):
         for c in range(cols):
-            pred_score = score_map.get((r, c), 0.0)
-            prob = float(heatmap[r, c])
+            pred_score = pred_norm[r, c]
+            prob = heat_norm[r, c]
             final = fusion_alpha * pred_score + (1.0 - fusion_alpha) * prob
             recs.append({"row": r, "col": c, "final_score": final})
     recs.sort(key=lambda x: x["final_score"], reverse=True)
@@ -935,11 +946,21 @@ def fuse_score_matrices(
         raise ValueError("score map and heatmap must have the same shape")
 
     rows, cols = predict_scores.shape
+
+    def _softmax(mat: np.ndarray) -> np.ndarray:
+        flat = mat.ravel().astype(float)
+        exp = np.exp(flat - flat.max())
+        res = exp / (exp.sum() + 1e-12)
+        return res.reshape(mat.shape)
+
+    p_norm = _softmax(predict_scores)
+    h_norm = _softmax(heatmap_prob_map)
+
     recs: List[Dict[str, Any]] = []
     for r in range(rows):
         for c in range(cols):
-            pred = float(predict_scores[r, c])
-            prob = float(heatmap_prob_map[r, c])
+            pred = float(p_norm[r, c])
+            prob = float(h_norm[r, c])
             score = fusion_alpha * pred + (1.0 - fusion_alpha) * prob
             recs.append({"row": r, "col": c, "final_score": score})
 
@@ -1208,15 +1229,21 @@ def predict_scratch_card(
         else:
             has_target_neighbor = False
             for r, c in target_cells:
-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nr, nc = r + dr, c + dc
-                    if (
-                        0 <= nr < rows
-                        and 0 <= nc < cols
-                        and grid_np[nr, nc] > 0
-                        and (nr, nc) not in target_cells
-                    ):
-                        has_target_neighbor = True
+                # 八方向檢查：如果目標周圍八格都沒有已知數字，就退回 heatmap_only
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if (
+                            0 <= nr < rows
+                            and 0 <= nc < cols
+                            and grid_np[nr, nc] > 0
+                            and (nr, nc) not in target_cells
+                        ):
+                            has_target_neighbor = True
+                            break
+                    if has_target_neighbor:
                         break
                 if has_target_neighbor:
                     break
