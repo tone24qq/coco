@@ -1094,11 +1094,53 @@ def predict_scratch_card(
 
     blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
 
+    known_coords = [tuple(b) for b in np.argwhere(grid_np > 0)]
+    use_heatmap_only = False
+    if len(known_coords) <= 3:
+        has_adj = False
+        for r, c in known_coords:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and grid_np[nr, nc] > 0:
+                        has_adj = True
+                        break
+                if has_adj:
+                    break
+        if not has_adj:
+            use_heatmap_only = True
+
     if not blanks:
         return {
             "mode": "no_blanks",
+            "strategy": "predict_structured",
             "predictions": [],
             "top_predictions": [],
+            "full_probabilities": {},
+            "final_recommendations": [],
+        }
+
+    if use_heatmap_only and target_num is not None:
+        heat = probability_heatmap(
+            grid_np,
+            target_num,
+            n_iter=iterations or 10000,
+            sample_gamma=sample_gamma,
+            history_dir=history_dir,
+        )
+        top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+        ranked = sorted([(float(heat[r, c]), r, c) for r, c in blanks], reverse=True)[
+            :top_k
+        ]
+        preds = [{"row": r, "col": c, "score": prob} for prob, r, c in ranked]
+        return {
+            "mode": "heatmap_only",
+            "strategy": "heatmap_only",
+            "target_num": int(target_num),
+            "predictions": preds,
+            "top_predictions": preds,
             "full_probabilities": {},
             "final_recommendations": [],
         }
@@ -1169,6 +1211,7 @@ def predict_scratch_card(
 
     return {
         "mode": "neighbor",
+        "strategy": "predict_structured",
         "predictions": preds,
         "top_predictions": preds,
         "full_probabilities": {},

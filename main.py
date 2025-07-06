@@ -182,7 +182,7 @@ def main():
                     with open("heatmap.txt", "w") as f:
                         f.write(rendered)
                     logging.info("Heatmap base64 saved to heatmap.txt")
-        logging.info("Prediction results:")
+        logging.info("Prediction results (strategy=%s):", result.get("strategy"))
         for pred in result["predictions"]:
             r = int(pred.get("row", 0)) + 1
             c = int(pred.get("col", 0)) + 1

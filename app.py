@@ -405,6 +405,7 @@ async def predict(req: GridRequest):
             "full_probabilities": clean_probs,
             "sample_gamma_used": req.sample_gamma or 0.0,
             "final_recommendations": recs,
+            "strategy": result.get("strategy"),
         }
         safe_payload = sanitize_floats(payload)
         logger.info("✅ Response ready")
@@ -490,6 +491,7 @@ async def heatmap(req: HeatmapRequest):
                 "top_predictions": tops,
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
+                "strategy": pred_result.get("strategy"),
             }
         elif req.output_format.lower() in ("raw", "json"):
             resp = {
@@ -500,6 +502,7 @@ async def heatmap(req: HeatmapRequest):
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
                 "sample_gamma_used": req.sample_gamma or 0.0,
+                "strategy": pred_result.get("strategy"),
             }
         else:
             img = render_heatmap(prob, req.output_format)
@@ -511,6 +514,7 @@ async def heatmap(req: HeatmapRequest):
                 "top_predictions": tops,
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
+                "strategy": pred_result.get("strategy"),
             }
 
         return JSONResponse(content=sanitize_floats(resp), status_code=200)
