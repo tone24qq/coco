@@ -1188,16 +1188,17 @@ def predict_scratch_card(
     if len(known_coords) <= 3:
         has_adj = False
         for r, c in known_coords:
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < rows and 0 <= nc < cols and grid_np[nr, nc] > 0:
-                        has_adj = True
-                        break
-                if has_adj:
+        # 八方向檢查：如果目標周圍八格都沒有已知數字，就退回 heatmap_only
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols and grid_np[nr, nc] > 0:
+                    has_target_neighbor = True
                     break
+            if has_target_neighbor:
+                break
         if not has_adj:
             use_heatmap_only = True
 
