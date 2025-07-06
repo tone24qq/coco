@@ -6,6 +6,7 @@ import logging
 import math
 import os
 import sys
+import re
 import zipfile
 from collections import defaultdict
 from functools import lru_cache
@@ -109,26 +110,55 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
             except Exception as exc:  # pragma: no cover - corrupted JSON
                 logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
                 continue
-            grid = data.get("grid")
-            if not isinstance(grid, list) or not all(
-                isinstance(row, list) for row in grid
-            ):
-                logger.warning("Invalid grid in %s:%s", zip_path.name, name)
+
+            if "grid" in data:
+                grid = data.get("grid")
+                if not isinstance(grid, list) or not all(
+                    isinstance(row, list) for row in grid
+                ):
+                    logger.warning("Invalid grid in %s:%s", zip_path.name, name)
+                    continue
+                rows = data.get("rows", len(grid))
+                cols = data.get("cols", len(grid[0]) if grid else 0)
+                if rows != len(grid) or any(len(r) != cols for r in grid):
+                    logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
+                    continue
+                count += 1
+                item = {
+                    "rows": rows,
+                    "cols": cols,
+                    "grid": grid,
+                    "target_num": data.get("target_num"),
+                    "mode": data.get("mode"),
+                }
+                yield item
                 continue
-            rows = data.get("rows", len(grid))
-            cols = data.get("cols", len(grid[0]) if grid else 0)
-            if rows != len(grid) or any(len(r) != cols for r in grid):
-                logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
-                continue
-            count += 1
-            item = {
-                "rows": rows,
-                "cols": cols,
-                "grid": grid,
-                "target_num": data.get("target_num"),
-                "mode": data.get("mode"),
-            }
-            yield item
+
+            for key, boards_list in data.items():
+                match = re.match(r"^(\d+)x(\d+)$", key)
+                if not match:
+                    logger.warning(
+                        "Skip invalid key %s in %s:%s", key, zip_path.name, name
+                    )
+                    continue
+                rows, cols = int(match.group(1)), int(match.group(2))
+                if not isinstance(boards_list, list):
+                    logger.warning(
+                        "Invalid boards list for %s in %s:%s", key, zip_path.name, name
+                    )
+                    continue
+                for board in boards_list:
+                    if not (
+                        isinstance(board, list)
+                        and len(board) == rows
+                        and all(isinstance(r, list) and len(r) == cols for r in board)
+                    ):
+                        logger.warning(
+                            "Invalid board for %s in %s:%s", key, zip_path.name, name
+                        )
+                        continue
+                    count += 1
+                    yield {"rows": rows, "cols": cols, "grid": board}
     logger.info("Loaded %s (%d JSON)", zip_path.name, count)
 
 
