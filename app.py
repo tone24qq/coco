@@ -22,7 +22,8 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities, iter_sample_jsons,
+from analyzer import (compute_position_probabilities,
+                      fuse_predictions_with_heatmap, iter_sample_jsons,
                       predict_scratch_card, probability_heatmap,
                       render_heatmap)
 
@@ -188,6 +189,7 @@ class HeatmapRequest(BaseModel):
     seed: int = 0
     output_format: Literal["base64", "raw", "json"] = "base64"
     sample_gamma: Optional[float] = None
+    fusion_alpha: Optional[float] = None
 
 
 class HeatmapResponse(BaseModel):
@@ -359,6 +361,23 @@ async def predict(req: GridRequest):
             strategy=req.strategy,
         )
 
+        if req.target_num is not None:
+            hm_iter = phase1 if os.getenv("FAST_TEST") != "1" else min(phase1, 100)
+            heat = probability_heatmap(
+                grid_norm,
+                req.target_num,
+                hm_iter,
+                sample_gamma=req.sample_gamma or 0.0,
+                history_dir="samples",
+            )
+            fusion_alpha = req.fusion_alpha or 0.7
+            result["final_recommendations"] = fuse_predictions_with_heatmap(
+                heat,
+                result.get("top_predictions", []),
+                fusion_alpha=fusion_alpha,
+                top_k=top_k,
+            )
+
         full_probs = result.get("full_probabilities", {})
         clean_probs = _full_probs_to_1_based(full_probs)
 
@@ -431,6 +450,15 @@ async def heatmap(req: HeatmapRequest):
             priors=priors,
             sample_gamma=req.sample_gamma or 0.0,
         )
+
+        fusion_alpha = req.fusion_alpha or 0.7
+        if isinstance(prob, np.ndarray) and req.target_num is not None:
+            pred_result["final_recommendations"] = fuse_predictions_with_heatmap(
+                prob,
+                pred_result.get("top_predictions", []),
+                fusion_alpha=fusion_alpha,
+                top_k=3,
+            )
 
         full_probs = pred_result.get("full_probabilities", {})
         clean_probs = _full_probs_to_1_based(full_probs)

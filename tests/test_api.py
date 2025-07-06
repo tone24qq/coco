@@ -43,6 +43,8 @@ def test_predict_basic(client):
     assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
     assert isinstance(body.get("final_recommendations"), list)
+    if body["final_recommendations"]:
+        assert "final_score" in body["final_recommendations"][0]
 
 
 def test_heatmap_basic(client):
@@ -61,6 +63,8 @@ def test_heatmap_basic(client):
     assert isinstance(body.get("top_predictions"), list)
     assert isinstance(body.get("full_probabilities"), dict)
     assert isinstance(body.get("final_recommendations"), list)
+    if body["final_recommendations"]:
+        assert "final_score" in body["final_recommendations"][0]
 
 
 def test_heatmap_json(client):

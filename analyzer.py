@@ -768,6 +768,49 @@ def _compute_final_recommendations(
     return recs[:top_k]
 
 
+def fuse_predictions_with_heatmap(
+    heatmap: np.ndarray,
+    predictions: List[Dict[str, Any]],
+    *,
+    fusion_alpha: float = 0.7,
+    top_k: int = 3,
+) -> List[Dict[str, Any]]:
+    """Fuse prediction scores with heatmap probability.
+
+    Parameters
+    ----------
+    heatmap : np.ndarray
+        Probability matrix for the target number.
+    predictions : list of dict
+        Items with ``row``, ``col`` and ``score`` fields (0-based indices).
+    fusion_alpha : float, optional
+        Weight for ``score`` from predictions. ``1 - fusion_alpha`` is applied
+        to ``heatmap`` probability. Defaults to ``0.7``.
+    top_k : int, optional
+        Number of cells to return. Defaults to ``3``.
+
+    Returns
+    -------
+    List[Dict[str, Any]]
+        Sorted list of recommendations with ``final_score``.
+    """
+
+    rows, cols = heatmap.shape
+    score_map = {
+        (int(p.get("row")), int(p.get("col"))): float(p.get("score", 0.0))
+        for p in predictions
+    }
+    recs: List[Dict[str, Any]] = []
+    for r in range(rows):
+        for c in range(cols):
+            pred_score = score_map.get((r, c), 0.0)
+            prob = float(heatmap[r, c])
+            final = fusion_alpha * pred_score + (1.0 - fusion_alpha) * prob
+            recs.append({"row": r, "col": c, "final_score": final})
+    recs.sort(key=lambda x: x["final_score"], reverse=True)
+    return recs[:top_k]
+
+
 def rank_cells_by_prior_and_modules(
     grid: np.ndarray,
     prior_cube: np.ndarray,
