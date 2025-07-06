@@ -1201,6 +1201,28 @@ def predict_scratch_card(
         if not has_adj:
             use_heatmap_only = True
 
+    if not use_heatmap_only and target_num is not None:
+        target_cells = [pos for pos in known_coords if grid_np[pos] == target_num]
+        if not target_cells:
+            use_heatmap_only = True
+        else:
+            has_target_neighbor = False
+            for r, c in target_cells:
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if (
+                        0 <= nr < rows
+                        and 0 <= nc < cols
+                        and grid_np[nr, nc] > 0
+                        and (nr, nc) not in target_cells
+                    ):
+                        has_target_neighbor = True
+                        break
+                if has_target_neighbor:
+                    break
+            if not has_target_neighbor:
+                use_heatmap_only = True
+
     if not blanks:
         return {
             "mode": "no_blanks",
@@ -1230,6 +1252,7 @@ def predict_scratch_card(
             "target_num": int(target_num),
             "predictions": preds,
             "top_predictions": preds,
+            "top_recommendations": preds,
             "full_probabilities": {},
             "final_recommendations": [],
         }

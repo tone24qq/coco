@@ -177,6 +177,7 @@ class Prediction(BaseModel):
 class PredictResponse(BaseModel):
     predictions: List[Prediction]
     top_predictions: List[Prediction]
+    top_recommendations: Optional[List[Prediction]] = None
     full_probabilities: Dict[str, Dict[str, float]]
     final_recommendations: List[Dict[str, Any]]
 
@@ -197,6 +198,7 @@ class HeatmapResponse(BaseModel):
     heatmap: Optional[str] = None
     predictions: Optional[List[Prediction]] = None
     top_predictions: Optional[List[Prediction]] = None
+    top_recommendations: Optional[List[Prediction]] = None
     full_probabilities: Optional[Dict[str, Dict[str, float]]] = None
     final_recommendations: Optional[List[Dict[str, Any]]] = None
 
@@ -398,6 +400,7 @@ async def predict(req: GridRequest):
         preds = _to_1_based(result.get("predictions"))
         tops = _to_1_based(result.get("top_predictions"))
         recs = _to_1_based(result.get("final_recommendations"))
+        top_recs = _to_1_based(result.get("top_recommendations"))
 
         payload = {
             "predictions": preds,
@@ -405,6 +408,7 @@ async def predict(req: GridRequest):
             "full_probabilities": clean_probs,
             "sample_gamma_used": req.sample_gamma or 0.0,
             "final_recommendations": recs,
+            "top_recommendations": top_recs,
             "strategy": result.get("strategy"),
         }
         safe_payload = sanitize_floats(payload)
@@ -481,6 +485,7 @@ async def heatmap(req: HeatmapRequest):
         preds = _to_1_based(pred_result.get("predictions"))
         tops = _to_1_based(pred_result.get("top_predictions"))
         recs = _to_1_based(pred_result.get("final_recommendations"))
+        top_recs = _to_1_based(pred_result.get("top_recommendations"))
 
         if isinstance(prob, dict):
             pm = {str(int(k)): v.tolist() for k, v in prob.items()}
@@ -491,6 +496,7 @@ async def heatmap(req: HeatmapRequest):
                 "top_predictions": tops,
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
+                "top_recommendations": top_recs,
                 "strategy": pred_result.get("strategy"),
             }
         elif req.output_format.lower() in ("raw", "json"):
@@ -501,6 +507,7 @@ async def heatmap(req: HeatmapRequest):
                 "top_predictions": tops,
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
+                "top_recommendations": top_recs,
                 "sample_gamma_used": req.sample_gamma or 0.0,
                 "strategy": pred_result.get("strategy"),
             }
@@ -514,6 +521,7 @@ async def heatmap(req: HeatmapRequest):
                 "top_predictions": tops,
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
+                "top_recommendations": top_recs,
                 "strategy": pred_result.get("strategy"),
             }
 
