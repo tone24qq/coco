@@ -1390,7 +1390,7 @@ def predict_scratch_card(
                 phase1=iterations or 6000,
                 samples_dir=history_dir,
                 sample_gamma=sample_gamma or 0.9,
-                fusion_alpha=fusion_alpha or 0.1,
+                fusion_alpha = 0.1,
                 threshold=neighbor_threshold,
             )
             return {
