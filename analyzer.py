@@ -1349,13 +1349,21 @@ def predict_scratch_card(
 ) -> Dict[str, Any]:
 
     BLANK_VAL = -1
-    # Keep object dtype first to avoid coercing values like "0" or "" to 0
-    grid_np = np.asarray(grid, dtype=object)
-    grid_np = np.where(grid_np == BLANK_VAL, BLANK_VAL, grid_np).astype(np.int64)
-    rows, cols = grid_np.shape
+# Keep object dtype first to avoid coercing values like "0" or "" to 0
+grid_np = np.asarray(grid, dtype=object)
+grid_np = np.where(grid_np == BLANK_VAL, BLANK_VAL, grid_np).astype(np.int64)
+rows, cols = grid_np.shape
 
-    blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
+try:
+    _ = probability_heatmap(
+        grid_np,
+        sample_gamma=sample_gamma,
+        history_dir=history_dir
+    )
+except Exception:
+    pass
 
+blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
     if target_num is not None:
         # 1) 全局盤面大小分布熱力
         global_heat = _get_global_pos_freq(history_dir)
