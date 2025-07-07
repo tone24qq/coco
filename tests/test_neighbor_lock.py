@@ -29,12 +29,11 @@ def test_neighbor_lock_hits(monkeypatch):
         fusion_alpha=0.0,
     )
 
-    # ✅ 容許策略 fallback，穩定斷言
     assert res["strategy"] in ("neighbor_lock", "pure_sample+global")
     assert res["predictions"]
     assert res["predictions"][0]["row"] == 0
     assert res["predictions"][0]["col"] == 1
-    assert called["sim"] == 0  # 邏輯不會 fallback 到模擬就應該不會呼叫
+    assert called["sim"] == 0
 
 
 def test_neighbor_lock_fallback(monkeypatch):
@@ -43,7 +42,7 @@ def test_neighbor_lock_fallback(monkeypatch):
     monkeypatch.setattr(
         analyzer,
         "neighbor_compatibility_score",
-        lambda g, d: np.zeros_like(g, dtype=float),  # 模擬鄰居全無貢獻，觸發 fallback
+        lambda g, d: np.zeros_like(g, dtype=float),
     )
     monkeypatch.setattr(analyzer, "compute_neighbor_distribution", lambda *a, **k: {})
 
@@ -51,7 +50,11 @@ def test_neighbor_lock_fallback(monkeypatch):
 
     def fake_sim(g, t, n_iter=0, **_):
         called["sim"] += 1
-        return {(0, 1): {1: 0.4}}
+        # 回傳明確有效的模擬分布，避免被主邏輯忽略
+        return {
+            (0, 1): {t: 0.6},
+            (1, 1): {t: 0.4},
+        }
 
     def fake_prior(*a, **k):
         called["prior"] += 1
@@ -65,11 +68,10 @@ def test_neighbor_lock_fallback(monkeypatch):
         target_num=1,
         iterations=2,
         use_neighbor_lock=True,
-        sample_gamma=1.0,  # ✅ 強制用模擬（讓 simulate 被叫到）
+        sample_gamma=1.0,  # 強制使用模擬（simulate_full_board）
         fusion_alpha=0.0,
     )
 
-    # ✅ 容許策略為 fallback 結果（實務中常發生）
     assert res["strategy"] in ("neighbor_lock", "pure_sample+global")
     assert res["predictions"]
     assert res["predictions"][0]["col"] == 1
