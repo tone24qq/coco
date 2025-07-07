@@ -18,9 +18,30 @@ def main() -> None:
                     continue
                 try:
                     data = json.loads(zf.read(name))
-                    rows = int(data["rows"])
-                    cols = int(data["cols"])
-                    shapes.add((rows, cols))
+
+                    # ✅ Case 1: dict 格式，標準結構
+                    if isinstance(data, dict) and "rows" in data and "cols" in data:
+                        rows = int(data["rows"])
+                        cols = int(data["cols"])
+                        shapes.add((rows, cols))
+
+                    # ✅ Case 2: 純 grid 陣列 → [[1,2], [3,4]]
+                    elif isinstance(data, list) and data and isinstance(data[0], list):
+                        rows = len(data)
+                        cols = len(data[0])
+                        shapes.add((rows, cols))
+
+                    # （可選擴充）Case 3: list of dicts
+                    elif isinstance(data, list) and data and isinstance(data[0], dict):
+                        for item in data:
+                            if "rows" in item and "cols" in item:
+                                rows = int(item["rows"])
+                                cols = int(item["cols"])
+                                shapes.add((rows, cols))
+
+                    else:
+                        raise ValueError("Unrecognized JSON structure")
+
                 except Exception as e:
                     print(f"⚠️ Skip malformed: {name} in {zp.name}: {e}")
                     continue
@@ -34,6 +55,7 @@ def main() -> None:
         np.savez(out_path, freq=freq)
         print(f"✅ Generated {out_path}")
 
+    # fallback alias: only if there's exactly one size
     if len(shapes) == 1:
         rows, cols = next(iter(shapes))
         src = SAMPLES_DIR / f"pos_freq_{rows}x{cols}.npz"
