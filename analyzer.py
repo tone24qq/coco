@@ -116,6 +116,38 @@ def filter_matching_samples(
     return result
 
 
+def filter_neighbor_matching_samples(
+    grid: np.ndarray, samples: List[np.ndarray], *, ratio: float = 0.5
+) -> List[np.ndarray]:
+    """Return samples with similar neighbor patterns to ``grid``.
+
+    A sample qualifies if the proportion of matching known neighbors
+    around all known cells is at least ``ratio``.
+    """
+
+    rows, cols = grid.shape
+    known_pos = [(r, c) for r, c in zip(*np.where(grid != -1))]
+    result: List[np.ndarray] = []
+
+    for board in samples:
+        matches = 0
+        total = 0
+        for r, c in known_pos:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
+                        total += 1
+                        if board[nr, nc] == grid[nr, nc]:
+                            matches += 1
+        if total and matches / total >= ratio:
+            result.append(board)
+
+    return result
+
+
 def compute_target_distribution(
     matching: List[np.ndarray], target: int, shape: Tuple[int, int]
 ) -> np.ndarray:
@@ -1310,6 +1342,8 @@ def predict_scratch_card(
         # 2) 樣本篩選
         samples = _load_samples_for_shape(history_dir, rows, cols)
         matching = filter_matching_samples(grid_np, samples)
+        if len(matching) < MIN_MATCHING:
+            matching = filter_neighbor_matching_samples(grid_np, samples)
 
         # 3) 若至少有一個 sample 匹配
         if len(matching) >= MIN_MATCHING:

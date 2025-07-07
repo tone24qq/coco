@@ -54,3 +54,18 @@ def test_pure_sample_final_score_weighting(tmp_path):
     assert preds[1]["row"] == 0 and preds[1]["col"] == 1
     assert abs(preds[0]["score"] - 1.0) < 1e-6
     assert abs(preds[1]["score"] - 0.2) < 1e-6
+
+
+def test_neighbor_relaxed_matching(tmp_path):
+    samples = tmp_path / "samples"
+    samples.mkdir()
+    board = {"rows": 3, "cols": 3, "grid": [[9, 2, 3], [4, 5, 6], [7, 8, 1]]}
+    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
+        zf.writestr("b.json", json.dumps(board))
+
+    grid = [[1, 2, -1], [4, 5, -1], [7, 8, -1]]
+    res = analyzer.predict_scratch_card(grid, target_num=3, history_dir=str(samples))
+    assert res["mode"] == "sample_only"
+    assert res["strategy"] == "pure_sample+global"
+    pred = res["predictions"][0]
+    assert pred["row"] == 0 and pred["col"] == 2
