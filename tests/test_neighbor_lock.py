@@ -1,46 +1,67 @@
-import json
-import zipfile
-
 import numpy as np
+
 import analyzer
 
 
-def test_load_and_filter_samples(tmp_path):
-    # 准备测试目录和压缩样本
-    samples = tmp_path / "samples"
-    samples.mkdir()
-    board = [[1, 2], [3, 4]]
-    with zipfile.ZipFile(samples / "z.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps({"rows": 2, "cols": 2, "grid": board}))
+def test_neighbor_lock_hits(monkeypatch):
+    grid = np.array([[1, -1], [2, 3]])
 
-    # 清空缓存并加载
-    analyzer._SAMPLE_CACHE.clear()
-    loaded = analyzer._load_samples_for_shape(str(samples), 2, 2)
+    def fake_score(g, dist):
+        s = np.zeros_like(g, dtype=float)
+        s[0, 1] = 0.8
+        return s
 
-    # 新增：處理 grid_np 並調用 probability_heatmap
-    BLANK_VAL = -1
-    grid_np = np.asarray(board, dtype=object)
-    grid_np = np.where(grid_np == BLANK_VAL, BLANK_VAL, grid_np).astype(np.int64)
-    rows, cols = grid_np.shape
+    monkeypatch.setattr(analyzer, "neighbor_compatibility_score", fake_score)
+    monkeypatch.setattr(analyzer, "compute_neighbor_distribution", lambda *a, **k: {})
+    called = {"sim": 0}
 
-    try:
-        _ = analyzer.probability_heatmap(
-            grid_np,
-            sample_gamma=0.0,  # 默認值
-            history_dir=str(samples)
-        )
-    except Exception:
-        pass
+    def fake_sim(*a, **k):
+        called["sim"] += 1
+        return {}
 
-    # 验证加载结果是列表，且只有一个样本
-    assert isinstance(loaded, list)
-    assert len(loaded) == 1
+    monkeypatch.setattr(analyzer, "simulate_full_board", fake_sim)
 
-    arr, filename = loaded[0]
-    # 验证文件名
-    assert filename == "z.zip"
-    # 验证数组类型、shape 和内容
-    assert isinstance(arr, np.ndarray)
-    assert arr.dtype == int
-    assert arr.shape == (2, 2)
-    assert np.array_equal(arr, np.array(board, dtype=int))
+    res = analyzer.predict_scratch_card(
+        grid.tolist(),
+        target_num=1,
+        iterations=4,
+        use_neighbor_lock=True,
+    )
+    assert res["strategy"] == "neighbor_lock"
+    assert called["sim"] == 0
+    assert res["predictions"][0]["row"] == 0
+    assert res["predictions"][0]["col"] == 1
+
+
+def test_neighbor_lock_fallback(monkeypatch):
+    grid = np.array([[1, -1], [2, 3]])
+
+    monkeypatch.setattr(
+        analyzer,
+        "neighbor_compatibility_score",
+        lambda g, d: np.zeros_like(g, dtype=float),
+    )
+    monkeypatch.setattr(analyzer, "compute_neighbor_distribution", lambda *a, **k: {})
+    called = {"sim": 0, "prior": 0}
+
+    def fake_sim(g, t, n_iter=0, **_):
+        called["sim"] += 1
+        return {(0, 1): {1: 0.4}}
+
+    def fake_prior(*a, **k):
+        called["prior"] += 1
+        return {(0, 1): {1: 0.6}}
+
+    monkeypatch.setattr(analyzer, "simulate_full_board", fake_sim)
+    monkeypatch.setattr(analyzer, "compute_position_probabilities", fake_prior)
+
+    res = analyzer.predict_scratch_card(
+        grid.tolist(),
+        target_num=1,
+        iterations=2,
+        use_neighbor_lock=True,
+    )
+    assert res["strategy"] == "neighbor_lock"
+    assert called["sim"] == 1
+    assert called["prior"] == 1
+    assert res["predictions"][0]["col"] == 1
