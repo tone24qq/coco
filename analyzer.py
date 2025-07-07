@@ -57,7 +57,7 @@ _POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
 _SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
 
 # Minimum number of matching samples to activate pure-sample mode
-MIN_MATCHING = 1
+MIN_MATCHING = 0
 
 
 def load_global_pos_freq(samples_dir: str) -> None:
