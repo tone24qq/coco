@@ -21,6 +21,11 @@ def test_top3_logging(caplog):
     grid = [[-1, -1], [-1, -1]]
     with caplog.at_level(logging.INFO):
         result = analyzer.predict_scratch_card(
-            grid, iterations=2, global_iter=1, focus_iter=1
+            grid,
+            iterations=2,
+            global_iter=1,
+            focus_iter=1,
+            target_num=1,
         )
     assert result["predictions"]
+    assert any("匹配到" in r.message for r in caplog.records)

@@ -53,8 +53,8 @@ analyzer_utils = BoardAnalyzerUtils()
 # Global position prior cache
 _POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
 
-# Cache full sample boards by shape
-_SAMPLE_CACHE: Dict[Tuple[int, int, str], List[np.ndarray]] = {}
+# Cache full sample boards by shape with file names
+_SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
 
 # Minimum number of matching samples to activate pure-sample mode
 MIN_MATCHING = 1
@@ -89,36 +89,42 @@ def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
 
 
-def _load_samples_for_shape(samples_dir: str, rows: int, cols: int) -> List[np.ndarray]:
-    """Load all sample boards for the given shape."""
+def _load_samples_for_shape(
+    samples_dir: str, rows: int, cols: int
+) -> List[Tuple[np.ndarray, str]]:
+    """Load all sample boards for the given shape along with file names."""
     key = (rows, cols, samples_dir)
     if key in _SAMPLE_CACHE:
         return _SAMPLE_CACHE[key]
 
-    boards: List[np.ndarray] = []
-    for item in iter_sample_jsons(samples_dir):
-        if item["rows"] == rows and item["cols"] == cols:
-            boards.append(np.asarray(item["grid"], dtype=int))
+    boards: List[Tuple[np.ndarray, str]] = []
+    path = Path(samples_dir)
+    for zip_path in sorted(path.glob("*.zip")):
+        for item in _iter_json_from_zip(zip_path):
+            if item["rows"] == rows and item["cols"] == cols:
+                boards.append((np.asarray(item["grid"], dtype=int), zip_path.name))
     _SAMPLE_CACHE[key] = boards
-    logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
+    logger.info(
+        "Loaded %d sample boards for %dx%d", len(boards), rows, cols
+    )  # 中文：載入指定尺寸樣本數量
     return boards
 
 
 def filter_matching_samples(
-    grid: np.ndarray, samples: List[np.ndarray]
-) -> List[np.ndarray]:
+    grid: np.ndarray, samples: List[Tuple[np.ndarray, str]]
+) -> List[Tuple[np.ndarray, str]]:
     """Return samples exactly matching known cells in ``grid``."""
     known = [(r, c, grid[r, c]) for r, c in zip(*np.where(grid != -1))]
-    result: List[np.ndarray] = []
-    for board in samples:
+    result: List[Tuple[np.ndarray, str]] = []
+    for board, name in samples:
         if all(board[r, c] == v for r, c, v in known):
-            result.append(board)
+            result.append((board, name))
     return result
 
 
 def filter_neighbor_matching_samples(
-    grid: np.ndarray, samples: List[np.ndarray], *, ratio: float = 0.5
-) -> List[np.ndarray]:
+    grid: np.ndarray, samples: List[Tuple[np.ndarray, str]], *, ratio: float = 0.5
+) -> List[Tuple[np.ndarray, str]]:
     """Return samples with similar neighbor patterns to ``grid``.
 
     A sample qualifies if the proportion of matching known neighbors
@@ -127,9 +133,9 @@ def filter_neighbor_matching_samples(
 
     rows, cols = grid.shape
     known_pos = [(r, c) for r, c in zip(*np.where(grid != -1))]
-    result: List[np.ndarray] = []
+    result: List[Tuple[np.ndarray, str]] = []
 
-    for board in samples:
+    for board, name in samples:
         matches = 0
         total = 0
         for r, c in known_pos:
@@ -143,17 +149,17 @@ def filter_neighbor_matching_samples(
                         if board[nr, nc] == grid[nr, nc]:
                             matches += 1
         if total and matches / total >= ratio:
-            result.append(board)
+            result.append((board, name))
 
     return result
 
 
 def compute_target_distribution(
-    matching: List[np.ndarray], target: int, shape: Tuple[int, int]
+    matching: List[Tuple[np.ndarray, str]], target: int, shape: Tuple[int, int]
 ) -> np.ndarray:
     """Compute target number distribution among matching boards."""
     freq = np.zeros(shape, dtype=int)
-    for board in matching:
+    for board, _ in matching:
         pos = np.argwhere(board == target)
         for r, c in pos:
             freq[r, c] += 1
@@ -162,7 +168,7 @@ def compute_target_distribution(
 
 
 def compute_neighbor_match_score(
-    grid: np.ndarray, boards: List[np.ndarray]
+    grid: np.ndarray, boards: List[Tuple[np.ndarray, str]]
 ) -> np.ndarray:
     """Average neighbor matching ratios across ``boards``."""
 
@@ -172,7 +178,7 @@ def compute_neighbor_match_score(
         return scores
 
     blanks = np.argwhere(grid == -1)
-    for board in boards:
+    for board, _ in boards:
         for r, c in blanks:
             match = 0
             known = 0
@@ -190,6 +196,23 @@ def compute_neighbor_match_score(
 
     scores /= float(len(boards))
     return scores
+
+
+def visualize_board(board: np.ndarray, title: str | None = None) -> None:
+    """Display a board using matplotlib."""
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as exc:  # pragma: no cover - optional dependency
+        logger.warning("visualize_board failed: %s", exc)  # 中文：缺少繪圖套件
+        return
+
+    fig, ax = plt.subplots()
+    ax.matshow(board, cmap="tab20")
+    for (i, j), val in np.ndenumerate(board):
+        ax.text(j, i, str(val), ha="center", va="center")
+    if title:
+        fig.suptitle(title)
+    plt.show()
 
 
 def rank_cells_by_prob(
@@ -1344,6 +1367,14 @@ def predict_scratch_card(
         matching = filter_matching_samples(grid_np, samples)
         if len(matching) < MIN_MATCHING:
             matching = filter_neighbor_matching_samples(grid_np, samples)
+
+        logger.info(
+            "匹配到%d张样本，示例：%s",
+            len(matching),
+            ", ".join(name for _, name in matching[:3]),
+        )  # 中文：記錄匹配樣本數與部分檔名
+        if matching:
+            visualize_board(matching[0][0], title=matching[0][1])
 
         # 3) 若至少有一個 sample 匹配
         if len(matching) >= MIN_MATCHING:
