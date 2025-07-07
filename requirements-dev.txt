@@ -7,6 +7,7 @@ flake8>=7.0
 mypy>=1.10
 bandit>=1.7
 pip-audit>=2.7
+matplotlib>=3.8.4
 
 # Testing
 pytest>=8.2
