@@ -127,17 +127,62 @@ def compute_target_distribution(
     return freq.astype(float) / float(total)
 
 
+def compute_neighbor_match_score(
+    grid: np.ndarray, matching: List[np.ndarray]
+) -> np.ndarray:
+    """Return per-cell neighbor match counts averaged over ``matching`` boards."""
+
+    rows, cols = grid.shape
+    scores = np.zeros((rows, cols), dtype=float)
+    if not matching:
+        return scores
+
+    deltas = [
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ]
+
+    blanks = np.argwhere(grid == -1)
+    for r, c in blanks:
+        total = 0
+        for board in matching:
+            cnt = 0
+            for dr, dc in deltas:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
+                    if board[nr, nc] == grid[nr, nc]:
+                        cnt += 1
+            total += cnt
+        scores[r, c] = total / float(len(matching))
+    return scores
+
+
 def rank_cells_by_prob(
-    grid: np.ndarray, probs: np.ndarray
+    grid: np.ndarray, probs: np.ndarray, *, neighbor: Optional[np.ndarray] = None
 ) -> List[Tuple[int, int, float]]:
-    """Rank blank cells by probability."""
+    """Rank blank cells by probability and optional neighbor score."""
+
     blanks = [(int(r), int(c)) for r, c in zip(*np.where(grid == -1))]
+    if neighbor is None:
+        ranked = sorted(
+            [(r, c, float(probs[r, c])) for r, c in blanks],
+            key=lambda x: x[2],
+            reverse=True,
+        )
+        return ranked
+
     ranked = sorted(
-        [(r, c, float(probs[r, c])) for r, c in blanks],
-        key=lambda x: x[2],
+        [(r, c, float(probs[r, c]), float(neighbor[r, c])) for r, c in blanks],
+        key=lambda x: (x[2], x[3]),
         reverse=True,
     )
-    return ranked
+    return [(r, c, p) for r, c, p, _ in ranked]
 
 
 def apply_uniqueness_penalty(
@@ -1264,7 +1309,8 @@ def predict_scratch_card(
         matching = filter_matching_samples(grid_np, samples)
         if len(matching) >= MIN_MATCHING:
             probs = compute_target_distribution(matching, target_num, grid_np.shape)
-            ranked = rank_cells_by_prob(grid_np, probs)
+            neighbor_score = compute_neighbor_match_score(grid_np, matching)
+            ranked = rank_cells_by_prob(grid_np, probs, neighbor=neighbor_score)
             preds = [{"row": r, "col": c, "score": p} for r, c, p in ranked[:top_n]]
             return {
                 "mode": "sample_only",
