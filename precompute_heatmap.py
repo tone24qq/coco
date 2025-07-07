@@ -16,8 +16,14 @@ def main() -> None:
             for name in zf.namelist():
                 if not name.endswith(".json"):
                     continue
-                data = json.loads(zf.read(name))
-                shapes.add((data["rows"], data["cols"]))
+                try:
+                    data = json.loads(zf.read(name))
+                    rows = int(data["rows"])
+                    cols = int(data["cols"])
+                    shapes.add((rows, cols))
+                except Exception as e:
+                    print(f"⚠️ Skip malformed: {name} in {zp.name}: {e}")
+                    continue
 
     for rows, cols in sorted(shapes):
         out_path = SAMPLES_DIR / f"pos_freq_{rows}x{cols}.npz"
@@ -26,7 +32,7 @@ def main() -> None:
             continue
         freq = compute_global_distribution(str(SAMPLES_DIR), rows, cols)
         np.savez(out_path, freq=freq)
-        print(f"Generated {out_path}")
+        print(f"✅ Generated {out_path}")
 
     if len(shapes) == 1:
         rows, cols = next(iter(shapes))
@@ -34,6 +40,7 @@ def main() -> None:
         dst = SAMPLES_DIR / "pos_freq.npz"
         if not dst.exists() and src.exists():
             src.replace(dst)
+            print(f"✅ Created fallback alias: {dst}")
 
 
 if __name__ == "__main__":
