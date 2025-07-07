@@ -1352,9 +1352,16 @@ def predict_scratch_card(
             # B) 3×3 鄰居相似度
             neighbor_score = compute_neighbor_match_score(grid_np, matching)
 
-            # C) 混合權重
-            β = 0.8
+            # C) 混合權重（全局熱力 20%，樣本熱力 80%）
+            β = 0.2  # 全局熱力權重
             α = sample_gamma  # 從外部傳入，默認0.9
+
+            # 日誌：顯示當前混合權重
+            logger.info(
+                "混合權重：全局熱力 %.0f%%，樣本熱力 %.0f%%",
+                β * 100,
+                (1 - β) * 100,
+            )
 
             mixed_sample = α * probs + (1 - α) * neighbor_score
             global_layer = global_heat[:, :, target_num]

@@ -53,7 +53,7 @@ def test_pure_sample_final_score_weighting(tmp_path):
     assert preds[0]["row"] == 1 and preds[0]["col"] == 1
     assert preds[1]["row"] == 0 and preds[1]["col"] == 1
     assert abs(preds[0]["score"] - 1.0) < 1e-6
-    assert abs(preds[1]["score"] - 0.2) < 1e-6
+    assert abs(preds[1]["score"] - 0.8) < 1e-6
 
 
 def test_neighbor_relaxed_matching(tmp_path):
