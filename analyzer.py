@@ -579,7 +579,18 @@ def compute_position_probabilities(
 
 @lru_cache(maxsize=8)
 def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.ndarray:
-    """按現有邏輯計算 global pos heatmap"""
+    """Return global position heatmap for ``rows`` × ``cols`` boards."""
+    npz_path = Path(samples_dir) / f"pos_freq_{rows}x{cols}.npz"
+    if npz_path.exists():
+        try:
+            arr = np.load(npz_path)["freq"]
+            if arr.shape == (rows, cols, rows * cols + 1):
+                logger.info("Loaded heatmap from %s", npz_path)
+                return arr.astype(float)
+            logger.warning("Heatmap shape mismatch in %s: %s", npz_path, arr.shape)
+        except Exception as exc:  # pragma: no cover - corrupted file
+            logger.error("failed to load %s: %s", npz_path, exc)
+
     cached = Path(samples_dir) / "prior.npy"
     if cached.exists():
         cube = np.load(cached, mmap_mode="r")
@@ -1356,9 +1367,7 @@ def predict_scratch_card(
 
     try:
         _ = probability_heatmap(
-            grid_np,
-            sample_gamma=sample_gamma,
-            history_dir=history_dir
+            grid_np, sample_gamma=sample_gamma, history_dir=history_dir
         )
     except Exception:
         pass
