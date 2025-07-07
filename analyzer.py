@@ -1389,7 +1389,7 @@ def predict_scratch_card(
                 target_num,
                 phase1=iterations or 6000,
                 samples_dir=history_dir,
-                sample_gamma=sample_gamma or 0.9,
+                sample_gamma=sample_gamma,
                 fusion_alpha=fusion_alpha,
                 threshold=neighbor_threshold,
             )
@@ -1727,7 +1727,7 @@ def probability_heatmap(
     sample_gamma: float = 0.0,
     history_dir: str = "samples",
     nearest_weight: float = 0.0,
-    fusion_alpha: float = 1.0,
+    fusion_alpha: float = 0.1,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
 
@@ -1769,8 +1769,8 @@ def probability_heatmap(
 
     # 中文 log：顯示融合參數與實際使用的樣本比例
     logger.info(
-        "融合中：sample_gamma=%.2f（樣本佔比），fusion_alpha=%.2f（模擬佔比）",
-        sample_gamma or 0.9,
+        "融合中：sample_gamma=%.2f（样本占比），fusion_alpha=%.2f（模拟占比）",
+        sample_gamma,
         fusion_alpha,
     )
 
