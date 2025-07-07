@@ -31,6 +31,8 @@ from brain import (
 # isort: on
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
+
+# 额外引入全局分布计算
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
 from csp_solver import heuristic_csp_sampling
 
@@ -72,10 +74,10 @@ def load_global_pos_freq(samples_dir: str) -> None:
 
 def _get_global_pos_freq(samples_dir: str) -> Optional[np.ndarray]:
     path = Path(samples_dir) / "pos_freq.npz"
-    key = str(path)
-    if key not in _POS_FREQ_CACHE and path.exists():
+    # 已存在时读取，没有再计算
+    if path.exists() and str(path) not in _POS_FREQ_CACHE:
         load_global_pos_freq(samples_dir)
-    return _POS_FREQ_CACHE.get(key)
+    return _POS_FREQ_CACHE.get(str(path))
 
 
 # 來自 probmap_key_patch_v2.txt
@@ -522,7 +524,7 @@ def compute_position_probabilities(
 
 @lru_cache(maxsize=8)
 def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.ndarray:
-    """Return per-cell number probability cube from history samples."""
+    """按現有邏輯計算 global pos heatmap"""
     cached = Path(samples_dir) / "prior.npy"
     if cached.exists():
         cube = np.load(cached, mmap_mode="r")
@@ -1300,18 +1302,44 @@ def predict_scratch_card(
     blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
 
     if target_num is not None:
+        # 1) 全局盤面大小分布熱力
+        global_heat = _get_global_pos_freq(history_dir)
+        if global_heat is None:
+            global_heat = compute_global_distribution(history_dir, rows, cols)
+
+        # 2) 樣本篩選
         samples = _load_samples_for_shape(history_dir, rows, cols)
         matching = filter_matching_samples(grid_np, samples)
+
+        # 3) 若至少有一個 sample 匹配
         if len(matching) >= MIN_MATCHING:
+            # A) 目標數字全樣本熱力
             probs = compute_target_distribution(matching, target_num, grid_np.shape)
+            # B) 3×3 鄰居相似度
             neighbor_score = compute_neighbor_match_score(grid_np, matching)
-            alpha = 0.5
-            final_score = alpha * probs + (1.0 - alpha) * neighbor_score
-            ranked = rank_cells_by_prob(grid_np, final_score)
+
+            # C) 混合權重
+            β = 0.8
+            α = sample_gamma  # 從外部傳入，默認0.9
+
+            mixed_sample = α * probs + (1 - α) * neighbor_score
+            global_layer = global_heat[:, :, target_num]
+
+            final_score = β * global_layer + (1 - β) * mixed_sample
+
+            blanks_coords = [
+                (int(r), int(c)) for r, c in np.argwhere(grid_np == BLANK_VAL)
+            ]
+            ranked = sorted(
+                [(r, c, float(final_score[r, c])) for r, c in blanks_coords],
+                key=lambda x: x[2],
+                reverse=True,
+            )
             preds = [{"row": r, "col": c, "score": s} for r, c, s in ranked[:top_n]]
+
             return {
                 "mode": "sample_only",
-                "strategy": "pure_sample",
+                "strategy": "pure_sample+global",
                 "predictions": preds,
                 "top_predictions": preds,
                 "full_probabilities": {
