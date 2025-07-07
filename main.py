@@ -165,7 +165,7 @@ def main():
             priors=priors,
             sample_gamma=args.sample_gamma,
             use_neighbor_lock=args.use_neighbor_lock,
-            fusion_alpha=None,
+            fusion_alpha=0.1,
             force_legacy=False,
             strategy=args.strategy,
         )

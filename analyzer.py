@@ -1316,7 +1316,7 @@ def predict_scratch_card(
     history_dir: str = "samples",
     gamma_history: float = 0.0,
     sample_gamma: float = 0.0,
-    fusion_alpha: Optional[float] = None,
+    fusion_alpha: float = 0.1,
     pseudo_count: float = 0.0,
     force_legacy: bool = False,
     exclude_filled: bool = True,
@@ -1390,7 +1390,7 @@ def predict_scratch_card(
                 phase1=iterations or 6000,
                 samples_dir=history_dir,
                 sample_gamma=sample_gamma or 0.9,
-                fusion_alpha = 0.1,
+                fusion_alpha=fusion_alpha,
                 threshold=neighbor_threshold,
             )
             return {
@@ -1770,7 +1770,7 @@ def probability_heatmap(
     # 中文 log：顯示融合參數與實際使用的樣本比例
     logger.info(
         "融合中：sample_gamma=%.2f（樣本佔比），fusion_alpha=%.2f（模擬佔比）",
-        sample_gamma,
+        sample_gamma or 0.9,
         fusion_alpha,
     )
 
@@ -1829,7 +1829,7 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
             focus_iter=5,
             top_n=5,
             epsilon=0.1,
-            fusion_alpha=None,
+            fusion_alpha=0.1,
             force_legacy=False,
         )
         preds = res.get("predictions", [])

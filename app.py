@@ -373,6 +373,7 @@ async def predict(req: GridRequest):
         ):
             force_legacy = True
 
+        fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.1
         result = predict_scratch_card(
             grid=grid_norm,
             target_num=req.target_num,
@@ -385,7 +386,7 @@ async def predict(req: GridRequest):
             priors=priors,
             sample_gamma=req.sample_gamma or 0.9,
             use_neighbor_lock=req.use_neighbor_lock,
-            fusion_alpha=req.fusion_alpha,
+            fusion_alpha=fusion_alpha,
             force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
             strategy=req.strategy,
