@@ -128,38 +128,33 @@ def compute_target_distribution(
 
 
 def compute_neighbor_match_score(
-    grid: np.ndarray, matching: List[np.ndarray]
+    grid: np.ndarray, boards: List[np.ndarray]
 ) -> np.ndarray:
-    """Return per-cell neighbor match counts averaged over ``matching`` boards."""
+    """Average neighbor matching ratios across ``boards``."""
 
     rows, cols = grid.shape
     scores = np.zeros((rows, cols), dtype=float)
-    if not matching:
+    if not boards:
         return scores
 
-    deltas = [
-        (-1, -1),
-        (-1, 0),
-        (-1, 1),
-        (0, -1),
-        (0, 1),
-        (1, -1),
-        (1, 0),
-        (1, 1),
-    ]
-
     blanks = np.argwhere(grid == -1)
-    for r, c in blanks:
-        total = 0
-        for board in matching:
-            cnt = 0
-            for dr, dc in deltas:
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
-                    if board[nr, nc] == grid[nr, nc]:
-                        cnt += 1
-            total += cnt
-        scores[r, c] = total / float(len(matching))
+    for board in boards:
+        for r, c in blanks:
+            match = 0
+            known = 0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols and grid[nr, nc] != -1:
+                        known += 1
+                        if board[nr, nc] == grid[nr, nc]:
+                            match += 1
+            if known:
+                scores[r, c] += match / known
+
+    scores /= float(len(boards))
     return scores
 
 
@@ -1310,8 +1305,10 @@ def predict_scratch_card(
         if len(matching) >= MIN_MATCHING:
             probs = compute_target_distribution(matching, target_num, grid_np.shape)
             neighbor_score = compute_neighbor_match_score(grid_np, matching)
-            ranked = rank_cells_by_prob(grid_np, probs, neighbor=neighbor_score)
-            preds = [{"row": r, "col": c, "score": p} for r, c, p in ranked[:top_n]]
+            alpha = 0.5
+            final_score = alpha * probs + (1.0 - alpha) * neighbor_score
+            ranked = rank_cells_by_prob(grid_np, final_score)
+            preds = [{"row": r, "col": c, "score": s} for r, c, s in ranked[:top_n]]
             return {
                 "mode": "sample_only",
                 "strategy": "pure_sample",
