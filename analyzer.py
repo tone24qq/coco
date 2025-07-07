@@ -51,6 +51,12 @@ analyzer_utils = BoardAnalyzerUtils()
 # Global position prior cache
 _POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
 
+# Cache full sample boards by shape
+_SAMPLE_CACHE: Dict[Tuple[int, int, str], List[np.ndarray]] = {}
+
+# Minimum number of matching samples to activate pure-sample mode
+MIN_MATCHING = 1
+
 
 def load_global_pos_freq(samples_dir: str) -> None:
     """Load global position frequency tensor from samples_dir if available."""
@@ -79,6 +85,59 @@ def _native_coord(k):
 
 def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
+
+
+def _load_samples_for_shape(samples_dir: str, rows: int, cols: int) -> List[np.ndarray]:
+    """Load all sample boards for the given shape."""
+    key = (rows, cols, samples_dir)
+    if key in _SAMPLE_CACHE:
+        return _SAMPLE_CACHE[key]
+
+    boards: List[np.ndarray] = []
+    for item in iter_sample_jsons(samples_dir):
+        if item["rows"] == rows and item["cols"] == cols:
+            boards.append(np.asarray(item["grid"], dtype=int))
+    _SAMPLE_CACHE[key] = boards
+    logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
+    return boards
+
+
+def filter_matching_samples(
+    grid: np.ndarray, samples: List[np.ndarray]
+) -> List[np.ndarray]:
+    """Return samples exactly matching known cells in ``grid``."""
+    known = [(r, c, grid[r, c]) for r, c in zip(*np.where(grid != -1))]
+    result: List[np.ndarray] = []
+    for board in samples:
+        if all(board[r, c] == v for r, c, v in known):
+            result.append(board)
+    return result
+
+
+def compute_target_distribution(
+    matching: List[np.ndarray], target: int, shape: Tuple[int, int]
+) -> np.ndarray:
+    """Compute target number distribution among matching boards."""
+    freq = np.zeros(shape, dtype=int)
+    for board in matching:
+        pos = np.argwhere(board == target)
+        for r, c in pos:
+            freq[r, c] += 1
+    total = len(matching) or 1
+    return freq.astype(float) / float(total)
+
+
+def rank_cells_by_prob(
+    grid: np.ndarray, probs: np.ndarray
+) -> List[Tuple[int, int, float]]:
+    """Rank blank cells by probability."""
+    blanks = [(int(r), int(c)) for r, c in zip(*np.where(grid == -1))]
+    ranked = sorted(
+        [(r, c, float(probs[r, c])) for r, c in blanks],
+        key=lambda x: x[2],
+        reverse=True,
+    )
+    return ranked
 
 
 def apply_uniqueness_penalty(
@@ -1199,6 +1258,24 @@ def predict_scratch_card(
     rows, cols = grid_np.shape
 
     blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
+
+    if target_num is not None:
+        samples = _load_samples_for_shape(history_dir, rows, cols)
+        matching = filter_matching_samples(grid_np, samples)
+        if len(matching) >= MIN_MATCHING:
+            probs = compute_target_distribution(matching, target_num, grid_np.shape)
+            ranked = rank_cells_by_prob(grid_np, probs)
+            preds = [{"row": r, "col": c, "score": p} for r, c, p in ranked[:top_n]]
+            return {
+                "mode": "sample_only",
+                "strategy": "pure_sample",
+                "predictions": preds,
+                "top_predictions": preds,
+                "full_probabilities": {
+                    (r, c): {int(target_num): float(probs[r, c])} for r, c, _ in ranked
+                },
+                "final_recommendations": [],
+            }
 
     if use_neighbor_lock and target_num is not None:
         try:
