@@ -32,8 +32,6 @@ def test_load_and_filter_samples(tmp_path):
     except Exception:
         pass
 
-    blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
-
     # 验证加载结果是列表，且只有一个样本
     assert isinstance(loaded, list)
     assert len(loaded) == 1
