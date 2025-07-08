@@ -103,6 +103,17 @@ def test_debug_number_distribution(client, monkeypatch):
     assert body["1"]["1,1"] == 2
 
 
+def test_debug_global_freqs(client, tmp_path, monkeypatch):
+    d = tmp_path / "npz"
+    d.mkdir()
+    arr = np.ones((2, 2, 5))
+    np.savez(d / "global_pos_freq_2x2.npz", freq=arr)
+    monkeypatch.setattr(analyzer, "DEFAULT_NPZ_DIR", d)
+    resp = client.get("/debug/global_freqs")
+    assert resp.status_code == 200
+    assert resp.json() == ["2x2"]
+
+
 def test_predict_1_based_top_left(client):
     grid = [[-1, 2], [3, 4]]
     payload = {"grid": grid, "target_num": 1, "iterations": 2}

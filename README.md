@@ -41,6 +41,17 @@ To reduce build time when manually deploying to Render:
 
 Render will restore this cache before each build and save it afterwards, avoiding repeated downloads.
 
+## Global Frequency Files
+
+Precomputed position frequencies are stored in the `out_npz/` directory.
+Each file is named `global_pos_freq_{rows}x{cols}.npz` and contains a
+`freq` array with shape `(rows, cols, targets)` where the last axis
+corresponds to the target number. Place the files under `out_npz/` so
+the service can load them on demand and skip heavy archive parsing.
+
+You can inspect which board sizes are currently available via the
+`/debug/global_freqs` API endpoint.
+
 # Scratch-Card Prediction System
 
 This project provides a FastAPI service and CLI tool for predicting hidden numbers on scratch cards. The system uses modular heuristics and Monte-Carlo simulation to estimate probabilities.

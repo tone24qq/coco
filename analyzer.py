@@ -59,6 +59,36 @@ _SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
 # Minimum number of matching samples to activate pure-sample mode
 MIN_MATCHING = 0
 
+# Directory containing precomputed global position frequency files
+DEFAULT_NPZ_DIR = Path("out_npz")
+
+
+@lru_cache(maxsize=16)
+def load_global_pos_freq_npz(
+    shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
+) -> np.ndarray:
+    """Load precomputed global position frequencies from ``npz_dir``.
+
+    Parameters
+    ----------
+    shape : tuple[int, int]
+        Board shape ``(rows, cols)``.
+    npz_dir : Path
+        Directory containing ``global_pos_freq_{rows}x{cols}.npz``.
+
+    Returns
+    -------
+    np.ndarray
+        Loaded frequency cube with shape ``(rows, cols, targets)``.
+    """
+    rows, cols = shape
+    path = npz_dir / f"global_pos_freq_{rows}x{cols}.npz"
+    try:
+        return np.load(path)["freq"]
+    except Exception as exc:
+        logger.error("failed to load %s: %s", path, exc)
+        raise FileNotFoundError(path) from exc
+
 
 def load_global_pos_freq(samples_dir: str) -> None:
     """Load global position frequency tensor from samples_dir if available."""
@@ -579,7 +609,11 @@ def compute_position_probabilities(
 
 @lru_cache(maxsize=8)
 def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.ndarray:
-    """按現有邏輯計算 global pos heatmap"""
+    """Compute global position heatmap from raw sample ZIP files.
+
+    This heavy-weight routine is kept for offline generation of priors.
+    Runtime code should prefer :func:`load_global_pos_freq_npz`.
+    """
     cached = Path(samples_dir) / "prior.npy"
     if cached.exists():
         cube = np.load(cached, mmap_mode="r")
@@ -1356,9 +1390,7 @@ def predict_scratch_card(
 
     try:
         _ = probability_heatmap(
-            grid_np,
-            sample_gamma=sample_gamma,
-            history_dir=history_dir
+            grid_np, sample_gamma=sample_gamma, history_dir=history_dir
         )
     except Exception:
         pass
@@ -1368,7 +1400,11 @@ def predict_scratch_card(
         # 1) 全局盤面大小分布熱力
         global_heat = _get_global_pos_freq(history_dir)
         if global_heat is None:
-            global_heat = compute_global_distribution(history_dir, rows, cols)
+            try:
+                global_heat = load_global_pos_freq_npz((rows, cols))
+            except FileNotFoundError:
+                # fallback to on-the-fly computation for missing npz
+                global_heat = compute_global_distribution(history_dir, rows, cols)
         # 2) 樣本篩選
         samples = _load_samples_for_shape(history_dir, rows, cols)
         matching = filter_matching_samples(grid_np, samples)

@@ -135,6 +135,17 @@ async def debug_number_distribution(
     return result
 
 
+@app.get("/debug/global_freqs", response_class=JSONResponse)
+async def debug_global_freqs() -> List[str]:
+    """Return board sizes with available global frequency files."""
+    shapes: set[str] = set()
+    for p in analyzer.DEFAULT_NPZ_DIR.glob("global_pos_freq_*x*.npz"):
+        m = re.search(r"_(\d+x\d+)\.npz$", p.name)
+        if m:
+            shapes.add(m.group(1))
+    return sorted(shapes)
+
+
 async def _load_samples_background():
     # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
     for _ in iter_sample_jsons("samples"):
@@ -144,7 +155,6 @@ async def _load_samples_background():
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    analyzer.load_global_pos_freq("samples")
     asyncio.create_task(warm_up())
 
 
