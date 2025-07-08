@@ -1,16 +1,18 @@
-import zipfile
 import json
-import re
-import numpy as np
-from pathlib import Path
-from collections import defaultdict
 import logging
+import re
+import zipfile
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
 SAMPLES_DIR = Path("samples")
 OUTPUT_DIR = Path("priors")
+
 
 def iter_all_json_from_zip(zip_path: Path):
     """
@@ -34,15 +36,25 @@ def iter_all_json_from_zip(zip_path: Path):
                 continue
 
             # ---- 格式 1：grid + rows/cols ----
-            if isinstance(data, dict) and "grid" in data and isinstance(data["grid"], list):
+            if (
+                isinstance(data, dict)
+                and "grid" in data
+                and isinstance(data["grid"], list)
+            ):
                 grid = data["grid"]
                 rows = int(data.get("rows", len(grid)))
                 cols = int(data.get("cols", len(grid[0]) if grid else 0))
-                if rows > 0 and cols > 0 and all(isinstance(r, list) and len(r) == cols for r in grid):
+                if (
+                    rows > 0
+                    and cols > 0
+                    and all(isinstance(r, list) and len(r) == cols for r in grid)
+                ):
                     yield rows, cols, grid
                     count += 1
                 else:
-                    logger.warning(f"❌ 跳過 format1：{name} rows={rows}, cols={cols} 與 grid 不符")
+                    logger.warning(
+                        f"❌ 跳過 format1：{name} rows={rows}, cols={cols} 與 grid 不符"
+                    )
                 continue
 
             # ---- 格式 2：裸 list of boards 或單一 board ----
@@ -54,20 +66,34 @@ def iter_all_json_from_zip(zip_path: Path):
                     for i, board in enumerate(data):
                         rows0 = len(board)
                         cols0 = len(board[0]) if rows0 else 0
-                        if rows0 and cols0 and all(isinstance(r, list) and len(r) == cols0 for r in board):
+                        if (
+                            rows0
+                            and cols0
+                            and all(
+                                isinstance(r, list) and len(r) == cols0 for r in board
+                            )
+                        ):
                             yield rows0, cols0, board
                             count += 1
                         else:
-                            logger.warning(f"❌ 跳過 format2 board#{i}：行列 {rows0}x{cols0} 不一致 ({name})")
+                            logger.warning(
+                                f"❌ 跳過 format2 board#{i}：行列 {rows0}x{cols0} 不一致 ({name})"
+                            )
                 else:
                     # 單一盤面
                     rows0 = len(data)
                     cols0 = len(data[0])
-                    if rows0 and cols0 and all(isinstance(r, list) and len(r) == cols0 for r in data):
+                    if (
+                        rows0
+                        and cols0
+                        and all(isinstance(r, list) and len(r) == cols0 for r in data)
+                    ):
                         yield rows0, cols0, data
                         count += 1
                     else:
-                        logger.warning(f"❌ 跳過單一盤面：{name} 行列 {rows0}x{cols0} 不一致")
+                        logger.warning(
+                            f"❌ 跳過單一盤面：{name} 行列 {rows0}x{cols0} 不一致"
+                        )
                 continue
 
             # ---- 格式 3：{"8x10": [盤面, ...], ...} ----
@@ -81,13 +107,19 @@ def iter_all_json_from_zip(zip_path: Path):
                         continue
                     rows0, cols0 = map(int, m.groups())
                     for i, board in enumerate(boards):
-                        if (isinstance(board, list)
+                        if (
+                            isinstance(board, list)
                             and board
-                            and all(isinstance(r, list) and len(r) == cols0 for r in board)):
+                            and all(
+                                isinstance(r, list) and len(r) == cols0 for r in board
+                            )
+                        ):
                             yield rows0, cols0, board
                             count += 1
                         else:
-                            logger.warning(f"❌ 跳過 format3 board#{i} for key '{key}': size mismatch")
+                            logger.warning(
+                                f"❌ 跳過 format3 board#{i} for key '{key}': size mismatch"
+                            )
                 continue
 
     logger.info(f"✅ {zip_path.name} 讀取 {count} 筆資料")
