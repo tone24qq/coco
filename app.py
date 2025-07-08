@@ -99,6 +99,7 @@ async def warm_up() -> None:
     brain.priors_map.update(priors)
     logging.info(f"[warm-up] Loaded {len(priors)} shapes")
     logger.debug("Loaded priors sizes: %s", list(brain.priors_map.keys()))
+    analyzer.load_all_global_pos_freqs(str(analyzer.DEFAULT_NPZ_DIR))
     await _load_samples_background()
 
 

@@ -5,6 +5,7 @@ import analyzer
 
 
 def test_pure_sample_branch(tmp_path):
+    analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
     b1 = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
@@ -23,6 +24,7 @@ def test_pure_sample_branch(tmp_path):
 
 
 def test_pure_sample_neighbor_ranking(tmp_path):
+    analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
     board = {"rows": 3, "cols": 3, "grid": [[1, 2, 2], [3, 4, 4], [5, 6, 7]]}
@@ -39,6 +41,7 @@ def test_pure_sample_neighbor_ranking(tmp_path):
 
 
 def test_pure_sample_final_score_weighting(tmp_path):
+    analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
     board = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
@@ -57,6 +60,7 @@ def test_pure_sample_final_score_weighting(tmp_path):
 
 
 def test_neighbor_relaxed_matching(tmp_path):
+    analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
     board = {"rows": 3, "cols": 3, "grid": [[9, 2, 3], [4, 5, 6], [7, 8, 1]]}

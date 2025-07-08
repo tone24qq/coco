@@ -51,7 +51,11 @@ _PRIOR_CACHE: Dict[tuple[int, int], np.ndarray] = {}
 analyzer_utils = BoardAnalyzerUtils()
 
 # Global position prior cache
+# Cache per-samples_dir frequency maps
 _POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
+
+# Global heatmap cache keyed by (rows, cols)
+_GLOBAL_POS_FREQ_CACHE: Dict[tuple[int, int], np.ndarray] = {}
 
 # Cache full sample boards by shape with file names
 _SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
@@ -108,6 +112,33 @@ def _get_global_pos_freq(samples_dir: str) -> Optional[np.ndarray]:
     if path.exists() and str(path) not in _POS_FREQ_CACHE:
         load_global_pos_freq(samples_dir)
     return _POS_FREQ_CACHE.get(str(path))
+
+
+def load_all_global_pos_freqs(npz_dir: str) -> None:
+    """Scan ``npz_dir`` and cache all ``global_pos_freq_*x*.npz`` files."""
+    pattern = re.compile(r"global_pos_freq.*?_(\d+)x(\d+)\.npz$")
+    p = Path(npz_dir)
+    for npz in p.glob("*.npz"):
+        m = pattern.match(npz.name)
+        if not m:
+            logger.warning("檔名不符合預期格式，跳過：%s", npz.name)
+            continue
+        rows, cols = map(int, m.groups())
+        try:
+            data = np.load(npz)
+            freq = data.get("freq")
+            if freq is None:
+                logger.error("在 %s 找不到 key 'freq'，跳過", npz.name)
+                continue
+            _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq.astype(float)
+            logger.info("載入 priors for %dx%d from %s", rows, cols, npz.name)
+        except Exception as e:  # pragma: no cover - corrupted file
+            logger.error("載入 %s 失敗：%s", npz.name, e)
+
+
+def get_global_pos_freq(shape: tuple[int, int]) -> Optional[np.ndarray]:
+    """Return cached global frequency map for ``shape`` if available."""
+    return _GLOBAL_POS_FREQ_CACHE.get(shape)
 
 
 # 來自 probmap_key_patch_v2.txt
@@ -1399,6 +1430,8 @@ def predict_scratch_card(
     if target_num is not None:
         # 1) 全局盤面大小分布熱力
         global_heat = _get_global_pos_freq(history_dir)
+        if global_heat is None:
+            global_heat = get_global_pos_freq((rows, cols))
         if global_heat is None:
             try:
                 global_heat = load_global_pos_freq_npz((rows, cols))
