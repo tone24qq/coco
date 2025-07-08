@@ -88,7 +88,7 @@ def print_npz_usage_stats() -> None:
 def _load_global_pos_freq_npz_cached(
     shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
 ) -> np.ndarray:
-    """Internal cached loader for global position frequencies."""
+    """內部快取載入器，讀取全域位置頻率。"""
 
     rows, cols = shape
     path = npz_dir / f"global_pos_freq_{rows}x{cols}.npz"
@@ -102,7 +102,7 @@ def _load_global_pos_freq_npz_cached(
 def load_global_pos_freq_npz(
     shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
 ) -> np.ndarray:
-    """Load precomputed global position frequencies and track usage."""
+    """載入預先計算的全域位置頻率並統計使用次數。"""
 
     rows, cols = shape
     _NPZ_USAGE_STATS[f"{rows}x{cols}"] += 1
@@ -110,7 +110,7 @@ def load_global_pos_freq_npz(
 
 
 def load_global_pos_freq(samples_dir: str) -> None:
-    """Load global position frequency tensor from samples_dir if available."""
+    """若 ``samples_dir`` 內已有計算結果，直接載入全域位置頻率。"""
     path = Path(samples_dir) / "pos_freq.npz"
     try:
         if path.exists():
@@ -663,10 +663,10 @@ def compute_position_probabilities(
 
 @lru_cache(maxsize=8)
 def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.ndarray:
-    """Compute global position heatmap from raw sample ZIP files.
+    """從樣本 ZIP 檔計算全域位置熱力圖。
 
-    This heavy-weight routine is kept for offline generation of priors.
-    Runtime code should prefer :func:`load_global_pos_freq_npz`.
+    此函式運算量大，僅用於離線產生先驗資料，
+    執行階段建議改用 :func:`load_global_pos_freq_npz`。
     """
     cached = Path(samples_dir) / "prior.npy"
     if cached.exists():

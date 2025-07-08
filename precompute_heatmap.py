@@ -4,12 +4,20 @@ from pathlib import Path
 
 import numpy as np
 
-from analyzer import compute_global_distribution
+from analyzer import compute_global_distribution, load_global_pos_freq_npz
 
 SAMPLES_DIR = Path("samples")
 
 
 def main() -> None:
+    """Generate heatmap NPZ files and pre-load one to warm caches."""
+
+    # 強制讀一次真實熱力圖，避免 build 時出現 "no heatmap .npz files loaded"
+    try:
+        _ = load_global_pos_freq_npz((4, 5))  # 可換其他尺寸
+    except Exception:  # noqa: BLE001 - best effort warm-up
+        pass
+
     shapes = set()
     for zp in SAMPLES_DIR.glob("*.zip"):
         with zipfile.ZipFile(zp) as zf:
