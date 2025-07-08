@@ -1,5 +1,4 @@
-import json
-import zipfile
+import numpy as np
 
 import analyzer
 
@@ -8,11 +7,22 @@ def test_pure_sample_branch(tmp_path):
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
-    b1 = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    b2 = {"rows": 2, "cols": 2, "grid": [[1, 3], [2, 4]]}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("a.json", json.dumps(b1))
-        zf.writestr("b.json", json.dumps(b2))
+    arr = np.array(
+        [
+            [[1, 2], [3, 4]],
+            [[1, 3], [2, 4]],
+        ]
+    )
+    np.savez(samples / "s.npz", boards=arr)
+    counts = np.zeros((2, 2, 5), dtype=float)
+    for board in arr:
+        for r in range(2):
+            for c in range(2):
+                counts[r, c, board[r, c]] += 1
+    totals = counts.sum(axis=2, keepdims=True)
+    totals[totals == 0] = 1
+    freq = counts / totals
+    np.savez(samples / "pos_freq.npz", freq=freq)
 
     grid = [[1, 2], [3, -1]]
     res = analyzer.predict_scratch_card(grid, target_num=4, history_dir=str(samples))
@@ -27,9 +37,17 @@ def test_pure_sample_neighbor_ranking(tmp_path):
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
-    board = {"rows": 3, "cols": 3, "grid": [[1, 2, 2], [3, 4, 4], [5, 6, 7]]}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps(board))
+    arr = np.array([[[1, 2, 2], [3, 4, 4], [5, 6, 7]]])
+    np.savez(samples / "s.npz", boards=arr)
+    counts = np.zeros((3, 3, 10), dtype=float)
+    for board in arr:
+        for r in range(3):
+            for c in range(3):
+                counts[r, c, board[r, c]] += 1
+    totals = counts.sum(axis=2, keepdims=True)
+    totals[totals == 0] = 1
+    freq = counts / totals
+    np.savez(samples / "pos_freq.npz", freq=freq)
 
     grid = [[1, -1, -1], [3, 4, -1], [5, 6, 7]]
     res = analyzer.predict_scratch_card(
@@ -44,9 +62,17 @@ def test_pure_sample_final_score_weighting(tmp_path):
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
-    board = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps(board))
+    arr = np.array([[[1, 2], [3, 4]]])
+    np.savez(samples / "s.npz", boards=arr)
+    counts = np.zeros((2, 2, 5), dtype=float)
+    for board in arr:
+        for r in range(2):
+            for c in range(2):
+                counts[r, c, board[r, c]] += 1
+    totals = counts.sum(axis=2, keepdims=True)
+    totals[totals == 0] = 1
+    freq = counts / totals
+    np.savez(samples / "pos_freq.npz", freq=freq)
 
     grid = [[1, -1], [3, -1]]
     res = analyzer.predict_scratch_card(
@@ -63,9 +89,17 @@ def test_neighbor_relaxed_matching(tmp_path):
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     samples = tmp_path / "samples"
     samples.mkdir()
-    board = {"rows": 3, "cols": 3, "grid": [[9, 2, 3], [4, 5, 6], [7, 8, 1]]}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps(board))
+    arr = np.array([[[9, 2, 3], [4, 5, 6], [7, 8, 1]]])
+    np.savez(samples / "s.npz", boards=arr)
+    counts = np.zeros((3, 3, 10), dtype=float)
+    for board in arr:
+        for r in range(3):
+            for c in range(3):
+                counts[r, c, board[r, c]] += 1
+    totals = counts.sum(axis=2, keepdims=True)
+    totals[totals == 0] = 1
+    freq = counts / totals
+    np.savez(samples / "pos_freq.npz", freq=freq)
 
     grid = [[1, 2, -1], [4, 5, -1], [7, 8, -1]]
     res = analyzer.predict_scratch_card(grid, target_num=3, history_dir=str(samples))

@@ -1,6 +1,8 @@
 import json
 import zipfile
 
+import numpy as np
+
 import analyzer
 
 
@@ -24,10 +26,17 @@ def test_compute_position_probabilities(tmp_path):
 def test_predict_with_sample_prior(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
-    data = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    zpath = samples / "s.zip"
-    with zipfile.ZipFile(zpath, "w") as zf:
-        zf.writestr("c.json", json.dumps(data))
+    arr = np.array([[[1, 2], [3, 4]]])
+    np.savez(samples / "s.npz", boards=arr)
+    counts = np.zeros((2, 2, 5), dtype=float)
+    for board in arr:
+        for r in range(2):
+            for c in range(2):
+                counts[r, c, board[r, c]] += 1
+    totals = counts.sum(axis=2, keepdims=True)
+    totals[totals == 0] = 1
+    freq = counts / totals
+    np.savez(samples / "pos_freq.npz", freq=freq)
 
     grid = [[-1, 2], [3, 4]]
     res = analyzer.predict_scratch_card(

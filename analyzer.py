@@ -151,23 +151,31 @@ def _native_dict(d):
 
 
 def _load_samples_for_shape(
-    samples_dir: str, rows: int, cols: int
+    out_npz_dir: str, rows: int, cols: int
 ) -> List[Tuple[np.ndarray, str]]:
-    """Load all sample boards for the given shape along with file names."""
-    key = (rows, cols, samples_dir)
+    """Load sample boards for ``rows``×``cols`` from ``out_npz`` only."""
+
+    key = (rows, cols, out_npz_dir)
     if key in _SAMPLE_CACHE:
         return _SAMPLE_CACHE[key]
 
     boards: List[Tuple[np.ndarray, str]] = []
-    path = Path(samples_dir)
-    for zip_path in sorted(path.glob("*.zip")):
-        for item in _iter_json_from_zip(zip_path):
-            if item["rows"] == rows and item["cols"] == cols:
-                boards.append((np.asarray(item["grid"], dtype=int), zip_path.name))
+    p = Path(out_npz_dir)
+    for npz_path in sorted(p.glob("*.npz")):
+        try:
+            data = np.load(npz_path)
+        except Exception as exc:  # pragma: no cover - corrupted file
+            logger.error("failed to load %s: %s", npz_path, exc)
+            continue
+        if "boards" not in data:
+            continue
+        arr = data["boards"]
+        if arr.ndim == 3 and arr.shape[1:] == (rows, cols):
+            for i, grid in enumerate(arr):
+                boards.append((grid.astype(int), f"{npz_path.name}[{i}]"))
+
     _SAMPLE_CACHE[key] = boards
-    logger.info(
-        "Loaded %d sample boards for %dx%d", len(boards), rows, cols
-    )  # 中文：載入指定尺寸樣本數量
+    logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
     return boards
 
 
