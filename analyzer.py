@@ -130,6 +130,11 @@ def get_global_pos_freq(shape: tuple[int, int]) -> Optional[np.ndarray]:
     return _GLOBAL_POS_FREQ_CACHE.get(shape)
 
 
+def list_loaded_freq_shapes() -> List[tuple[int, int]]:
+    """Return all board shapes with cached heatmaps."""
+    return sorted(_GLOBAL_POS_FREQ_CACHE.keys())
+
+
 # 來自 probmap_key_patch_v2.txt
 def _native_coord(k):
     return int(k[0]), int(k[1])
@@ -570,8 +575,20 @@ def compute_position_probabilities(
             global_freq = None
 
     if global_freq is not None:
-        buckets = global_freq.shape[1]
         prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+        # Shape either (rows, cols, targets) or (targets, buckets, buckets)
+        if global_freq.shape[:2] == (rows, cols):
+            for r in range(rows):
+                for c in range(cols):
+                    dist = global_freq[r, c].astype(float)
+                    dist = dist[: rows * cols + 1]
+                    tot = dist.sum() or 1.0
+                    probs = {
+                        k: dist[k] / tot for k in range(1, dist.size) if dist[k] > 0
+                    }
+                    prob_map[(r, c)] = probs
+            return prob_map
+        buckets = global_freq.shape[1]
         for r in range(rows):
             for c in range(cols):
                 u = r / (rows - 1) if rows > 1 else 0.0
