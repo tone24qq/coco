@@ -37,17 +37,22 @@ def test_compute_history_frequency_precomputed(tmp_path, monkeypatch):
 def test_predict_with_history(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
-    arr = np.array([[[2, 1], [3, 2]]])
-    np.savez(samples / "s.npz", boards=arr)
+    arr = [[[2, 1], [3, 2]]]
+    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
+        zf.writestr("a.json", json.dumps({"rows": 2, "cols": 2, "grid": arr[0]}))
     counts = np.zeros((2, 2, 5), dtype=float)
     for board in arr:
         for r in range(2):
             for c in range(2):
-                counts[r, c, board[r, c]] += 1
+                counts[r, c, board[r][c]] += 1
     totals = counts.sum(axis=2, keepdims=True)
     totals[totals == 0] = 1
     freq = counts / totals
-    np.savez(samples / "pos_freq.npz", freq=freq)
+    out_npz = tmp_path / "out_npz"
+    out_npz.mkdir()
+    np.savez(out_npz / "global_pos_freq_2x2.npz", freq=freq)
+    analyzer._GLOBAL_POS_FREQ_CACHE.clear()
+    analyzer.load_all_global_pos_freqs(str(out_npz))
 
     grid = [[-1, -1], [-1, -1]]
     result = analyzer.predict_scratch_card(

@@ -2,6 +2,8 @@ import json
 import logging
 import zipfile
 
+import numpy as np
+
 import analyzer
 
 
@@ -17,7 +19,14 @@ def test_iter_sample_jsons_logging(tmp_path, caplog):
     assert any("已載入 a.zip" in r.message for r in caplog.records)
 
 
-def test_top3_logging(caplog):
+def test_top3_logging(tmp_path, caplog):
+    out_npz = tmp_path / "out_npz"
+    out_npz.mkdir()
+    freq = np.ones((2, 2, 5))
+    np.savez(out_npz / "global_pos_freq_2x2.npz", freq=freq)
+    analyzer._GLOBAL_POS_FREQ_CACHE.clear()
+    analyzer.load_all_global_pos_freqs(str(out_npz))
+
     grid = [[-1, -1], [-1, -1]]
     with caplog.at_level(logging.INFO):
         result = analyzer.predict_scratch_card(

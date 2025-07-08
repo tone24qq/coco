@@ -52,9 +52,6 @@ _PRIOR_CACHE: Dict[tuple[int, int], np.ndarray] = {}
 analyzer_utils = BoardAnalyzerUtils()
 
 # Global position prior cache
-# Cache per-samples_dir frequency maps
-_POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
-
 # Global heatmap cache keyed by (rows, cols)
 _GLOBAL_POS_FREQ_CACHE: Dict[tuple[int, int], np.ndarray] = {}
 
@@ -109,46 +106,23 @@ def load_global_pos_freq_npz(
     return _load_global_pos_freq_npz_cached(shape, npz_dir)
 
 
-def load_global_pos_freq(samples_dir: str) -> None:
-    """若 ``samples_dir`` 內已有計算結果，直接載入全域位置頻率。"""
-    path = Path(samples_dir) / "pos_freq.npz"
-    try:
-        if path.exists():
-            arr = np.load(path)["freq"]
-            _POS_FREQ_CACHE[str(path)] = arr.astype(float)
-            logger.info("Loaded global position freq from %s", path)
-    except Exception as exc:  # pragma: no cover - corrupted file
-        logger.error("failed to load %s: %s", path, exc)
-
-
-def _get_global_pos_freq(samples_dir: str) -> Optional[np.ndarray]:
-    path = Path(samples_dir) / "pos_freq.npz"
-    # 已存在时读取，没有再计算
-    if path.exists() and str(path) not in _POS_FREQ_CACHE:
-        load_global_pos_freq(samples_dir)
-    return _POS_FREQ_CACHE.get(str(path))
-
-
 def load_all_global_pos_freqs(npz_dir: str) -> None:
-    """Scan ``npz_dir`` and cache all ``global_pos_freq_*x*.npz`` files."""
-    pattern = re.compile(r"global_pos_freq.*?_(\d+)x(\d+)\.npz$")
-    p = Path(npz_dir)
-    for npz in p.glob("*.npz"):
-        m = pattern.match(npz.name)
+    """Scan ``npz_dir`` and cache all ``*x*.npz`` heatmap files."""
+    pattern = re.compile(r"(\d+)x(\d+)\.npz$")
+    for npz_file in Path(npz_dir).glob("*.npz"):
+        m = pattern.search(npz_file.name)
         if not m:
-            logger.warning("檔名不符合預期格式，跳過：%s", npz.name)
             continue
         rows, cols = map(int, m.groups())
         try:
-            data = np.load(npz)
+            data = np.load(npz_file)
             freq = data.get("freq")
             if freq is None:
-                logger.error("在 %s 找不到 key 'freq'，跳過", npz.name)
                 continue
             _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq.astype(float)
-            logger.info("載入 priors for %dx%d from %s", rows, cols, npz.name)
+            logger.info("loaded %dx%d heatmap from %s", rows, cols, npz_file.name)
         except Exception as e:  # pragma: no cover - corrupted file
-            logger.error("載入 %s 失敗：%s", npz.name, e)
+            logger.warning("Failed to load %s: %s", npz_file.name, e)
 
 
 def get_global_pos_freq(shape: tuple[int, int]) -> Optional[np.ndarray]:
@@ -166,28 +140,25 @@ def _native_dict(d):
 
 
 def _load_samples_for_shape(
-    out_npz_dir: str, rows: int, cols: int
+    samples_dir: str, rows: int, cols: int
 ) -> List[Tuple[np.ndarray, str]]:
-    """Load sample boards for ``rows``×``cols`` from ``out_npz`` only."""
+    """Load sample boards for ``rows``×``cols`` from JSON zip samples."""
 
-    key = (rows, cols, out_npz_dir)
+    key = (rows, cols, samples_dir)
     if key in _SAMPLE_CACHE:
         return _SAMPLE_CACHE[key]
 
     boards: List[Tuple[np.ndarray, str]] = []
-    p = Path(out_npz_dir)
-    for npz_path in sorted(p.glob("*.npz")):
-        try:
-            data = np.load(npz_path)
-        except Exception as exc:  # pragma: no cover - corrupted file
-            logger.error("failed to load %s: %s", npz_path, exc)
-            continue
-        if "boards" not in data:
-            continue
-        arr = data["boards"]
-        if arr.ndim == 3 and arr.shape[1:] == (rows, cols):
-            for i, grid in enumerate(arr):
-                boards.append((grid.astype(int), f"{npz_path.name}[{i}]"))
+    path = Path(samples_dir)
+    for zip_path in sorted(path.glob("*.zip")):
+        idx = 0
+        for item in _iter_json_from_zip(zip_path):
+            if item["rows"] != rows or item["cols"] != cols:
+                idx += 1
+                continue
+            grid = np.asarray(item["grid"], dtype=int)
+            boards.append((grid, f"{zip_path.name}[{idx}]"))
+            idx += 1
 
     _SAMPLE_CACHE[key] = boards
     logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
@@ -591,7 +562,13 @@ def compute_position_probabilities(
     samples_dir: str, rows: int, cols: int
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Return per-cell number probabilities from history samples."""
-    global_freq = _get_global_pos_freq(samples_dir)
+    global_freq = get_global_pos_freq((rows, cols))
+    if global_freq is None:
+        try:
+            global_freq = load_global_pos_freq_npz((rows, cols))
+        except FileNotFoundError:
+            global_freq = None
+
     if global_freq is not None:
         buckets = global_freq.shape[1]
         prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
@@ -1452,9 +1429,7 @@ def predict_scratch_card(
     blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
     if target_num is not None:
         # 1) 全局盤面大小分布熱力
-        global_heat = _get_global_pos_freq(history_dir)
-        if global_heat is None:
-            global_heat = get_global_pos_freq((rows, cols))
+        global_heat = get_global_pos_freq((rows, cols))
         if global_heat is None:
             try:
                 global_heat = load_global_pos_freq_npz((rows, cols))
