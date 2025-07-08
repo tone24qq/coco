@@ -8,8 +8,9 @@ import os
 import sys
 import re
 import zipfile
-from collections import defaultdict
+from collections import defaultdict, Counter
 from functools import lru_cache
+import atexit
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
@@ -66,25 +67,29 @@ MIN_MATCHING = 0
 # Directory containing precomputed global position frequency files
 DEFAULT_NPZ_DIR = Path("out_npz")
 
+# Track how many times each heatmap NPZ is loaded
+_NPZ_USAGE_STATS: Counter = Counter()
+
+
+@atexit.register
+def print_npz_usage_stats() -> None:
+    """Print usage statistics for loaded heatmap NPZ files."""
+
+    if not _NPZ_USAGE_STATS:
+        print("WARNING: no heatmap .npz files loaded")
+        return
+
+    print("\nHeatmap .npz usage stats:")
+    for shape, count in sorted(_NPZ_USAGE_STATS.items()):
+        print(f"  {shape} -> {count}")
+
 
 @lru_cache(maxsize=16)
-def load_global_pos_freq_npz(
+def _load_global_pos_freq_npz_cached(
     shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
 ) -> np.ndarray:
-    """Load precomputed global position frequencies from ``npz_dir``.
+    """Internal cached loader for global position frequencies."""
 
-    Parameters
-    ----------
-    shape : tuple[int, int]
-        Board shape ``(rows, cols)``.
-    npz_dir : Path
-        Directory containing ``global_pos_freq_{rows}x{cols}.npz``.
-
-    Returns
-    -------
-    np.ndarray
-        Loaded frequency cube with shape ``(rows, cols, targets)``.
-    """
     rows, cols = shape
     path = npz_dir / f"global_pos_freq_{rows}x{cols}.npz"
     try:
@@ -92,6 +97,16 @@ def load_global_pos_freq_npz(
     except Exception as exc:
         logger.error("failed to load %s: %s", path, exc)
         raise FileNotFoundError(path) from exc
+
+
+def load_global_pos_freq_npz(
+    shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
+) -> np.ndarray:
+    """Load precomputed global position frequencies and track usage."""
+
+    rows, cols = shape
+    _NPZ_USAGE_STATS[f"{rows}x{cols}"] += 1
+    return _load_global_pos_freq_npz_cached(shape, npz_dir)
 
 
 def load_global_pos_freq(samples_dir: str) -> None:
