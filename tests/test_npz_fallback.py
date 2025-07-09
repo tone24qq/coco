@@ -21,4 +21,4 @@ def test_predict_fallback_to_compute(monkeypatch):
 
     grid = [[-1, -1], [-1, -1]]
     analyzer.predict_scratch_card(grid, target_num=1, use_neighbor_lock=False)
-    assert called["n"] == 1
+    assert called["n"] == 2

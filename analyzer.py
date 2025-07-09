@@ -61,11 +61,31 @@ _SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
 # Minimum number of matching samples to activate pure-sample mode
 MIN_MATCHING = 0
 
+# Thresholds for pure heatmap fallback
+SAMPLE_FALLBACK_THRESHOLD = 50
+KNOWN_RATIO_THRESHOLD = 0.15
+
 # Directory containing precomputed global position frequency files
 DEFAULT_NPZ_DIR = Path("out_npz")
 
 # Track how many times each heatmap NPZ is loaded
 _NPZ_USAGE_STATS: Counter = Counter()
+
+
+def _align_heatmap_axes(freq: np.ndarray, rows: int, cols: int) -> np.ndarray:
+    """Return heatmap with axes ordered as (rows, cols, targets)."""
+    if freq.shape[:2] == (rows, cols):
+        return freq
+    if freq.shape[:2] == (cols, rows):
+        return freq.transpose(1, 0, 2)
+    targets = rows * cols + 1
+    if freq.shape[0] == targets and freq.shape[1:] == (rows, cols):
+        return freq.transpose(1, 2, 0)
+    if freq.shape[0] == targets and freq.shape[1:] == (cols, rows):
+        return freq.transpose(2, 1, 0)
+    if freq.shape[2] == targets and freq.shape[:2] == (cols, rows):
+        return freq.transpose(1, 0, 2)
+    return freq
 
 
 @atexit.register
@@ -90,7 +110,8 @@ def _load_global_pos_freq_npz_cached(
     rows, cols = shape
     path = npz_dir / f"global_pos_freq_{rows}x{cols}.npz"
     try:
-        return np.load(path)["freq"]
+        freq = np.load(path)["freq"]
+        return _align_heatmap_axes(freq, rows, cols)
     except Exception as exc:
         logger.error("failed to load %s: %s", path, exc)
         raise FileNotFoundError(path) from exc
@@ -119,7 +140,8 @@ def load_all_global_pos_freqs(npz_dir: str) -> None:
             freq = data.get("freq")
             if freq is None:
                 continue
-            _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq.astype(float)
+            freq = _align_heatmap_axes(freq, rows, cols).astype(float)
+            _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq
             logger.info("loaded %dx%d heatmap from %s", rows, cols, npz_file.name)
         except Exception as e:  # pragma: no cover - corrupted file
             logger.warning("Failed to load %s: %s", npz_file.name, e)
@@ -315,6 +337,52 @@ def apply_uniqueness_penalty(
         else:
             result[cell] = dist.copy()
     return result
+
+
+def heatmap_fallback_prediction(
+    grid: np.ndarray,
+    target: int,
+    matching: List[Tuple[np.ndarray, str]],
+    *,
+    history_dir: str,
+    sample_gamma: float,
+    top_n: int,
+) -> Dict[str, Any]:
+    """Predict by blending global heatmap with optional sample distribution."""
+
+    rows, cols = grid.shape
+    global_heat = get_global_pos_freq((rows, cols))
+    if global_heat is None:
+        try:
+            global_heat = load_global_pos_freq_npz((rows, cols))
+        except FileNotFoundError:
+            global_heat = compute_global_distribution(history_dir, rows, cols)
+
+    layer = global_heat[:, :, target].astype(float)
+    strategy = "heatmap_global_only"
+    if matching:
+        probs = compute_target_distribution(matching, target, grid.shape)
+        layer = (1.0 - sample_gamma) * layer + sample_gamma * probs
+        strategy = "heatmap_mix"
+    if layer.max() > 0:
+        layer /= float(layer.max())
+
+    mask = grid == -1
+    ranked = sorted(
+        [(float(layer[r, c]), int(r), int(c)) for r, c in zip(*np.where(mask))],
+        reverse=True,
+    )[:top_n]
+    preds = [{"row": r, "col": c, "score": p} for p, r, c in ranked]
+    return {
+        "mode": "heatmap_only",
+        "strategy": strategy,
+        "predictions": preds,
+        "top_predictions": preds,
+        "top_recommendations": preds,
+        "full_probabilities": {},
+        "final_recommendations": [],
+        "fallback_heat": True,
+    }
 
 
 def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
@@ -575,6 +643,7 @@ def compute_position_probabilities(
             global_freq = None
 
     if global_freq is not None:
+        global_freq = _align_heatmap_axes(global_freq, rows, cols)
         prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
         # Shape either (rows, cols, targets) or (targets, buckets, buckets)
         if global_freq.shape[:2] == (rows, cols):
@@ -1466,6 +1535,21 @@ def predict_scratch_card(
         )  # 中文：記錄匹配樣本數與部分檔名
         if matching:
             visualize_board(matching[0][0], title=matching[0][1])
+
+        known_ratio = 1.0 - float(len(blanks)) / float(rows * cols)
+        if (
+            known_ratio <= KNOWN_RATIO_THRESHOLD
+            and len(matching) < SAMPLE_FALLBACK_THRESHOLD
+        ):
+            top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+            return heatmap_fallback_prediction(
+                grid_np,
+                int(target_num),
+                matching,
+                history_dir=history_dir,
+                sample_gamma=sample_gamma,
+                top_n=top_k,
+            )
 
         # 3) 若至少有一個 sample 匹配
         if len(matching) >= MIN_MATCHING:
