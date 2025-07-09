@@ -22,10 +22,14 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities,
-                      fuse_predictions_with_heatmap, fuse_score_matrices,
-                      load_all_sample_stats, predict_scratch_card,
-                      probability_heatmap, render_heatmap)
+from analyzer import (
+    compute_position_probabilities,
+    fuse_predictions_with_heatmap,
+    fuse_score_matrices,
+    predict_scratch_card,
+    probability_heatmap,
+    render_heatmap,
+)
 from env_config import EnvConfig
 from strategy_types import Strategy
 
