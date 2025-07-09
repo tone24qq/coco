@@ -9,6 +9,7 @@ import sys
 import re
 import zipfile
 from collections import defaultdict, Counter
+from prometheus_client import Counter as PromCounter
 from functools import lru_cache
 import atexit
 from pathlib import Path
@@ -59,6 +60,16 @@ analyzer_utils = BoardAnalyzerUtils()
 # Global position prior cache
 # Global heatmap cache keyed by (rows, cols)
 _GLOBAL_POS_FREQ_CACHE: Dict[tuple[int, int], np.ndarray] = {}
+
+# Track cached sample stats using LRU
+INVALID_NPZ_COUNTER = PromCounter("coco_npz_invalid_total", "Invalid sample NPZ files")
+
+
+# Track sample stats loaded (for introspection only)
+_SAMPLE_STATS_LOADED: set[Tuple[int, int, str]] = set()
+
+# Toggle legacy ZIP/JSON support
+ENABLE_ZIP_JSON = os.getenv("ENABLE_ZIP_JSON", "0") == "1"
 
 # Cache full sample boards by shape with file names
 _SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
@@ -163,6 +174,72 @@ def get_global_pos_freq(shape: tuple[int, int]) -> Optional[np.ndarray]:
 def list_loaded_freq_shapes() -> List[tuple[int, int]]:
     """Return all board shapes with cached heatmaps."""
     return sorted(_GLOBAL_POS_FREQ_CACHE.keys())
+
+
+def _load_sample_stats(
+    shape: tuple[int, int], samples_dir: str
+) -> Optional[np.ndarray]:
+    """Load sample frequency cube with schema validation."""
+
+    rows, cols = shape
+    path = Path(samples_dir) / f"{rows}x{cols}.npz"
+    if not path.exists():
+        return None
+    try:
+        data = np.load(path, mmap_mode="r", allow_pickle=True)
+    except Exception as exc:  # pragma: no cover - corrupted file
+        logger.warning("Failed to load %s: %s", path.name, exc)
+        INVALID_NPZ_COUNTER.inc()
+        return None
+    meta = data.get("meta", {})
+    if isinstance(meta, np.ndarray) and meta.shape == ():
+        meta = meta.item()
+    if (
+        not isinstance(meta, dict)
+        or meta.get("schema_version") != 1
+        or "generated_at" not in meta
+    ):
+        logger.warning("Invalid sample NPZ meta in %s: %s", path.name, meta)
+        INVALID_NPZ_COUNTER.inc()
+        return None
+    freq = data.get("freq")
+    if freq is None:
+        logger.warning("freq missing in %s", path.name)
+        INVALID_NPZ_COUNTER.inc()
+        return None
+    logger.info("loaded sample freq %s", path.name)
+    return freq
+
+
+@lru_cache(maxsize=6)
+def get_sample_stats_cached(
+    rows: int, cols: int, samples_dir: str
+) -> Optional[np.ndarray]:
+    arr = _load_sample_stats((rows, cols), samples_dir)
+    if arr is not None:
+        _SAMPLE_STATS_LOADED.add((rows, cols, samples_dir))
+    return arr
+
+
+def load_all_sample_stats(samples_dir: str) -> None:
+    """Preload valid ``NxM.npz`` files with version check."""
+
+    pattern = re.compile(r"^(\d+)x(\d+)\.npz$")
+    count = 0
+    for npz_file in Path(samples_dir).glob("*.npz"):
+        m = pattern.match(npz_file.name)
+        if not m:
+            continue
+        rows, cols = map(int, m.groups())
+        if get_sample_stats_cached(rows, cols, samples_dir) is not None:
+            count += 1
+    logger.info("Total loaded sample freq: %d", count)
+
+
+def list_loaded_sample_shapes() -> List[tuple[int, int]]:
+    """Return shapes available in the sample freq cache."""
+
+    return sorted({(r, c) for r, c, _ in _SAMPLE_STATS_LOADED})
 
 
 # 來自 probmap_key_patch_v2.txt
@@ -576,17 +653,28 @@ def compute_position_distribution(
         (r, c): defaultdict(int) for r in range(rows) for c in range(cols)
     }
     total = 0
-    for sample in iter_sample_jsons(samples_dir):
-        if sample["rows"] != rows or sample["cols"] != cols:
-            continue
-        if mode and sample.get("mode") != mode:
-            continue
-        total += 1
-        grid = np.asarray(sample["grid"], dtype=int)
+    freq = get_sample_stats_cached(rows, cols, samples_dir)
+    if freq is not None:
+        freq = _align_heatmap_axes(freq, rows, cols)
         for r in range(rows):
             for c in range(cols):
-                k = int(grid[r, c])
-                stats[(r, c)][k] += 1
+                for n in range(1, rows * cols + 1):
+                    cnt = int(freq[r, c, n])
+                    if cnt:
+                        stats[(r, c)][n] += cnt
+        total = int(freq.sum())
+    elif ENABLE_ZIP_JSON:
+        for sample in iter_sample_jsons(samples_dir):
+            if sample["rows"] != rows or sample["cols"] != cols:
+                continue
+            if mode and sample.get("mode") != mode:
+                continue
+            total += 1
+            grid = np.asarray(sample["grid"], dtype=int)
+            for r in range(rows):
+                for c in range(cols):
+                    k = int(grid[r, c])
+                    stats[(r, c)][k] += 1
     logger.info(
         "Position distribution for %d×%d processed %d samples%s",
         rows,
@@ -608,17 +696,29 @@ def compute_number_distribution(
     """Return per-number position frequency counts from history samples."""
     stats: Dict[int, Dict[Tuple[int, int], int]] = defaultdict(lambda: defaultdict(int))
     total = 0
-    for sample in iter_sample_jsons(samples_dir):
-        if sample["rows"] != rows or sample["cols"] != cols:
-            continue
-        if mode and sample.get("mode") != mode:
-            continue
-        total += 1
-        grid = np.asarray(sample["grid"], dtype=int)
-        for r in range(rows):
-            for c in range(cols):
-                k = int(grid[r, c])
-                stats[k][(r, c)] += 1
+    freq = get_sample_stats_cached(rows, cols, samples_dir)
+    if freq is not None:
+        freq = _align_heatmap_axes(freq, rows, cols)
+        for n in range(1, rows * cols + 1):
+            layer = freq[:, :, n]
+            for r in range(rows):
+                for c in range(cols):
+                    cnt = int(layer[r, c])
+                    if cnt:
+                        stats[n][(r, c)] += cnt
+        total = int(freq.sum())
+    elif ENABLE_ZIP_JSON:
+        for sample in iter_sample_jsons(samples_dir):
+            if sample["rows"] != rows or sample["cols"] != cols:
+                continue
+            if mode and sample.get("mode") != mode:
+                continue
+            total += 1
+            grid = np.asarray(sample["grid"], dtype=int)
+            for r in range(rows):
+                for c in range(cols):
+                    k = int(grid[r, c])
+                    stats[k][(r, c)] += 1
     logger.info(
         "Number distribution for %d×%d processed %d samples%s",
         rows,
@@ -695,6 +795,21 @@ def compute_position_probabilities(
                 prob_map[(r, c)] = probs
         return prob_map
 
+    freq = get_sample_stats_cached(rows, cols, samples_dir)
+    if freq is not None:
+        freq = _align_heatmap_axes(freq, rows, cols)
+        totals = freq.sum(axis=2, keepdims=True)
+        totals[totals == 0] = 1
+        probs_arr = freq.astype(float) / totals
+        prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
+        for r in range(rows):
+            for c in range(cols):
+                dist = probs_arr[r, c]
+                prob_map[(r, c)] = {
+                    n: float(dist[n]) for n in range(1, rows * cols + 1) if dist[n] > 0
+                }
+        return prob_map
+
     cached = Path(samples_dir) / "prior.npy"
     if cached.exists():
         cube = np.load(cached, mmap_mode="r")
@@ -703,7 +818,6 @@ def compute_position_probabilities(
             # 中文說明：先前快取的 prior 尺寸與目前需求不符
         else:
             logger.info("Loaded prior from %s", cached)
-            # 中文說明：使用磁碟快取的 prior，加速啟動
             prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
             for r in range(rows):
                 for c in range(cols):
@@ -714,6 +828,14 @@ def compute_position_probabilities(
                     }
                     prob_map[(r, c)] = probs
             return prob_map
+    if not ENABLE_ZIP_JSON:
+        logger.warning("ZIP/JSON disabled; using uniform prior for %dx%d", rows, cols)
+        uniform = 1.0 / float(rows * cols)
+        return {
+            (r, c): {n: uniform for n in range(1, rows * cols + 1)}
+            for r in range(rows)
+            for c in range(cols)
+        }
 
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
     used_count = 0
@@ -740,14 +862,12 @@ def compute_position_probabilities(
             else:
                 prob_map[(r, c)] = {}
 
-    # 中文 log：顯示本次統計實際用到的樣本筆數
     logger.info(
         "當前計算位置機率使用樣本數：%d 筆（盤面尺寸 %dx%d）",
         used_count,
         rows,
         cols,
     )
-    # 中文說明：完成位置機率計算後，輸出實際統計到的樣本數與尺寸
     return prob_map
 
 
@@ -763,13 +883,22 @@ def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.nd
         cube = np.load(cached, mmap_mode="r")
         if cube.shape[:2] != (rows, cols):
             logger.warning("Cached prior shape mismatch: %s", cube.shape)
-            # 中文說明：快取檔尺寸與當前需求不同，需重新計算
         else:
             logger.info("Loaded prior cube from %s", cached)
-            # 中文說明：成功載入 prior 立方體，用以產生熱力圖
             totals = cube.sum(axis=2, keepdims=True)
             totals[totals == 0] = 1
             return cube.astype(float) / totals
+
+    freq = get_sample_stats_cached(rows, cols, samples_dir)
+    if freq is not None:
+        freq = _align_heatmap_axes(freq, rows, cols)
+        totals = freq.sum(axis=2, keepdims=True)
+        totals[totals == 0] = 1
+        return freq.astype(float) / totals
+
+    if not ENABLE_ZIP_JSON:
+        logger.warning("ZIP/JSON disabled; returning zeros for %dx%d", rows, cols)
+        return np.zeros((rows, cols, rows * cols + 1), dtype=float)
 
     counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
     total = 0
