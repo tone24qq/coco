@@ -26,6 +26,7 @@ from analyzer import (compute_position_probabilities,
                       fuse_predictions_with_heatmap, fuse_score_matrices,
                       iter_sample_jsons, predict_scratch_card,
                       probability_heatmap, render_heatmap)
+from env_config import EnvConfig
 from strategy_types import Strategy
 
 # fmt: on
@@ -247,10 +248,7 @@ os.environ.setdefault("PHASE2_TOP_N", "10")
 os.environ.setdefault("PHASE2_EPSILON", "0.05")
 os.environ.setdefault("LOG_LEVEL", "INFO")
 
-PHASE1_ITER = int(os.getenv("PHASE1_ITERATIONS"))
-PHASE2_ITER = int(os.getenv("PHASE2_ITERATIONS"))
-PHASE2_TOP_N = int(os.getenv("PHASE2_TOP_N"))
-PHASE2_EPS = float(os.getenv("PHASE2_EPSILON"))
+env = EnvConfig()
 
 
 # ==== Helpers: sanitize floats ===============================================
@@ -358,11 +356,11 @@ async def predict(req: GridRequest):
             brain.priors_map[key] = priors
 
         # 参数
-        phase1 = req.iterations or PHASE1_ITER
-        phase2 = req.focus_iter or PHASE2_ITER
-        top_n = req.top_n or PHASE2_TOP_N
-        eps = req.epsilon or PHASE2_EPS
-        top_k = req.result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+        phase1 = req.iterations or env.phase1_iter
+        phase2 = req.focus_iter or env.phase2_iter
+        top_n = req.top_n or env.phase2_top_n
+        eps = req.epsilon or env.phase2_epsilon
+        top_k = req.result_top_k or env.result_top_k
 
         logger.info(
             "Predict | size=%dx%d | target=%s | ph1=%d | ph2=%d | top_k=%d | top_n=%d | eps=%.3f",
@@ -493,11 +491,11 @@ async def heatmap(req: HeatmapRequest):
         pred_result = predict_scratch_card(
             grid=grid_norm,
             target_num=req.target_num,
-            iterations=PHASE1_ITER,
+            iterations=env.phase1_iter,
             global_iter=None,
-            focus_iter=PHASE2_ITER,
-            top_n=PHASE2_TOP_N,
-            epsilon=PHASE2_EPS,
+            focus_iter=env.phase2_iter,
+            top_n=env.phase2_top_n,
+            epsilon=env.phase2_epsilon,
             result_top_k=3,
             priors=priors,
             sample_gamma=req.sample_gamma,

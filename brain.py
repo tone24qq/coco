@@ -154,6 +154,12 @@ AGG_WEIGHTS = _load_weights()
 
 
 def get_core_modules(limit: Optional[int] = None) -> List[str]:
+    """Return top modules sorted by weight.
+
+    The ``limit`` parameter or ``CORE_LIMIT`` environment variable controls how
+    many modules are returned. Invalid values fall back to defaults.
+    """
+
     limit_env_str = os.getenv("CORE_LIMIT", "6")
     try:
         limit_env = int(limit_env_str)
@@ -161,11 +167,22 @@ def get_core_modules(limit: Optional[int] = None) -> List[str]:
         logger.warning("Invalid CORE_LIMIT '%s', using default 6", limit_env_str)
         limit_env = 6
     if limit is None:
-        limit = limit_env
+        limit_final = limit_env
+    else:
+        try:
+            limit_final = int(limit)
+        except (TypeError, ValueError):
+            logger.warning("Invalid limit '%s', using CORE_LIMIT", limit)
+            limit_final = limit_env
+
+    if limit_final < 1:
+        logger.warning("Limit must be >=1, using 1")
+        limit_final = 1
+
     names = list(REGISTERED_MODULES_BRAIN)
-    limit = max(1, min(len(names), limit))
+    limit_final = min(len(names), limit_final)
     sorted_mods = sorted(AGG_WEIGHTS.items(), key=lambda kv: kv[1], reverse=True)
-    return [m for m, _ in sorted_mods[:limit]]
+    return [m for m, _ in sorted_mods[:limit_final]]
 
 
 def get_module_score(

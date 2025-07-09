@@ -3,8 +3,9 @@ import json
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import ray
@@ -32,7 +33,27 @@ logging.basicConfig(
 priors: Dict[int, float] = {}
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass
+class CLIConfig:
+    """Command-line configuration."""
+
+    grid: str
+    iterations: int
+    global_iter: Optional[int]
+    focus_iter: Optional[int]
+    top_n: int
+    top_k: Optional[int]
+    epsilon: float
+    target: Optional[int]
+    heatmap_k: Optional[int]
+    heatmap_iter: int
+    heatmap_format: str
+    sample_gamma: float
+    use_neighbor_lock: bool
+    strategy: Strategy
+
+
+def parse_args(argv: Optional[List[str]] = None) -> CLIConfig:
     """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(
         description="Predict hidden numbers in a scratch card grid."
@@ -110,7 +131,23 @@ def parse_args() -> argparse.Namespace:
         default=Strategy.LEGACY.value,
         help="Prediction ranking strategy",
     )
-    return parser.parse_args()
+    ns = parser.parse_args(argv)
+    return CLIConfig(
+        grid=ns.grid,
+        iterations=ns.iterations,
+        global_iter=ns.global_iter,
+        focus_iter=ns.focus_iter,
+        top_n=ns.top_n,
+        top_k=ns.top_k,
+        epsilon=ns.epsilon,
+        target=ns.target,
+        heatmap_k=ns.heatmap_k,
+        heatmap_iter=ns.heatmap_iter,
+        heatmap_format=ns.heatmap_format,
+        sample_gamma=ns.sample_gamma,
+        use_neighbor_lock=ns.use_neighbor_lock,
+        strategy=Strategy(ns.strategy),
+    )
 
 
 def parse_grid(grid_str: str) -> List[List[int]]:
