@@ -14,6 +14,8 @@ import atexit
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
+from env_config import EnvConfig
+
 import numpy as np
 from joblib import Parallel, delayed
 from numba import njit
@@ -33,6 +35,8 @@ from brain import (
 # isort: on
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
+
+env = EnvConfig()
 
 # 额外引入全局分布计算
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
@@ -1543,7 +1547,7 @@ def predict_scratch_card(
             known_ratio <= KNOWN_RATIO_THRESHOLD
             and len(matching) < SAMPLE_FALLBACK_THRESHOLD
         ):
-            top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+            top_k = result_top_k or env.result_top_k
             return heatmap_fallback_prediction(
                 grid_np,
                 int(target_num),
@@ -1678,7 +1682,7 @@ def predict_scratch_card(
             sample_gamma=sample_gamma,
             history_dir=history_dir,
         )
-        top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+        top_k = result_top_k or env.result_top_k
         ranked = sorted([(float(heat[r, c]), r, c) for r, c in blanks], reverse=True)[
             :top_k
         ]
@@ -1746,7 +1750,7 @@ def predict_scratch_card(
         for (r, c), p in csp_probs.items():
             final_score_map[r, c] += (1 - alpha) * p
 
-    top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+    top_k = result_top_k or env.result_top_k
     rings = BoardAnalyzerUtils.ring_index(*grid_np.shape)
     ranked_all = sorted(
         blanks,
