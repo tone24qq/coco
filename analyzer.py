@@ -8,9 +8,11 @@ import os
 import sys
 import re
 import zipfile
-from collections import defaultdict, Counter
-from prometheus_client import Counter as PromCounter
+import gc
+import time
+from collections import defaultdict, Counter, OrderedDict
 from functools import lru_cache
+from prometheus_client import Counter as PromCounter, Gauge
 import atexit
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
@@ -87,6 +89,33 @@ DEFAULT_NPZ_DIR = Path("out_npz")
 # Track how many times each heatmap NPZ is loaded
 _NPZ_USAGE_STATS: Counter = Counter()
 
+# Metrics for NPZ loading
+NPZ_LOADED_TOTAL = Gauge(
+    "coco_npz_loaded_total", "Successfully loaded NPZ files", ["shape"]
+)
+NPZ_CACHE_BYTES = Gauge("coco_npz_cache_bytes", "Current LRU cache memory usage")
+NPZ_LOAD_LATENCY_SECONDS = Gauge(
+    "coco_npz_load_latency_seconds", "Single NPZ load time", ["shape"]
+)
+
+# Simple LRU cache for loaded heatmaps
+_NPZ_CACHE: "OrderedDict[tuple[int, int], np.ndarray]" = OrderedDict()
+_NPZ_CACHE_SIZE = 16
+
+
+def dtype_for_shape(rows: int, cols: int) -> np.dtype:
+    """Return recommended dtype for count arrays based on board size."""
+    if rows <= 10 and cols <= 10:
+        return np.uint16
+    if rows <= 30 and cols <= 30:
+        return np.uint32
+    return np.int64
+
+
+def _update_cache_metrics() -> None:
+    size = sum(arr.nbytes for arr in _NPZ_CACHE.values())
+    NPZ_CACHE_BYTES.set(size)
+
 
 def _align_heatmap_axes(freq: np.ndarray, rows: int, cols: int) -> np.ndarray:
     """Return heatmap with axes ordered as (rows, cols, targets)."""
@@ -117,21 +146,50 @@ def print_npz_usage_stats() -> None:
         print(f"  {shape} -> {count}")
 
 
-@lru_cache(maxsize=16)
 def _load_global_pos_freq_npz_cached(
     shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
 ) -> np.ndarray:
-    """內部快取載入器，讀取全域位置頻率。"""
+    """LRU cached loader for global heatmap NPZ."""
 
     rows, cols = shape
+    if shape in _NPZ_CACHE:
+        arr = _NPZ_CACHE.pop(shape)
+        _NPZ_CACHE[shape] = arr
+        return arr
+
     path = npz_dir / f"global_pos_freq_{rows}x{cols}.npz"
+    start = time.perf_counter()
     try:
-        freq = np.load(path)["freq"]
-        return _align_heatmap_axes(freq, rows, cols)
+        freq = np.load(path, mmap_mode="r")["freq"]
+    except OSError as e:
+        if e.errno == 24:  # EMFILE
+            time.sleep(0.05)
+            gc.collect()
+            freq = np.load(path)["freq"]
+        else:
+            raise
     except Exception as exc:
         logger.error("failed to load %s: %s", path, exc)
-        # 中文說明：讀取全域位置頻率檔失敗，將拋出 FileNotFoundError
         raise FileNotFoundError(path) from exc
+    finally:
+        elapsed = time.perf_counter() - start
+        NPZ_LOAD_LATENCY_SECONDS.labels(f"{rows}x{cols}").set(elapsed)
+
+    freq = _align_heatmap_axes(freq, rows, cols)
+    _NPZ_CACHE[shape] = freq
+    if len(_NPZ_CACHE) > _NPZ_CACHE_SIZE:
+        _NPZ_CACHE.popitem(last=False)
+    NPZ_LOADED_TOTAL.labels(f"{rows}x{cols}").inc()
+    _update_cache_metrics()
+    return freq
+
+
+def _clear_npz_cache() -> None:
+    _NPZ_CACHE.clear()
+    _update_cache_metrics()
+
+
+_load_global_pos_freq_npz_cached.cache_clear = _clear_npz_cache
 
 
 def load_global_pos_freq_npz(
@@ -153,12 +211,18 @@ def load_all_global_pos_freqs(npz_dir: str) -> None:
             continue
         rows, cols = map(int, m.groups())
         try:
+            start = time.perf_counter()
             data = np.load(npz_file)
             freq = data.get("freq")
             if freq is None:
                 continue
             freq = _align_heatmap_axes(freq, rows, cols).astype(float)
             _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq
+            NPZ_LOAD_LATENCY_SECONDS.labels(f"{rows}x{cols}").set(
+                time.perf_counter() - start
+            )
+            NPZ_LOADED_TOTAL.labels(f"{rows}x{cols}").inc()
+            _update_cache_metrics()
             logger.info("loaded %dx%d heatmap from %s", rows, cols, npz_file.name)
             # 中文說明：成功載入指定尺寸的熱力圖檔，用於後續全域機率分布
         except Exception as e:  # pragma: no cover - corrupted file
@@ -589,7 +653,7 @@ def _compute_target_prior(
     samples_dir: str, rows: int, cols: int, target_num: Optional[int] = None
 ) -> np.ndarray:
     """Compute target position frequency normalized as probabilities."""
-    counts = np.zeros((rows, cols), dtype=np.int64)
+    counts = np.zeros((rows, cols), dtype=dtype_for_shape(rows, cols))
     for sample in iter_sample_jsons(samples_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
             continue
@@ -837,7 +901,7 @@ def compute_position_probabilities(
             for c in range(cols)
         }
 
-    counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
+    counts = np.zeros((rows, cols, rows * cols + 1), dtype=dtype_for_shape(rows, cols))
     used_count = 0
     for sample in iter_sample_jsons(samples_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
@@ -897,10 +961,23 @@ def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.nd
         return freq.astype(float) / totals
 
     if not ENABLE_ZIP_JSON:
-        logger.warning("ZIP/JSON disabled; returning zeros for %dx%d", rows, cols)
-        return np.zeros((rows, cols, rows * cols + 1), dtype=float)
+        logger.warning(
+            "ZIP/JSON disabled; attempting fallback heatmap for %dx%d",
+            rows,
+            cols,
+        )
+        try:
+            heat = load_global_pos_freq_npz((rows, cols))
+            totals = heat.sum(axis=2, keepdims=True)
+            totals[totals == 0] = 1
+            return heat.astype(float) / totals
+        except FileNotFoundError:
+            uniform = np.full((rows, cols, rows * cols + 1), 0.0, dtype=float)
+            uniform[:, :, 1:] = 1.0
+            totals = uniform.sum(axis=2, keepdims=True)
+            return uniform / totals
 
-    counts = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
+    counts = np.zeros((rows, cols, rows * cols + 1), dtype=dtype_for_shape(rows, cols))
     total = 0
     for sample in iter_sample_jsons(samples_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
@@ -940,7 +1017,9 @@ def dump_prior(samples_dir: str, outfile: str) -> None:
         r, c = sample["rows"], sample["cols"]
         if cube is None:
             rows, cols = r, c
-            cube = np.zeros((rows, cols, rows * cols + 1), dtype=np.int64)
+            cube = np.zeros(
+                (rows, cols, rows * cols + 1), dtype=dtype_for_shape(rows, cols)
+            )
         if r != rows or c != cols:
             logger.warning("Skip mismatched sample %s×%s", r, c)
             continue

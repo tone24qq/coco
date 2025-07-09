@@ -16,6 +16,7 @@ def test_load_global_pos_freq_npz(tmp_path):
 def test_load_global_pos_freq_npz_missing(tmp_path):
     d = tmp_path / "out"
     d.mkdir()
+    analyzer._NPZ_CACHE.clear()
     with pytest.raises(FileNotFoundError):
         analyzer.load_global_pos_freq_npz((2, 2), d)
 
@@ -29,7 +30,7 @@ def test_npz_usage_stats(tmp_path):
     np.savez(d / "global_pos_freq_3x3.npz", freq=arr_b)
 
     analyzer._NPZ_USAGE_STATS.clear()
-    analyzer._load_global_pos_freq_npz_cached.cache_clear()
+    analyzer._NPZ_CACHE.clear()
 
     analyzer.load_global_pos_freq_npz((2, 2), d)
     analyzer.load_global_pos_freq_npz((3, 3), d)
