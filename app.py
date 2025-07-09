@@ -61,6 +61,7 @@ def _load_priors_files() -> Dict[str, Dict[int, float]]:
             priors[path.stem.replace("priors_", "")] = json.loads(path.read_text())
         except Exception as exc:  # pragma: no cover - corrupted JSON
             logger.error("Failed to load %s: %s", path, exc)
+            # 中文說明：讀取 priors_*.json 檔案失敗，通常是 JSON 格式錯誤
     if not priors:
         priors["10x12"] = compute_position_probabilities("samples", 10, 12)
     return priors
@@ -160,6 +161,7 @@ async def _load_samples_background():
     for _ in iter_sample_jsons("samples"):
         pass
     logger.info("Sample iteration complete (background)")
+    # 中文說明：後台載入樣本資料結束，可確認樣本檔案讀取流程無阻塞
 
 
 @app.on_event("startup")
@@ -352,6 +354,7 @@ async def predict(req: GridRequest):
         priors = brain.priors_map.get(key)
         if priors is None:
             logger.warning("No priors for %s, computing on-the-fly", key)
+            # 中文說明：指定尺寸缺少先驗分布，將即時計算，可能稍慢
             priors = compute_position_probabilities("samples", rows, cols)
             brain.priors_map[key] = priors
 
@@ -373,6 +376,7 @@ async def predict(req: GridRequest):
             top_n,
             eps,
         )
+        # 中文說明：預測啟動，記錄使用的盤面大小、目標數字與主要參數（ph1 為全局模擬次數，ph2 為焦點模擬次數）
 
         # 调用核心推理
         grid_np = np.asarray(req.grid, dtype=object)
@@ -444,12 +448,14 @@ async def predict(req: GridRequest):
         }
         safe_payload = sanitize_floats(payload)
         logger.info("✅ Response ready")
+        # 中文說明：主要預測流程完成，回傳結果前的確認訊息
         return JSONResponse(content=safe_payload, status_code=200)
 
     except HTTPException:
         raise
     except Exception as exc:
         logger.error("Prediction failed", exc_info=True)
+        # 中文說明：預測過程發生未預期錯誤，附帶 traceback 供偵錯
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -485,6 +491,7 @@ async def heatmap(req: HeatmapRequest):
         priors = brain.priors_map.get(key)
         if priors is None:
             logger.warning("No priors for %s, computing on-the-fly", key)
+            # 中文說明：缺少對應尺寸先驗，需即時計算才能繼續
             priors = compute_position_probabilities("samples", rows, cols)
             brain.priors_map[key] = priors
 
@@ -562,6 +569,7 @@ async def heatmap(req: HeatmapRequest):
         raise
     except Exception as exc:
         logger.error("Heatmap failed", exc_info=True)
+        # 中文說明：產生熱力圖時發生錯誤，紀錄原因與堆疊
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -593,17 +601,20 @@ async def fuse(req: FusionRequest):
         raise
     except Exception as exc:
         logger.error("Fusion failed", exc_info=True)
+        # 中文說明：合併兩組分數矩陣時發生例外，印出錯誤細節
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     logger.info("Shutdown complete")
+    # 中文說明：FastAPI 伺服器已關閉，用於觀察服務停止時間點
 
 
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API on port %d", port)
+    # 中文說明：啟動 FastAPI 服務，輸出實際綁定的埠號
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
 

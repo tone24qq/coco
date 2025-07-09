@@ -41,6 +41,7 @@ def build_position_prior(samples_dir: str, outfile: str, buckets: int = 20) -> N
     freq = counts.astype(float) / totals
     np.savez_compressed(outfile, freq=freq)
     logger.info("position prior saved to %s", outfile)
+    # 中文說明：完成全域位置先驗計算並寫入檔案
 
 
 def build_position_prior_map(
@@ -57,4 +58,5 @@ def build_position_prior_map(
     for rows, cols in sorted(dims):
         priors[(rows, cols)] = compute_position_probabilities(samples_dir, rows, cols)
     logger.info("position prior map built for %d board sizes", len(priors))
+    # 中文說明：產生的先驗表涵蓋的不同盤面數量
     return priors

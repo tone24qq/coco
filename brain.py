@@ -142,9 +142,11 @@ def _load_weights() -> Dict[str, float]:
                 w[name] = float(env_val)
             except ValueError:
                 logger.warning("Invalid weight for %s: %s", env_key, env_val)
+                # 中文說明：環境變數提供的權重值無法解析，將忽略
     total = sum(w.values())
     if not math.isclose(total, 1.0, rel_tol=1e-3):
         logger.info("Normalizing module weights (sum %.3f)", total)
+        # 中文說明：權重總和不為 1，將自動正規化
         for k in w:
             w[k] /= total or 1.0
     return w
@@ -165,6 +167,7 @@ def get_core_modules(limit: Optional[int] = None) -> List[str]:
         limit_env = int(limit_env_str)
     except ValueError:  # FIXME invalid env value
         logger.warning("Invalid CORE_LIMIT '%s', using default 6", limit_env_str)
+        # 中文說明：環境變數 CORE_LIMIT 不是整數，改用預設值
         limit_env = 6
     if limit is None:
         limit_final = limit_env
@@ -173,10 +176,12 @@ def get_core_modules(limit: Optional[int] = None) -> List[str]:
             limit_final = int(limit)
         except (TypeError, ValueError):
             logger.warning("Invalid limit '%s', using CORE_LIMIT", limit)
+            # 中文說明：函式引數 limit 非法，退回使用環境變數值
             limit_final = limit_env
 
     if limit_final < 1:
         logger.warning("Limit must be >=1, using 1")
+        # 中文說明：限制值過小，自動修正為 1
         limit_final = 1
 
     names = list(REGISTERED_MODULES_BRAIN)
@@ -190,6 +195,7 @@ def get_module_score(
 ) -> np.ndarray:
     if module_name not in REGISTERED_MODULES_BRAIN:
         logger.error("Module %s not found in REGISTERED_MODULES_BRAIN.", module_name)
+        # 中文說明：指定的模組名稱不存在，回傳全零矩陣避免崩潰
         rows, cols = grid.shape
         return np.zeros((rows, cols), dtype=float)
     func = REGISTERED_MODULES_BRAIN[module_name]

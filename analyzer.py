@@ -36,11 +36,11 @@ from brain import (
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
 
-env = EnvConfig()
-
-# 额外引入全局分布计算
+# 额外引入全局分布計算
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
 from csp_solver import heuristic_csp_sampling
+
+env = EnvConfig()
 
 # Logger configuration
 logging.basicConfig(
@@ -119,6 +119,7 @@ def _load_global_pos_freq_npz_cached(
         return _align_heatmap_axes(freq, rows, cols)
     except Exception as exc:
         logger.error("failed to load %s: %s", path, exc)
+        # 中文說明：讀取全域位置頻率檔失敗，將拋出 FileNotFoundError
         raise FileNotFoundError(path) from exc
 
 
@@ -148,8 +149,10 @@ def load_all_global_pos_freqs(npz_dir: str) -> None:
             freq = _align_heatmap_axes(freq, rows, cols).astype(float)
             _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq
             logger.info("loaded %dx%d heatmap from %s", rows, cols, npz_file.name)
+            # 中文說明：成功載入指定尺寸的熱力圖檔，用於後續全域機率分布
         except Exception as e:  # pragma: no cover - corrupted file
             logger.warning("Failed to load %s: %s", npz_file.name, e)
+            # 中文說明：熱力圖 NPZ 檔毀損或讀取錯誤，略過該檔
 
 
 def get_global_pos_freq(shape: tuple[int, int]) -> Optional[np.ndarray]:
@@ -194,6 +197,7 @@ def _load_samples_for_shape(
 
     _SAMPLE_CACHE[key] = boards
     logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
+    # 中文說明：載入指定尺寸的樣本盤面完成，方便確認樣本數量是否足夠
     return boards
 
 
@@ -402,6 +406,7 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                     data = orjson.loads(f.read())
             except Exception as exc:  # pragma: no cover - corrupted JSON
                 logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
+                # 中文說明：ZIP 檔內的 JSON 檔損壞或解析失敗
                 continue
 
             if "grid" in data:
@@ -410,11 +415,13 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                     isinstance(row, list) for row in grid
                 ):
                     logger.warning("Invalid grid in %s:%s", zip_path.name, name)
+                    # 中文說明：grid 欄位格式不正確，跳過該檔案
                     continue
                 rows = data.get("rows", len(grid))
                 cols = data.get("cols", len(grid[0]) if grid else 0)
                 if rows != len(grid) or any(len(r) != cols for r in grid):
                     logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
+                    # 中文說明：rows/cols 描述與實際 grid 尺寸不符
                     continue
                 count += 1
                 item = {
@@ -438,6 +445,7 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                     logger.warning(
                         "Top-level list not boards in %s:%s", zip_path.name, name
                     )
+                    # 中文說明：最外層為 list 但內容不是盤面資料，視為無效
                     continue
                 rows, cols = len(first), len(first[0])
                 for board in data:
@@ -452,6 +460,7 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                         logger.warning(
                             "Invalid board in list %s:%s", zip_path.name, name
                         )
+                        # 中文說明：多盤面列表中某一盤面格式錯誤
                 continue
 
             for key, boards_list in data.items():
@@ -460,12 +469,14 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                     logger.warning(
                         "Skip invalid key %s in %s:%s", key, zip_path.name, name
                     )
+                    # 中文說明：字典 key 非 "NxM" 格式，忽略
                     continue
                 rows, cols = int(match.group(1)), int(match.group(2))
                 if not isinstance(boards_list, list):
                     logger.warning(
                         "Invalid boards list for %s in %s:%s", key, zip_path.name, name
                     )
+                    # 中文說明：key 對應的 boards 不是 list，無法解析
                     continue
                 for board in boards_list:
                     if not (
@@ -476,11 +487,13 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
                         logger.warning(
                             "Invalid board for %s in %s:%s", key, zip_path.name, name
                         )
+                        # 中文說明：單一盤面資料與宣告尺寸不符
                         continue
                     count += 1
                     yield {"rows": rows, "cols": cols, "grid": board}
     # 中文 log：啟動時顯示已載入的樣本檔名與筆數
     logger.info("已載入 %s，共 %d 筆樣本", zip_path.name, count)
+    # 中文說明：顯示單一 ZIP 檔讀取完成與內含樣本數
 
 
 def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
@@ -492,6 +505,7 @@ def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
                 yield item
         except Exception as exc:  # pragma: no cover - broken zip
             logger.error("Failed to load %s: %s", zp.name, exc)
+            # 中文說明：ZIP 檔案無法打開或內容損壞
 
 
 def _compute_target_prior(
@@ -527,6 +541,7 @@ def load_priors(rows: int, cols: int, samples_dir: str = "samples") -> np.ndarra
         return arr
 
     logger.warning("prior %s not found, computing from samples", path)
+    # 中文說明：預先生成的 prior 檔不存在，將從樣本即時計算
     arr = _compute_target_prior(samples_dir, rows, cols)
     _PRIOR_CACHE[key] = arr
     return arr
@@ -539,9 +554,11 @@ def compute_history_frequency(
     path = PRIORS_DIR / f"{rows}x{cols}.npy"
     if path.exists():
         logger.info("Loaded prior from %s", path)
+        # 中文說明：成功載入已預先計算的 prior 檔案
         return np.load(path)
 
     logger.warning("Prior %s missing, computing on-the-fly", path)
+    # 中文說明：缺少 prior 檔，會即時計算而非讀取
     arr = _compute_target_prior(samples_dir, rows, cols, target_num)
     _PRIOR_CACHE[(rows, cols)] = arr
     return arr
@@ -577,6 +594,7 @@ def compute_position_distribution(
         total,
         f" mode={mode}" if mode else "",
     )
+    # 中文說明：統計各格子出現次數後輸出，確認樣本數與篩選模式
     return {k: dict(v) for k, v in stats.items()}
 
 
@@ -608,6 +626,7 @@ def compute_number_distribution(
         total,
         f" mode={mode}" if mode else "",
     )
+    # 中文說明：記錄各號碼在盤面中的分布計算完成，可用於追蹤樣本豐富度
     return {n: dict(pos) for n, pos in stats.items()}
 
 
@@ -681,8 +700,10 @@ def compute_position_probabilities(
         cube = np.load(cached, mmap_mode="r")
         if cube.shape[:2] != (rows, cols):
             logger.warning("Cached prior shape mismatch: %s", cube.shape)
+            # 中文說明：先前快取的 prior 尺寸與目前需求不符
         else:
             logger.info("Loaded prior from %s", cached)
+            # 中文說明：使用磁碟快取的 prior，加速啟動
             prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
             for r in range(rows):
                 for c in range(cols):
@@ -726,6 +747,7 @@ def compute_position_probabilities(
         rows,
         cols,
     )
+    # 中文說明：完成位置機率計算後，輸出實際統計到的樣本數與尺寸
     return prob_map
 
 
@@ -741,8 +763,10 @@ def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.nd
         cube = np.load(cached, mmap_mode="r")
         if cube.shape[:2] != (rows, cols):
             logger.warning("Cached prior shape mismatch: %s", cube.shape)
+            # 中文說明：快取檔尺寸與當前需求不同，需重新計算
         else:
             logger.info("Loaded prior cube from %s", cached)
+            # 中文說明：成功載入 prior 立方體，用以產生熱力圖
             totals = cube.sum(axis=2, keepdims=True)
             totals[totals == 0] = 1
             return cube.astype(float) / totals
@@ -767,6 +791,7 @@ def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.nd
         cols,
         total,
     )
+    # 中文說明：輸出全域分布計算完成及使用的樣本量
     return probs
 
 
@@ -799,6 +824,7 @@ def dump_prior(samples_dir: str, outfile: str) -> None:
         return
     np.save(outfile, cube)
     logger.info("Prior saved to %s", outfile)
+    # 中文說明：將計算完成的 prior cube 儲存成檔案
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI helper
@@ -924,6 +950,7 @@ def simulate_full_board(
         str(target_num),
         n_iter,
     )
+    # 中文說明：開始 Monte Carlo 模擬，列出目標數字與總迭代次數
     if rng is None:
         rng = np.random.default_rng()
 
@@ -1137,6 +1164,7 @@ def weight_prob_by_modules(
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     if not isinstance(prob_map, dict):
         logger.error(f"Invalid prob_map type: {type(prob_map)}")
+        # 中文說明：模組輸入的機率地圖型態錯誤，直接返回空結果
         return {}
 
     result = prob_map.copy()
@@ -1338,6 +1366,7 @@ def assign_unique_numbers(
         return {nums[r]: cells[c] for r, c in zip(row, col)}
     except Exception as e:  # pragma: no cover - fallback rarely used
         logger.error("assign_unique_numbers failed: %s", e)
+        # 中文說明：線性分配演算法失敗，改用簡易貪婪法
         assigned: Dict[int, Tuple[int, int]] = {}
         used: set[Tuple[int, int]] = set()
         numbers = sorted({n for d in prob_map.values() for n in d})
@@ -1369,6 +1398,7 @@ def global_unique(
         }
     except Exception as e:
         logger.error(f"Global unique assignment failed: {e}")
+        # 中文說明：指派每個數字唯一格子時失敗，將退化為貪婪策略
         assigned, res = set(), {}
         for cell in sorted(
             blanks,
@@ -1449,6 +1479,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             sim_result = simulate_full_board(current.grid, None, n_iter=100)
             if not isinstance(sim_result, dict):
                 logger.error(f"Invalid sim_result type: {type(sim_result)}")
+                # 中文說明：模擬回傳資料型別非預期，可能是邊界情況
                 return 0.0
 
             reward = 0.0
@@ -1467,6 +1498,7 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
             return reward
         except ZeroDivisionError as e:
             logger.error(f"ZeroDivisionError in simulate: {e}")
+            # 中文說明：數值除以零導致錯誤，通常是模擬過程 bug
             return 0.0
 
     Parallel(n_jobs=4, require="sharedmem")(
@@ -1622,6 +1654,7 @@ def predict_scratch_card(
             }
         except Exception as exc:  # pragma: no cover - fallback on error
             logger.error("neighbor_lock failed: %s", exc)
+            # 中文說明：鄰居鎖定流程出錯，將改用其他策略
 
     known_coords = [tuple(b) for b in np.argwhere(grid_np > 0)]
     use_heatmap_only = False
@@ -1982,6 +2015,7 @@ def probability_heatmap(
             pos_probs = compute_position_probabilities(history_dir, *grid_np.shape)
         except Exception as exc:  # pragma: no cover - history load failures
             logger.error("heatmap prior load failed: %s", exc)
+            # 中文說明：嘗試載入歷史 heatmap 失敗，將只依賴模擬結果
             pos_probs = {}
     else:
         pos_probs = {}
@@ -1992,6 +2026,7 @@ def probability_heatmap(
         sample_gamma,
         fusion_alpha,
     )
+    # 中文說明：輸出當前熱力圖融合比重設定
 
     if k is not None:
         out = np.zeros_like(grid_np, dtype=float)
@@ -2086,10 +2121,12 @@ def neighbor_lock_or_fuse(
         len(neighbors),
         max([s for _, s in neighbors], default=0.0),
     )
+    # 中文說明：鄰居鎖定前的統計資訊，列出候選格數與最佳分數
 
     if neighbors:
         pos, score_n = max(neighbors, key=lambda x: x[1])
         logger.info("使用鄰居鎖定，選定位置 %s，鄰居相容度 %.3f", pos, score_n)
+        # 中文說明：鄰居鎖定成功，輸出選定格子與相容度
         return (int(pos[0]), int(pos[1])), float(score_n)
 
     logger.info(
@@ -2097,17 +2134,20 @@ def neighbor_lock_or_fuse(
         sample_gamma,
         fusion_alpha,
     )
+    # 中文說明：沒有合格鄰居，將改以樣本與模擬混合方式決定
 
     try:
         prior_map = compute_position_probabilities(samples_dir, *grid.shape)
     except Exception as exc:  # pragma: no cover - IO errors
         logger.error("prior load failed: %s", exc)
+        # 中文說明：讀取樣本 prior 檔案失敗，後續只能依賴模擬
         prior_map = {}
     used = len(prior_map)
     logger.info(
         "回退融合：從歷史樣本載入 %d 個格子位置的機率分布",
         used,
     )
+    # 中文說明：記錄 fallback 階段實際取得的歷史位置分布數量
     sim_map = simulate_full_board(grid, target_num, n_iter=phase1)
 
     prior_scores = {pos: prior_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}

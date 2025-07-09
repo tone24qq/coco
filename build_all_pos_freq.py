@@ -33,6 +33,7 @@ def iter_all_json_from_zip(zip_path: Path):
                 data = json.loads(raw)
             except Exception as exc:
                 logger.warning(f"❌ 讀取失敗：{name} in {zip_path.name} - {exc}")
+                # 中文說明：ZIP 內的 JSON 檔案無法解析，直接跳過
                 continue
 
             # ---- 格式 1：grid + rows/cols ----
@@ -55,6 +56,7 @@ def iter_all_json_from_zip(zip_path: Path):
                     logger.warning(
                         f"❌ 跳過 format1：{name} rows={rows}, cols={cols} 與 grid 不符"
                     )
+                    # 中文說明：資料列宣稱的行列與實際內容不一致
                 continue
 
             # ---- 格式 2：裸 list of boards 或單一 board ----
@@ -79,6 +81,7 @@ def iter_all_json_from_zip(zip_path: Path):
                             logger.warning(
                                 f"❌ 跳過 format2 board#{i}：行列 {rows0}x{cols0} 不一致 ({name})"
                             )
+                            # 中文說明：多盤面列表中的其中一盤與預期尺寸不符
                 else:
                     # 單一盤面
                     rows0 = len(data)
@@ -94,6 +97,7 @@ def iter_all_json_from_zip(zip_path: Path):
                         logger.warning(
                             f"❌ 跳過單一盤面：{name} 行列 {rows0}x{cols0} 不一致"
                         )
+                        # 中文說明：單一盤面的尺寸資訊與實際內容不符
                 continue
 
             # ---- 格式 3：{"8x10": [盤面, ...], ...} ----
@@ -120,9 +124,11 @@ def iter_all_json_from_zip(zip_path: Path):
                             logger.warning(
                                 f"❌ 跳過 format3 board#{i} for key '{key}': size mismatch"
                             )
+                            # 中文說明：字典格式的盤面尺寸與資料不一致
                 continue
 
     logger.info(f"✅ {zip_path.name} 讀取 {count} 筆資料")
+    # 中文說明：每處理完一個 ZIP 檔後回報其有效樣本數
 
 
 def build_and_save_all_pos_freq(samples_dir: Path, output_dir: Path):
@@ -132,6 +138,7 @@ def build_and_save_all_pos_freq(samples_dir: Path, output_dir: Path):
     # 掃描並累加
     for zip_file in samples_dir.glob("*.zip"):
         logger.info(f"📦 掃描 {zip_file.name}")
+        # 中文說明：開始處理此 ZIP 檔案
         for rows, cols, grid in iter_all_json_from_zip(zip_file):
             grid_np = np.asarray(grid, dtype=int)
             shape = (rows, cols)
@@ -141,11 +148,13 @@ def build_and_save_all_pos_freq(samples_dir: Path, output_dir: Path):
 
     if not shape_counts:
         logger.warning("⚠️ 沒有有效樣本可供輸出")
+        # 中文說明：掃描結果為空，無檔案可產生
         return
 
     # 列出所有實際讀到的尺寸，方便檢查
     all_shapes = sorted(shape_counts.keys())
     logger.info(f"🔍 一共找到這些盤面尺寸：{all_shapes}")
+    # 中文說明：彙整所有出現過的盤面大小
 
     # 計算頻率並輸出
     for (rows, cols), count_mat in shape_counts.items():
@@ -154,6 +163,7 @@ def build_and_save_all_pos_freq(samples_dir: Path, output_dir: Path):
         out_path = output_dir / f"pos_freq_{rows}x{cols}.npz"
         np.savez_compressed(out_path, freq=freq)
         logger.info(f"✅ 儲存 {out_path.name} ({rows}x{cols})")
+        # 中文說明：成功產生單一尺寸的頻率檔
 
 
 if __name__ == "__main__":
