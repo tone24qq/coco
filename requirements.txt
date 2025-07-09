@@ -10,3 +10,4 @@ openpyxl
 numba>=0.59.1
 orjson>=3.10.0
 matplotlib>=3.8.4
+prometheus_client>=0.20.0

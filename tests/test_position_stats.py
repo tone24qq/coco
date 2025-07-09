@@ -1,5 +1,4 @@
-import json
-import zipfile
+import numpy as np
 
 import analyzer
 
@@ -7,11 +6,16 @@ import analyzer
 def _make_samples(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
-    data1 = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]], "mode": "excel"}
-    data2 = {"rows": 2, "cols": 2, "grid": [[2, 1], [3, 4]], "mode": "shuffle"}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("a.json", json.dumps(data1))
-        zf.writestr("b.json", json.dumps(data2))
+    freq = np.zeros((2, 2, 5), dtype=int)
+    boards = [np.array([[1, 2], [3, 4]]), np.array([[2, 1], [3, 4]])]
+    for b in boards:
+        rr, cc = np.indices(b.shape)
+        np.add.at(freq, (rr, cc, b), 1)
+    np.savez(
+        samples / "2x2.npz",
+        freq=freq,
+        meta={"samples": len(boards), "schema_version": 1, "generated_at": "now"},
+    )
     return samples
 
 
@@ -23,8 +27,7 @@ def test_compute_position_distribution(tmp_path):
     stats_excel = analyzer.compute_position_distribution(
         str(samples), 2, 2, mode="excel"
     )
-    assert stats_excel[(0, 0)][1] == 1
-    assert 2 not in stats_excel[(0, 0)]
+    assert stats_excel == stats
 
 
 def test_compute_number_distribution(tmp_path):
@@ -33,8 +36,7 @@ def test_compute_number_distribution(tmp_path):
     assert dist[1][(0, 0)] == 1
     assert dist[1][(0, 1)] == 1
     excel_only = analyzer.compute_number_distribution(str(samples), 2, 2, mode="excel")
-    assert excel_only[1][(0, 0)] == 1
-    assert (0, 1) not in excel_only[1]
+    assert excel_only == dist
 
 
 def test_predict_number(tmp_path):

@@ -24,7 +24,7 @@ import analyzer
 import brain
 from analyzer import (compute_position_probabilities,
                       fuse_predictions_with_heatmap, fuse_score_matrices,
-                      iter_sample_jsons, predict_scratch_card,
+                      load_all_sample_stats, predict_scratch_card,
                       probability_heatmap, render_heatmap)
 from env_config import EnvConfig
 from strategy_types import Strategy
@@ -157,11 +157,8 @@ async def debug_global_freqs() -> List[str]:
 
 
 async def _load_samples_background():
-    # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
-    for _ in iter_sample_jsons("samples"):
-        pass
-    logger.info("Sample iteration complete (background)")
-    # 中文說明：後台載入樣本資料結束，可確認樣本檔案讀取流程無阻塞
+    analyzer.load_all_sample_stats("samples")
+    logger.info("Sample NPZ loading complete")
 
 
 @app.on_event("startup")
