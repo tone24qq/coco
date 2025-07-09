@@ -26,6 +26,7 @@ from analyzer import (compute_position_probabilities,
                       fuse_predictions_with_heatmap, fuse_score_matrices,
                       iter_sample_jsons, predict_scratch_card,
                       probability_heatmap, render_heatmap)
+from strategy_types import Strategy
 
 # fmt: on
 brain.priors_map: Dict[str, Dict[int, float]] = {}
@@ -180,7 +181,7 @@ class GridRequest(BaseModel):
     fusion_alpha: Optional[float] = None
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
-    strategy: Literal["legacy", "modern"] = "legacy"
+    strategy: Strategy = Strategy.LEGACY
 
 
 class Prediction(BaseModel):
@@ -381,7 +382,7 @@ async def predict(req: GridRequest):
         is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
         grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
         force_legacy = False
-        if "strategy" in req.model_fields_set and req.strategy == "legacy":
+        if "strategy" in req.model_fields_set and req.strategy == Strategy.LEGACY:
             force_legacy = True
         if (
             "fusion_alpha" in req.model_fields_set

@@ -3,6 +3,7 @@ import numpy as np
 
 import analyzer
 from analyzer import simulate_full_board
+from strategy_types import Strategy
 
 
 def test_simulate_dimensions(make_grid):
@@ -137,3 +138,10 @@ def test_apply_uniqueness_penalty():
     assert out[(0, 0)][1] < pm[(0, 0)][1]
     assert out[(0, 0)][2] < pm[(0, 0)][2]
     assert out[(0, 1)][1] == pm[(0, 1)][1]
+
+
+def test_predict_accepts_enum_strategy():
+    grid = [[-1, -1], [-1, -1]]
+    res_enum = analyzer.predict_scratch_card(grid, strategy=Strategy.MODERN)
+    res_str = analyzer.predict_scratch_card(grid, strategy="modern")
+    assert res_enum["strategy"] == res_str["strategy"]

@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 from joblib import Parallel, delayed
 from numba import njit
+from strategy_types import Strategy
 
 import brain
 
@@ -1494,7 +1495,7 @@ def predict_scratch_card(
     pseudo_count: float = 0.0,
     force_legacy: bool = False,
     exclude_filled: bool = True,
-    strategy: str = "legacy",
+    strategy: Union[str, Strategy] = Strategy.LEGACY,
     use_neighbor_lock: bool = False,
     neighbor_threshold: float = 0.0,
 ) -> Dict[str, Any]:
@@ -1504,6 +1505,7 @@ def predict_scratch_card(
     grid_np = np.asarray(grid, dtype=object)
     grid_np = np.where(grid_np == BLANK_VAL, BLANK_VAL, grid_np).astype(np.int64)
     rows, cols = grid_np.shape
+    strat_name = strategy.value if isinstance(strategy, Strategy) else str(strategy)
 
     try:
         _ = probability_heatmap(
@@ -1661,7 +1663,7 @@ def predict_scratch_card(
     if not blanks:
         return {
             "mode": "no_blanks",
-            "strategy": "predict_structured",
+            "strategy": strat_name,
             "predictions": [],
             "top_predictions": [],
             "full_probabilities": {},
@@ -1758,7 +1760,7 @@ def predict_scratch_card(
 
     return {
         "mode": "neighbor",
-        "strategy": "predict_structured",
+        "strategy": strat_name,
         "predictions": preds,
         "top_predictions": preds,
         "full_probabilities": {},

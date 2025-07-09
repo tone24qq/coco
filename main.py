@@ -9,6 +9,8 @@ from typing import Dict, List
 import numpy as np
 import ray
 
+from strategy_types import Strategy
+
 # fmt: off
 # isort: off
 import analyzer
@@ -104,8 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strategy",
         type=str,
-        choices=["legacy", "modern"],
-        default="legacy",
+        choices=[s.value for s in Strategy],
+        default=Strategy.LEGACY.value,
         help="Prediction ranking strategy",
     )
     return parser.parse_args()
@@ -131,6 +133,7 @@ def parse_grid(grid_str: str) -> List[List[int]]:
 def main():
     """Main function to run scratch card prediction."""
     args = parse_args()
+    args.strategy = Strategy(args.strategy)
     try:
         p = Path("output/cleaned_data.json")
         global priors
