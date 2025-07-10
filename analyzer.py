@@ -45,10 +45,6 @@ from csp_solver import heuristic_csp_sampling
 env = EnvConfig()
 
 # Logger configuration
-def load_all_sample_stats(samples_dir: str) -> None:
-    p = Path(samples_dir)
-    # **新增這行**：列出 samples/ 底下所有檔
-    logging.info(">> Samples 目錄內容: %s", [
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
