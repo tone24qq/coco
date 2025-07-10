@@ -1,5 +1,4 @@
-import json
-import zipfile
+import numpy as np
 
 import analyzer
 from position_prior import build_position_prior
@@ -8,9 +7,8 @@ from position_prior import build_position_prior
 def test_global_position_prior(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
-    data = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("a.json", json.dumps(data))
+    arr = np.array([[[1, 2], [3, 4]]], dtype=np.uint8)
+    np.savez(samples / "2x2.npz", boards=arr)
 
     out_npz = tmp_path / "out_npz"
     out_npz.mkdir()

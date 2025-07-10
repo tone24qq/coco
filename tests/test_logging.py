@@ -1,6 +1,4 @@
-import json
 import logging
-import zipfile
 
 import numpy as np
 
@@ -10,13 +8,12 @@ import analyzer
 def test_iter_sample_jsons_logging(tmp_path, caplog):
     samples = tmp_path / "samples"
     samples.mkdir()
-    data = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    with zipfile.ZipFile(samples / "a.zip", "w") as zf:
-        zf.writestr("d.json", json.dumps(data))
+    boards = np.array([[[1, 2], [3, 4]]], dtype=np.int8)
+    np.savez(samples / "a.npz", boards=boards)
     with caplog.at_level(logging.INFO):
         list(analyzer.iter_sample_jsons(str(samples)))
     # 這裡改成抓實際出現的 log 關鍵字
-    assert any("已載入 a.zip" in r.message for r in caplog.records)
+    assert any("已載入 a.npz" in r.message for r in caplog.records)
 
 
 def test_top3_logging(tmp_path, caplog):

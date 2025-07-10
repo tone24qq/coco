@@ -1,5 +1,4 @@
-import json
-import zipfile
+import numpy as np
 
 from position_prior import build_position_prior_map
 
@@ -7,9 +6,7 @@ from position_prior import build_position_prior_map
 def test_build_position_prior_map(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
-    data = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("a.json", json.dumps(data))
+    np.savez(samples / "2x2.npz", boards=np.array([[[1, 2], [3, 4]]], dtype=np.int8))
 
     priors = build_position_prior_map(str(samples))
     assert (2, 2) in priors

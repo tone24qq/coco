@@ -1,6 +1,3 @@
-import json
-import zipfile
-
 import numpy as np
 
 import analyzer
@@ -14,9 +11,7 @@ def test_pure_sample_branch(tmp_path):
         [[1, 2], [3, 4]],
         [[1, 3], [2, 4]],
     ]
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        for i, b in enumerate(boards):
-            zf.writestr(f"b{i}.json", json.dumps({"rows": 2, "cols": 2, "grid": b}))
+    np.savez(samples / "2x2.npz", boards=np.array(boards, dtype=np.int8))
     counts = np.zeros((2, 2, 5), dtype=float)
     for board in boards:
         for r in range(2):
@@ -45,8 +40,7 @@ def test_pure_sample_neighbor_ranking(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
     arr = [[[1, 2, 2], [3, 4, 4], [5, 6, 7]]]
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps({"rows": 3, "cols": 3, "grid": arr[0]}))
+    np.savez(samples / "3x3.npz", boards=np.array(arr, dtype=np.int8))
     counts = np.zeros((3, 3, 10), dtype=float)
     for board in arr:
         for r in range(3):
@@ -75,8 +69,7 @@ def test_pure_sample_final_score_weighting(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
     arr = [[[1, 2], [3, 4]]]
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps({"rows": 2, "cols": 2, "grid": arr[0]}))
+    np.savez(samples / "2x2.npz", boards=np.array(arr, dtype=np.int8))
     counts = np.zeros((2, 2, 5), dtype=float)
     for board in arr:
         for r in range(2):
@@ -107,8 +100,7 @@ def test_neighbor_relaxed_matching(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
     arr = [[[9, 2, 3], [4, 5, 6], [7, 8, 1]]]
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("b.json", json.dumps({"rows": 3, "cols": 3, "grid": arr[0]}))
+    np.savez(samples / "3x3.npz", boards=np.array(arr, dtype=np.int8))
     counts = np.zeros((3, 3, 10), dtype=float)
     for board in arr:
         for r in range(3):

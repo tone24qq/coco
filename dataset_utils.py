@@ -1,37 +1,26 @@
-# Utilities for loading board datasets from compressed archives
+"""Utilities for loading board datasets from NPZ archives."""
 
 from __future__ import annotations
 
-import json
-import zipfile
 from pathlib import Path
 from typing import List
 
+import numpy as np
 
-def load_boards_from_zip(
-    zip_path: str | Path, rows: int, cols: int
-) -> List[List[List[int]]]:
-    """Load boards from a ZIP archive.
 
-    Parameters
-    ----------
-    zip_path : str | Path
-        Path to the ZIP archive containing board JSON files.
-    rows : int
-        Number of rows of the desired boards.
-    cols : int
-        Number of columns of the desired boards.
+def load_boards_from_npz(npz_path: str | Path) -> List[List[List[int]]]:
+    """Load boards from an ``.npz`` file.
 
-    Returns
-    -------
-    list[list[list[int]]]
-        List of boards.
+    The archive must contain an array named ``boards`` with shape
+    ``(n, rows, cols)``. The function will return a list of boards as nested
+    Python lists.
     """
-    filename = f"boards_{rows}x{cols}_50000.json"
-    zpath = Path(zip_path)
-    with zipfile.ZipFile(zpath, "r") as zf:
-        if filename not in zf.namelist():
-            raise FileNotFoundError(f"{filename} not found in {zpath}")
-        with zf.open(filename) as f:
-            boards: List[List[List[int]]] = json.load(f)
-    return boards
+
+    path = Path(npz_path)
+    with np.load(path) as data:
+        if "boards" not in data:
+            raise KeyError(f"'boards' not found in {path}")
+        boards = data["boards"]
+    if boards.ndim == 2:
+        boards = boards[None, ...]
+    return boards.astype(int).tolist()

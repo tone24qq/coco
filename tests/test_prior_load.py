@@ -1,6 +1,3 @@
-import json
-import zipfile
-
 import numpy as np
 
 import analyzer
@@ -10,9 +7,7 @@ def test_prior_load(tmp_path, monkeypatch):
     samples = tmp_path / "samples"
     samples.mkdir()
     grid = [[1, 2], [3, 4]]
-    data = {"rows": 2, "cols": 2, "grid": grid}
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("d.json", json.dumps(data))
+    np.savez(samples / "2x2.npz", boards=np.array([grid], dtype=np.int8))
     cube = np.zeros((2, 2, 5), dtype=np.int64)
     arr = np.array(grid)
     rr, cc = np.indices(arr.shape)

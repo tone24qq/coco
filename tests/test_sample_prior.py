@@ -1,6 +1,3 @@
-import json
-import zipfile
-
 import numpy as np
 
 import analyzer
@@ -9,12 +6,14 @@ import analyzer
 def test_compute_position_probabilities(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
-    data1 = {"rows": 2, "cols": 2, "grid": [[1, 2], [3, 4]]}
-    data2 = {"rows": 2, "cols": 2, "grid": [[2, 1], [4, 3]]}
-    zpath = samples / "s.zip"
-    with zipfile.ZipFile(zpath, "w") as zf:
-        zf.writestr("a.json", json.dumps(data1))
-        zf.writestr("b.json", json.dumps(data2))
+    boards = np.array(
+        [
+            [[1, 2], [3, 4]],
+            [[2, 1], [4, 3]],
+        ],
+        dtype=np.int8,
+    )
+    np.savez(samples / "2x2.npz", boards=boards)
 
     probs = analyzer.compute_position_probabilities(str(samples), 2, 2)
     assert (0, 0) in probs
@@ -27,8 +26,7 @@ def test_predict_with_sample_prior(tmp_path):
     samples = tmp_path / "samples"
     samples.mkdir()
     arr = [[[1, 2], [3, 4]]]
-    with zipfile.ZipFile(samples / "s.zip", "w") as zf:
-        zf.writestr("a.json", json.dumps({"rows": 2, "cols": 2, "grid": arr[0]}))
+    np.savez(samples / "2x2.npz", boards=np.array(arr, dtype=np.int8))
     counts = np.zeros((2, 2, 5), dtype=float)
     for board in arr:
         for r in range(2):

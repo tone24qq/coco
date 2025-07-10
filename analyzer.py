@@ -1,13 +1,11 @@
 # isort: skip_file
 import base64
 import heapq
-import orjson
 import logging
 import math
 import os
 import sys
 import re
-import zipfile
 import gc
 import time
 from collections import defaultdict, Counter, OrderedDict
@@ -70,8 +68,8 @@ INVALID_NPZ_COUNTER = PromCounter("coco_npz_invalid_total", "Invalid sample NPZ 
 # Track sample stats loaded (for introspection only)
 _SAMPLE_STATS_LOADED: set[Tuple[int, int, str]] = set()
 
-# Toggle legacy ZIP/JSON support
-ENABLE_ZIP_JSON = os.getenv("ENABLE_ZIP_JSON", "0") == "1"
+# Toggle legacy ZIP/JSON support (disabled)
+ENABLE_ZIP_JSON = False
 
 # Cache full sample boards by shape with file names
 _SAMPLE_CACHE: Dict[Tuple[int, int, str], List[Tuple[np.ndarray, str]]] = {}
@@ -318,23 +316,25 @@ def _native_dict(d):
 def _load_samples_for_shape(
     samples_dir: str, rows: int, cols: int
 ) -> List[Tuple[np.ndarray, str]]:
-    """Load sample boards for ``rows``×``cols`` from JSON zip samples."""
+    """Load sample boards for ``rows``×``cols`` from NPZ files."""
 
     key = (rows, cols, samples_dir)
     if key in _SAMPLE_CACHE:
         return _SAMPLE_CACHE[key]
 
     boards: List[Tuple[np.ndarray, str]] = []
-    path = Path(samples_dir)
-    for zip_path in sorted(path.glob("*.zip")):
-        idx = 0
-        for item in _iter_json_from_zip(zip_path):
-            if item["rows"] != rows or item["cols"] != cols:
-                idx += 1
-                continue
-            grid = np.asarray(item["grid"], dtype=int)
-            boards.append((grid, f"{zip_path.name}[{idx}]"))
-            idx += 1
+    path = Path(samples_dir) / f"{rows}x{cols}.npz"
+    if path.exists():
+        try:
+            with np.load(path) as data:
+                arr = data.get("boards")
+                if arr is not None:
+                    if arr.ndim == 2:
+                        arr = arr[None, ...]
+                    for idx, board in enumerate(arr):
+                        boards.append((board.astype(int), f"{path.name}[{idx}]"))
+        except Exception as exc:  # pragma: no cover - corrupted file
+            logger.error("Failed to load %s: %s", path.name, exc)
 
     _SAMPLE_CACHE[key] = boards
     logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
@@ -535,118 +535,33 @@ def heatmap_fallback_prediction(
     }
 
 
-def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
-    """Yield JSON objects from a zip file with basic validation."""
-    count = 0
-    with zipfile.ZipFile(zip_path) as zf:
-        for name in zf.namelist():
-            if not name.endswith(".json"):
-                continue
-            try:
-                with zf.open(name) as f:
-                    data = orjson.loads(f.read())
-            except Exception as exc:  # pragma: no cover - corrupted JSON
-                logger.error("Failed to read %s:%s: %s", zip_path.name, name, exc)
-                # 中文說明：ZIP 檔內的 JSON 檔損壞或解析失敗
-                continue
+def _iter_npz(zip_path: Path) -> Iterator[Dict[str, Any]]:
+    """Yield boards from an ``.npz`` file."""
 
-            if "grid" in data:
-                grid = data.get("grid")
-                if not isinstance(grid, list) or not all(
-                    isinstance(row, list) for row in grid
-                ):
-                    logger.warning("Invalid grid in %s:%s", zip_path.name, name)
-                    # 中文說明：grid 欄位格式不正確，跳過該檔案
-                    continue
-                rows = data.get("rows", len(grid))
-                cols = data.get("cols", len(grid[0]) if grid else 0)
-                if rows != len(grid) or any(len(r) != cols for r in grid):
-                    logger.warning("Row/col mismatch in %s:%s", zip_path.name, name)
-                    # 中文說明：rows/cols 描述與實際 grid 尺寸不符
-                    continue
-                count += 1
-                item = {
-                    "rows": rows,
-                    "cols": cols,
-                    "grid": grid,
-                    "target_num": data.get("target_num"),
-                    "mode": data.get("mode"),
-                }
-                yield item
-                continue
+    with np.load(zip_path) as data:
+        if "boards" not in data:
+            logger.warning("boards missing in %s", zip_path.name)
+            return
+        arr = data["boards"].astype(int)
 
-            # 新增：裸 list 也要拆成單張 board
-            if isinstance(data, list):
-                if not data:
-                    continue
-                first = data[0]
-                if not (
-                    isinstance(first, list) and all(isinstance(r, list) for r in first)
-                ):
-                    logger.warning(
-                        "Top-level list not boards in %s:%s", zip_path.name, name
-                    )
-                    # 中文說明：最外層為 list 但內容不是盤面資料，視為無效
-                    continue
-                rows, cols = len(first), len(first[0])
-                for board in data:
-                    if (
-                        isinstance(board, list)
-                        and len(board) == rows
-                        and all(isinstance(r, list) and len(r) == cols for r in board)
-                    ):
-                        count += 1
-                        yield {"rows": rows, "cols": cols, "grid": board}
-                    else:
-                        logger.warning(
-                            "Invalid board in list %s:%s", zip_path.name, name
-                        )
-                        # 中文說明：多盤面列表中某一盤面格式錯誤
-                continue
-
-            for key, boards_list in data.items():
-                match = re.match(r"^(\d+)x(\d+)$", key)
-                if not match:
-                    logger.warning(
-                        "Skip invalid key %s in %s:%s", key, zip_path.name, name
-                    )
-                    # 中文說明：字典 key 非 "NxM" 格式，忽略
-                    continue
-                rows, cols = int(match.group(1)), int(match.group(2))
-                if not isinstance(boards_list, list):
-                    logger.warning(
-                        "Invalid boards list for %s in %s:%s", key, zip_path.name, name
-                    )
-                    # 中文說明：key 對應的 boards 不是 list，無法解析
-                    continue
-                for board in boards_list:
-                    if not (
-                        isinstance(board, list)
-                        and len(board) == rows
-                        and all(isinstance(r, list) and len(r) == cols for r in board)
-                    ):
-                        logger.warning(
-                            "Invalid board for %s in %s:%s", key, zip_path.name, name
-                        )
-                        # 中文說明：單一盤面資料與宣告尺寸不符
-                        continue
-                    count += 1
-                    yield {"rows": rows, "cols": cols, "grid": board}
-    # 中文 log：啟動時顯示已載入的樣本檔名與筆數
-    logger.info("已載入 %s，共 %d 筆樣本", zip_path.name, count)
-    # 中文說明：顯示單一 ZIP 檔讀取完成與內含樣本數
+    if arr.ndim == 2:
+        arr = arr[None, ...]
+    rows, cols = arr.shape[1:3]
+    for board in arr:
+        yield {"rows": rows, "cols": cols, "grid": board.tolist()}
+    logger.info("已載入 %s，共 %d 筆樣本", zip_path.name, arr.shape[0])
 
 
 def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
-    """Iterate through all JSON samples in ``samples_dir``."""
+    """Iterate through all sample NPZ files in ``samples_dir``."""
     path = Path(samples_dir)
-    for zp in sorted(path.glob("*.zip")):
+    for npz_file in sorted(path.glob("*.npz")):
         try:
-            for item in _iter_json_from_zip(zp):
+            for item in _iter_npz(npz_file):
                 yield item
-        except Exception as exc:  # pragma: no cover - broken zip
-            logger.error("Failed to load %s: %s", zp.name, exc)
-            # 中文說明：ZIP 檔案無法打開或內容損壞
+        except Exception as exc:  # pragma: no cover - corrupted file
+            logger.error("Failed to load %s: %s", npz_file.name, exc)
+            # 中文說明：NPZ 檔案無法讀取或內容損壞
 
 
 def _compute_target_prior(
