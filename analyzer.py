@@ -8,6 +8,7 @@ import sys
 import re
 import gc
 import time
+import json
 from collections import defaultdict, Counter, OrderedDict
 from functools import lru_cache
 from prometheus_client import Counter as PromCounter, Gauge
@@ -244,8 +245,15 @@ def _load_sample_stats(
     """Load sample frequency cube with schema validation."""
 
     rows, cols = shape
-    path = Path(samples_dir) / f"{rows}x{cols}.npz"
-    if not path.exists():
+    # Support legacy "NxM.npz" as well as "full_stats_NxM.npz"
+    cand_names = [f"{rows}x{cols}.npz", f"full_stats_{rows}x{cols}.npz"]
+    path = None
+    for name in cand_names:
+        p = Path(samples_dir) / name
+        if p.exists():
+            path = p
+            break
+    if path is None:
         return None
     try:
         data = np.load(path, mmap_mode="r", allow_pickle=True)
@@ -254,13 +262,25 @@ def _load_sample_stats(
         INVALID_NPZ_COUNTER.inc()
         return None
     meta = data.get("meta", {})
-    if isinstance(meta, np.ndarray) and meta.shape == ():
-        meta = meta.item()
-    if (
-        not isinstance(meta, dict)
-        or meta.get("schema_version") != 1
-        or "generated_at" not in meta
-    ):
+    if isinstance(meta, np.ndarray):
+        if meta.shape == ():
+            meta = meta.item()
+        elif meta.dtype == np.uint8:
+            try:
+                meta = json.loads(meta.tobytes().decode())
+            except Exception:
+                meta = {}
+    if isinstance(meta, bytes):
+        try:
+            meta = json.loads(meta.decode())
+        except Exception:
+            meta = {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    if not isinstance(meta, dict) or "generated_at" not in meta:
         logger.warning("Invalid sample NPZ meta in %s: %s", path.name, meta)
         INVALID_NPZ_COUNTER.inc()
         return None
@@ -323,18 +343,24 @@ def _load_samples_for_shape(
         return _SAMPLE_CACHE[key]
 
     boards: List[Tuple[np.ndarray, str]] = []
-    path = Path(samples_dir) / f"{rows}x{cols}.npz"
-    if path.exists():
-        try:
-            with np.load(path) as data:
-                arr = data.get("boards")
-                if arr is not None:
+    patterns = [
+        f"{rows}x{cols}.npz",
+        f"boards_{rows}x{cols}.npz",
+        f"boards_{rows}x{cols}_part*.npz",
+    ]
+    for pat in patterns:
+        for fp in sorted(Path(samples_dir).glob(pat)):
+            try:
+                with np.load(fp) as data:
+                    arr = data.get("boards")
+                    if arr is None:
+                        continue
                     if arr.ndim == 2:
                         arr = arr[None, ...]
                     for idx, board in enumerate(arr):
-                        boards.append((board.astype(int), f"{path.name}[{idx}]"))
-        except Exception as exc:  # pragma: no cover - corrupted file
-            logger.error("Failed to load %s: %s", path.name, exc)
+                        boards.append((board.astype(int), f"{fp.name}[{idx}]"))
+            except Exception as exc:  # pragma: no cover - corrupted file
+                logger.error("Failed to load %s: %s", fp.name, exc)
 
     _SAMPLE_CACHE[key] = boards
     logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
