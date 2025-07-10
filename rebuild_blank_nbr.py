@@ -10,15 +10,20 @@ for every out_npz/full_stats_{rows}x{cols}.npz
 """
 
 from __future__ import annotations
-import json, zipfile, sys, numpy as np
+
+import json
+import sys
+import zipfile
 from pathlib import Path
+
+import numpy as np
 from tqdm import tqdm
 
 # ───── 使用者參數 ──────────────────────────────────────────
-NPZ_DIR      = Path("samples")            # 統計檔所在資料夾
-SAMPLES_DIR  = Path("samples")            # ZIP / JSON 根目錄
-BLANK_VAL    = -1                         # 你的空格值；若用 0 改成 0
-SHOW_SKIP    = True                       # 跳過壞盤時是否列印警告
+NPZ_DIR = Path("samples")  # 統計檔所在資料夾
+SAMPLES_DIR = Path("samples")  # ZIP / JSON 根目錄
+BLANK_VAL = -1  # 你的空格值；若用 0 改成 0
+SHOW_SKIP = True  # 跳過壞盤時是否列印警告
 # ─────────────────────────────────────────────────────────
 
 
@@ -47,12 +52,16 @@ def iter_boards(rows: int, cols: int):
                         continue
                 else:
                     data = json.loads(zf.read(name))
-                    boards = data if (
-                        isinstance(data, list)
-                        and data
-                        and isinstance(data[0], list)
-                        and isinstance(data[0][0], list)
-                    ) else [data]
+                    boards = (
+                        data
+                        if (
+                            isinstance(data, list)
+                            and data
+                            and isinstance(data[0], list)
+                            and isinstance(data[0][0], list)
+                        )
+                        else [data]
+                    )
 
                 for b in boards:
                     arr = np.asarray(b, dtype=np.int16)
@@ -88,9 +97,7 @@ def build_blank_nbr(npz_path: Path):
                 f"{npz_path.name} 內的 nbr3x3_blank shape 不符，請先確認檔案版本"
             )
         z["nbr3x3_blank"][:] = nbr
-    print(
-        f"✅ {npz_path.name} done ─ samples={int(nbr.sum()) // 9:,}  max={nbr.max()}"
-    )
+    print(f"✅ {npz_path.name} done ─ samples={int(nbr.sum()) // 9:,}  max={nbr.max()}")
 
 
 def main():

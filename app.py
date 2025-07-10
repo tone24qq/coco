@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
-import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -22,14 +21,10 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    fuse_predictions_with_heatmap,
-    fuse_score_matrices,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities,
+                      fuse_predictions_with_heatmap, fuse_score_matrices,
+                      predict_scratch_card, probability_heatmap,
+                      render_heatmap)
 from env_config import EnvConfig
 from strategy_types import Strategy
 
@@ -104,16 +99,15 @@ async def warm_up() -> None:
     priors = await load_priors_async()
     brain.priors_map.clear()
     brain.priors_map.update(priors)
-    logging.info(f"[warm-up] Loaded {len(priors)} shapes")
-    logger.debug("Loaded priors sizes: %s", list(brain.priors_map.keys()))
+    logging.info(f"[warm-up] Loaded {len(priors)} prior shapes")
+
     analyzer.load_all_global_pos_freqs(str(analyzer.DEFAULT_NPZ_DIR))
-    for shape in analyzer.list_loaded_freq_shapes():
-        key = f"{shape[0]}x{shape[1]}"
-        if key not in brain.priors_map:
-            brain.priors_map[key] = analyzer.compute_position_probabilities(
-                "samples", shape[0], shape[1]
-            )
-    await _load_samples_background()
+
+    analyzer.load_all_sample_stats("samples")
+    shapes = analyzer.list_loaded_sample_shapes()
+    logging.info("★★ Samples 已加载 shapes: %s", shapes)
+    if (4, 5) not in shapes:
+        logging.error("样本 4×5 未加载成功！")
 
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
@@ -160,14 +154,16 @@ async def debug_global_freqs() -> List[str]:
     return sorted(shapes)
 
 
-async def _load_samples_background():
-    analyzer.load_all_sample_stats("samples")
-    logger.info("Sample NPZ loading complete")
+@app.get("/health/samples")
+def health_samples():
+    shapes = analyzer.list_loaded_sample_shapes()
+    return {"loaded_sample_shapes": shapes}
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    asyncio.create_task(warm_up())
+    await warm_up()
+    # 这里 **不要** 再调用 load_all_sample_stats 或其他会重复加载的函数
 
 
 # ==== Schemas ==============================================================
@@ -612,12 +608,15 @@ async def on_shutdown():
     # 中文說明：FastAPI 伺服器已關閉，用於觀察服務停止時間點
 
 
-def run_api() -> None:
-    port = int(os.getenv("PORT", "10000"))
-    logger.info("Starting API on port %d", port)
-    # 中文說明：啟動 FastAPI 服務，輸出實際綁定的埠號
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
-
-
 if __name__ == "__main__":
-    run_api()
+    import os
+
+    import uvicorn
+
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(
+        "app:app",  # 或者你的应用模块路径
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+    )
