@@ -1,19 +1,17 @@
 FROM python:3.11-slim
 
-# 設定工作目錄
+# 1. 設定工作目錄
 WORKDIR /app
 
-# 安裝依賴
+# 2. 安裝 Python 依賴
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN echo "samples 內容：" && ls -l samples
-# 複製程式碼 + 熱力圖資料
+
+# 3. 複製整個專案（包含 samples/）
 COPY . .
 
-# ✅ 已預先準備 out_npz/*.npz、samples/*.npz，不需再重產
-# ❌ 以下兩行可移除避免浪費時間或意外覆蓋
-# RUN python3 build_global_pos_freq.py -s samples -o out_npz
-# RUN python3 precompute_heatmap.py
+# 4. 列出 /app/samples 內容，確認檔案已經在 image 裡
+RUN echo ">>> /app/samples 內容：" && ls -l /app/samples
 
-# 啟動 API 伺服器
+# 5. 啟動 API 伺服器
 ENTRYPOINT ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
