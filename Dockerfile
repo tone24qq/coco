@@ -6,7 +6,7 @@ WORKDIR /app
 # 安裝依賴
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN echo "samples 內容：" && ls -l samples
 # 複製程式碼 + 熱力圖資料
 COPY . .
 
