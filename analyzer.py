@@ -293,6 +293,35 @@ def _load_sample_stats(
     return freq
 
 
+def extract_shape_from_filename(fname: str) -> Optional[tuple[int, int]]:
+    m = re.match(r"sample_stats_(\d+)x(\d+)\.npz", fname)
+    if m:
+        return int(m[1]), int(m[2])
+    return None
+
+
+def load_sample_npz_for_shape(
+    shape: tuple[int, int], samples_dir: Path = Path("samples")
+) -> None:
+    rows, cols = shape
+    fname = f"sample_stats_{rows}x{cols}.npz"
+    path = samples_dir / fname
+    if not path.exists():
+        logger.warning("找不到樣本檔 %s", path)
+        return
+    try:
+        data = np.load(path, allow_pickle=True)
+        freq = data.get("freq")
+        if freq is not None:
+            _SAMPLE_STATS_LOADED.add((rows, cols, "npz"))
+            _SAMPLE_CACHE[(rows, cols, "npz")] = [(freq, "npz")]
+            logger.info("載入樣本 npz：%s", path.name)
+        else:
+            logger.warning("npz 檔案中沒有 freq 欄位：%s", path.name)
+    except Exception as e:
+        logger.error("讀取樣本 npz 檔失敗 %s：%s", path.name, e)
+
+
 @lru_cache(maxsize=6)
 def get_sample_stats_cached(
     rows: int, cols: int, samples_dir: str
@@ -304,16 +333,15 @@ def get_sample_stats_cached(
 
 
 def load_all_sample_stats(samples_dir: str) -> None:
-    """Preload valid ``NxM.npz`` files with version check."""
+    """Load all ``sample_stats_*x*.npz`` files from ``samples_dir``."""
 
-    pattern = re.compile(r"^(\d+)x(\d+)\.npz$")
+    samples_path = Path(samples_dir)
     count = 0
-    for npz_file in Path(samples_dir).glob("*.npz"):
-        m = pattern.match(npz_file.name)
-        if not m:
-            continue
-        rows, cols = map(int, m.groups())
-        if get_sample_stats_cached(rows, cols, samples_dir) is not None:
+    npz_files = samples_path.glob("sample_stats_*x*.npz")
+    for path in npz_files:
+        shape = extract_shape_from_filename(path.name)
+        if shape:
+            load_sample_npz_for_shape(shape, samples_path)
             count += 1
     logger.info("Total loaded sample freq: %d", count)
 

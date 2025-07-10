@@ -15,7 +15,8 @@ def test_invalid_npz_counter(tmp_path):
     np.savez(samples / "3x3.npz", freq=np.zeros((3, 3, 10), int), meta=invalid_meta)
     analyzer.get_sample_stats_cached.cache_clear()
     before = analyzer.INVALID_NPZ_COUNTER._value.get()
-    analyzer.load_all_sample_stats(str(samples))
+    analyzer.get_sample_stats_cached(2, 2, str(samples))
+    analyzer.get_sample_stats_cached(3, 3, str(samples))
     after = analyzer.INVALID_NPZ_COUNTER._value.get()
     assert after - before == 1
     assert analyzer.get_sample_stats_cached.cache_info().currsize <= 6
