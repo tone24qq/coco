@@ -5,26 +5,40 @@
 執行: python trim_boards_to_100mb.py
 """
 from __future__ import annotations
-import json, re, sys, zipfile, math
+
+import json
+import math
+import re
+import sys
+import zipfile
 from pathlib import Path
 from typing import List
+
 import numpy as np
+
 try:
     from tqdm import tqdm
 except ImportError:
-    def tqdm(it, **k): return it
+
+    def tqdm(it, **k):
+        return it
+
 
 # 路徑與檔名規則 -------------------------------------------------
 SAMPLES_DIR = Path("samples")
 NPZ_RE = re.compile(r"full_stats_(\d+)x(\d+)\.npz$")
 OUT_TMPL = "boards_{rows}x{cols}_part{idx}.npz"
-MAX_FILE_MB = 100      # 每檔上限 (MB)
-DTYPE = np.uint8       # 1 byte
+MAX_FILE_MB = 100  # 每檔上限 (MB)
+DTYPE = np.uint8  # 1 byte
+
 
 # ---------------------------------------------------------------
 def to_int(x, default=-999):
-    try: return int(str(x).strip().split(".")[0])
-    except Exception: return default
+    try:
+        return int(str(x).strip().split(".")[0])
+    except Exception:
+        return default
+
 
 def collect_boards(rows: int, cols: int) -> np.ndarray | None:
     """從 ZIP 取出符合尺寸的盤面。回傳 uint8 ndarray 或 None。"""
@@ -67,6 +81,7 @@ def collect_boards(rows: int, cols: int) -> np.ndarray | None:
         return None
     return np.stack(boards)  # (N, rows, cols), dtype=uint8
 
+
 def main() -> None:
     npz_files = sorted(SAMPLES_DIR.rglob("full_stats_*x*.npz"))
     if not npz_files:
@@ -76,7 +91,8 @@ def main() -> None:
     for stats_npz in tqdm(npz_files, desc="處理尺寸檔", unit="file"):
         m = NPZ_RE.search(stats_npz.name)
         if not m:
-            tqdm.write(f"⚠️ 無法解析尺寸：{stats_npz.name}"); continue
+            tqdm.write(f"⚠️ 無法解析尺寸：{stats_npz.name}")
+            continue
         rows, cols = map(int, m.groups())
 
         # 若已存在 boards_..._part0.npz 就略過
@@ -96,14 +112,17 @@ def main() -> None:
         parts = math.ceil(arr.shape[0] / max_boards_per_file)
 
         for idx in range(parts):
-            sl = slice(idx*max_boards_per_file, (idx+1)*max_boards_per_file)
+            sl = slice(idx * max_boards_per_file, (idx + 1) * max_boards_per_file)
             part_arr = arr[sl]
             out_path = SAMPLES_DIR / OUT_TMPL.format(rows=rows, cols=cols, idx=idx)
             np.savez_compressed(out_path, boards=part_arr)
             sz = out_path.stat().st_size / 1024 / 1024
-            tqdm.write(f"  ✅ {out_path.name}  {part_arr.shape[0]} boards → {sz:.2f} MB")
+            tqdm.write(
+                f"  ✅ {out_path.name}  {part_arr.shape[0]} boards → {sz:.2f} MB"
+            )
 
     print("🎉 全部尺寸補檔完成 (單檔 ≤100 MB)")
+
 
 if __name__ == "__main__":
     main()

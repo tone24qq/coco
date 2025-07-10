@@ -244,13 +244,15 @@ def _load_sample_stats(
 ) -> Optional[np.ndarray]:
     """Load sample frequency cube.
 
-    Supports legacy ``NxM.npz``/``full_stats_NxM.npz`` as well as
-    ``boards_NxM_part*.npz`` which store raw boards.
+    支援新格式 ``boards_{rows}x{cols}_part*.npz`` 以及 legacy ``NxM.npz``,
+    ``full_stats_NxM.npz``, ``sample_stats_NxM.npz``。
     """
 
     rows, cols = shape
-    p = Path(samples_dir)
-    part_files = sorted(p.glob(f"boards_{rows}x{cols}_part*.npz"))
+    base = Path(samples_dir)
+
+    # —— 新格式：boards_*_part*.npz ——
+    part_files = sorted(base.glob(f"boards_{rows}x{cols}_part*.npz"))
     if part_files:
         boards_list = []
         for fp in part_files:
@@ -263,70 +265,42 @@ def _load_sample_stats(
                         arr = arr[None, ...]
                     boards_list.append(arr.astype(int))
             except Exception as exc:  # pragma: no cover - corrupted file
-                logger.warning("Failed to load %s: %s", fp.name, exc)
+                logger.warning("Failed to load sample part %s: %s", fp.name, exc)
+                INVALID_NPZ_COUNTER.inc()
         if boards_list:
-            boards = np.concatenate(boards_list, axis=0)
+            all_boards = np.concatenate(boards_list, axis=0)
             freq = np.zeros(
                 (rows, cols, rows * cols + 1), dtype=dtype_for_shape(rows, cols)
             )
             rr, cc = np.indices((rows, cols))
-            for board in boards:
-                mask = (board >= 1) & (board <= rows * cols)
-                np.add.at(freq, (rr[mask], cc[mask], board[mask]), 1)
+            for b in all_boards:
+                mask = (b >= 1) & (b <= rows * cols)
+                np.add.at(freq, (rr[mask], cc[mask], b[mask]), 1)
             logger.info(
-                "loaded %d boards parts for %dx%d",
-                len(boards_list),
-                rows,
-                cols,
+                "loaded %d boards parts for %dx%d", len(boards_list), rows, cols
             )
             return freq
 
-    # Support legacy "NxM.npz" as well as "full_stats_NxM.npz"
-    cand_names = [f"{rows}x{cols}.npz", f"full_stats_{rows}x{cols}.npz"]
-    path = None
+    # —— fallback legacy 格式 ——
+    cand_names = [
+        f"{rows}x{cols}.npz",
+        f"full_stats_{rows}x{cols}.npz",
+        f"sample_stats_{rows}x{cols}.npz",
+    ]
     for name in cand_names:
-        cand = p / name
-        if cand.exists():
-            path = cand
-            break
-    if path is None:
-        return None
-    try:
-        data = np.load(path, mmap_mode="r", allow_pickle=True)
-    except Exception as exc:  # pragma: no cover - corrupted file
-        logger.warning("Failed to load %s: %s", path.name, exc)
-        INVALID_NPZ_COUNTER.inc()
-        return None
-    meta = data.get("meta", {})
-    if isinstance(meta, np.ndarray):
-        if meta.shape == ():
-            meta = meta.item()
-        elif meta.dtype == np.uint8:
-            try:
-                meta = json.loads(meta.tobytes().decode())
-            except Exception:
-                meta = {}
-    if isinstance(meta, bytes):
+        fp = base / name
+        if not fp.exists():
+            continue
         try:
-            meta = json.loads(meta.decode())
-        except Exception:
-            meta = {}
-    if isinstance(meta, str):
-        try:
-            meta = json.loads(meta)
-        except Exception:
-            meta = {}
-    if not isinstance(meta, dict) or "generated_at" not in meta:
-        logger.warning("Invalid sample NPZ meta in %s: %s", path.name, meta)
-        INVALID_NPZ_COUNTER.inc()
-        return None
-    freq = data.get("freq")
-    if freq is None:
-        logger.warning("freq missing in %s", path.name)
-        INVALID_NPZ_COUNTER.inc()
-        return None
-    logger.info("loaded sample freq %s", path.name)
-    return freq
+            with np.load(fp, mmap_mode="r", allow_pickle=True) as data:
+                freq = data.get("freq")
+                if isinstance(freq, np.ndarray):
+                    logger.info("loaded sample freq %s", fp.name)
+                    return freq
+        except Exception as exc:  # pragma: no cover - corrupted file
+            logger.warning("Failed to load %s: %s", fp.name, exc)
+            INVALID_NPZ_COUNTER.inc()
+    return None
 
 
 def extract_shape_from_filename(fname: str) -> Optional[tuple[int, int]]:
@@ -361,7 +335,9 @@ def load_sample_npz_for_shape(
 
 
 @lru_cache(maxsize=6)
-def get_sample_stats_cached(rows: int, cols: int, samples_dir: str) -> Optional[np.ndarray]:
+def get_sample_stats_cached(
+    rows: int, cols: int, samples_dir: str
+) -> Optional[np.ndarray]:
     """
     Load (and cache) sample stats for the given board shape.
     成功时在 _SAMPLE_STATS_LOADED 中记录 (rows, cols, "npz")，以通过相关测试。

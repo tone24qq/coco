@@ -5,9 +5,12 @@ Auto-generate global_pos_freq .npz files for specified or detected board shapes 
 # coding: utf-8
 import json
 import zipfile
-import numpy as np
 from pathlib import Path
+
+import numpy as np
+
 from analyzer import compute_global_distribution
+
 
 def detect_shapes(samples_dir: Path) -> set[tuple[int, int]]:
     """
@@ -31,6 +34,7 @@ def detect_shapes(samples_dir: Path) -> set[tuple[int, int]]:
             continue
     return shapes
 
+
 def parse_shapes(shape_list: list[str]) -> list[tuple[int, int]]:
     """
     Parse list of strings like ['4x5','8x10'] into list of (4,5),(8,10)
@@ -38,11 +42,12 @@ def parse_shapes(shape_list: list[str]) -> list[tuple[int, int]]:
     result = []
     for s in shape_list:
         try:
-            r, c = map(int, s.lower().split('x'))
+            r, c = map(int, s.lower().split("x"))
             result.append((r, c))
         except Exception:
             raise ValueError(f"Invalid shape '{s}'. Must be in RxC format, e.g. 4x5.")
     return result
+
 
 def main():
     import argparse
@@ -51,21 +56,24 @@ def main():
         description="Generate .npz frequency maps for shapes in samples folder"
     )
     parser.add_argument(
-        "-s", "--samples",
+        "-s",
+        "--samples",
         type=Path,
         required=True,
-        help="Directory containing your .zip sample files"
+        help="Directory containing your .zip sample files",
     )
     parser.add_argument(
-        "-o", "--outdir",
+        "-o",
+        "--outdir",
         type=Path,
         default=Path("out_npz"),
-        help="Output directory for .npz files"
+        help="Output directory for .npz files",
     )
     parser.add_argument(
-        "-S", "--shapes",
-        nargs='+',
-        help="Optional list of shapes to process, e.g. 4x5 8x10. If omitted, will auto-detect."
+        "-S",
+        "--shapes",
+        nargs="+",
+        help="Optional list of shapes to process, e.g. 4x5 8x10. If omitted, will auto-detect.",
     )
     args = parser.parse_args()
 
@@ -83,7 +91,9 @@ def main():
         shapes = detect_shapes(samples_dir)
 
     if not shapes:
-        print("ERROR: No shapes to process. Provide --shapes or ensure ZIPs contain JSON with rows/cols.")
+        print(
+            "ERROR: No shapes to process. Provide --shapes or ensure ZIPs contain JSON with rows/cols."
+        )
         return
 
     print(f"Shapes to process: {sorted(shapes)}")
@@ -95,5 +105,6 @@ def main():
         mb = out_file.stat().st_size / 1024**2
         print(f"Saved {out_file.name} ({mb:.1f} MB)")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
