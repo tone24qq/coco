@@ -1,3 +1,4 @@
+# === 內建模組 ===
 import asyncio
 import atexit
 import base64
@@ -7,24 +8,30 @@ import math
 import os
 import re
 import threading
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from pathlib import Path  # ✅ 推薦這個簡寫方式
+
+# === 第三方套件 ===
 import numpy as np
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-# fmt: off
+# === 專案內部模組 ===
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities,
-                      fuse_predictions_with_heatmap, fuse_score_matrices,
-                      predict_scratch_card, probability_heatmap,
-                      render_heatmap)
+from analyzer import (
+    compute_position_probabilities,
+    fuse_predictions_with_heatmap,
+    fuse_score_matrices,
+    predict_scratch_card,
+    probability_heatmap,
+    render_heatmap,
+)
 from env_config import EnvConfig
 from strategy_types import Strategy
 
@@ -123,11 +130,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-def _warm_up() -> None:                  ### 新增 ↓
-    analyzer.load_all_global_pos_freqs("out_npz")   # 全局熱力圖
-    analyzer.load_all_sample_stats("samples")       # 較小的樣本統計
-    print("✅ Warm-up 完成")                         ### 可選 log
-
 @app.on_event("startup")                 ### 新增 ↓
 async def _startup() -> None:
     threading.Thread(target=_warm_up, daemon=True).start()
