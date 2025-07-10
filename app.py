@@ -627,4 +627,9 @@ def run_api() -> None:
 
 
 if __name__ == "__main__":
-    run_api()
+    import os
+    import uvicorn
+
+    # 从环境变量拿端口，默认回落到 8000
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port)
