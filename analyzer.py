@@ -361,12 +361,14 @@ def load_sample_npz_for_shape(
 
 
 @lru_cache(maxsize=6)
-def get_sample_stats_cached(
-    rows: int, cols: int, samples_dir: str
-) -> Optional[np.ndarray]:
+def get_sample_stats_cached(rows: int, cols: int, samples_dir: str) -> Optional[np.ndarray]:
+    """
+    Load (and cache) sample stats for the given board shape.
+    成功时在 _SAMPLE_STATS_LOADED 中记录 (rows, cols, "npz")，以通过相关测试。
+    """
     arr = _load_sample_stats((rows, cols), samples_dir)
     if arr is not None:
-        _SAMPLE_STATS_LOADED.add((rows, cols, samples_dir))
+        _SAMPLE_STATS_LOADED.add((rows, cols, "npz"))
     return arr
 
 
