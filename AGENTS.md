@@ -3,6 +3,65 @@
 > **目標**：在「任意大小盤面」中以 *最短延遲* 取得 *最高準確* 的隱藏數字機率。  
 > Maintainer: **橘子 (Research Master)**  
 > Last-Updated: **2025-06-25**
+【橘子專案 - 實作整合重點摘要】
+
+一、主程式要求與設計原則
+-------------------------
+1. 每個模組都需「可直接呼叫、能實際參與推理」：
+   - 模組函數不能只是寫好，必須有對應的 strategy 判斷邏輯，以及在主流程中被註冊與調用。
+   - 主流程如 `main.py`、`analyzer.py` 或策略分派處，應加上類似：
+     ```python
+     if strategy == "sample_line":
+         score = compute_neighbor_line_stats(...)
+         ...
+     ```
+
+2. 所有模組須符合三大原則：
+   - **動態適應性**：自動偵測盤面大小、遮蔽格等，不硬編碼。
+   - **可解釋性**：採用明確啟發式邏輯，例如鄰近匹配、序列修補。
+   - **即時可用性**：建議提供 `sample_xyz_stats(...)` 包裝函式，輸出為 Top-N 格式，讓主程式可直接使用。
+
+3. 建議模組輸出統一格式：
+   ```python
+   List[Tuple[Tuple[int, int], List[int], List[float]]]
+   ```
+
+二、常見錯誤與需避免設計
+-------------------------
+1. ❌ 單純寫好函數但未導入主邏輯（例：只有寫 `neighbor_line_stats.py` 但 `main.py` 無調用）
+2. ❌ 匹配過於嚴格，導致沒有任何樣本通過（需允許 row 或 col match 即可）
+3. ❌ 匹配失敗時無 log、無 fallback，造成無聲錯誤
+4. ❌ 沒有註冊為 strategy 或無法被主程式選用 → 實作形同虛設
+
+三、工程師導入模組應包含的語句（建議範本）
+------------------------------------------
+1. 匯入模組：
+   ```python
+   from neighbor_line_stats import compute_neighbor_line_stats
+   ```
+
+2. 在主策略流程加入支援：
+   ```python
+   if strategy == "sample_line":
+       score = compute_neighbor_line_stats(grid, target, ...)
+       ranked = ...
+       return {
+           "strategy": "sample_line",
+           "top_predictions": preds,
+           ...
+       }
+   ```
+
+3. 測試檔需涵蓋：
+   - 空格是否正確被選出
+   - 輸出 shape 是否與 grid 一致
+   - 分數是否都在 [0, 1] 範圍內
+
+四、補充：簡單溝通句建議
+-------------------------
+- 「請確保你做的模組有實際參與預測流程，不只是寫好函數」
+- 「我們希望每個模組都能被 strategy 呼叫，並可直接推理出 top-N 空格」
+- 「只寫函數不實際用在流程中，等於模組沒有存在感」
 
 本文件說明 `app.py`, `main.py`, `analyzer.py`, `brain.py`, `modules.py` 之間的 _Agent_ 切分與責任。低耦合、高內聚的代理設計能讓你 **快速替換演算法**，同時維持 API/CLI 介面不變。
 # AGENTS 使用與擴充規範（AGENTS.md）
