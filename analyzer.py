@@ -330,7 +330,9 @@ def _load_sample_stats(
 
 
 def extract_shape_from_filename(fname: str) -> Optional[tuple[int, int]]:
-    m = re.match(r"sample_stats_(\d+)x(\d+)\.npz", fname)
+    """Return board shape inferred from various NPZ filenames."""
+
+    m = re.search(r"(?:sample_stats_|boards_)(\d+)x(\d+)", fname)
     if m:
         return int(m[1]), int(m[2])
     return None
@@ -369,19 +371,34 @@ def get_sample_stats_cached(
 
 
 def load_all_sample_stats(samples_dir: str) -> None:
-    """Load all ``sample_stats_*x*.npz`` files from ``samples_dir``."""
+    """Load all sample NPZ files (legacy or boards_*_part*.npz) from samples_dir."""
 
     samples_path = Path(samples_dir)
+    # 列出目錄內容（debug）
     logging.info(
         "Samples 目錄 npz 檔：%s", [f.name for f in samples_path.glob("*.npz")]
     )
     count = 0
-    npz_files = samples_path.glob("sample_stats_*x*.npz")
-    for path in npz_files:
-        shape = extract_shape_from_filename(path.name)
-        if shape:
-            load_sample_npz_for_shape(shape, samples_path)
+    # 1) 先處理所有 boards_{rows}x{cols}_part*.npz
+    for part in samples_path.glob("boards_*x*_part*.npz"):
+        # 從檔名推 shape
+        shape = extract_shape_from_filename(part.name)
+        if not shape:
+            continue
+        # 讓 get_sample_stats_cached / _load_sample_stats 實際去讀它
+        stats = get_sample_stats_cached(shape[0], shape[1], samples_dir)
+        if stats is not None:
             count += 1
+
+    # 2) 再處理舊版 sample_stats_*x*.npz（if any）
+    for legacy in samples_path.glob("sample_stats_*x*.npz"):
+        shape = extract_shape_from_filename(legacy.name)
+        if not shape:
+            continue
+        stats = get_sample_stats_cached(shape[0], shape[1], samples_dir)
+        if stats is not None:
+            count += 1
+
     logger.info("Total loaded sample freq: %d", count)
 
 
