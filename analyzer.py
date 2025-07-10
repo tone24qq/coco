@@ -607,6 +607,8 @@ def heatmap_fallback_prediction(
     if layer.max() > 0:
         layer /= float(layer.max())
 
+    layer = _blend_with_sample_line(layer, grid, int(target), samples_dir=history_dir)
+
     mask = grid == -1
     ranked = sorted(
         [(float(layer[r, c]), int(r), int(c)) for r, c in zip(*np.where(mask))],
@@ -651,6 +653,34 @@ def sample_neighbor_line_stats(
     blanks = [(int(r), int(c)) for r, c in zip(*np.where(grid == BLANK_VAL))]
     ranked = sorted(blanks, key=lambda pos: score[pos], reverse=True)[:top_k]
     return [(pos, [int(target_num)], [float(score[pos])]) for pos in ranked]
+
+
+def _blend_with_sample_line(
+    score_map: np.ndarray,
+    grid: np.ndarray,
+    target: int,
+    *,
+    samples_dir: str = "samples",
+    weight: float = 0.3,
+) -> np.ndarray:
+    """Add neighbor & line sample stats layer to ``score_map``."""
+
+    extra_sample_score = compute_neighbor_line_stats(
+        grid,
+        target,
+        samples_dir=samples_dir,
+        enable_neighbor_match=True,
+        enable_line_match=True,
+        weight_neighbor=0.6,
+        weight_line=0.4,
+    )
+
+    if extra_sample_score.max() > 0:
+        extra_sample_score /= float(extra_sample_score.max())
+
+    total_score_map = score_map.copy()
+    total_score_map += weight * extra_sample_score
+    return total_score_map
 
 
 def _iter_npz(zip_path: Path) -> Iterator[Dict[str, Any]]:
@@ -1853,6 +1883,10 @@ def predict_scratch_card(
 
             final_score = β * global_layer + (1 - β) * mixed_sample
 
+            final_score = _blend_with_sample_line(
+                final_score, grid_np, int(target_num), samples_dir=history_dir
+            )
+
             blanks_coords = [
                 (int(r), int(c)) for r, c in np.argwhere(grid_np == BLANK_VAL)
             ]
@@ -2023,6 +2057,11 @@ def predict_scratch_card(
             final_score_map[r, c] += alpha * nbr_probs.get((r, c), 0.0)
         for (r, c), p in csp_probs.items():
             final_score_map[r, c] += (1 - alpha) * p
+
+    if target_num is not None:
+        final_score_map = _blend_with_sample_line(
+            final_score_map, grid_np, int(target_num), samples_dir=history_dir
+        )
 
     top_k = result_top_k or env.result_top_k
     rings = BoardAnalyzerUtils.ring_index(*grid_np.shape)
