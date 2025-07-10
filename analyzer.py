@@ -373,35 +373,37 @@ def get_sample_stats_cached(rows: int, cols: int, samples_dir: str) -> Optional[
 
 
 def load_all_sample_stats(samples_dir: str) -> None:
-    """Load all sample NPZ files (legacy or boards_*_part*.npz) from samples_dir."""
-
+    """
+    Load all sample NPZ files (new boards_* parts or legacy sample_stats_*).
+    成功时会调用 get_sample_stats_cached 并在 _SAMPLE_STATS_LOADED 中记录 (rows, cols, "npz")。
+    """
     samples_path = Path(samples_dir)
-    # 列出目錄內容（debug）
+    # 列出目录内容（调试用）
     logging.info(
-        "Samples 目錄 npz 檔：%s", [f.name for f in samples_path.glob("*.npz")]
+        "Samples 目录 npz 文件：%s",
+        [f.name for f in samples_path.glob("*.npz")],
     )
     count = 0
-    # 1) 先處理所有 boards_{rows}x{cols}_part*.npz
-    for part in samples_path.glob("boards_*x*_part*.npz"):
-        # 從檔名推 shape
-        shape = extract_shape_from_filename(part.name)
-        if not shape:
+
+    # 1) 先处理所有 boards_{rows}x{cols}_part*.npz
+    for fp in samples_path.glob("boards_*x*_part*.npz"):
+        m = re.match(r"boards_(\d+)x(\d+)_part\d+\.npz", fp.name)
+        if not m:
             continue
-        # 讓 get_sample_stats_cached / _load_sample_stats 實際去讀它
-        stats = get_sample_stats_cached(shape[0], shape[1], samples_dir)
-        if stats is not None:
+        rows, cols = int(m.group(1)), int(m.group(2))
+        if get_sample_stats_cached(rows, cols, samples_dir) is not None:
             count += 1
 
-    # 2) 再處理舊版 sample_stats_*x*.npz（if any）
-    for legacy in samples_path.glob("sample_stats_*x*.npz"):
-        shape = extract_shape_from_filename(legacy.name)
-        if not shape:
+    # 2) 再处理 legacy 的 sample_stats_*x*.npz
+    for fp in samples_path.glob("sample_stats_*x*.npz"):
+        m = re.match(r"sample_stats_(\d+)x(\d+)\.npz", fp.name)
+        if not m:
             continue
-        stats = get_sample_stats_cached(shape[0], shape[1], samples_dir)
-        if stats is not None:
+        rows, cols = int(m.group(1)), int(m.group(2))
+        if get_sample_stats_cached(rows, cols, samples_dir) is not None:
             count += 1
 
-    logger.info("Total loaded sample freq: %d", count)
+    logging.info("Total loaded sample freq: %d", count)
 
 
 def list_loaded_sample_shapes() -> List[tuple[int, int]]:
