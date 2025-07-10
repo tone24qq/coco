@@ -10,4 +10,5 @@ COPY . .
 RUN echo "=== out_npz ===" && ls -l out_npz || true && \
     echo "=== samples ===" && ls -l samples || true
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "${PORT:-8000}"]
+# 取代原來那行
+CMD ["sh", "-c", "exec uvicorn app:app --host 0.0.0.0 --port ${PORT:-8000}"]
