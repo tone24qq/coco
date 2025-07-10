@@ -39,6 +39,7 @@ from weights import AGG_WEIGHTS
 
 # 额外引入全局分布計算
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
+from neighbor_line_stats import BLANK_VAL, compute_neighbor_line_stats
 from csp_solver import heuristic_csp_sampling
 
 env = EnvConfig()
@@ -622,6 +623,34 @@ def heatmap_fallback_prediction(
         "final_recommendations": [],
         "fallback_heat": True,
     }
+
+
+def sample_neighbor_line_stats(
+    grid: np.ndarray,
+    target_num: int,
+    *,
+    samples_dir: str = "samples",
+    enable_neighbor_match: bool = True,
+    enable_line_match: bool = True,
+    weight_neighbor: float = 0.5,
+    weight_line: float = 0.5,
+    top_k: int = 5,
+) -> List[Tuple[Tuple[int, int], list[int], list[float]]]:
+    """Return top-k positions by sample neighbor and line statistics."""
+
+    score = compute_neighbor_line_stats(
+        grid,
+        target_num,
+        samples_dir=samples_dir,
+        enable_neighbor_match=enable_neighbor_match,
+        enable_line_match=enable_line_match,
+        weight_neighbor=weight_neighbor,
+        weight_line=weight_line,
+    )
+
+    blanks = [(int(r), int(c)) for r, c in zip(*np.where(grid == BLANK_VAL))]
+    ranked = sorted(blanks, key=lambda pos: score[pos], reverse=True)[:top_k]
+    return [(pos, [int(target_num)], [float(score[pos])]) for pos in ranked]
 
 
 def _iter_npz(zip_path: Path) -> Iterator[Dict[str, Any]]:
