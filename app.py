@@ -12,7 +12,18 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
-from pathlib import Path  # ✅ 推薦這個簡寫方式
+from pathlib import Path
+
+# === 類型註記 ===
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Union,
+    Literal,
+)
 
 # === 第三方套件 ===
 import numpy as np
@@ -21,7 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-# === 專案內部模組 ===
+# === 專案內部 ===
 import analyzer
 import brain
 from analyzer import (
