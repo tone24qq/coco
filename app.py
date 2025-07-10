@@ -123,7 +123,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+def _warm_up() -> None:                  ### 新增 ↓
+    analyzer.load_all_global_pos_freqs("out_npz")   # 全局熱力圖
+    analyzer.load_all_sample_stats("samples")       # 較小的樣本統計
+    print("✅ Warm-up 完成")                         ### 可選 log
 
+@app.on_event("startup")                 ### 新增 ↓
+async def _startup() -> None:
+    threading.Thread(target=_warm_up, daemon=True).start()
 
 @app.get("/debug/priors", response_class=JSONResponse)
 async def debug_priors():
