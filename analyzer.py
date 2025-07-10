@@ -242,16 +242,52 @@ def list_loaded_freq_shapes() -> List[tuple[int, int]]:
 def _load_sample_stats(
     shape: tuple[int, int], samples_dir: str
 ) -> Optional[np.ndarray]:
-    """Load sample frequency cube with schema validation."""
+    """Load sample frequency cube.
+
+    Supports legacy ``NxM.npz``/``full_stats_NxM.npz`` as well as
+    ``boards_NxM_part*.npz`` which store raw boards.
+    """
 
     rows, cols = shape
+    p = Path(samples_dir)
+    part_files = sorted(p.glob(f"boards_{rows}x{cols}_part*.npz"))
+    if part_files:
+        boards_list = []
+        for fp in part_files:
+            try:
+                with np.load(fp, mmap_mode="r") as data:
+                    arr = data.get("boards")
+                    if arr is None:
+                        continue
+                    if arr.ndim == 2:
+                        arr = arr[None, ...]
+                    boards_list.append(arr.astype(int))
+            except Exception as exc:  # pragma: no cover - corrupted file
+                logger.warning("Failed to load %s: %s", fp.name, exc)
+        if boards_list:
+            boards = np.concatenate(boards_list, axis=0)
+            freq = np.zeros(
+                (rows, cols, rows * cols + 1), dtype=dtype_for_shape(rows, cols)
+            )
+            rr, cc = np.indices((rows, cols))
+            for board in boards:
+                mask = (board >= 1) & (board <= rows * cols)
+                np.add.at(freq, (rr[mask], cc[mask], board[mask]), 1)
+            logger.info(
+                "loaded %d boards parts for %dx%d",
+                len(boards_list),
+                rows,
+                cols,
+            )
+            return freq
+
     # Support legacy "NxM.npz" as well as "full_stats_NxM.npz"
     cand_names = [f"{rows}x{cols}.npz", f"full_stats_{rows}x{cols}.npz"]
     path = None
     for name in cand_names:
-        p = Path(samples_dir) / name
-        if p.exists():
-            path = p
+        cand = p / name
+        if cand.exists():
+            path = cand
             break
     if path is None:
         return None
@@ -336,6 +372,9 @@ def load_all_sample_stats(samples_dir: str) -> None:
     """Load all ``sample_stats_*x*.npz`` files from ``samples_dir``."""
 
     samples_path = Path(samples_dir)
+    logging.info(
+        "Samples 目錄 npz 檔：%s", [f.name for f in samples_path.glob("*.npz")]
+    )
     count = 0
     npz_files = samples_path.glob("sample_stats_*x*.npz")
     for path in npz_files:
