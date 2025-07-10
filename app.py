@@ -22,14 +22,10 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    fuse_predictions_with_heatmap,
-    fuse_score_matrices,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities,
+                      fuse_predictions_with_heatmap, fuse_score_matrices,
+                      predict_scratch_card, probability_heatmap,
+                      render_heatmap)
 from env_config import EnvConfig
 from strategy_types import Strategy
 
@@ -113,7 +109,12 @@ async def warm_up() -> None:
             brain.priors_map[key] = analyzer.compute_position_probabilities(
                 "samples", shape[0], shape[1]
             )
-    await _load_samples_background()
+
+    analyzer.load_all_sample_stats("samples")
+    loaded = analyzer.list_loaded_sample_shapes()
+    logging.info("★★ Samples 已加载 shape 列表: %s", loaded)
+    if (4, 5) not in loaded:
+        logging.error("样本 4x5 未加载成功！请检查目录与 Loader 逻辑。")
 
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
@@ -158,6 +159,12 @@ async def debug_global_freqs() -> List[str]:
         if m:
             shapes.add(m.group(1))
     return sorted(shapes)
+
+
+@app.get("/health/samples")
+def health_samples():
+    shapes = analyzer.list_loaded_sample_shapes()
+    return {"loaded_sample_shapes": shapes}
 
 
 async def _load_samples_background():
