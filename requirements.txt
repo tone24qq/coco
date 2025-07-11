@@ -1,10 +1,11 @@
-numpy>=2.0.0
-numba>=0.59.1
-joblib>=1.4.2
-orjson>=3.10.0
-matplotlib>=3.8.4
-prometheus_client>=0.20.0
-fastapi>=0.115.0
-uvicorn>=0.30.6
-pydantic>=2.8.2
-scipy>=1.13.0
+# requirements.txt（示範）
+numpy==2.0.1          # 最新 LTS patch
+numba==0.60.2         # 首個穩定支援 NumPy 2 的版本
+scipy==1.13.1         # 同樣支援 NumPy 2
+joblib==1.4.2
+orjson==3.10.0
+matplotlib==3.8.4
+prometheus_client==0.20.0
+fastapi==0.115.14     # 目前 0.115 系列最新 patch
+uvicorn==0.30.6
+pydantic==2.8.2
