@@ -134,10 +134,12 @@ async def warm_up() -> None:
         logging.info("样本 4×5 已成功加载。")
 
 
+app = FastAPI(
     title="Scratch Card Prediction API",
     version="1.0.0",
     description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
 )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
