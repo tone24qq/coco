@@ -1661,6 +1661,67 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
     return hits / float(trials)
 
 
+def match_samples(
+    grid: np.ndarray, target_num: int, history_dir: str
+) -> List[np.ndarray]:
+    """Return boards from ``history_dir`` matching known cells and containing ``target_num``."""
+    rows, cols = grid.shape
+    mask = grid != -1
+    matches: List[np.ndarray] = []
+    for sample in iter_sample_jsons(history_dir):
+        if sample["rows"] != rows or sample["cols"] != cols:
+            continue
+        board = np.asarray(sample["grid"], dtype=int)
+        if not np.array_equal(board[mask], grid[mask]):
+            continue
+        if target_num not in board:
+            continue
+        matches.append(board)
+    return matches
+
+
+def compute_sample_heatmap(
+    matches: List[np.ndarray], shape: Tuple[int, int], target_num: int
+) -> np.ndarray:
+    """Return count heatmap of ``target_num`` from matched boards."""
+    heat = np.zeros(shape, dtype=float)
+    for board in matches:
+        idx = np.argwhere(np.asarray(board) == target_num)
+        for r, c in idx:
+            heat[int(r), int(c)] += 1
+    return heat
+
+
+def predict_target_cell(
+    grid: Union[List[List[int]], np.ndarray],
+    target_num: int,
+    history_dir: str = "samples",
+    *,
+    fusion_alpha: float = 0.7,
+    min_samples: int = 5,
+    top_k: int = 1,
+) -> Union[Tuple[int, int], List[Tuple[int, int]]]:
+    """Predict target location by fusing global and sample heatmaps."""
+    arr = np.asarray(grid, dtype=int)
+    rows, cols = arr.shape
+    prior = compute_history_frequency(history_dir, target_num, rows, cols)
+    h_global = prior.astype(float)
+    h_global_norm = h_global / (h_global.sum() or 1.0)
+    matches = match_samples(arr, target_num, history_dir)
+    if len(matches) >= min_samples:
+        h_sample = compute_sample_heatmap(matches, (rows, cols), target_num)
+        h_sample_norm = h_sample / (h_sample.sum() or 1.0)
+    else:
+        h_sample_norm = np.zeros_like(h_global_norm)
+    fused = fusion_alpha * h_global_norm + (1.0 - fusion_alpha) * h_sample_norm
+    if top_k == 1:
+        r, c = np.unravel_index(int(np.argmax(fused)), fused.shape)
+        return (int(r), int(c))
+    flat = fused.flatten()
+    idxs = np.argsort(flat)[-top_k:][::-1]
+    return [tuple(map(int, np.unravel_index(i, fused.shape))) for i in idxs]
+
+
 def neighbor_lock_or_fuse(
     grid: np.ndarray,
     target_num: int,
@@ -1694,28 +1755,20 @@ def neighbor_lock_or_fuse(
         return (int(pos[0]), int(pos[1])), float(score_n)
 
     logger.info(
-        "無鄰居候選，使用樣本+模擬融合：sample_gamma=%.2f, fusion_alpha=%.2f",
-        sample_gamma,
+        "無鄰居候選，啟用全局+樣本熱力融合：alpha=%.2f",
         fusion_alpha,
     )
-
-    try:
-        prior_map = compute_position_probabilities(samples_dir, *grid.shape)
-    except Exception as exc:  # pragma: no cover - IO errors
-        logger.error("prior load failed: %s", exc)
-        prior_map = {}
-    sim_map = simulate_full_board(grid, target_num, n_iter=phase1)
-
-    prior_scores = {pos: prior_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}
-    sim_scores = {pos: sim_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}
-
-    max_p = max(prior_scores.values()) or 1.0
-    max_s = max(sim_scores.values()) or 1.0
-    final_scores = {
-        pos: sample_gamma * (prior_scores[pos] / max_p)
-        + fusion_alpha * (sim_scores[pos] / max_s)
-        for pos in blanks
-    }
-
-    pos, val = max(final_scores.items(), key=lambda x: x[1])
-    return (int(pos[0]), int(pos[1])), float(val)
+    heat_pos = predict_target_cell(
+        grid,
+        target_num,
+        history_dir=samples_dir,
+        fusion_alpha=fusion_alpha,
+        min_samples=5,
+        top_k=1,
+    )
+    r, c = heat_pos
+    prior = compute_history_frequency(
+        samples_dir, target_num, grid.shape[0], grid.shape[1]
+    )
+    prob = float(prior[r, c]) if prior.size else 0.0
+    return (int(r), int(c)), prob
