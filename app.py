@@ -128,8 +128,7 @@ async def warm_up() -> None:
         logging.error("样本 4×5 未加载成功！")
 
 
-# —— FastAPI app & CORS —————————————————————————————————————————————————————————
-app = FastAPI(
+# —— FastAPI app & CORS —————————————————————————————————————————————————————————app = FastAPI(
     title="Scratch Card Prediction API",
     version="1.0.0",
     description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
