@@ -146,7 +146,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)  # ✅ 結束
+)  # 結束
 @app.on_event("startup")                 ### 新增 ↓
 async def _startup() -> None:
     threading.Thread(target=_warm_up, daemon=True).start()
