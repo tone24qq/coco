@@ -371,6 +371,9 @@ async def predict(req: GridRequest):
         ):
             force_legacy = True
 
+        # 若請求未帶入 sample_gamma，預設採樣本占 90%
+        sample_gamma = req.sample_gamma if req.sample_gamma is not None else 0.9
+
         result = predict_scratch_card(
             grid=grid_norm,
             target_num=req.target_num,
@@ -381,7 +384,7 @@ async def predict(req: GridRequest):
             epsilon=eps,
             result_top_k=top_k,
             priors=priors,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=sample_gamma,
             fusion_alpha=req.fusion_alpha,
             force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
@@ -394,7 +397,7 @@ async def predict(req: GridRequest):
                 grid_norm,
                 req.target_num,
                 hm_iter,
-                sample_gamma=req.sample_gamma or 0.0,
+                sample_gamma=sample_gamma,
                 history_dir="samples",
             )
             fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
@@ -417,7 +420,7 @@ async def predict(req: GridRequest):
             "predictions": preds,
             "top_predictions": tops,
             "full_probabilities": clean_probs,
-            "sample_gamma_used": req.sample_gamma or 0.0,
+            "sample_gamma_used": sample_gamma,
             "final_recommendations": recs,
             "top_recommendations": top_recs,
             "strategy": result.get("strategy"),
@@ -451,12 +454,15 @@ async def heatmap(req: HeatmapRequest):
         is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
         grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
 
+        # 若未提供 sample_gamma，預設 0.9
+        sample_gamma = req.sample_gamma if req.sample_gamma is not None else 0.9
+
         prob = probability_heatmap(
             grid_norm,
             k_eff,
             iters,
             seed=req.seed,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=sample_gamma,
             history_dir="samples",
         )
 
@@ -478,7 +484,7 @@ async def heatmap(req: HeatmapRequest):
             epsilon=PHASE2_EPS,
             result_top_k=3,
             priors=priors,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=sample_gamma,
         )
 
         fusion_alpha = req.fusion_alpha or 0.7
@@ -519,7 +525,7 @@ async def heatmap(req: HeatmapRequest):
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
                 "top_recommendations": top_recs,
-                "sample_gamma_used": req.sample_gamma or 0.0,
+                "sample_gamma_used": sample_gamma,
                 "strategy": pred_result.get("strategy"),
             }
         else:
