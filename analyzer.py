@@ -1202,13 +1202,14 @@ def predict_scratch_card(
 
     if use_neighbor_lock and target_num is not None:
         try:
+            fusion_alpha_eff = fusion_alpha if fusion_alpha is not None else 0.1
             (r_sel, c_sel), sc = neighbor_lock_or_fuse(
                 grid_np,
                 target_num,
                 phase1=iterations or 6000,
                 samples_dir=history_dir,
-                sample_gamma=sample_gamma or 0.9,
-                fusion_alpha=fusion_alpha or 0.1,
+                sample_gamma=sample_gamma,
+                fusion_alpha=fusion_alpha_eff,
                 threshold=neighbor_threshold,
             )
             return {
@@ -1545,7 +1546,7 @@ def probability_heatmap(
     sample_gamma: float = 0.0,
     history_dir: str = "samples",
     nearest_weight: float = 0.0,
-    fusion_alpha: float = 1.0,
+    fusion_alpha: float = 0.1,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
 
@@ -1572,6 +1573,8 @@ def probability_heatmap(
     rng = np.random.default_rng(seed)
     grid_np = np.asarray(grid, dtype=int)
     prob_map_dict = simulate_full_board(grid_np, k, n_iter=n_iter, rng=rng)
+    if sample_gamma is None:
+        sample_gamma = 0.0
 
     mask_ratio = float(np.mean(grid_np == -1))
     gamma = sample_gamma * (1.0 + mask_ratio)
@@ -1587,7 +1590,7 @@ def probability_heatmap(
 
     # 中文 log：顯示融合參數與實際使用的樣本比例
     logger.info(
-        "融合中：sample_gamma=%.2f（樣本佔比），fusion_alpha=%.2f（模擬佔比）",
+        "融合中：sample_gamma=%.2f（样本占比），fusion_alpha=%.2f（模拟占比）",
         sample_gamma,
         fusion_alpha,
     )
@@ -1595,11 +1598,10 @@ def probability_heatmap(
     if k is not None:
         out = np.zeros_like(grid_np, dtype=float)
         for (r, c), cell in prob_map_dict.items():
-            val = cell.get(k, 0.0)
-            if pos_probs:
-                val = (1.0 - gamma) * val + gamma * pos_probs.get((r, c), {}).get(
-                    k, 0.0
-                )
+            sim_val = cell.get(k, 0.0)
+            sample_val = pos_probs.get((r, c), {}).get(k, 0.0) if pos_probs else 0.0
+            # 真正依 fusion_alpha 參數來融合
+            val = fusion_alpha * sim_val + (1.0 - fusion_alpha) * sample_val
             out[r, c] = val
         if nearest_weight > 0:
             from modules import nearest_value_affinity

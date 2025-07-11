@@ -381,7 +381,7 @@ async def predict(req: GridRequest):
             epsilon=eps,
             result_top_k=top_k,
             priors=priors,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=req.sample_gamma,
             fusion_alpha=req.fusion_alpha,
             force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
@@ -394,7 +394,7 @@ async def predict(req: GridRequest):
                 grid_norm,
                 req.target_num,
                 hm_iter,
-                sample_gamma=req.sample_gamma or 0.0,
+                sample_gamma=req.sample_gamma,
                 history_dir="samples",
             )
             fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
@@ -417,7 +417,7 @@ async def predict(req: GridRequest):
             "predictions": preds,
             "top_predictions": tops,
             "full_probabilities": clean_probs,
-            "sample_gamma_used": req.sample_gamma or 0.0,
+            "sample_gamma_used": req.sample_gamma,
             "final_recommendations": recs,
             "top_recommendations": top_recs,
             "strategy": result.get("strategy"),
@@ -456,7 +456,7 @@ async def heatmap(req: HeatmapRequest):
             k_eff,
             iters,
             seed=req.seed,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=req.sample_gamma,
             history_dir="samples",
         )
 
@@ -478,7 +478,7 @@ async def heatmap(req: HeatmapRequest):
             epsilon=PHASE2_EPS,
             result_top_k=3,
             priors=priors,
-            sample_gamma=req.sample_gamma or 0.0,
+            sample_gamma=req.sample_gamma,
         )
 
         fusion_alpha = req.fusion_alpha or 0.7
@@ -519,7 +519,7 @@ async def heatmap(req: HeatmapRequest):
                 "full_probabilities": clean_probs,
                 "final_recommendations": recs,
                 "top_recommendations": top_recs,
-                "sample_gamma_used": req.sample_gamma or 0.0,
+                "sample_gamma_used": req.sample_gamma,
                 "strategy": pred_result.get("strategy"),
             }
         else:
