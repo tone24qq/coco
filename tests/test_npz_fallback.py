@@ -15,7 +15,7 @@ def test_predict_fallback_to_compute(monkeypatch):
 
     monkeypatch.setattr(analyzer, "load_global_pos_freq_npz", fake_load)
     monkeypatch.setattr(analyzer, "compute_global_distribution", fake_compute)
-    monkeypatch.setattr(analyzer, "_load_samples_for_shape", lambda *_: [])
+    monkeypatch.setattr(analyzer, "load_samples_for_shape", lambda *_: [])
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
     monkeypatch.setattr(analyzer, "get_global_pos_freq", lambda *_: None)
 

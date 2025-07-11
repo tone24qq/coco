@@ -54,9 +54,9 @@ def compute_neighbor_line_stats(
     if blanks.size == 0:
         return np.zeros((rows, cols), dtype=float)
 
-    from analyzer import _load_samples_for_shape
+    from analyzer import load_samples_for_shape
 
-    boards: List[Tuple[np.ndarray, str]] = _load_samples_for_shape(
+    boards: List[Tuple[np.ndarray, str]] = load_samples_for_shape(
         samples_dir, rows, cols
     )
     if not boards:

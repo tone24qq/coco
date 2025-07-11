@@ -207,52 +207,13 @@ _load_global_pos_freq_npz_cached.cache_clear = _clear_npz_cache
 def load_global_pos_freq_npz(
     shape: tuple[int, int], npz_dir: Path = DEFAULT_NPZ_DIR
 ) -> np.ndarray:
-    """載入預先計算的全域位置頻率並統計使用次數。"""
+    """Load heatmap NPZ for ``shape`` on demand and cache it."""
 
     rows, cols = shape
     _NPZ_USAGE_STATS[f"{rows}x{cols}"] += 1
-    return _load_global_pos_freq_npz_cached(shape, npz_dir)
-
-
-def load_all_global_pos_freqs(npz_dir: str) -> None:
-    """Scan ``npz_dir`` (and ``out_npz/``) and cache heatmap files."""
-    pattern = re.compile(r"(\d+)x(\d+)\.npz$")
-    base = Path(npz_dir)
-    files = list(base.glob("*.npz"))
-    if not files:
-        files = list((base / "out_npz").glob("*.npz"))
-    for npz_file in files:
-        m = pattern.search(npz_file.name)
-        if not m:
-            continue
-        rows, cols = map(int, m.groups())
-        try:
-            start = time.perf_counter()
-            data = np.load(npz_file, mmap_mode="r")
-            freq = data.get("freq")
-            if freq is None:
-                continue
-            freq = _align_heatmap_axes(freq, rows, cols).astype(float)
-            _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq
-            NPZ_LOAD_LATENCY_SECONDS.labels(f"{rows}x{cols}").set(
-                time.perf_counter() - start
-            )
-            NPZ_LOADED_TOTAL.labels(f"{rows}x{cols}").inc()
-            _update_cache_metrics()
-            logger.info(
-                "loaded %dx%d heatmap from %s - 已載入熱力圖",
-                rows,
-                cols,
-                npz_file.name,
-            )
-            # 中文說明：成功載入指定尺寸的熱力圖檔，用於後續全域機率分布
-        except Exception as e:  # pragma: no cover - corrupted file
-            logger.warning(
-                "Failed to load %s: %s - 讀取熱力圖失敗",
-                npz_file.name,
-                e,
-            )
-            # 中文說明：熱力圖 NPZ 檔毀損或讀取錯誤，略過該檔
+    freq = _load_global_pos_freq_npz_cached(shape, npz_dir)
+    _GLOBAL_POS_FREQ_CACHE[(rows, cols)] = freq
+    return freq
 
 
 def get_global_pos_freq(shape: tuple[int, int]) -> Optional[np.ndarray]:
@@ -382,40 +343,6 @@ def get_sample_stats_cached(
     return arr
 
 
-def load_all_sample_stats(samples_dir: str) -> None:
-    """
-    Load all sample NPZ files (new boards_* parts or legacy sample_stats_*).
-    成功时会调用 get_sample_stats_cached 并在 _SAMPLE_STATS_LOADED 中记录 (rows, cols, "npz")。
-    """
-    samples_path = Path(samples_dir)
-    # 列出目录内容（调试用）
-    logging.info(
-        "Samples 目录 npz 文件：%s",
-        [f.name for f in samples_path.glob("*.npz")],
-    )
-    count = 0
-
-    # 1) 先处理所有 boards_{rows}x{cols}_part*.npz
-    for fp in samples_path.glob("boards_*x*_part*.npz"):
-        m = re.match(r"boards_(\d+)x(\d+)_part\d+\.npz", fp.name)
-        if not m:
-            continue
-        rows, cols = int(m.group(1)), int(m.group(2))
-        if get_sample_stats_cached(rows, cols, samples_dir) is not None:
-            count += 1
-
-    # 2) 再处理 legacy 的 sample_stats_*x*.npz
-    for fp in samples_path.glob("sample_stats_*x*.npz"):
-        m = re.match(r"sample_stats_(\d+)x(\d+)\.npz", fp.name)
-        if not m:
-            continue
-        rows, cols = int(m.group(1)), int(m.group(2))
-        if get_sample_stats_cached(rows, cols, samples_dir) is not None:
-            count += 1
-
-    logging.info("Total loaded sample freq: %d", count)
-
-
 def list_loaded_sample_shapes() -> List[tuple[int, int]]:
     """Return shapes available in the sample freq cache."""
 
@@ -431,7 +358,7 @@ def _native_dict(d):
     return {_native_coord(k): v for k, v in d.items()}
 
 
-def _load_samples_for_shape(
+def load_samples_for_shape(
     samples_dir: str, rows: int, cols: int
 ) -> List[Tuple[np.ndarray, str]]:
     """Load sample boards for ``rows``×``cols`` from NPZ files."""
@@ -1907,7 +1834,7 @@ def predict_scratch_card(
                 # fallback to on-the-fly computation for missing npz
                 global_heat = compute_global_distribution(history_dir, rows, cols)
         # 2) 樣本篩選
-        samples = _load_samples_for_shape(history_dir, rows, cols)
+        samples = load_samples_for_shape(history_dir, rows, cols)
         matching = filter_matching_samples(grid_np, samples)
         if len(matching) < MIN_MATCHING:
             matching = filter_neighbor_matching_samples(grid_np, samples)

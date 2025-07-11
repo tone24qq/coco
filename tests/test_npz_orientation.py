@@ -14,7 +14,9 @@ def test_compute_position_probabilities_board_oriented(tmp_path):
     np.savez(d / "global_pos_freq_2x2.npz", freq=freq)
 
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(d))
+    analyzer._load_global_pos_freq_npz_cached.cache_clear()
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), d)
     probs = analyzer.compute_position_probabilities(str(tmp_path / "samples"), 2, 2)
     assert probs[(0, 0)][1] == 1.0
     assert probs[(0, 1)][2] == 1.0
@@ -33,7 +35,9 @@ def test_compute_position_probabilities_target_first(tmp_path):
     np.savez(d / "global_pos_freq_2x2.npz", freq=freq)
 
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(d))
+    analyzer._load_global_pos_freq_npz_cached.cache_clear()
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), d)
     probs = analyzer.compute_position_probabilities(str(tmp_path / "samples"), 2, 2)
     assert probs[(0, 0)][1] == 1.0
     assert probs[(0, 1)][2] == 1.0
@@ -53,7 +57,9 @@ def test_compute_position_probabilities_swapped_axes(tmp_path):
     np.savez(d / "global_pos_freq_2x2.npz", freq=freq_swapped)
 
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(d))
+    analyzer._load_global_pos_freq_npz_cached.cache_clear()
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), d)
     probs = analyzer.compute_position_probabilities(str(tmp_path / "samples"), 2, 2)
     assert probs[(0, 0)][1] == 1.0
     assert probs[(0, 1)][2] == 1.0

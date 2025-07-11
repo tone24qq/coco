@@ -14,7 +14,8 @@ def test_heatmap_fallback_when_sparse(tmp_path):
     freq /= totals
     np.savez(out_npz / f"global_pos_freq_{rows}x{cols}.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((rows, cols), out_npz)
 
     samples = tmp_path / "samples"
     samples.mkdir()

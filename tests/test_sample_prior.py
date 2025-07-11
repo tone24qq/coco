@@ -4,6 +4,7 @@ import analyzer
 
 
 def test_compute_position_probabilities(tmp_path):
+    analyzer.compute_position_probabilities.cache_clear()
     samples = tmp_path / "samples"
     samples.mkdir()
     boards = np.array(
@@ -39,7 +40,8 @@ def test_predict_with_sample_prior(tmp_path):
     out_npz.mkdir()
     np.savez(out_npz / "global_pos_freq_2x2.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), out_npz)
 
     grid = [[-1, 2], [3, 4]]
     res = analyzer.predict_scratch_card(

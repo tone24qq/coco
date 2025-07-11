@@ -24,7 +24,8 @@ def test_pure_sample_branch(tmp_path):
     out_npz.mkdir()
     np.savez(out_npz / "global_pos_freq_2x2.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), out_npz)
 
     grid = [[1, 2], [3, -1]]
     res = analyzer.predict_scratch_card(grid, target_num=4, history_dir=str(samples))
@@ -53,7 +54,8 @@ def test_pure_sample_neighbor_ranking(tmp_path):
     out_npz.mkdir(exist_ok=True)
     np.savez(out_npz / "global_pos_freq_3x3.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((3, 3), out_npz)
 
     grid = [[1, -1, -1], [3, 4, -1], [5, 6, 7]]
     res = analyzer.predict_scratch_card(
@@ -82,7 +84,8 @@ def test_pure_sample_final_score_weighting(tmp_path):
     out_npz.mkdir(exist_ok=True)
     np.savez(out_npz / "global_pos_freq_2x2.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), out_npz)
 
     grid = [[1, -1], [3, -1]]
     res = analyzer.predict_scratch_card(
@@ -113,7 +116,8 @@ def test_neighbor_relaxed_matching(tmp_path):
     out_npz.mkdir(exist_ok=True)
     np.savez(out_npz / "global_pos_freq_3x3.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((3, 3), out_npz)
 
     grid = [[1, 2, -1], [4, 5, -1], [7, 8, -1]]
     res = analyzer.predict_scratch_card(grid, target_num=3, history_dir=str(samples))

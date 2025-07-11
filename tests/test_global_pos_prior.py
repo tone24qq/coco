@@ -16,7 +16,9 @@ def test_global_position_prior(tmp_path):
     build_position_prior(str(samples), str(out), buckets=2)
 
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer._load_global_pos_freq_npz_cached.cache_clear()
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), out_npz)
     probs = analyzer.compute_position_probabilities(str(samples), 2, 2)
     assert probs[(0, 0)][1] == 1.0
     assert probs[(0, 1)][2] == 1.0

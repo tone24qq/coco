@@ -22,7 +22,8 @@ def test_top3_logging(tmp_path, caplog):
     freq = np.ones((2, 2, 5))
     np.savez(out_npz / "global_pos_freq_2x2.npz", freq=freq)
     analyzer._GLOBAL_POS_FREQ_CACHE.clear()
-    analyzer.load_all_global_pos_freqs(str(out_npz))
+    analyzer.compute_position_probabilities.cache_clear()
+    analyzer.load_global_pos_freq_npz((2, 2), out_npz)
 
     grid = [[-1, -1], [-1, -1]]
     with caplog.at_level(logging.INFO):
