@@ -1,5 +1,6 @@
 # tests/test_analyzer.py
 import numpy as np
+import pytest
 
 import analyzer
 from analyzer import simulate_full_board
@@ -137,3 +138,10 @@ def test_apply_uniqueness_penalty():
     assert out[(0, 0)][1] < pm[(0, 0)][1]
     assert out[(0, 0)][2] < pm[(0, 0)][2]
     assert out[(0, 1)][1] == pm[(0, 1)][1]
+
+
+def test_apply_consecutive_penalty_map():
+    pm = {(0, 0): {1: 0.6, 3: 0.4}}
+    penalties = {2: 0.5}
+    out = analyzer.apply_consecutive_penalty_map(pm, 1, penalties)
+    assert out[(0, 0)][3] == pytest.approx(0.4 * 0.5)
