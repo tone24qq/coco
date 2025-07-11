@@ -1180,6 +1180,7 @@ def simulate_full_board(
     check_interval: int = 500,
     mask: Optional[np.ndarray] = None,
     _internal: bool = False,
+    time_limit: Optional[float] = None,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with optional focus and ε-exploration."""
     logger.info(
@@ -1188,6 +1189,7 @@ def simulate_full_board(
         n_iter,
     )
     # 中文說明：開始 Monte Carlo 模擬，列出目標數字與總迭代次數
+    start_time = time.monotonic()
     if rng is None:
         rng = np.random.default_rng()
 
@@ -1248,6 +1250,8 @@ def simulate_full_board(
     early_stop = False
 
     while remain > 0:
+        if time_limit is not None and time.monotonic() - start_time >= time_limit:
+            break
         batch = min(4000, remain)
         boards = generate_full_boards(
             rows, cols, batch, rng, formulas, weights, grid_gen
@@ -1341,6 +1345,7 @@ def simulate_full_board(
             check_interval=check_interval,
             mask=mask_arr,
             _internal=True,
+            time_limit=time_limit,
         )
         for cell in focus:
             prob_map[cell] = refine.get(cell, prob_map.get(cell, {}))
@@ -1771,6 +1776,7 @@ def predict_scratch_card(
     strategy: Union[str, Strategy] = Strategy.LEGACY,
     use_neighbor_lock: bool = False,
     neighbor_threshold: float = 0.0,
+    time_limit: Optional[float] = None,
 ) -> Dict[str, Any]:
 
     BLANK_VAL = -1
@@ -1818,7 +1824,10 @@ def predict_scratch_card(
 
     try:
         _ = probability_heatmap(
-            grid_np, sample_gamma=sample_gamma, history_dir=history_dir
+            grid_np,
+            sample_gamma=sample_gamma,
+            history_dir=history_dir,
+            time_limit=time_limit,
         )
     except Exception:
         pass
@@ -1920,6 +1929,7 @@ def predict_scratch_card(
                 sample_gamma=sample_gamma,
                 fusion_alpha=fusion_alpha,
                 threshold=neighbor_threshold,
+                time_limit=time_limit,
             )
             return {
                 "mode": "neighbor_lock",
@@ -1991,6 +2001,7 @@ def predict_scratch_card(
             n_iter=10000,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
+            time_limit=time_limit,
         )
         top_k = result_top_k or env.result_top_k
         ranked = sorted([(float(heat[r, c]), r, c) for r, c in blanks], reverse=True)[
@@ -2050,6 +2061,7 @@ def predict_scratch_card(
             n_iter=iterations or 500,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
+            time_limit=time_limit,
         )
         for r, c in blanks:
             final_score_map[r, c] = float(heat[r, c])
@@ -2262,6 +2274,7 @@ def probability_heatmap(
     history_dir: str = "samples",
     nearest_weight: float = 0.0,
     fusion_alpha: float = 0.1,
+    time_limit: Optional[float] = None,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
 
@@ -2287,7 +2300,9 @@ def probability_heatmap(
 
     rng = np.random.default_rng(seed)
     grid_np = np.asarray(grid, dtype=int)
-    prob_map_dict = simulate_full_board(grid_np, k, n_iter=n_iter, rng=rng)
+    prob_map_dict = simulate_full_board(
+        grid_np, k, n_iter=n_iter, rng=rng, time_limit=time_limit
+    )
 
     mask_ratio = float(np.mean(grid_np == -1))
     gamma = sample_gamma * (1.0 + mask_ratio)
@@ -2386,6 +2401,7 @@ def neighbor_lock_or_fuse(
     sample_gamma: float = 0.9,
     fusion_alpha: float = 0.1,
     threshold: float = 0.0,
+    time_limit: Optional[float] = None,
 ) -> Tuple[Tuple[int, int], float]:
     """Return cell selection using neighbor lock then sample+simulation fusion."""
 
@@ -2430,7 +2446,12 @@ def neighbor_lock_or_fuse(
         used,
     )
     # 中文說明：記錄 fallback 階段實際取得的歷史位置分布數量
-    sim_map = simulate_full_board(grid, target_num, n_iter=phase1)
+    sim_map = simulate_full_board(
+        grid,
+        target_num,
+        n_iter=phase1,
+        time_limit=time_limit,
+    )
 
     prior_scores = {pos: prior_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}
     sim_scores = {pos: sim_map.get(pos, {}).get(target_num, 0.0) for pos in blanks}

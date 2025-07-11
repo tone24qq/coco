@@ -1,5 +1,6 @@
 import os
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -22,3 +23,8 @@ class EnvConfig:
         default_factory=lambda: int(os.getenv("RESULT_TOP_K", "3"))
     )
     log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    sim_time_limit: Optional[float] = field(
+        default_factory=lambda: (
+            float(v) if (v := os.getenv("SIM_TIME_LIMIT")) else None
+        )
+    )

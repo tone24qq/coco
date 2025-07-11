@@ -174,6 +174,7 @@ class GridRequest(BaseModel):
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
     strategy: Strategy = Strategy.LEGACY
+    time_limit: Optional[float] = None
 
 
 class Prediction(BaseModel):
@@ -203,6 +204,7 @@ class HeatmapRequest(BaseModel):
     sample_gamma: Optional[float] = 0.9
     use_neighbor_lock: bool = True
     fusion_alpha: Optional[float] = None
+    time_limit: Optional[float] = None
 
 
 class HeatmapResponse(BaseModel):
@@ -356,6 +358,11 @@ async def predict(req: GridRequest):
         top_n = req.top_n or env.phase2_top_n
         eps = req.epsilon or env.phase2_epsilon
         top_k = req.result_top_k or env.result_top_k
+        time_limit = (
+            req.time_limit
+            if "time_limit" in req.model_fields_set and req.time_limit is not None
+            else env.sim_time_limit
+        )
 
         logger.info(
             "Predict | size=%dx%d | target=%s | ph1=%d | ph2=%d | top_k=%d | top_n=%d | eps=%.3f - 開始預測",
@@ -402,6 +409,7 @@ async def predict(req: GridRequest):
             force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
             strategy=req.strategy,
+            time_limit=time_limit,
         )
 
         if req.target_num is not None:
@@ -412,6 +420,7 @@ async def predict(req: GridRequest):
                 hm_iter,
                 sample_gamma=req.sample_gamma,
                 history_dir="samples",
+                time_limit=time_limit,
             )
             fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
             result["final_recommendations"] = fuse_predictions_with_heatmap(
@@ -476,6 +485,11 @@ async def heatmap(req: HeatmapRequest):
             seed=req.seed,
             sample_gamma=req.sample_gamma,
             history_dir="samples",
+            time_limit=(
+                req.time_limit
+                if "time_limit" in req.model_fields_set and req.time_limit is not None
+                else env.sim_time_limit
+            ),
         )
 
         rows, cols = len(req.grid), len(req.grid[0])
@@ -502,6 +516,11 @@ async def heatmap(req: HeatmapRequest):
             priors=priors,
             sample_gamma=req.sample_gamma,
             use_neighbor_lock=req.use_neighbor_lock,
+            time_limit=(
+                req.time_limit
+                if "time_limit" in req.model_fields_set and req.time_limit is not None
+                else env.sim_time_limit
+            ),
         )
 
         fusion_alpha = req.fusion_alpha or 0.7
