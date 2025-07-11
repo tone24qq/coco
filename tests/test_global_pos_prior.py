@@ -12,10 +12,9 @@ def test_global_position_prior(tmp_path):
     with zipfile.ZipFile(samples / "s.zip", "w") as zf:
         zf.writestr("a.json", json.dumps(data))
 
-    out = samples / "pos_freq.npz"
+    out = samples / "pos_freq_2x2.npz"
     build_position_prior(str(samples), str(out), buckets=2)
 
-    analyzer.load_global_pos_freq(str(samples))
     probs = analyzer.compute_position_probabilities(str(samples), 2, 2)
     assert probs[(0, 0)][1] == 1.0
     assert probs[(0, 1)][2] == 1.0

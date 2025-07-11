@@ -49,40 +49,52 @@ _PRIOR_CACHE: Dict[tuple[int, int], np.ndarray] = {}
 
 analyzer_utils = BoardAnalyzerUtils()
 
-# Global position prior cache
-_POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
+# Global/sample position frequency caches keyed by (dir, rows, cols)
+_GLOBAL_FREQ_CACHE: Dict[tuple[str, int, int], np.ndarray] = {}
+_SAMPLE_FREQ_CACHE: Dict[tuple[str, int, int], np.ndarray] = {}
 
 
-def load_global_pos_freq(samples_dir: str) -> None:
-    """Load global position frequency tensor from samples_dir or fallback."""
-    paths = [Path(samples_dir) / "pos_freq.npz", GLOBAL_PRIOR_DIR / "pos_freq.npz"]
-    for path in paths:
-        try:
-            if path.exists():
-                data = np.load(path)
-                freq_keys = [k for k in data.files if k.startswith("freq")]
-                if not freq_keys:
-                    continue
-                if len(freq_keys) == 1:
-                    arr = data[freq_keys[0]]
-                else:
-                    arr = np.array([data[k] for k in sorted(freq_keys)])
-                _POS_FREQ_CACHE[str(path)] = arr.astype(float)
-                logger.info("Loaded global position freq from %s", path)
-                return
-        except Exception as exc:  # pragma: no cover - corrupted file
-            logger.error("failed to load %s: %s", path, exc)
+def _load_npz_array(path: Path) -> Optional[np.ndarray]:
+    """Load first array from NPZ, return ``None`` if missing."""
+    if not path.exists():
+        return None
+    try:
+        data = np.load(path)
+        key = data.files[0] if data.files else None
+        if key is None:
+            return None
+        return data[key].astype(float)
+    except Exception as exc:  # pragma: no cover - corrupted file
+        logger.error("failed to load %s: %s", path, exc)
+        return None
 
 
-def _get_global_pos_freq(samples_dir: str) -> Optional[np.ndarray]:
-    paths = [Path(samples_dir) / "pos_freq.npz", GLOBAL_PRIOR_DIR / "pos_freq.npz"]
-    for path in paths:
-        key = str(path)
-        if key not in _POS_FREQ_CACHE and path.exists():
-            load_global_pos_freq(samples_dir)
-        if key in _POS_FREQ_CACHE:
-            return _POS_FREQ_CACHE[key]
-    return None
+def load_global_pos_freq(
+    rows: int, cols: int, global_dir: str = str(GLOBAL_PRIOR_DIR)
+) -> Optional[np.ndarray]:
+    """Load global position frequency for ``rows`` x ``cols`` boards."""
+    key = (global_dir, rows, cols)
+    if key not in _GLOBAL_FREQ_CACHE:
+        path = Path(global_dir) / f"global_pos_freq_{rows}x{cols}.npz"
+        arr = _load_npz_array(path)
+        if arr is not None:
+            _GLOBAL_FREQ_CACHE[key] = arr
+            logger.info("Loaded global position freq from %s", path)
+    return _GLOBAL_FREQ_CACHE.get(key)
+
+
+def load_sample_pos_freq(
+    rows: int, cols: int, samples_dir: str = "samples"
+) -> Optional[np.ndarray]:
+    """Load sample-based frequency for ``rows`` x ``cols`` boards."""
+    key = (samples_dir, rows, cols)
+    if key not in _SAMPLE_FREQ_CACHE:
+        path = Path(samples_dir) / f"pos_freq_{rows}x{cols}.npz"
+        arr = _load_npz_array(path)
+        if arr is not None:
+            _SAMPLE_FREQ_CACHE[key] = arr
+            logger.info("Loaded sample position freq from %s", path)
+    return _SAMPLE_FREQ_CACHE.get(key)
 
 
 # 來自 probmap_key_patch_v2.txt
@@ -294,7 +306,9 @@ def get_global_heatmap(
     rows: int, cols: int, target_num: int, samples_dir: str = "samples"
 ) -> np.ndarray:
     """Return global prior heatmap with multi-resolution fallback."""
-    freq = _get_global_pos_freq(samples_dir)
+    freq = load_global_pos_freq(rows, cols, str(GLOBAL_PRIOR_DIR))
+    if freq is None:
+        freq = load_sample_pos_freq(rows, cols, samples_dir)
     if freq is not None:
         if freq.ndim == 3:
             return _interpolate_heat(freq, rows, cols, target_num)
@@ -401,7 +415,9 @@ def compute_position_probabilities(
     samples_dir: str, rows: int, cols: int
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Return per-cell number probabilities from history samples."""
-    global_freq = _get_global_pos_freq(samples_dir)
+    global_freq = load_global_pos_freq(rows, cols, str(GLOBAL_PRIOR_DIR))
+    if global_freq is None:
+        global_freq = load_sample_pos_freq(rows, cols, samples_dir)
     if global_freq is not None:
         buckets = global_freq.shape[1]
         prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}

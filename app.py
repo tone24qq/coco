@@ -99,7 +99,6 @@ async def warm_up() -> None:
     brain.priors_map.update(priors)
     logging.info(f"[warm-up] Loaded {len(priors)} shapes")
     logger.debug("Loaded priors sizes: %s", list(brain.priors_map.keys()))
-    await _load_samples_background()
 
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
@@ -135,16 +134,8 @@ async def debug_number_distribution(
     return result
 
 
-async def _load_samples_background():
-    # 這裡會觸發 analyzer 裡的 logger.info("Total loaded: …")
-    for _ in iter_sample_jsons("samples"):
-        pass
-    logger.info("Sample iteration complete (background)")
-
-
 @app.on_event("startup")
 async def startup_event() -> None:
-    analyzer.load_global_pos_freq("samples")
     asyncio.create_task(warm_up())
 
 

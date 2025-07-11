@@ -56,6 +56,9 @@ def test_neighbor_lock_fallback(monkeypatch):
 
     monkeypatch.setattr(analyzer, "simulate_full_board", fake_sim)
     monkeypatch.setattr(analyzer, "compute_history_frequency", fake_prior)
+    monkeypatch.setattr(analyzer, "load_global_pos_freq", lambda *a, **k: None)
+    monkeypatch.setattr(analyzer, "load_sample_pos_freq", lambda *a, **k: None)
+    monkeypatch.setattr(analyzer, "match_samples", lambda *a, **k: [])
 
     res = analyzer.predict_scratch_card(
         grid.tolist(),

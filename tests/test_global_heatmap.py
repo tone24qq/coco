@@ -11,7 +11,7 @@ def test_get_global_heatmap_basic(tmp_path):
     samples.mkdir()
     freq = np.zeros((5, 2, 2), dtype=float)
     freq[1, 0, 0] = 1.0
-    np.savez(samples / "pos_freq.npz", freq=freq)
+    np.savez(samples / "pos_freq_2x2.npz", freq=freq)
     heat = analyzer.get_global_heatmap(2, 2, 1, str(samples))
     assert heat.shape == (2, 2)
     assert heat[0, 0] == 1.0
