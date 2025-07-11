@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 # Directory for precomputed priors
 PRIORS_DIR = Path("priors")
+GLOBAL_PRIOR_DIR = Path("out_npz")
 _PRIOR_CACHE: Dict[tuple[int, int], np.ndarray] = {}
 
 analyzer_utils = BoardAnalyzerUtils()
@@ -53,23 +54,35 @@ _POS_FREQ_CACHE: Dict[str, np.ndarray] = {}
 
 
 def load_global_pos_freq(samples_dir: str) -> None:
-    """Load global position frequency tensor from samples_dir if available."""
-    path = Path(samples_dir) / "pos_freq.npz"
-    try:
-        if path.exists():
-            arr = np.load(path)["freq"]
-            _POS_FREQ_CACHE[str(path)] = arr.astype(float)
-            logger.info("Loaded global position freq from %s", path)
-    except Exception as exc:  # pragma: no cover - corrupted file
-        logger.error("failed to load %s: %s", path, exc)
+    """Load global position frequency tensor from samples_dir or fallback."""
+    paths = [Path(samples_dir) / "pos_freq.npz", GLOBAL_PRIOR_DIR / "pos_freq.npz"]
+    for path in paths:
+        try:
+            if path.exists():
+                data = np.load(path)
+                freq_keys = [k for k in data.files if k.startswith("freq")]
+                if not freq_keys:
+                    continue
+                if len(freq_keys) == 1:
+                    arr = data[freq_keys[0]]
+                else:
+                    arr = np.array([data[k] for k in sorted(freq_keys)])
+                _POS_FREQ_CACHE[str(path)] = arr.astype(float)
+                logger.info("Loaded global position freq from %s", path)
+                return
+        except Exception as exc:  # pragma: no cover - corrupted file
+            logger.error("failed to load %s: %s", path, exc)
 
 
 def _get_global_pos_freq(samples_dir: str) -> Optional[np.ndarray]:
-    path = Path(samples_dir) / "pos_freq.npz"
-    key = str(path)
-    if key not in _POS_FREQ_CACHE and path.exists():
-        load_global_pos_freq(samples_dir)
-    return _POS_FREQ_CACHE.get(key)
+    paths = [Path(samples_dir) / "pos_freq.npz", GLOBAL_PRIOR_DIR / "pos_freq.npz"]
+    for path in paths:
+        key = str(path)
+        if key not in _POS_FREQ_CACHE and path.exists():
+            load_global_pos_freq(samples_dir)
+        if key in _POS_FREQ_CACHE:
+            return _POS_FREQ_CACHE[key]
+    return None
 
 
 # 來自 probmap_key_patch_v2.txt
@@ -256,6 +269,43 @@ def compute_history_frequency(
     arr = _compute_target_prior(samples_dir, rows, cols, target_num)
     _PRIOR_CACHE[(rows, cols)] = arr
     return arr
+
+
+def _interpolate_heat(
+    freq: np.ndarray, rows: int, cols: int, target_num: int
+) -> np.ndarray:
+    """Map bucketed frequencies to board coordinates."""
+    buckets = freq.shape[1]
+    heat = np.zeros((rows, cols), dtype=float)
+    if target_num >= freq.shape[0]:
+        return heat
+    for r in range(rows):
+        for c in range(cols):
+            u = r / (rows - 1) if rows > 1 else 0.0
+            v = c / (cols - 1) if cols > 1 else 0.0
+            i = min(int(u * buckets), buckets - 1)
+            j = min(int(v * buckets), buckets - 1)
+            heat[r, c] = freq[target_num, i, j]
+    mx = heat.max(initial=0.0)
+    return heat / mx if mx > 0 else heat
+
+
+def get_global_heatmap(
+    rows: int, cols: int, target_num: int, samples_dir: str = "samples"
+) -> np.ndarray:
+    """Return global prior heatmap with multi-resolution fallback."""
+    freq = _get_global_pos_freq(samples_dir)
+    if freq is not None:
+        if freq.ndim == 3:
+            return _interpolate_heat(freq, rows, cols, target_num)
+        if freq.ndim == 4:
+            heat = np.zeros((rows, cols), dtype=float)
+            for level in freq:
+                heat += _interpolate_heat(level, rows, cols, target_num)
+            mx = heat.max(initial=0.0)
+            return heat / mx if mx > 0 else heat
+    logger.info("Global pos freq not found, falling back to history frequency")
+    return compute_history_frequency(samples_dir, target_num, rows, cols)
 
 
 def compute_position_distribution(
@@ -1210,6 +1260,7 @@ def predict_scratch_card(
                 samples_dir=history_dir,
                 sample_gamma=sample_gamma,
                 fusion_alpha=fusion_alpha_eff,
+                sample_limit=100,
                 threshold=neighbor_threshold,
             )
             return {
@@ -1662,9 +1713,9 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
 
 
 def match_samples(
-    grid: np.ndarray, target_num: int, history_dir: str
+    grid: np.ndarray, target_num: int, history_dir: str, limit: int | None = None
 ) -> List[np.ndarray]:
-    """Return boards from ``history_dir`` matching known cells and containing ``target_num``."""
+    """Return boards matching known cells and containing ``target_num``."""
     rows, cols = grid.shape
     mask = grid != -1
     matches: List[np.ndarray] = []
@@ -1677,6 +1728,8 @@ def match_samples(
         if target_num not in board:
             continue
         matches.append(board)
+        if limit is not None and len(matches) >= limit:
+            break
     return matches
 
 
@@ -1700,20 +1753,27 @@ def predict_target_cell(
     fusion_alpha: float = 0.7,
     min_samples: int = 5,
     top_k: int = 1,
+    sample_limit: int | None = 100,
+    local_weight: float = 0.0,
 ) -> Union[Tuple[int, int], List[Tuple[int, int]]]:
     """Predict target location by fusing global and sample heatmaps."""
     arr = np.asarray(grid, dtype=int)
     rows, cols = arr.shape
-    prior = compute_history_frequency(history_dir, target_num, rows, cols)
+    prior = get_global_heatmap(rows, cols, target_num, history_dir)
     h_global = prior.astype(float)
     h_global_norm = h_global / (h_global.sum() or 1.0)
-    matches = match_samples(arr, target_num, history_dir)
+    matches = match_samples(arr, target_num, history_dir, limit=sample_limit)
     if len(matches) >= min_samples:
         h_sample = compute_sample_heatmap(matches, (rows, cols), target_num)
         h_sample_norm = h_sample / (h_sample.sum() or 1.0)
     else:
         h_sample_norm = np.zeros_like(h_global_norm)
     fused = fusion_alpha * h_global_norm + (1.0 - fusion_alpha) * h_sample_norm
+    if local_weight > 0:
+        from modules import nearest_value_affinity
+
+        local = nearest_value_affinity(arr, target_num)
+        fused = (1.0 - local_weight) * fused + local_weight * local
     if top_k == 1:
         r, c = np.unravel_index(int(np.argmax(fused)), fused.shape)
         return (int(r), int(c))
@@ -1730,6 +1790,7 @@ def neighbor_lock_or_fuse(
     samples_dir: str = "samples",
     sample_gamma: float = 0.9,
     fusion_alpha: float = 0.1,
+    sample_limit: int | None = 100,
     threshold: float = 0.0,
 ) -> Tuple[Tuple[int, int], float]:
     """Return cell selection using neighbor lock then sample+simulation fusion."""
@@ -1765,10 +1826,9 @@ def neighbor_lock_or_fuse(
         fusion_alpha=fusion_alpha,
         min_samples=5,
         top_k=1,
+        sample_limit=sample_limit,
     )
     r, c = heat_pos
-    prior = compute_history_frequency(
-        samples_dir, target_num, grid.shape[0], grid.shape[1]
-    )
+    prior = get_global_heatmap(grid.shape[0], grid.shape[1], target_num, samples_dir)
     prob = float(prior[r, c]) if prior.size else 0.0
     return (int(r), int(c)), prob
