@@ -114,10 +114,13 @@ def get_prior_for_shape(rows: int, cols: int) -> Dict[int, float]:
 
 async def warm_up() -> None:
     logging.info("[warm-up] Loading priors…")
-    priors = await load_priors_async()
-    brain.priors_map.clear()
-    brain.priors_map.update(priors)
-    logging.info(f"[warm-up] Loaded {len(priors)} prior shapes")
+    try:
+        priors = await load_priors_async()
+        brain.priors_map.clear()
+        brain.priors_map.update(priors)
+        logging.info(f"[warm-up] Loaded {len(priors)} prior shapes")
+    except Exception as e:
+        logging.warning(f"[warm-up] Failed to load priors: {e}")
 
     analyzer.load_all_global_pos_freqs(str(analyzer.DEFAULT_NPZ_DIR))
     analyzer.load_all_sample_stats("samples")
@@ -126,6 +129,7 @@ async def warm_up() -> None:
     logging.info("★★ Samples 已加载 shapes: %s", shapes)
     if (4, 5) not in shapes:
         logging.error("样本 4×5 未加载成功！")
+        raise RuntimeError("缺少關鍵樣本尺寸 (4x5)，請檢查 samples/")
     else:
         logging.info("样本 4×5 已成功加载。")
 
@@ -140,7 +144,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
+)  # ✅ 結束
 @app.on_event("startup")                 ### 新增 ↓
 async def _startup() -> None:
     threading.Thread(target=_warm_up, daemon=True).start()
