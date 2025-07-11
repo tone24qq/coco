@@ -1665,7 +1665,7 @@ def probability_heatmap(
     sample_gamma: float = 0.0,
     history_dir: str = "samples",
     nearest_weight: float = 0.0,
-    fusion_alpha: float = 0.1,
+    fusion_alpha: float = 0.0,
     penalty_deltas: Optional[Dict[int, float]] = None,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
