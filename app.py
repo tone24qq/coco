@@ -120,13 +120,14 @@ async def warm_up() -> None:
     logging.info(f"[warm-up] Loaded {len(priors)} prior shapes")
 
     analyzer.load_all_global_pos_freqs(str(analyzer.DEFAULT_NPZ_DIR))
-
     analyzer.load_all_sample_stats("samples")
     shapes = analyzer.list_loaded_sample_shapes()
+
     logging.info("★★ Samples 已加载 shapes: %s", shapes)
     if (4, 5) not in shapes:
         logging.error("样本 4×5 未加载成功！")
-
+    else:
+        logging.info("样本 4×5 已成功加载。")
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————app = FastAPI(
     title="Scratch Card Prediction API",
