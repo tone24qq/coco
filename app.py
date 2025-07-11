@@ -397,7 +397,7 @@ async def predict(req: GridRequest):
                 sample_gamma=req.sample_gamma,
                 history_dir="samples",
             )
-            fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
+            fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.1
             result["final_recommendations"] = fuse_predictions_with_heatmap(
                 heat,
                 result.get("top_predictions", []),
