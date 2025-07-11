@@ -22,10 +22,14 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities,
-                      fuse_predictions_with_heatmap, fuse_score_matrices,
-                      iter_sample_jsons, predict_scratch_card,
-                      probability_heatmap, render_heatmap)
+from analyzer import (
+    compute_position_probabilities,
+    fuse_score_matrices,
+    parse_penalty_string,
+    predict_scratch_card,
+    probability_heatmap,
+    render_heatmap,
+)
 
 # fmt: on
 brain.priors_map: Dict[str, Dict[int, float]] = {}
@@ -154,6 +158,7 @@ class GridRequest(BaseModel):
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
     strategy: Literal["legacy", "modern"] = "legacy"
+    penalty_deltas: Optional[str] = None
 
 
 class Prediction(BaseModel):
@@ -182,6 +187,7 @@ class HeatmapRequest(BaseModel):
     output_format: Literal["base64", "raw", "json"] = "base64"
     sample_gamma: Optional[float] = None
     fusion_alpha: Optional[float] = None
+    penalty_deltas: Optional[str] = None
 
 
 class HeatmapResponse(BaseModel):
@@ -352,6 +358,9 @@ async def predict(req: GridRequest):
         # 正規化空格：0 / "" 皆視為 -1
         is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
         grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
+        penalties = (
+            parse_penalty_string(req.penalty_deltas) if req.penalty_deltas else None
+        )
         force_legacy = False
         if "strategy" in req.model_fields_set and req.strategy == "legacy":
             force_legacy = True
@@ -380,24 +389,21 @@ async def predict(req: GridRequest):
             force_legacy=force_legacy,
             pseudo_count=req.pseudo_count or 0.0,
             strategy=req.strategy,
+            penalty_deltas=penalties,
         )
 
         if req.target_num is not None:
             hm_iter = phase1 if os.getenv("FAST_TEST") != "1" else min(phase1, 100)
-            heat = probability_heatmap(
+            _, recs = analyzer.neighbor_fused_heatmap(
                 grid_norm,
                 req.target_num,
-                hm_iter,
+                iterations=hm_iter,
                 sample_gamma=sample_gamma,
                 history_dir="samples",
-            )
-            fusion_alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.7
-            result["final_recommendations"] = fuse_predictions_with_heatmap(
-                heat,
-                result.get("top_predictions", []),
-                fusion_alpha=fusion_alpha,
+                penalty_deltas=penalties,
                 top_k=top_k,
             )
+            result["final_recommendations"] = recs
 
         full_probs = result.get("full_probabilities", {})
         clean_probs = _full_probs_to_1_based(full_probs)
@@ -444,6 +450,9 @@ async def heatmap(req: HeatmapRequest):
         grid_np = np.asarray(req.grid, dtype=object)
         is_blank = (grid_np == -1) | (grid_np == 0) | (grid_np == "")
         grid_norm = np.where(is_blank, -1, grid_np).astype(int).tolist()
+        penalties = (
+            parse_penalty_string(req.penalty_deltas) if req.penalty_deltas else None
+        )
 
         # 若未提供 sample_gamma，預設 0.9
         sample_gamma = req.sample_gamma if req.sample_gamma is not None else 0.9
@@ -455,6 +464,7 @@ async def heatmap(req: HeatmapRequest):
             seed=req.seed,
             sample_gamma=sample_gamma,
             history_dir="samples",
+            penalty_deltas=penalties,
         )
 
         rows, cols = len(req.grid), len(req.grid[0])
@@ -476,16 +486,20 @@ async def heatmap(req: HeatmapRequest):
             result_top_k=3,
             priors=priors,
             sample_gamma=sample_gamma,
+            penalty_deltas=penalties,
         )
 
-        fusion_alpha = req.fusion_alpha or 0.7
         if isinstance(prob, np.ndarray) and req.target_num is not None:
-            pred_result["final_recommendations"] = fuse_predictions_with_heatmap(
-                prob,
-                pred_result.get("top_predictions", []),
-                fusion_alpha=fusion_alpha,
+            _, recs = analyzer.neighbor_fused_heatmap(
+                grid_norm,
+                req.target_num,
+                iterations=iters,
+                sample_gamma=sample_gamma,
+                history_dir="samples",
+                penalty_deltas=penalties,
                 top_k=3,
             )
+            pred_result["final_recommendations"] = recs
 
         full_probs = pred_result.get("full_probabilities", {})
         clean_probs = _full_probs_to_1_based(full_probs)

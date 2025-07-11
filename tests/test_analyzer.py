@@ -1,5 +1,6 @@
 # tests/test_analyzer.py
 import numpy as np
+import pytest
 
 import analyzer
 from analyzer import simulate_full_board
@@ -137,3 +138,32 @@ def test_apply_uniqueness_penalty():
     assert out[(0, 0)][1] < pm[(0, 0)][1]
     assert out[(0, 0)][2] < pm[(0, 0)][2]
     assert out[(0, 1)][1] == pm[(0, 1)][1]
+
+
+def test_apply_consecutive_penalty_map():
+    pm = {(0, 0): {1: 0.6, 3: 0.4}}
+    penalties = {2: 0.5}
+    out = analyzer.apply_consecutive_penalty_map(pm, 1, penalties)
+    assert out[(0, 0)][3] == pytest.approx(0.4 * 0.5)
+
+
+def test_neighbor_fused_heatmap(monkeypatch):
+    grid = [[-1, -1], [-1, -1]]
+
+    def fake_prob(*_a, **_k):
+        return np.array([[0.1, 0.2], [0.3, 0.4]])
+
+    def fake_dist(r, c, target, n_sims=5000):
+        return {1: 1.0}
+
+    def fake_score(arr, dist):
+        return np.array([[0.4, 0.5], [0.6, 0.7]])
+
+    monkeypatch.setattr(analyzer, "probability_heatmap", fake_prob)
+    monkeypatch.setattr(analyzer, "compute_neighbor_distribution", fake_dist)
+    monkeypatch.setattr(analyzer, "neighbor_compatibility_score", fake_score)
+
+    heat, recs = analyzer.neighbor_fused_heatmap(grid, 1, iterations=5, top_k=2)
+    assert heat.shape == (2, 2)
+    assert len(recs) == 2
+    assert recs[0]["final_score"] >= recs[1]["final_score"]

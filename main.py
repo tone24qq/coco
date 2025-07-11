@@ -30,6 +30,19 @@ logging.basicConfig(
 priors: Dict[int, float] = {}
 
 
+def _parse_penalty_deltas(text: str) -> Dict[int, float]:
+    mapping: Dict[int, float] = {}
+    for part in text.split(","):
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        try:
+            mapping[int(k)] = float(v)
+        except ValueError:
+            continue
+    return mapping
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for grid input and iterations."""
     parser = argparse.ArgumentParser(
@@ -102,6 +115,12 @@ def parse_args() -> argparse.Namespace:
         default="legacy",
         help="Prediction ranking strategy",
     )
+    parser.add_argument(
+        "--penalty-deltas",
+        type=str,
+        default="2:0.8,3:0.7,5:0.6",
+        help="Consecutive penalty mapping deltas:factor",
+    )
     return parser.parse_args()
 
 
@@ -134,6 +153,7 @@ def main():
             priors = {}
         grid = parse_grid(args.grid)
         iterations = args.iterations
+        penalties = _parse_penalty_deltas(args.penalty_deltas)
         grid_np = np.array(grid, dtype=np.int64)
 
         # Validate grid
@@ -161,6 +181,7 @@ def main():
             fusion_alpha=None,
             force_legacy=False,
             strategy=args.strategy,
+            penalty_deltas=penalties,
         )
         ray.shutdown()
 
@@ -171,6 +192,7 @@ def main():
                 args.heatmap_iter,
                 sample_gamma=args.sample_gamma,
                 history_dir="samples",
+                penalty_deltas=penalties,
             )
             if isinstance(prob, dict):
                 logging.info("Full probability maps computed (no image)")

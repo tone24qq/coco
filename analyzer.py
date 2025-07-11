@@ -126,6 +126,43 @@ def apply_uniqueness_penalty(
     return result
 
 
+PENALTIES_DEFAULT = {2: 0.80, 3: 0.70, 5: 0.60}
+
+
+def parse_penalty_string(text: str) -> Dict[int, float]:
+    mapping: Dict[int, float] = {}
+    for part in text.split(","):
+        if ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        try:
+            mapping[int(k)] = float(v)
+        except ValueError:
+            continue
+    return mapping
+
+
+def apply_consecutive_penalty_map(
+    prob_map: Dict[Tuple[int, int], Dict[int, float]],
+    target: Optional[int],
+    penalties: Optional[Dict[int, float]] = None,
+) -> Dict[Tuple[int, int], Dict[int, float]]:
+    """Reduce probabilities of numbers close to ``target``."""
+
+    if target is None:
+        return prob_map
+
+    if penalties is None:
+        penalties = PENALTIES_DEFAULT
+
+    for dist in prob_map.values():
+        for num, score in list(dist.items()):
+            delta = abs(int(num) - int(target))
+            if delta in penalties:
+                dist[num] = score * penalties[delta]
+    return prob_map
+
+
 def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
     """Yield JSON objects from a zip file with basic validation."""
     count = 0
@@ -671,6 +708,7 @@ def simulate_full_board(
     check_interval: int = 500,
     mask: Optional[np.ndarray] = None,
     _internal: bool = False,
+    penalty_deltas: Optional[Dict[int, float]] = None,
 ) -> Dict[Tuple[int, int], Dict[int, float]]:
     """Simulate full boards with optional focus and ε-exploration."""
     logger.info(
@@ -831,6 +869,7 @@ def simulate_full_board(
             check_interval=check_interval,
             mask=mask_arr,
             _internal=True,
+            penalty_deltas=penalty_deltas,
         )
         for cell in focus:
             prob_map[cell] = refine.get(cell, prob_map.get(cell, {}))
@@ -872,6 +911,7 @@ def simulate_full_board(
     prob_map = {(int(r), int(c)): cell for (r, c), cell in final_prob_map.items()}
 
     prob_map = apply_uniqueness_penalty(prob_map)
+    prob_map = apply_consecutive_penalty_map(prob_map, target_num, penalty_deltas)
 
     # --- 保證所有格都有 entry ------------------------------
     if os.getenv("FORCE_FULL_SCAN", "0") == "1":
@@ -1176,7 +1216,11 @@ class MCTSNode:
         return max(self.children, key=ucb)
 
 
-def mcts(grid: np.ndarray, iterations: int = 1000):
+def mcts(
+    grid: np.ndarray,
+    iterations: int = 1000,
+    penalty_deltas: Optional[Dict[int, float]] = None,
+):
     rows, cols = grid.shape
     root = MCTSNode(grid)
 
@@ -1200,7 +1244,12 @@ def mcts(grid: np.ndarray, iterations: int = 1000):
                 current.children.append(new_child)
                 current = new_child
 
-            sim_result = simulate_full_board(current.grid, None, n_iter=100)
+            sim_result = simulate_full_board(
+                current.grid,
+                None,
+                n_iter=100,
+                penalty_deltas=penalty_deltas,
+            )
             if not isinstance(sim_result, dict):
                 logger.error(f"Invalid sim_result type: {type(sim_result)}")
                 return 0.0
@@ -1256,6 +1305,7 @@ def predict_scratch_card(
     strategy: str = "legacy",
     use_neighbor_lock: bool = False,
     neighbor_threshold: float = 0.0,
+    penalty_deltas: Optional[Dict[int, float]] = None,
 ) -> Dict[str, Any]:
 
     BLANK_VAL = -1
@@ -1348,6 +1398,7 @@ def predict_scratch_card(
             n_iter=10000,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
+            penalty_deltas=penalty_deltas,
         )
         top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
         ranked = sorted([(float(heat[r, c]), r, c) for r, c in blanks], reverse=True)[
@@ -1407,6 +1458,7 @@ def predict_scratch_card(
             n_iter=iterations or 500,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
+            penalty_deltas=penalty_deltas,
         )
         for r, c in blanks:
             final_score_map[r, c] = float(heat[r, c])
@@ -1614,6 +1666,7 @@ def probability_heatmap(
     history_dir: str = "samples",
     nearest_weight: float = 0.0,
     fusion_alpha: float = 0.1,
+    penalty_deltas: Optional[Dict[int, float]] = None,
 ) -> Union[np.ndarray, Dict[int, np.ndarray]]:
     """Heatmap simulation using :func:`simulate_full_board`.
 
@@ -1639,7 +1692,9 @@ def probability_heatmap(
 
     rng = np.random.default_rng(seed)
     grid_np = np.asarray(grid, dtype=int)
-    prob_map_dict = simulate_full_board(grid_np, k, n_iter=n_iter, rng=rng)
+    prob_map_dict = simulate_full_board(
+        grid_np, k, n_iter=n_iter, rng=rng, penalty_deltas=penalty_deltas
+    )
     if sample_gamma is None:
         sample_gamma = 0.0
 
@@ -1848,3 +1903,48 @@ def neighbor_lock_or_fuse(
     prior = get_global_heatmap(grid.shape[0], grid.shape[1], target_num, samples_dir)
     prob = float(prior[r, c]) if prior.size else 0.0
     return (int(r), int(c)), prob
+
+
+def neighbor_fused_heatmap(
+    grid: Union[List[List[int]], np.ndarray],
+    target_num: int,
+    *,
+    iterations: int = 5000,
+    sample_gamma: float = 0.9,
+    neighbor_weight: float = 0.25,
+    history_dir: str = "samples",
+    penalty_deltas: Optional[Dict[int, float]] = None,
+    top_k: int = 3,
+) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    """Fuse sample heatmap with neighbor similarity and return top cells."""
+
+    arr = np.asarray(grid, dtype=int)
+    base_heat = probability_heatmap(
+        arr,
+        target_num,
+        iterations,
+        sample_gamma=sample_gamma,
+        history_dir=history_dir,
+        penalty_deltas=penalty_deltas,
+    )
+    dist = compute_neighbor_distribution(
+        arr.shape[0], arr.shape[1], target_num, n_sims=5000
+    )
+    nbr = neighbor_compatibility_score(arr, dist)
+    if nbr.max() > 0:
+        nbr = nbr / float(nbr.max())
+    final = (1.0 - neighbor_weight) * base_heat + neighbor_weight * nbr
+
+    logger.info(
+        "最終融合：樣本熱力與鄰居熱力，權重 %.2f/%.2f",
+        1.0 - neighbor_weight,
+        neighbor_weight,
+    )
+
+    blanks = np.argwhere(arr == -1)
+    recs = [
+        {"row": int(r), "col": int(c), "final_score": float(final[r, c])}
+        for r, c in blanks
+    ]
+    recs.sort(key=lambda x: x["final_score"], reverse=True)
+    return final, recs[:top_k]
