@@ -38,3 +38,14 @@ def test_npz_usage_stats(tmp_path):
 
     assert analyzer._NPZ_USAGE_STATS["2x2"] == 2
     assert analyzer._NPZ_USAGE_STATS["3x3"] == 1
+
+
+def test_load_global_pos_freq_npz_nested(tmp_path):
+    outer = tmp_path / "out_npz"
+    (outer / "out_npz").mkdir(parents=True)
+    arr = np.ones((2, 2, 5))
+    np.savez(outer / "out_npz" / "global_pos_freq_2x2.npz", freq=arr)
+
+    analyzer._NPZ_CACHE.clear()
+    loaded = analyzer.load_global_pos_freq_npz((2, 2), outer)
+    assert np.array_equal(loaded, arr)

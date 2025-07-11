@@ -6,7 +6,6 @@ import logging
 import math
 import os
 import re
-import pathlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
@@ -163,7 +162,7 @@ def health_samples():
 
 @app.on_event("startup")
 async def startup_event() -> None:
-    await warm_up()
+    asyncio.create_task(warm_up())  # 非阻塞預載入 NPZ
     # 这里 **不要** 再调用 load_all_sample_stats 或其他会重复加载的函数
 
 

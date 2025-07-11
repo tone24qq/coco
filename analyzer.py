@@ -156,23 +156,36 @@ def _load_global_pos_freq_npz_cached(
         _NPZ_CACHE[shape] = arr
         return arr
 
-    path = npz_dir / f"global_pos_freq_{rows}x{cols}.npz"
-    start = time.perf_counter()
-    try:
-        freq = np.load(path, mmap_mode="r")["freq"]
-    except OSError as e:
-        if e.errno == 24:  # EMFILE
-            time.sleep(0.05)
-            gc.collect()
-            freq = np.load(path)["freq"]
-        else:
-            raise
-    except Exception as exc:
-        logger.error("failed to load %s: %s", path, exc)
-        raise FileNotFoundError(path) from exc
-    finally:
-        elapsed = time.perf_counter() - start
-        NPZ_LOAD_LATENCY_SECONDS.labels(f"{rows}x{cols}").set(elapsed)
+    fname = f"global_pos_freq_{rows}x{cols}.npz"
+    search_dirs = [npz_dir, npz_dir / "out_npz"]
+    last_exc: Exception | None = None
+    for base in search_dirs:
+        path = base / fname
+        start = time.perf_counter()
+        try:
+            freq = np.load(path, mmap_mode="r")["freq"]
+            break
+        except FileNotFoundError as exc:
+            last_exc = exc
+            continue
+        except OSError as e:
+            if e.errno == 24:  # EMFILE
+                time.sleep(0.05)
+                gc.collect()
+                freq = np.load(path, mmap_mode="r")["freq"]
+                break
+            last_exc = e
+            continue
+        except Exception as exc:
+            logger.error("failed to load %s: %s", path, exc)
+            last_exc = exc
+            continue
+        finally:
+            elapsed = time.perf_counter() - start
+            NPZ_LOAD_LATENCY_SECONDS.labels(f"{rows}x{cols}").set(elapsed)
+    else:
+        # FIXME nested fallback not found
+        raise FileNotFoundError(search_dirs[-1] / fname) from last_exc
 
     freq = _align_heatmap_axes(freq, rows, cols)
     _NPZ_CACHE[shape] = freq
@@ -202,16 +215,20 @@ def load_global_pos_freq_npz(
 
 
 def load_all_global_pos_freqs(npz_dir: str) -> None:
-    """Scan ``npz_dir`` and cache all ``*x*.npz`` heatmap files."""
+    """Scan ``npz_dir`` (and ``out_npz/``) and cache heatmap files."""
     pattern = re.compile(r"(\d+)x(\d+)\.npz$")
-    for npz_file in Path(npz_dir).glob("*.npz"):
+    base = Path(npz_dir)
+    files = list(base.glob("*.npz"))
+    if not files:
+        files = list((base / "out_npz").glob("*.npz"))
+    for npz_file in files:
         m = pattern.search(npz_file.name)
         if not m:
             continue
         rows, cols = map(int, m.groups())
         try:
             start = time.perf_counter()
-            data = np.load(npz_file)
+            data = np.load(npz_file, mmap_mode="r")
             freq = data.get("freq")
             if freq is None:
                 continue
@@ -339,7 +356,7 @@ def load_sample_npz_for_shape(
         logger.warning("找不到樣本檔 %s", path)
         return
     try:
-        data = np.load(path, allow_pickle=True)
+        data = np.load(path, allow_pickle=True, mmap_mode="r")
         freq = data.get("freq")
         if freq is not None:
             _SAMPLE_STATS_LOADED.add((rows, cols, "npz"))
@@ -432,7 +449,7 @@ def _load_samples_for_shape(
     for pat in patterns:
         for fp in sorted(Path(samples_dir).glob(pat)):
             try:
-                with np.load(fp) as data:
+                with np.load(fp, mmap_mode="r") as data:
                     arr = data.get("boards")
                     if arr is None:
                         continue
@@ -708,7 +725,7 @@ def _blend_with_sample_line(
 def _iter_npz(zip_path: Path) -> Iterator[Dict[str, Any]]:
     """Yield boards from an ``.npz`` file."""
 
-    with np.load(zip_path) as data:
+    with np.load(zip_path, mmap_mode="r") as data:
         if "boards" not in data:
             logger.warning("boards missing in %s", zip_path.name)
             return
@@ -762,7 +779,7 @@ def load_priors(rows: int, cols: int, samples_dir: str = "samples") -> np.ndarra
 
     path = PRIORS_DIR / f"{rows}x{cols}.npy"
     if path.exists():
-        arr = np.load(path)
+        arr = np.load(path, mmap_mode="r")
         _PRIOR_CACHE[key] = arr
         return arr
 
@@ -781,7 +798,7 @@ def compute_history_frequency(
     if path.exists():
         logger.info("Loaded prior from %s - 已載入 prior", path)
         # 中文說明：成功載入已預先計算的 prior 檔案
-        return np.load(path)
+        return np.load(path, mmap_mode="r")
 
     logger.warning("Prior %s missing, computing on-the-fly", path)
     # 中文說明：缺少 prior 檔，會即時計算而非讀取

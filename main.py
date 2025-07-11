@@ -8,7 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
-import ray
+
+try:
+    import ray
+except ModuleNotFoundError:  # FIXME optional dependency
+    ray = None
 
 from strategy_types import Strategy
 
@@ -193,7 +197,8 @@ def main():
             raise ValueError(f"Numbers must be between 1 and {max_val}")
 
         # Disable Ray dashboard to avoid excessive port scanning
-        ray.init(num_cpus=4, include_dashboard=False)
+        if ray is not None:
+            ray.init(num_cpus=4, include_dashboard=False)
         result = predict_scratch_card(
             grid,
             target_num=args.target,
@@ -210,7 +215,8 @@ def main():
             force_legacy=False,
             strategy=args.strategy,
         )
-        ray.shutdown()
+        if ray is not None:
+            ray.shutdown()
 
         if args.heatmap_k is not None:
             prob = probability_heatmap(
