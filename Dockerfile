@@ -8,8 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 复制源码並預先生成 NPZ
 COPY . .
-RUN python3 build_global_pos_freq.py -s samples -o out_npz \
- && python3 precompute_heatmap.py
+
 
 FROM python:3.11-slim AS runner
 WORKDIR /app
