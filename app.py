@@ -189,7 +189,7 @@ def _warm_up():
     # 1. 先載現有熱力圖
     analyzer.load_all_global_pos_freqs("out_npz")
     # 2. 若缺 shape，就異步補跑
-    if not pathlib.Path("out_npz").glob("global_pos_freq_*.npz"):
+    if not Path("out_npz").glob("global_pos_freq_*.npz"):
         subprocess.run(
             ["python", "build_global_pos_freq.py", "-s", "samples", "-o", "out_npz"],
             check=True
