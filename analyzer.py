@@ -222,10 +222,19 @@ def load_all_global_pos_freqs(npz_dir: str) -> None:
             )
             NPZ_LOADED_TOTAL.labels(f"{rows}x{cols}").inc()
             _update_cache_metrics()
-            logger.info("loaded %dx%d heatmap from %s", rows, cols, npz_file.name)
+            logger.info(
+                "loaded %dx%d heatmap from %s - 已載入熱力圖",
+                rows,
+                cols,
+                npz_file.name,
+            )
             # 中文說明：成功載入指定尺寸的熱力圖檔，用於後續全域機率分布
         except Exception as e:  # pragma: no cover - corrupted file
-            logger.warning("Failed to load %s: %s", npz_file.name, e)
+            logger.warning(
+                "Failed to load %s: %s - 讀取熱力圖失敗",
+                npz_file.name,
+                e,
+            )
             # 中文說明：熱力圖 NPZ 檔毀損或讀取錯誤，略過該檔
 
 
@@ -265,7 +274,11 @@ def _load_sample_stats(
                         arr = arr[None, ...]
                     boards_list.append(arr.astype(int))
             except Exception as exc:  # pragma: no cover - corrupted file
-                logger.warning("Failed to load sample part %s: %s", fp.name, exc)
+                logger.warning(
+                    "Failed to load sample part %s: %s - 樣本切片載入失敗",
+                    fp.name,
+                    exc,
+                )
                 INVALID_NPZ_COUNTER.inc()
         if boards_list:
             all_boards = np.concatenate(boards_list, axis=0)
@@ -295,10 +308,14 @@ def _load_sample_stats(
             with np.load(fp, mmap_mode="r", allow_pickle=True) as data:
                 freq = data.get("freq")
                 if isinstance(freq, np.ndarray):
-                    logger.info("loaded sample freq %s", fp.name)
+                    logger.info("loaded sample freq %s - 讀取樣本統計成功", fp.name)
                     return freq
         except Exception as exc:  # pragma: no cover - corrupted file
-            logger.warning("Failed to load %s: %s", fp.name, exc)
+            logger.warning(
+                "Failed to load %s: %s - 樣本統計讀取失敗",
+                fp.name,
+                exc,
+            )
             INVALID_NPZ_COUNTER.inc()
     return None
 
@@ -427,7 +444,12 @@ def _load_samples_for_shape(
                 logger.error("Failed to load %s: %s", fp.name, exc)
 
     _SAMPLE_CACHE[key] = boards
-    logger.info("Loaded %d sample boards for %dx%d", len(boards), rows, cols)
+    logger.info(
+        "Loaded %d sample boards for %dx%d - 樣本盤面載入完成",
+        len(boards),
+        rows,
+        cols,
+    )
     # 中文說明：載入指定尺寸的樣本盤面完成，方便確認樣本數量是否足夠
     return boards
 
@@ -757,7 +779,7 @@ def compute_history_frequency(
     """Return probability matrix from precomputed priors if available."""
     path = PRIORS_DIR / f"{rows}x{cols}.npy"
     if path.exists():
-        logger.info("Loaded prior from %s", path)
+        logger.info("Loaded prior from %s - 已載入 prior", path)
         # 中文說明：成功載入已預先計算的 prior 檔案
         return np.load(path)
 
@@ -944,7 +966,7 @@ def compute_position_probabilities(
             logger.warning("Cached prior shape mismatch: %s", cube.shape)
             # 中文說明：先前快取的 prior 尺寸與目前需求不符
         else:
-            logger.info("Loaded prior from %s", cached)
+            logger.info("Loaded prior from %s - 已載入 prior", cached)
             prob_map: Dict[Tuple[int, int], Dict[int, float]] = {}
             for r in range(rows):
                 for c in range(cols):
@@ -1011,7 +1033,7 @@ def compute_global_distribution(samples_dir: str, rows: int, cols: int) -> np.nd
         if cube.shape[:2] != (rows, cols):
             logger.warning("Cached prior shape mismatch: %s", cube.shape)
         else:
-            logger.info("Loaded prior cube from %s", cached)
+            logger.info("Loaded prior cube from %s - 已載入 prior cube", cached)
             totals = cube.sum(axis=2, keepdims=True)
             totals[totals == 0] = 1
             return cube.astype(float) / totals

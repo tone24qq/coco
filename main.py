@@ -163,7 +163,7 @@ def parse_grid(grid_str: str) -> List[List[int]]:
             raise ValueError("Grid must be at least 2x2 with consistent row length")
         return grid_np.tolist()
     except ValueError as e:
-        logging.error(f"Invalid grid format: {e}")
+        logging.error(f"Invalid grid format: {e} - 格子字串格式錯誤")
         # 中文說明：解析命令列輸入的格子失敗，提示使用者檢查格式
         raise
 
@@ -221,21 +221,29 @@ def main():
                 history_dir="samples",
             )
             if isinstance(prob, dict):
-                logging.info("Full probability maps computed (no image)")
+                logging.info(
+                    "Full probability maps computed (no image) - 完成機率矩陣計算"
+                )
                 # 中文說明：僅輸出數值矩陣，不產生圖片
             else:
                 rendered = render_heatmap(prob, args.heatmap_format)
                 if isinstance(rendered, bytes):
                     with open("heatmap.png", "wb") as f:
                         f.write(rendered)
-                    logging.info("Heatmap saved to heatmap.png")
+                    logging.info(
+                        "Heatmap saved to heatmap.png - 熱力圖已存成 heatmap.png"
+                    )
                     # 中文說明：熱力圖已存成 PNG 檔案
                 elif isinstance(rendered, str):
                     with open("heatmap.txt", "w") as f:
                         f.write(rendered)
-                    logging.info("Heatmap base64 saved to heatmap.txt")
+                    logging.info(
+                        "Heatmap base64 saved to heatmap.txt - 熱力圖 base64 已存至 heatmap.txt"
+                    )
                     # 中文說明：將熱力圖的 base64 字串寫入檔案
-        logging.info("Prediction results (strategy=%s):", result.get("strategy"))
+        logging.info(
+            "Prediction results (strategy=%s) - 預測結果", result.get("strategy")
+        )
         # 中文說明：列出採用的策略名稱
         for pred in result["predictions"]:
             r = int(pred.get("row", 0)) + 1
@@ -246,15 +254,17 @@ def main():
                 msg = f"Cell ({r}, {c}) score {pred['score']:.4f}"
             else:
                 msg = f"Cell ({r}, {c})"
-            logging.info(msg)
+            logging.info(f"{msg} - 單格預測結果")
             # 中文說明：逐行列印每個格子的預測分數或機率
-        logging.info("Full probabilities available in result['full_probabilities']")
+        logging.info(
+            "Full probabilities available in result['full_probabilities'] - 全機率矩陣已包含於結果"
+        )
         # 中文說明：提醒使用者結果內包含完整機率矩陣
-        logging.info("Complete!")
+        logging.info("Complete! - 程序結束")
         # 中文說明：CLI 流程結束
         return result
     except (ValueError, Exception) as e:
-        logging.error(f"Error during prediction: {e}")
+        logging.error(f"Error during prediction: {e} - 預測過程發生錯誤")
         # 中文說明：預測過程發生錯誤，程式將以非零狀態結束
         sys.exit(1)
 
