@@ -1,4 +1,3 @@
-# === 內建模組 ===
 import asyncio
 import atexit
 import base64
@@ -7,42 +6,25 @@ import logging
 import math
 import os
 import re
-import threading
-import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-# === 類型註記 ===
-from typing import (
-    Any,
-    Dict,
-    List,
-    Optional,
-    Tuple,
-    Union,
-    Literal,
-)
-
-# === 第三方套件 ===
 import numpy as np
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel
 
-# === 專案內部 ===
+# fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    fuse_predictions_with_heatmap,
-    fuse_score_matrices,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities,
+                      fuse_predictions_with_heatmap, fuse_score_matrices,
+                      predict_scratch_card, probability_heatmap,
+                      render_heatmap)
 from env_config import EnvConfig
 from strategy_types import Strategy
 
@@ -114,42 +96,34 @@ def get_prior_for_shape(rows: int, cols: int) -> Dict[int, float]:
 
 async def warm_up() -> None:
     logging.info("[warm-up] Loading priors…")
-    try:
-        priors = await load_priors_async()
-        brain.priors_map.clear()
-        brain.priors_map.update(priors)
-        logging.info(f"[warm-up] Loaded {len(priors)} prior shapes")
-    except Exception as e:
-        logging.warning(f"[warm-up] Failed to load priors: {e}")
+    priors = await load_priors_async()
+    brain.priors_map.clear()
+    brain.priors_map.update(priors)
+    logging.info(f"[warm-up] Loaded {len(priors)} prior shapes")
 
     analyzer.load_all_global_pos_freqs(str(analyzer.DEFAULT_NPZ_DIR))
+
     analyzer.load_all_sample_stats("samples")
     shapes = analyzer.list_loaded_sample_shapes()
-
     logging.info("★★ Samples 已加载 shapes: %s", shapes)
     if (4, 5) not in shapes:
         logging.error("样本 4×5 未加载成功！")
-        raise RuntimeError("缺少關鍵樣本尺寸 (4x5)，請檢查 samples/")
-    else:
-        logging.info("样本 4×5 已成功加载。")
 
 
+# —— FastAPI app & CORS —————————————————————————————————————————————————————————
 app = FastAPI(
     title="Scratch Card Prediction API",
     version="1.0.0",
     description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
 )
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)  # 結束
-@app.on_event("startup")                 ### 新增 ↓
-async def _startup() -> None:
-    threading.Thread(target=_warm_up, daemon=True).start()
+)
+
 
 @app.get("/debug/priors", response_class=JSONResponse)
 async def debug_priors():
@@ -185,19 +159,6 @@ def health_samples():
     shapes = analyzer.list_loaded_sample_shapes()
     return {"loaded_sample_shapes": shapes}
 
-def _warm_up():
-    # 1. 先載現有熱力圖
-    analyzer.load_all_global_pos_freqs("out_npz")
-    # 2. 若缺 shape，就異步補跑
-    if not Path("out_npz").glob("global_pos_freq_*.npz"):
-        subprocess.run(
-            ["python", "build_global_pos_freq.py", "-s", "samples", "-o", "out_npz"],
-            check=True
-        )
-        analyzer.load_all_global_pos_freqs("out_npz")  # 重新註冊
-    # 3. 樣本統計
-    analyzer.load_all_sample_stats("samples")
-    print("✅ Warm-up done.")
 
 @app.on_event("startup")
 async def startup_event() -> None:
