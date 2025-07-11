@@ -1853,6 +1853,42 @@ def predict_scratch_card(
     rows, cols = grid_np.shape
     strat_name = strategy.value if isinstance(strategy, Strategy) else str(strategy)
 
+    if strat_name == "sample_line" and target_num is not None:
+        score = compute_neighbor_line_stats(
+            grid_np,
+            target_num,
+            samples_dir=history_dir,
+            weight_neighbor=0.5,
+            weight_line=0.5,
+        )
+        freq = get_sample_stats_cached(rows, cols, history_dir)
+        heat = np.zeros((rows, cols), dtype=float)
+        if freq is not None:
+            freq = _align_heatmap_axes(freq, rows, cols)
+            totals = freq.sum(axis=2, keepdims=True)
+            totals[totals == 0] = 1
+            heat = freq[:, :, int(target_num)] / totals[:, :, 0]
+        final_score = 0.5 * score + 0.5 * heat
+        for r in range(rows):
+            for c in range(cols):
+                if grid_np[r, c] != BLANK_VAL:
+                    final_score[r, c] = 0.0
+        blanks = [tuple(b) for b in np.argwhere(grid_np == BLANK_VAL)]
+        ranked = sorted(
+            [(r, c, float(final_score[r, c])) for r, c in blanks],
+            key=lambda x: x[2],
+            reverse=True,
+        )[:top_n]
+        preds = [{"row": r, "col": c, "score": s} for r, c, s in ranked]
+        return {
+            "mode": "sample_line",
+            "strategy": "sample_line",
+            "predictions": preds,
+            "top_predictions": preds,
+            "full_probabilities": {},
+            "final_recommendations": [],
+        }
+
     try:
         _ = probability_heatmap(
             grid_np, sample_gamma=sample_gamma, history_dir=history_dir
