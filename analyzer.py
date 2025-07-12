@@ -1402,7 +1402,7 @@ def predict_scratch_card(
         heat = probability_heatmap(
             grid_np,
             target_num,
-            n_iter=10000,
+            n_iter=0,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
             penalty_deltas=penalty_deltas,
@@ -1666,7 +1666,7 @@ def render_heatmap(prob_map: np.ndarray, output_format: str = "base64") -> Any:
 def probability_heatmap(
     grid: Union[List[List[int]], np.ndarray],
     k: Optional[int],
-    n_iter: int = 6000,
+    n_iter: int = 0,
     *,
     seed: int = 0,
     sample_gamma: float = 0.0,
