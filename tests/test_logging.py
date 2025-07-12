@@ -13,8 +13,12 @@ def test_iter_sample_jsons_logging(tmp_path, caplog):
         zf.writestr("d.json", json.dumps(data))
     with caplog.at_level(logging.INFO):
         list(analyzer.iter_sample_jsons(str(samples)))
-    # 這裡改成抓實際出現的 log 關鍵字
     assert any("已載入 a.zip" in r.message for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        list(analyzer.iter_sample_jsons(str(samples)))
+    # second call uses cache
+    assert not any("已載入 a.zip" in r.message for r in caplog.records)
 
 
 def test_top3_logging(caplog):

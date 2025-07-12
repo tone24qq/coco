@@ -8,6 +8,8 @@ import os
 import sys
 import re
 import zipfile
+from collections import OrderedDict
+import threading
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
@@ -52,6 +54,11 @@ analyzer_utils = BoardAnalyzerUtils()
 # Global/sample position frequency caches keyed by (dir, rows, cols)
 _GLOBAL_FREQ_CACHE: Dict[tuple[str, int, int], np.ndarray] = {}
 _SAMPLE_FREQ_CACHE: Dict[tuple[str, int, int], np.ndarray] = {}
+
+# Cache for sample JSONs loaded from zip archives
+_CACHE_LOCK = threading.Lock()
+_CACHE_MAX = int(os.getenv("SAMPLE_CACHE_SIZE", "0"))  # 0 means unlimited
+_SAMPLE_CACHE: "OrderedDict[Path, List[Dict[str, Any]]]" = OrderedDict()
 
 
 def _load_npz_array(path: Path) -> Optional[np.ndarray]:
@@ -256,12 +263,42 @@ def _iter_json_from_zip(zip_path: Path) -> Iterator[Dict[str, Any]]:
     logger.info("已載入 %s，共 %d 筆樣本", zip_path.name, count)
 
 
+def _load_samples_from_zip(zip_path: Path) -> List[Dict[str, Any]]:
+    """Return all sample JSONs from ``zip_path``."""
+    return list(_iter_json_from_zip(zip_path))
+
+
+def _get_cached_samples(zip_path: Path) -> List[Dict[str, Any]]:
+    """Retrieve samples from cache or load and cache them."""
+    with _CACHE_LOCK:
+        samples = _SAMPLE_CACHE.get(zip_path)
+        if samples is not None:
+            _SAMPLE_CACHE.move_to_end(zip_path)
+            return samples
+
+    samples = _load_samples_from_zip(zip_path)
+
+    with _CACHE_LOCK:
+        _SAMPLE_CACHE[zip_path] = samples
+        if _CACHE_MAX and len(_SAMPLE_CACHE) > _CACHE_MAX:
+            _SAMPLE_CACHE.popitem(last=False)
+    return samples
+
+
+def warmup_sample_cache(samples_dir: str = "samples") -> None:
+    """Preload all sample zip files into the global cache."""
+    path = Path(samples_dir)
+    for zp in sorted(path.glob("*.zip")):
+        _get_cached_samples(zp)
+
+
 def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
     """Iterate through all JSON samples in ``samples_dir``."""
     path = Path(samples_dir)
     for zp in sorted(path.glob("*.zip")):
         try:
-            for item in _iter_json_from_zip(zp):
+            samples = _get_cached_samples(zp)
+            for item in samples:
                 yield item
         except Exception as exc:  # pragma: no cover - broken zip
             logger.error("Failed to load %s: %s", zp.name, exc)

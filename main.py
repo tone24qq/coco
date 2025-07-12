@@ -157,6 +157,7 @@ def main():
             priors = json.loads(p.read_text(encoding="utf-8"))
         else:
             priors = {}
+        analyzer.warmup_sample_cache("samples")
         grid = parse_grid(args.grid)
         iterations = args.iterations
         penalties = _parse_penalty_deltas(args.penalty_deltas)

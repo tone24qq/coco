@@ -22,14 +22,9 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    fuse_score_matrices,
-    parse_penalty_string,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities, fuse_score_matrices,
+                      parse_penalty_string, predict_scratch_card,
+                      probability_heatmap, render_heatmap)
 
 # fmt: on
 brain.priors_map: Dict[str, Dict[int, float]] = {}
@@ -103,6 +98,7 @@ async def warm_up() -> None:
     brain.priors_map.update(priors)
     logging.info(f"[warm-up] Loaded {len(priors)} shapes")
     logger.debug("Loaded priors sizes: %s", list(brain.priors_map.keys()))
+    analyzer.warmup_sample_cache("samples")
 
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
