@@ -1843,24 +1843,72 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
 
 
 def match_samples(
-    grid: np.ndarray, target_num: int, history_dir: str, limit: int | None = None
+    grid: np.ndarray,
+    target_num: int,
+    history_dir: str,
+    limit: int | None = None,
+    *,
+    max_mismatch: int = 2,
+    n1: int = 5,
+    n2: int = 10,
+    top_k: int = 10,
 ) -> List[np.ndarray]:
-    """Return boards matching known cells and containing ``target_num``."""
+    """Return boards similar to ``grid`` that contain ``target_num``.
+
+    The search progressively relaxes matching strictness:
+    1. Strict match of all known cells.
+    2. Allow up to ``max_mismatch`` mismatched cells.
+    3. Fall back to nearest neighbors by Hamming distance.
+    """
+
     rows, cols = grid.shape
     mask = grid != -1
-    matches: List[np.ndarray] = []
+    ref = grid[mask]
+
+    strict: List[np.ndarray] = []
+    partial: List[tuple[int, np.ndarray]] = []
+    approx: List[tuple[float, np.ndarray]] = []
+    seen: set[bytes] = set()
+
     for sample in iter_sample_jsons(history_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
             continue
         board = np.asarray(sample["grid"], dtype=int)
-        if not np.array_equal(board[mask], grid[mask]):
-            continue
         if target_num not in board:
             continue
-        matches.append(board)
-        if limit is not None and len(matches) >= limit:
-            break
-    return matches
+        key = board.tobytes()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        mism = int(np.sum(board[mask] != ref))
+        if mism == 0:
+            strict.append(board)
+            if limit is not None and len(strict) >= limit:
+                break
+        elif mism <= max_mismatch:
+            partial.append((mism, board))
+        else:
+            ratio = mism / float(mask.sum() or 1)
+            approx.append((ratio, board))
+
+    logger.info("嚴格匹配 %d 筆", len(strict))
+    if len(strict) >= n1 or (limit is not None and len(strict) >= limit):
+        return strict[:limit] if limit is not None else strict
+
+    partial.sort(key=lambda x: x[0])
+    logger.info("partial 匹配 %d 筆", len(partial))
+    boards = strict + [b for _, b in partial]
+    if len(boards) >= n2 or (limit is not None and len(boards) >= limit):
+        return boards[:limit] if limit is not None else boards
+
+    approx.sort(key=lambda x: x[0])
+    logger.info("近鄰匹配 %d 筆", len(approx))
+    boards.extend(b for _, b in approx[:top_k])
+    if not boards:
+        logger.warning("無法匹配任何樣本，回傳輸入盤面")
+        return [grid.copy()]
+    return boards[:limit] if limit is not None else boards
 
 
 def compute_sample_heatmap(
