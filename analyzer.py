@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 import numpy as np
 from joblib import Parallel, delayed
 from numba import njit
+from scipy.signal import convolve2d
 
 import brain
 
@@ -2020,7 +2021,7 @@ def local_adaptive_heatmap(
 
     rows, cols = grid.shape
     global_heat = get_global_heatmap(rows, cols, target_num, samples_dir)
-    mask = grid == -1
+    mask = (grid == -1).astype(float)
     out = global_heat * mask
     total = out.sum() or 1.0
     return out / float(total)
@@ -2057,26 +2058,19 @@ def neighbor_weighted_heatmap(
     logger.info("鄰格影響力加權熱力：計算鄰格權重")
 
     base = local_adaptive_heatmap(grid, target_num, samples_dir=samples_dir)
-    rows, cols = grid.shape
-    weights = np.zeros_like(base)
-    for r in range(rows):
-        for c in range(cols):
-            if grid[r, c] != -1:
-                continue
-            w = 0.0
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < rows and 0 <= nc < cols:
-                        v = grid[nr, nc]
-                        if v != -1:
-                            w += weight_by_value(v) if weight_by_value else 1.0
-            weights[r, c] = w
+    mask = (grid == -1).astype(float)
+    if weight_by_value is None:
+        neighbor_vals = (grid != -1).astype(float)
+    else:
+        vec_func = np.vectorize(weight_by_value)
+        neighbor_vals = np.where(grid != -1, vec_func(grid), 0.0)
+    kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=float)
+    weights = convolve2d(
+        neighbor_vals, kernel, mode="same", boundary="fill", fillvalue=0
+    )
     if weights.max() > 0:
         weights /= float(weights.max())
-    out = base * weights
+    out = base * weights * mask
     total = out.sum() or 1.0
     return out / float(total)
 
