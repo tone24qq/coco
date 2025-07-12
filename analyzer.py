@@ -737,7 +737,7 @@ def _update_counts_jit(
 def simulate_full_board(
     grid: np.ndarray,
     target_num: Optional[int],
-    n_iter: int = 6000,
+    n_iter: int = 0,
     rng: Optional[np.random.Generator] = None,
     *,
     focus_cells: Optional[List[Tuple[int, int]]] = None,
@@ -1440,7 +1440,7 @@ def predict_scratch_card(
         heat = probability_heatmap(
             grid_np,
             target_num,
-            n_iter=10000,
+            n_iter=0,
             sample_gamma=sample_gamma,
             history_dir=history_dir,
             penalty_deltas=penalty_deltas,
@@ -1461,7 +1461,7 @@ def predict_scratch_card(
             "final_recommendations": [],
         }
 
-    dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=10000)
+    dist = compute_neighbor_distribution(rows, cols, target_num, n_sims=0)
     nbr_score = neighbor_compatibility_score(grid_np, dist)
 
     nbr_probs = {(int(r), int(c)): float(nbr_score[r, c]) for r, c in blanks}
