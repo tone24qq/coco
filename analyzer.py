@@ -1843,24 +1843,101 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
 
 
 def match_samples(
-    grid: np.ndarray, target_num: int, history_dir: str, limit: int | None = None
+    grid: np.ndarray,
+    target_num: int,
+    history_dir: str,
+    limit: int | None = None,
+    *,
+    max_mismatch: int = 2,
+    n1: int = 5,
+    n2: int = 10,
+    top_k: int = 10,
+    legacy: bool = False,
 ) -> List[np.ndarray]:
-    """Return boards matching known cells and containing ``target_num``."""
+    """Return boards similar to ``grid`` that contain ``target_num``.
+
+    The search progressively relaxes matching strictness:
+    1. Strict match of all known cells.
+    2. Allow up to ``max_mismatch`` mismatched cells.
+    3. Fall back to nearest neighbors by Hamming distance.
+    """
+
     rows, cols = grid.shape
     mask = grid != -1
-    matches: List[np.ndarray] = []
+    ref = grid[mask]
+
+    strict: List[np.ndarray] = []
+    partial: List[tuple[int, np.ndarray]] = []
+    others: List[tuple[float, int, np.ndarray]] = []
+    seen: set[bytes] = set()
+
     for sample in iter_sample_jsons(history_dir):
         if sample["rows"] != rows or sample["cols"] != cols:
             continue
         board = np.asarray(sample["grid"], dtype=int)
-        if not np.array_equal(board[mask], grid[mask]):
-            continue
         if target_num not in board:
             continue
-        matches.append(board)
-        if limit is not None and len(matches) >= limit:
+
+        key = board.tobytes()
+        if key in seen:
+            continue
+        mism = int(np.sum(board[mask] != ref))
+        if legacy:
+            if mism == 0:
+                strict.append(board)
+                if limit is not None and len(strict) >= limit:
+                    break
+            seen.add(key)
+            continue
+
+        if mism == 0:
+            strict.append(board)
+        elif mism <= max_mismatch:
+            partial.append((mism, board))
+        else:
+            ratio = mism / (mask.sum() or 1)
+            others.append((ratio, mism, board))
+        seen.add(key)
+
+    logger.debug("Strict matches collected: %d", len(strict))
+    if legacy:
+        return strict[:limit] if limit is not None else strict
+
+    if len(strict) >= n1 or (limit is not None and len(strict) >= limit):
+        result = strict
+        logger.debug("Returning strict matches")
+        return result[:limit] if limit is not None else result
+
+    partial.sort(key=lambda x: x[0])
+    logger.debug("Partial matches collected: %d", len(partial))
+    boards = strict[:]
+    seen_bytes = {b.tobytes() for b in boards}
+    for _, b in partial:
+        key = b.tobytes()
+        if key not in seen_bytes:
+            boards.append(b)
+            seen_bytes.add(key)
+        if limit is not None and len(boards) >= limit:
             break
-    return matches
+    if len(boards) >= n2 or (limit is not None and len(boards) >= limit):
+        logger.debug("Returning partial matches")
+        return boards[:limit] if limit is not None else boards
+
+    others.sort(key=lambda x: (x[0], x[1]))
+    logger.debug("Approx matches collected: %d", len(others))
+    for _, _, b in others:
+        key = b.tobytes()
+        if key not in seen_bytes:
+            boards.append(b)
+            seen_bytes.add(key)
+        if len(boards) >= (top_k if limit is None else min(top_k, limit)):
+            break
+    if not boards and others:
+        boards.append(others[0][2])
+    if not boards and partial:
+        boards.append(partial[0][1])
+    logger.debug("Total matches returned: %d", len(boards))
+    return boards[:limit] if limit is not None else boards
 
 
 def compute_sample_heatmap(
