@@ -1099,8 +1099,15 @@ def rank_cells_by_prior_and_modules(
     final = w_prior * prior_k + (1.0 - w_prior) * agg
 
     mask = grid == -1
-    total = final[mask].sum() or 1.0
-    final[mask] = final[mask] / total
+    if np.isclose(np.ptp(final[mask]), 0.0):
+        rings = BoardAnalyzerUtils.ring_index(rows, cols)
+        weights = rings.max() - rings
+        weights[~mask] = 0.0
+        total = weights.sum() or 1.0
+        final = weights / total
+    else:
+        total = final[mask].sum() or 1.0
+        final[mask] = final[mask] / total
 
     results = [
         (int(r), int(c), float(final[r, c] * 100.0))

@@ -77,3 +77,24 @@ def test_rank_cells_normalization(tmp_path, monkeypatch):
     assert abs(total_prob - 1.0) < 1e-6
     assert ranks[0][2] < 100.0
     assert ranks[0][2] >= ranks[1][2] >= ranks[2][2]
+
+
+def test_rank_cells_uniform_tie_break(monkeypatch):
+    grid = np.full((3, 3), -1)
+    cube = np.ones((3, 3, 10), dtype=float)
+
+    monkeypatch.setattr(
+        analyzer,
+        "get_module_score",
+        lambda mod, g, target=None: np.ones_like(g, dtype=float),
+    )
+
+    ranks = analyzer.rank_cells_by_prior_and_modules(
+        grid,
+        cube,
+        ["dummy"],
+        [1.0],
+        target_num=1,
+        w_prior=0.5,
+    )
+    assert all((r, c) != (1, 1) for r, c, _ in ranks)
