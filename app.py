@@ -22,14 +22,9 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (
-    compute_position_probabilities,
-    fuse_score_matrices,
-    parse_penalty_string,
-    predict_scratch_card,
-    probability_heatmap,
-    render_heatmap,
-)
+from analyzer import (compute_position_probabilities, fuse_score_matrices,
+                      parse_penalty_string, predict_scratch_card,
+                      probability_heatmap, render_heatmap)
 
 # fmt: on
 brain.priors_map: Dict[str, Dict[int, float]] = {}
@@ -277,6 +272,26 @@ def _full_probs_to_1_based(
     return converted
 
 
+# ==== Helpers: trim large fields ============================================
+SAFE_KEYS = [
+    "predictions",
+    "top_predictions",
+    "final_recommendations",
+    "top_recommendations",
+    "strategy",
+    "sample_gamma_used",
+    "heatmap",
+]
+
+
+def filter_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep only SAFE_KEYS and drop heavy score maps."""
+    payload = {k: data.get(k) for k in SAFE_KEYS if k in data}
+    for key in ["full_probabilities", "prob_map", "all_scores"]:
+        payload.pop(key, None)
+    return payload
+
+
 # ==== Routes ==============================================================
 
 
@@ -413,9 +428,6 @@ async def predict(req: GridRequest):
             )
             result["final_recommendations"] = recs
 
-        full_probs = result.get("full_probabilities", {})
-        clean_probs = _full_probs_to_1_based(full_probs)
-
         preds = _to_1_based(result.get("predictions"))
         tops = _to_1_based(result.get("top_predictions"))
         recs = _to_1_based(result.get("final_recommendations"))
@@ -424,13 +436,12 @@ async def predict(req: GridRequest):
         payload = {
             "predictions": preds,
             "top_predictions": tops,
-            "full_probabilities": clean_probs,
             "sample_gamma_used": sample_gamma,
             "final_recommendations": recs,
             "top_recommendations": top_recs,
             "strategy": result.get("strategy"),
         }
-        safe_payload = sanitize_floats(payload)
+        safe_payload = sanitize_floats(filter_response(payload))
         logger.info("✅ Response ready")
         return JSONResponse(content=safe_payload, status_code=200)
 
@@ -507,53 +518,31 @@ async def heatmap(req: HeatmapRequest):
             )
             pred_result["final_recommendations"] = recs
 
-        full_probs = pred_result.get("full_probabilities", {})
-        clean_probs = _full_probs_to_1_based(full_probs)
-
         preds = _to_1_based(pred_result.get("predictions"))
         tops = _to_1_based(pred_result.get("top_predictions"))
         recs = _to_1_based(pred_result.get("final_recommendations"))
         top_recs = _to_1_based(pred_result.get("top_recommendations"))
 
-        if isinstance(prob, dict):
-            pm = {str(int(k)): v.tolist() for k, v in prob.items()}
-            resp = {
-                "prob_map": pm,
-                "heatmap": None,
-                "predictions": preds,
-                "top_predictions": tops,
-                "full_probabilities": clean_probs,
-                "final_recommendations": recs,
-                "top_recommendations": top_recs,
-                "strategy": pred_result.get("strategy"),
-            }
-        elif req.output_format.lower() in ("raw", "json"):
-            resp = {
-                "prob_map": prob.tolist(),
-                "heatmap": None,
-                "predictions": preds,
-                "top_predictions": tops,
-                "full_probabilities": clean_probs,
-                "final_recommendations": recs,
-                "top_recommendations": top_recs,
-                "sample_gamma_used": sample_gamma,
-                "strategy": pred_result.get("strategy"),
-            }
-        else:
+        heatmap_b64: Optional[str] = None
+        if req.output_format.lower() not in ("raw", "json"):
             img = render_heatmap(prob, req.output_format)
-            b64 = base64.b64encode(img).decode() if isinstance(img, bytes) else img
-            resp = {
-                "prob_map": prob.tolist(),
-                "heatmap": b64,
-                "predictions": preds,
-                "top_predictions": tops,
-                "full_probabilities": clean_probs,
-                "final_recommendations": recs,
-                "top_recommendations": top_recs,
-                "strategy": pred_result.get("strategy"),
-            }
+            heatmap_b64 = (
+                base64.b64encode(img).decode() if isinstance(img, bytes) else img
+            )
 
-        return JSONResponse(content=sanitize_floats(resp), status_code=200)
+        resp = {
+            "heatmap": heatmap_b64,
+            "predictions": preds,
+            "top_predictions": tops,
+            "final_recommendations": recs,
+            "top_recommendations": top_recs,
+            "sample_gamma_used": sample_gamma,
+            "strategy": pred_result.get("strategy"),
+        }
+
+        return JSONResponse(
+            content=sanitize_floats(filter_response(resp)), status_code=200
+        )
     except HTTPException:
         raise
     except Exception as exc:

@@ -31,7 +31,7 @@ def test_root_alive(client):
 
 
 def test_predict_basic(client):
-    """POST /predict → 200 且 predictions 至少 1 筆，full_probabilities 是 dict"""
+    """POST /predict → 200 且 predictions 至少 1 筆"""
     grid = empty_grid(2, 2)  # 最小合法 2×2 全未知
     payload: Dict[str, Any] = {
         "grid": grid,
@@ -44,9 +44,8 @@ def test_predict_basic(client):
     assert resp.status_code == 200
     assert isinstance(body.get("predictions"), list) and len(body["predictions"]) > 0
     assert isinstance(body.get("top_predictions"), list)
-    assert isinstance(body.get("full_probabilities"), dict)
+    assert "full_probabilities" not in body
     assert isinstance(body.get("final_recommendations"), list)
-    assert isinstance(body.get("top_recommendations"), list)
     assert isinstance(body.get("top_recommendations"), list)
     assert body.get("strategy") == "heatmap_only"
     if body["final_recommendations"]:
@@ -67,7 +66,8 @@ def test_heatmap_basic(client):
     assert heat.startswith("iVBOR")
     assert isinstance(body.get("predictions"), list)
     assert isinstance(body.get("top_predictions"), list)
-    assert isinstance(body.get("full_probabilities"), dict)
+    assert "full_probabilities" not in body
+    assert "prob_map" not in body
     assert isinstance(body.get("final_recommendations"), list)
     assert isinstance(body.get("top_recommendations"), list)
     if body["final_recommendations"]:
@@ -75,18 +75,18 @@ def test_heatmap_basic(client):
 
 
 def test_heatmap_json(client):
-    """POST /heatmap with output_format=json → prob_map JSON"""
+    """POST /heatmap with output_format=json"""
     grid = empty_grid(2, 2)
     payload = {"grid": grid, "target_num": 1, "iterations": 4, "output_format": "json"}
     resp = client.post("/heatmap", json=payload)
     body = resp.json()
 
     assert resp.status_code == 200
-    assert isinstance(body.get("prob_map"), list)
+    assert "prob_map" not in body
     assert body.get("heatmap") is None
     assert isinstance(body.get("predictions"), list)
     assert isinstance(body.get("top_predictions"), list)
-    assert isinstance(body.get("full_probabilities"), dict)
+    assert "full_probabilities" not in body
     assert isinstance(body.get("final_recommendations"), list)
 
 

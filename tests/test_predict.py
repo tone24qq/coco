@@ -41,7 +41,7 @@ def test_predict_valid_grid():
     body = res.json()
     assert "predictions" in body
     assert "top_predictions" in body
-    assert "full_probabilities" in body
+    assert "full_probabilities" not in body
     assert isinstance(body["predictions"], list)
     assert isinstance(body.get("final_recommendations"), list)
 
