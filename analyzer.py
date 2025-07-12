@@ -11,7 +11,7 @@ import zipfile
 from collections import defaultdict
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
 from joblib import Parallel, delayed
@@ -1737,8 +1737,22 @@ def probability_heatmap(
 
             near = nearest_value_affinity(grid_np, k, tolerance=1, radius=1)
             out = (1.0 - nearest_weight) * out + nearest_weight * near
-        if out.max() > 0:
-            out = out / float(out.max())
+
+        logger.info("套用四種進階熱力模組並融合")
+
+        heat_local = local_adaptive_heatmap(grid_np, k, samples_dir=history_dir)
+        heat_cond = conditional_heatmap(grid_np, k, samples_dir=history_dir)
+        heat_neighbor = neighbor_weighted_heatmap(
+            grid_np,
+            k,
+            samples_dir=history_dir,
+        )
+        heat_sample = sample_enhanced_heatmap(grid_np, k, samples_dir=history_dir)
+
+        out = (out + heat_local + heat_cond + heat_neighbor + heat_sample) / 5.0
+        total = out.sum()
+        if total > 0:
+            out /= float(total)
         return out
 
     numbers = {n for cell in prob_map_dict.values() for n in cell}
@@ -1955,3 +1969,95 @@ def neighbor_fused_heatmap(
     ]
     recs.sort(key=lambda x: x["final_score"], reverse=True)
     return final, recs[:top_k]
+
+
+def local_adaptive_heatmap(
+    grid: np.ndarray,
+    target_num: int,
+    *,
+    samples_dir: str = "samples",
+) -> np.ndarray:
+    """Return dynamic heatmap masking known cells then renormalizing."""
+
+    logger.info("局部動態熱力：依全局熱力遮蔽已知格後正規化")
+
+    rows, cols = grid.shape
+    global_heat = get_global_heatmap(rows, cols, target_num, samples_dir)
+    mask = grid == -1
+    out = global_heat * mask
+    total = out.sum() or 1.0
+    return out / float(total)
+
+
+def conditional_heatmap(
+    grid: np.ndarray,
+    target_num: int,
+    *,
+    samples_dir: str = "samples",
+) -> np.ndarray:
+    """Return conditional probability heatmap based on matched samples."""
+    matches = match_samples(grid, target_num, samples_dir)
+    logger.info("條件熱力：匹配到 %d 筆樣本", len(matches))
+    if matches:
+        heat = compute_sample_heatmap(matches, grid.shape, target_num)
+    else:
+        return local_adaptive_heatmap(grid, target_num, samples_dir=samples_dir)
+    mask = grid == -1
+    heat[~mask] = 0.0
+    total = heat.sum() or 1.0
+    return heat / float(total)
+
+
+def neighbor_weighted_heatmap(
+    grid: np.ndarray,
+    target_num: int,
+    *,
+    weight_by_value: Callable[[int], float] | None = None,
+    samples_dir: str = "samples",
+) -> np.ndarray:
+    """Return heatmap adjusted by numeric neighbors."""
+
+    logger.info("鄰格影響力加權熱力：計算鄰格權重")
+
+    base = local_adaptive_heatmap(grid, target_num, samples_dir=samples_dir)
+    rows, cols = grid.shape
+    weights = np.zeros_like(base)
+    for r in range(rows):
+        for c in range(cols):
+            if grid[r, c] != -1:
+                continue
+            w = 0.0
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        v = grid[nr, nc]
+                        if v != -1:
+                            w += weight_by_value(v) if weight_by_value else 1.0
+            weights[r, c] = w
+    if weights.max() > 0:
+        weights /= float(weights.max())
+    out = base * weights
+    total = out.sum() or 1.0
+    return out / float(total)
+
+
+def sample_enhanced_heatmap(
+    grid: np.ndarray,
+    target_num: int,
+    *,
+    samples_dir: str = "samples",
+) -> np.ndarray:
+    """Return heatmap from partial sample matches with fallback."""
+    matches = match_samples(grid, target_num, samples_dir)
+    logger.info("樣本增強熱力：找到 %d 筆完全匹配樣本", len(matches))
+    if matches:
+        heat = compute_sample_heatmap(matches, grid.shape, target_num)
+    else:
+        heat = get_global_heatmap(grid.shape[0], grid.shape[1], target_num, samples_dir)
+    mask = grid == -1
+    heat[~mask] = 0.0
+    total = heat.sum() or 1.0
+    return heat / float(total)

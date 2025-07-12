@@ -22,9 +22,14 @@ from pydantic import BaseModel
 # fmt: off
 import analyzer
 import brain
-from analyzer import (compute_position_probabilities, fuse_score_matrices,
-                      parse_penalty_string, predict_scratch_card,
-                      probability_heatmap, render_heatmap)
+from analyzer import (
+    compute_position_probabilities,
+    fuse_score_matrices,
+    parse_penalty_string,
+    predict_scratch_card,
+    probability_heatmap,
+    render_heatmap,
+)
 
 # fmt: on
 brain.priors_map: Dict[str, Dict[int, float]] = {}
@@ -386,6 +391,8 @@ async def predict(req: GridRequest):
             strategy=req.strategy,
             penalty_deltas=penalties,
         )
+        # ⚠️ 移除大型欄位 full_probabilities，避免觸發 ResponseTooLargeError
+        result.pop("full_probabilities", None)
 
         if req.target_num is not None:
             hm_iter = phase1 if os.getenv("FAST_TEST") != "1" else min(phase1, 100)
