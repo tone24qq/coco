@@ -1,5 +1,5 @@
 numpy>=2.0.0
-scipy>=1.14.0
+scipy>=1.8.0
 xxhash>=3.5.0
 joblib>=1.4.2
 ray>=2.47.1
