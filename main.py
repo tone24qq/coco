@@ -109,6 +109,12 @@ def parse_args() -> argparse.Namespace:
         help="Weight for sample-based frequency prior",
     )
     parser.add_argument(
+        "--fusion-alpha",
+        type=float,
+        default=0.5,
+        help="Weight for prediction score when fusing with heatmap",
+    )
+    parser.add_argument(
         "--strategy",
         type=str,
         choices=["legacy", "modern"],
@@ -185,6 +191,23 @@ def main():
         )
         ray.shutdown()
 
+        if args.target is not None:
+            heat = probability_heatmap(
+                grid_np,
+                args.target,
+                iterations,
+                sample_gamma=args.sample_gamma,
+                history_dir="samples",
+                penalty_deltas=penalties,
+            )
+            recs = analyzer.fuse_predictions_with_heatmap(
+                heat,
+                result.get("predictions", []),
+                fusion_alpha=args.fusion_alpha,
+                top_k=args.top_k or 3,
+            )
+            result["final_recommendations"] = recs
+
         if args.heatmap_k is not None:
             prob = probability_heatmap(
                 grid_np,
@@ -217,6 +240,13 @@ def main():
             else:
                 msg = f"Cell ({r}, {c})"
             logging.info(msg)
+        if result.get("final_recommendations"):
+            logging.info("Top fused recommendations:")
+            for rec in result["final_recommendations"]:
+                r = int(rec.get("row", 0)) + 1
+                c = int(rec.get("col", 0)) + 1
+                score = rec.get("final_score", 0.0)
+                logging.info("Cell (%d, %d) final_score %.4f", r, c, score)
         logging.info("Full probabilities available in result['full_probabilities']")
         logging.info("Complete!")
         return result

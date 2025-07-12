@@ -389,13 +389,19 @@ async def predict(req: GridRequest):
 
         if req.target_num is not None:
             hm_iter = phase1 if os.getenv("FAST_TEST") != "1" else min(phase1, 100)
-            _, recs = analyzer.neighbor_fused_heatmap(
+            heat = analyzer.probability_heatmap(
                 grid_norm,
                 req.target_num,
-                iterations=hm_iter,
+                hm_iter,
                 sample_gamma=sample_gamma,
                 history_dir="samples",
                 penalty_deltas=penalties,
+            )
+            alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.5
+            recs = analyzer.fuse_predictions_with_heatmap(
+                heat,
+                result.get("predictions", []),
+                fusion_alpha=alpha,
                 top_k=top_k,
             )
             result["final_recommendations"] = recs
@@ -485,13 +491,11 @@ async def heatmap(req: HeatmapRequest):
         )
 
         if isinstance(prob, np.ndarray) and req.target_num is not None:
-            _, recs = analyzer.neighbor_fused_heatmap(
-                grid_norm,
-                req.target_num,
-                iterations=iters,
-                sample_gamma=sample_gamma,
-                history_dir="samples",
-                penalty_deltas=penalties,
+            alpha = req.fusion_alpha if req.fusion_alpha is not None else 0.5
+            recs = analyzer.fuse_predictions_with_heatmap(
+                prob,
+                pred_result.get("predictions", []),
+                fusion_alpha=alpha,
                 top_k=3,
             )
             pred_result["final_recommendations"] = recs

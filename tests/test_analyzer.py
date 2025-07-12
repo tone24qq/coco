@@ -167,3 +167,33 @@ def test_neighbor_fused_heatmap(monkeypatch):
     assert heat.shape == (2, 2)
     assert len(recs) == 2
     assert recs[0]["final_score"] >= recs[1]["final_score"]
+
+
+def test_fuse_predictions_with_heatmap():
+    heat = np.array([[0.5, 0.1], [0.3, 0.2]])
+    preds = [
+        {"row": 0, "col": 0, "score": 0.9},
+        {"row": 1, "col": 1, "score": 0.2},
+    ]
+    recs = analyzer.fuse_predictions_with_heatmap(
+        heat,
+        preds,
+        fusion_alpha=0.5,
+        top_k=2,
+    )
+
+    def softmax(arr: np.ndarray) -> np.ndarray:
+        ex = np.exp(arr - np.max(arr))
+        return ex / ex.sum()
+
+    pred_mat = np.zeros_like(heat)
+    for p in preds:
+        pred_mat[p["row"], p["col"]] = p["score"]
+    expected = 0.5 * softmax(pred_mat) + 0.5 * softmax(heat)
+    top = expected.ravel().argsort()[::-1][:2]
+    rows, cols = np.unravel_index(top, expected.shape)
+    exp = [
+        {"row": int(r), "col": int(c), "final_score": float(expected[r, c])}
+        for r, c in zip(rows, cols)
+    ]
+    assert recs == exp
