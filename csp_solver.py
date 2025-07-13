@@ -1,5 +1,8 @@
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+from ortools.sat.python import cp_model
 
 BLANK = -1
 
@@ -57,3 +60,68 @@ def heuristic_csp_sampling(
                 counts[pos] += 1
 
     return {pos: counts[pos] / samples for pos in blanks}
+
+
+def full_csp_probabilities(
+    grid: List[List[int]],
+    target: int,
+    *,
+    samples: int = 1000,
+    reference: Optional[List[List[int]]] = None,
+) -> Dict[Tuple[int, int], float]:
+    """Use CP-SAT to estimate P(target at cell) with optional reference board."""
+
+    arr = np.asarray(grid, dtype=int)
+    rows, cols = arr.shape
+    blanks = [(int(r), int(c)) for r, c in np.argwhere(arr == BLANK)]
+    if not blanks:
+        return {}
+
+    domain = [n for n in range(1, rows * cols + 1) if n not in arr[arr != BLANK]]
+
+    model = cp_model.CpModel()
+    vars = [
+        model.NewIntVarFromDomain(cp_model.Domain.FromValues(domain), f"x{i}")
+        for i in range(len(blanks))
+    ]
+    model.AddAllDifferent(vars)
+    bools = []
+    for v in vars:
+        b = model.NewBoolVar("b")
+        model.Add(v == target).OnlyEnforceIf(b)
+        model.Add(v != target).OnlyEnforceIf(b.Not())
+        bools.append(b)
+    model.Add(sum(bools) == 1)
+
+    if reference is not None:
+        ref = np.asarray(reference, dtype=int)
+        for (r, c), var in zip(blanks, vars):
+            model.AddHint(var, int(ref[r, c]))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 3
+    solver.parameters.num_search_workers = 8
+
+    class Collector(cp_model.CpSolverSolutionCallback):
+        def __init__(self, variables: List[cp_model.IntVar], limit: int) -> None:
+            cp_model.CpSolverSolutionCallback.__init__(self)
+            self.vars = variables
+            self.limit = limit
+            self.counts = [0] * len(variables)
+            self.solutions = 0
+
+        def on_solution_callback(self) -> None:
+            for i, var in enumerate(self.vars):
+                if self.Value(var) == target:
+                    self.counts[i] += 1
+            self.solutions += 1
+            if self.solutions >= self.limit:
+                self.StopSearch()
+
+    cb = Collector(vars, samples)
+    solver.SearchForAllSolutions(model, cb)
+
+    if cb.solutions == 0:
+        return {pos: 0.0 for pos in blanks}
+
+    return {blanks[i]: cb.counts[i] / cb.solutions for i in range(len(blanks))}

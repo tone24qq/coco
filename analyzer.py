@@ -35,7 +35,7 @@ from brain import (
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
-from csp_solver import heuristic_csp_sampling
+from csp_solver import full_csp_probabilities
 
 # Logger configuration
 logging.basicConfig(
@@ -303,6 +303,39 @@ def iter_sample_jsons(samples_dir: str) -> Iterator[Dict[str, Any]]:
                 yield item
         except Exception as exc:  # pragma: no cover - broken zip
             logger.error("Failed to load %s: %s", zp.name, exc)
+
+
+def sample_similarity(
+    partial_grid: List[List[int]], full_sample: List[List[int]]
+) -> float:
+    """Return ratio of matching known cells between grids."""
+    total = 0
+    match = 0
+    rows = len(partial_grid)
+    cols = len(partial_grid[0]) if rows else 0
+    for r in range(rows):
+        for c in range(cols):
+            v = partial_grid[r][c]
+            if v != -1:
+                total += 1
+                if full_sample[r][c] == v:
+                    match += 1
+    return match / total if total > 0 else 0.0
+
+
+def find_reference_board(
+    grid: List[List[int]],
+    samples_dir: str,
+    threshold: float = 0.5,
+) -> Optional[List[List[int]]]:
+    """Return sample board if similarity ≥ threshold."""
+
+    for sample in iter_sample_jsons(samples_dir):
+        if sample["rows"] != len(grid) or sample["cols"] != len(grid[0]):
+            continue
+        if sample_similarity(grid, sample["grid"]) >= threshold:
+            return sample["grid"]
+    return None
 
 
 def _compute_target_prior(
@@ -1465,12 +1498,12 @@ def predict_scratch_card(
     nbr_score = neighbor_compatibility_score(grid_np, dist)
 
     nbr_probs = {(int(r), int(c)): float(nbr_score[r, c]) for r, c in blanks}
-    csp_probs = heuristic_csp_sampling(
+    reference = find_reference_board(grid_np.tolist(), history_dir)
+    csp_probs = full_csp_probabilities(
         grid_np.tolist(),
         target_num,
-        nbr_probs,
-        samples=iterations or 2000,
-        enforce_rowcol=True,
+        samples=iterations or 1000,
+        reference=reference,
     )
 
     scores_uniform = False
