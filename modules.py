@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
+from ortools.sat.python import cp_model
 from scipy import ndimage as ndi
 from scipy.signal import convolve2d
 
@@ -170,14 +171,38 @@ def generate_excel_style_card(
     return values.reshape((rows, cols))
 
 
+def sample_similarity(
+    partial_grid: List[List[int]],
+    full_sample: List[List[int]],
+) -> float:
+    """Return similarity ratio between ``partial_grid`` and ``full_sample``."""
+
+    total = 0
+    match = 0
+    rows = len(partial_grid)
+    cols = len(partial_grid[0]) if rows else 0
+    for r in range(rows):
+        for c in range(cols):
+            v = partial_grid[r][c]
+            if v != -1:
+                total += 1
+                if full_sample[r][c] == v:
+                    match += 1
+    return match / total if total > 0 else 0.0
+
+
 def locate_target_by_partial_grid(
-    grid: List[List[int]], target: int
+    grid: List[List[int]],
+    target: int,
+    *,
+    sample_library: Optional[List[List[List[int]]]] = None,
+    use_legacy: bool = False,
 ) -> Tuple[int, int]:
     """Predict the target's location from a partially hidden grid.
 
-    This implementation falls back to a random choice among unknown cells
-    when the target is hidden. It therefore does **not** guarantee high
-    accuracy but returns a valid coordinate.
+    The default implementation uses a CSP solver to infer the most likely
+    position of ``target`` when it is hidden. The previous random fallback
+    logic is still available via ``use_legacy=True``.
     """
 
     arr = np.asarray(grid, dtype=int)
@@ -193,10 +218,68 @@ def locate_target_by_partial_grid(
     if hidden.size == 0:
         raise ValueError("target not found and no hidden cells available")
 
-    rng = np.random.default_rng()
-    choice = int(rng.integers(len(hidden)))
-    r, c = hidden[choice]
-    return int(r), int(c)
+    blanks = [tuple(p) for p in hidden]
+
+    if use_legacy:
+        rng = np.random.default_rng()
+        r, c = blanks[int(rng.integers(len(blanks)))]
+        return int(r), int(c)
+
+    if sample_library:
+        for sample in sample_library:
+            if sample_similarity(grid, sample) >= 0.5:
+                arr_s = np.asarray(sample)
+                pos = np.argwhere(arr_s == target)
+                if pos.size:
+                    r, c = pos[0]
+                    if arr[r, c] == -1:
+                        return int(r), int(c)
+                break
+
+    missing_numbers = [n for n in range(1, arr.size + 1) if n not in arr[arr != -1]]
+
+    model = cp_model.CpModel()
+    vars_x = [
+        model.NewIntVarFromDomain(cp_model.Domain.FromValues(missing_numbers), f"x{i}")
+        for i in range(len(blanks))
+    ]
+    model.AddAllDifferent(vars_x)
+    bools = []
+    for var in vars_x:
+        b = model.NewBoolVar("")
+        model.Add(var == target).OnlyEnforceIf(b)
+        model.Add(var != target).OnlyEnforceIf(b.Not())
+        bools.append(b)
+    model.Add(sum(bools) == 1)
+
+    solver = cp_model.CpSolver()
+    solver.parameters.max_time_in_seconds = 0.02
+
+    class Counter(cp_model.CpSolverSolutionCallback):
+        def __init__(self, variables):
+            super().__init__()
+            self.variables = variables
+            self.count = 0
+            self.freq = {pos: 0 for pos in blanks}
+
+        def on_solution_callback(self):
+            self.count += 1
+            for var, pos in zip(self.variables, blanks):
+                if self.Value(var) == target:
+                    self.freq[pos] += 1
+            if self.count >= 16:
+                self.StopSearch()
+
+    cb = Counter(vars_x)
+    solver.SearchForAllSolutions(model, cb)
+
+    if cb.count == 0:
+        rng = np.random.default_rng()
+        r, c = blanks[int(rng.integers(len(blanks)))]
+        return int(r), int(c)
+
+    best = max(cb.freq.items(), key=lambda kv: kv[1])[0]
+    return int(best[0]), int(best[1])
 
 
 def global_offset_cooccurrence(
