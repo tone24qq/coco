@@ -17,3 +17,4 @@ scipy>=1.8.0
 openpyxl
 pytest-cov>=5.0
 orjson>=3.10.0
+ortools>=9.0.0
