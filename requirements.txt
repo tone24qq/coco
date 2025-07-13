@@ -10,3 +10,4 @@ openpyxl
 numba>=0.59.1
 orjson>=3.10.0
 ortools>=9.0.0
+scipy
