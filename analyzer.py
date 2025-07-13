@@ -1367,7 +1367,7 @@ def predict_scratch_card(
             (r_sel, c_sel), sc = neighbor_lock_or_fuse(
                 grid_np,
                 target_num,
-                phase1=iterations or 6000,
+                phase1=iterations or 1000,
                 samples_dir=history_dir,
                 sample_gamma=sample_gamma,
                 fusion_alpha=fusion_alpha_eff,
