@@ -16,8 +16,8 @@ cell. Cells are returned sorted by this difference with scores
 `1 / (1 + diff)`.
 
 This method does not rely on memorized boards and only uses the structure of the
-provided grid. Parameters such as rank and learning rate can be tuned via
-keyword arguments to `predict`.
+provided grid. Parameters such as rank, learning rate and the optional
+`max_val` bound can be tuned via keyword arguments to `predict`.
 
 ## Testing
 

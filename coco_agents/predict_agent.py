@@ -1,3 +1,5 @@
+"""Prediction agent based on matrix factorization."""
+
 from typing import Any, Dict, List
 
 import numpy as np
@@ -9,6 +11,7 @@ def _matrix_factorization(
     lr: float = 0.005,
     max_iter: int = 1000,
     seed: int | None = None,
+    max_val: int | None = None,
 ) -> np.ndarray:
     """Fill missing values using simple matrix factorization.
 
@@ -18,13 +21,18 @@ def _matrix_factorization(
         lr: learning rate for gradient descent.
         max_iter: maximum number of iterations.
         seed: random seed for reproducibility.
+        max_val: upper bound of the value range. If ``None`` the bound is
+            inferred from the observed board entries or ``board.size - 1``.
 
     Returns:
-        Completed board with integers in range 0-99.
+        Completed board with integers clipped to ``max_val``.
     """
     rng = np.random.default_rng(seed)
     mask = board != -1
     m, n = board.shape
+    if max_val is None:
+        observed_max = board[mask].max(initial=0)
+        max_val = max(observed_max, board.size - 1)
 
     # initial guess: row mean
     row_sum = np.where(mask, board, 0).sum(axis=1)
@@ -52,7 +60,7 @@ def _matrix_factorization(
         V -= lr * grad_V
         if np.linalg.norm(error) < 1e-3:
             break
-    result = np.clip(np.round(U @ V), 0, 99).astype(int)
+    result = np.clip(np.round(U @ V), 0, max_val).astype(int)
     return result
 
 

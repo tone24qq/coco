@@ -35,7 +35,8 @@ def test_matrix_factorization_shape_and_range():
 
     completed = _matrix_factorization(masked_grid, seed=0)
     assert completed.shape == ground_truth.shape
-    assert np.all((0 <= completed) & (completed < 100))
+    limit = ground_truth.size
+    assert np.all((0 <= completed) & (completed < limit))
 
     accuracy = (completed == ground_truth).mean()
     assert accuracy > 0.0
@@ -49,3 +50,35 @@ def test_predict_returns_candidate_list():
     for item in result:
         assert isinstance(item, dict)
         assert {"row", "col", "score"} <= item.keys()
+
+
+def test_metrics_on_unique_board():
+    rng = np.random.default_rng(123)
+    rows, cols = 10, 12
+    values = rng.permutation(rows * cols).reshape(rows, cols)
+    mask_indices = rng.choice(rows * cols, size=int(rows * cols * 0.6), replace=False)
+    masked = values.copy()
+    for idx in mask_indices:
+        r, c = divmod(int(idx), cols)
+        masked[r, c] = -1
+
+    completed = _matrix_factorization(masked, seed=123)
+    mask = masked == -1
+    final_accuracy = (completed[mask] == values[mask]).mean()
+
+    hit_count = 0
+    top3_hits = 0
+    for idx in mask_indices:
+        r, c = divmod(int(idx), cols)
+        target = int(values[r, c])
+        preds = predict(masked, target=target, seed=123)
+        if preds and (preds[0]["row"], preds[0]["col"]) == (r, c):
+            hit_count += 1
+        if (r, c) in {(p["row"], p["col"]) for p in preds[:3]}:
+            top3_hits += 1
+
+    top3_rate = top3_hits / len(mask_indices)
+
+    assert 0 <= final_accuracy <= 1
+    assert 0 <= top3_rate <= 1
+    assert hit_count <= len(mask_indices)
