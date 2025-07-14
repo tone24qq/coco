@@ -4,22 +4,13 @@
 > Maintainer: **橘子 (Research Master)**  
 > Last-Updated: **2025-06-25**
 
-本文件說明 `app.py`, `main.py`, `analyzer.py`, `brain.py`, `modules.py` 之間的 _Agent_ 切分與責任。低耦合、高內聚的代理設計能讓你 **快速替換演算法**，同時維持 API/CLI 介面不變。
-# AGENTS 使用與擴充規範（AGENTS.md）
+
 
 本專案採模組化與可維護設計，所有預測邏輯基於啟發式演算法、歷史樣本統計、模擬推論。為保障主體邏輯清晰、穩定與可測試，請遵守以下規範：
 如有提升 加強必要 可以新增任何檔案 但嚴格禁止擅自刪除 更改現有功能 模組 非指示請做好當前任務。
 ---
 
-## 🧾 允許修改的檔案範圍
 
-預設允許修改以下五個主流程模組：
-
-- `main.py`
-- `app.py`
-- `analyzer.py`
-- `brain.py`
-- `modules.py`
 
 以及所有測試相關檔案：
 
@@ -114,16 +105,6 @@
 號碼不重複 號碼1-N(範圍依據行列大小數量）
 ---
 
-## 2. Agent Contracts
-
-| Agent | Public API | I/O 型別 | 關鍵特性 |
-|-------|------------|----------|----------|
-| **GridAgent** | `normalize(grid: np.ndarray) -> dict` | 任意 `-1/num` 2-D 陣列 → dict{{known_mask, flat_values}} | 100 ns 內完成大小偵測 & 驗證 |
-| **GenAgent**  | `sample(batch:int, ctx:GridCtx) -> NDArray[int16]` | 上下文 → `(batch, r, c)` | 向量化洗牌 + 熵權重；可 1e6 boards/s (4 CPU) |
-| **ScoreAgent**| `score(board_batch) -> NDArray[float32]` | `(b,r,c)` → `(b,)` | 多公式合併；SIMD-friendly |
-| **SimAgent**  | `simulate(ctx, target:int, n_iter:int) -> ProbMap` | context, 目標, 迭代數 | 自適應收斂 (CV < 0.05)；Ray 任務粒度 500 |
-| **PredictionOrchestrator** | `predict(grid, target, iterations) -> Result` | JSON-like | 回傳 top-k 與 full heat-map |
-| **APIAgent** | `/predict` | HTTP POST JSON | FastAPI + Pydantic；< 50 ms overhead |
 
 ### Return Schema (`Result`)
 ```jsonc
