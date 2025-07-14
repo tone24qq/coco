@@ -18,7 +18,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 # fmt: off
 import analyzer
@@ -114,19 +114,26 @@ async def lifespan(app: FastAPI):
 
 
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
-app = FastAPI(
-    title="Scratch Card Prediction API",
-    version="1.0.0",
-    description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
-    lifespan=lifespan,
-)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="Scratch Card Prediction API",
+        version="1.0.0",
+        description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
+        lifespan=lifespan,
+    )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    return app
+
+
+app = create_app()
 
 
 @app.get("/debug/priors", response_class=JSONResponse)
@@ -149,6 +156,7 @@ async def debug_number_distribution(
 
 # ==== Schemas ==============================================================
 class GridRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     grid: List[List[Union[int, str]]]
     target_num: Optional[int] = None
     iterations: Optional[int] = None
@@ -166,6 +174,7 @@ class GridRequest(BaseModel):
 
 
 class Prediction(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
     row: int
     col: int
     candidates: List[int]
@@ -175,6 +184,7 @@ class Prediction(BaseModel):
 
 
 class PredictResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     predictions: List[Prediction]
     top_predictions: List[Prediction]
     top_recommendations: Optional[List[Prediction]] = None
@@ -183,6 +193,7 @@ class PredictResponse(BaseModel):
 
 
 class HeatmapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     grid: List[List[Union[int, str]]]
     k: Optional[int] = None
     target_num: Optional[int] = None
@@ -195,6 +206,7 @@ class HeatmapRequest(BaseModel):
 
 
 class HeatmapResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     prob_map: Union[List[List[float]], Dict[str, List[List[float]]]]
     heatmap: Optional[str] = None
     predictions: Optional[List[Prediction]] = None
@@ -205,6 +217,7 @@ class HeatmapResponse(BaseModel):
 
 
 class FusionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     predict_scores: List[List[float]]
     heatmap_prob_map: List[List[float]]
     alpha: Optional[float] = 0.5
@@ -213,6 +226,7 @@ class FusionRequest(BaseModel):
 
 
 class FusionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     row: int
     col: int
     final_score: float
@@ -599,7 +613,13 @@ async def fuse(req: FusionRequest):
 def run_api() -> None:
     port = int(os.getenv("PORT", "10000"))
     logger.info("Starting API on port %d", port)
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(
+        "app:create_app",
+        host="0.0.0.0",
+        port=port,
+        log_level="info",
+        factory=True,
+    )
 
 
 if __name__ == "__main__":
