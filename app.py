@@ -153,7 +153,7 @@ class GridRequest(BaseModel):
     fusion_alpha: Optional[float] = None
     pseudo_count: Optional[float] = None
     exclude_filled: bool = True
-    strategy: Literal["legacy", "modern"] = "legacy"
+    strategy: Literal["legacy", "modern", "outside_in"] = "outside_in"
     penalty_deltas: Optional[str] = None
 
 

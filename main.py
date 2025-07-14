@@ -117,8 +117,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strategy",
         type=str,
-        choices=["legacy", "modern"],
-        default="legacy",
+        choices=["legacy", "modern", "outside_in"],
+        default="outside_in",
         help="Prediction ranking strategy",
     )
     parser.add_argument(

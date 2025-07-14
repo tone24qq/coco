@@ -207,3 +207,10 @@ def test_fuse_basic(client):
         assert res["row"] == exp["row"]
         assert res["col"] == exp["col"]
         assert res["final_score"] == pytest.approx(exp["final_score"])
+
+
+def test_predict_default_strategy(client):
+    grid = [[-1, -1], [-1, -1]]
+    resp = client.post("/predict", json={"grid": grid, "target_num": 1})
+    assert resp.status_code == 200
+    assert resp.json().get("strategy") == "outside_in"

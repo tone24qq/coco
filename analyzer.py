@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor
 from joblib import Parallel, delayed
 from numba import njit
 from scipy.signal import convolve2d
@@ -36,7 +37,7 @@ from brain import (
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
-from csp_solver import csp_with_hint, full_csp_probabilities
+from csp_solver import csp_with_hint
 
 # Logger configuration
 logging.basicConfig(
@@ -1381,7 +1382,7 @@ def predict_scratch_card(
     pseudo_count: float = 0.0,
     force_legacy: bool = False,
     exclude_filled: bool = True,
-    strategy: str = "legacy",
+    strategy: str = "outside_in",
     use_neighbor_lock: bool = False,
     neighbor_threshold: float = 0.0,
     penalty_deltas: Optional[Dict[int, float]] = None,
@@ -1492,6 +1493,30 @@ def predict_scratch_card(
             "top_predictions": preds,
             "top_recommendations": preds,
             "full_probabilities": {},
+            "final_recommendations": [],
+        }
+
+    if strategy == "outside_in" and target_num is not None:
+        final_probs = predict_outside_in(
+            grid_np.tolist(),
+            target_num,
+            history_dir,
+            mc_iter=iterations or 300,
+            csp_sols=iterations or 200,
+            time_limit=0.8,
+        )
+        ranked = sorted(final_probs.items(), key=lambda x: -x[1])
+        top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
+        preds = [
+            {"row": r, "col": c, "score": float(p)} for (r, c), p in ranked[:top_k]
+        ]
+        full_map = {pos: {int(target_num): float(p)} for pos, p in final_probs.items()}
+        return {
+            "mode": "outside_in",
+            "strategy": "outside_in",
+            "predictions": preds,
+            "top_predictions": preds,
+            "full_probabilities": full_map,
             "final_recommendations": [],
         }
 
@@ -1920,6 +1945,127 @@ def evaluate_prediction_accuracy(num_trials: int = 50, seed: int = 0) -> float:
     if trials == 0:
         return 0.0
     return hits / float(trials)
+
+
+def compute_rings(grid: np.ndarray) -> Dict[Tuple[int, int], int]:
+    """Return ring index for each cell."""
+
+    rows, cols = grid.shape
+    ring_mat = BoardAnalyzerUtils.ring_index(rows, cols)
+    return {
+        (int(r), int(c)): int(ring_mat[r, c]) for r in range(rows) for c in range(cols)
+    }
+
+
+def infer_layer(
+    grid: List[List[int]],
+    target: int,
+    layer_positions: List[Tuple[int, int]],
+    reference: Optional[List[List[int]]],
+    mc_iter: int,
+    csp_sols: int,
+    time_limit: float,
+) -> Dict[Tuple[int, int], float]:
+    """Run MC + CSP for a board layer and return normalized probabilities."""
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _mc() -> Dict[Tuple[int, int], float]:
+        return mc_fullboard_fast(
+            grid,
+            target,
+            n_iter=mc_iter,
+            time_limit=time_limit * 0.5,
+            reference=reference,
+        )
+
+    def _csp() -> Dict[Tuple[int, int], float]:
+        return csp_with_hint(
+            grid,
+            target,
+            max_solutions=csp_sols,
+            time_limit=time_limit * 0.5,
+            reference=reference,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as exe:
+        mc_p = exe.submit(_mc)
+        csp_p = exe.submit(_csp)
+        mc_res = mc_p.result()
+        csp_res = csp_p.result()
+
+    probs: Dict[Tuple[int, int], float] = {}
+    for pos in layer_positions:
+        probs[pos] = min(mc_res.get(pos, 0.0), csp_res.get(pos, 0.0))
+
+    total = sum(probs.values()) or 1.0
+    for pos in probs:
+        probs[pos] /= total
+    return probs
+
+
+def update_reference(
+    ref: Optional[List[List[int]]],
+    layer: List[Tuple[int, int]],
+    p_layer: Dict[Tuple[int, int], float],
+    target: int,
+) -> Optional[List[List[int]]]:
+    """Update reference board with highest-probability cell from layer."""
+
+    if ref is None:
+        return None
+    new_ref = [row[:] for row in ref]
+    if p_layer:
+        pos = max(p_layer, key=p_layer.get)
+        new_ref[pos[0]][pos[1]] = target
+    return new_ref
+
+
+def predict_outside_in(
+    grid: List[List[int]],
+    target: int,
+    history_dir: str,
+    mc_iter: int = 300,
+    csp_sols: int = 200,
+    time_limit: float = 0.8,
+) -> Dict[Tuple[int, int], float]:
+    """Predict probabilities layer-by-layer from the outside in."""
+
+    grid_np = np.asarray(grid, dtype=int)
+    rings = compute_rings(grid_np)
+    max_ring = max(rings.values()) if rings else 0
+    reference = find_reference_board(grid, history_dir)
+
+    tasks: List[Tuple[int, List[Tuple[int, int]], Any]] = []
+    with ProcessPoolExecutor(max_workers=max_ring + 1) as exe:
+        for ring in range(max_ring, -1, -1):
+            layer = [
+                pos for pos, r in rings.items() if r == ring and grid_np[pos] == -1
+            ]
+            if not layer:
+                continue
+            fut = exe.submit(
+                infer_layer,
+                grid,
+                target,
+                layer,
+                reference,
+                mc_iter,
+                csp_sols,
+                time_limit,
+            )
+            tasks.append((ring, layer, fut))
+
+    final_probs: Dict[Tuple[int, int], float] = {}
+    for ring, layer, fut in sorted(tasks, key=lambda x: -x[0]):
+        p_layer = fut.result()
+        if p_layer:
+            best_pos = max(p_layer, key=p_layer.get)
+            grid_np[best_pos] = target
+        final_probs.update({pos: float(p) for pos, p in p_layer.items()})
+        reference = update_reference(reference, layer, p_layer, target)
+
+    return final_probs
 
 
 def match_samples(

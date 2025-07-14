@@ -1,5 +1,3 @@
-import numpy as np
-
 from analyzer import mc_fullboard_fast
 from csp_solver import csp_with_hint
 
