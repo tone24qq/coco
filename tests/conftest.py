@@ -3,6 +3,7 @@ import importlib.util
 import pathlib
 import sys
 import warnings
+from typing import Iterator
 
 import numpy as np
 import pytest
@@ -20,10 +21,11 @@ np.seterr(all="ignore")
 
 
 @pytest.fixture(scope="session")
-def client() -> TestClient:
+def client() -> Iterator[TestClient]:
     """Shared TestClient for FastAPI app."""
 
-    return TestClient(app)
+    with TestClient(app) as client:
+        yield client
 
 
 @pytest.fixture()

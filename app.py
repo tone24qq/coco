@@ -7,6 +7,7 @@ import math
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -92,6 +93,9 @@ def get_prior_for_shape(rows: int, cols: int) -> Dict[int, float]:
 
 
 async def warm_up() -> None:
+    if os.getenv("FAST_TEST") == "1":
+        logger.info("[warm-up] Skipped in FAST_TEST mode")
+        return
     logging.info("[warm-up] Loading priors…")
     priors = await load_priors_async()
     brain.priors_map.clear()
@@ -101,11 +105,20 @@ async def warm_up() -> None:
     analyzer.warmup_sample_cache("samples")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Handle startup and shutdown events."""
+    asyncio.create_task(warm_up())
+    yield
+    logger.info("Shutdown complete")
+
+
 # —— FastAPI app & CORS —————————————————————————————————————————————————————————
 app = FastAPI(
     title="Scratch Card Prediction API",
     version="1.0.0",
     description="Predict hidden numbers in scratch-card grids with Monte-Carlo + heuristic modules.",
+    lifespan=lifespan,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -132,11 +145,6 @@ async def debug_number_distribution(
         for n, pos in dist.items()
     }
     return result
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    asyncio.create_task(warm_up())
 
 
 # ==== Schemas ==============================================================
@@ -586,11 +594,6 @@ async def fuse(req: FusionRequest):
     except Exception as exc:
         logger.error("Fusion failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    logger.info("Shutdown complete")
 
 
 def run_api() -> None:

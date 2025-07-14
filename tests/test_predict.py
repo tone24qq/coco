@@ -1,23 +1,19 @@
 from fastapi.testclient import TestClient
 
-from app import app
 
-client = TestClient(app)
-
-
-def test_root_status():
+def test_root_status(client: TestClient):
     res = client.get("/")
     assert res.status_code == 200
     assert res.json()["status"] == "OK"
 
 
-def test_root_head():
+def test_root_head(client: TestClient):
     res = client.head("/")
     assert res.status_code == 200
     assert res.text == ""
 
 
-def test_predict_valid_grid():
+def test_predict_valid_grid(client: TestClient):
     grid = []
     val = 1
     for _ in range(8):
@@ -46,21 +42,21 @@ def test_predict_valid_grid():
     assert isinstance(body.get("final_recommendations"), list)
 
 
-def test_invalid_duplicate_numbers():
+def test_invalid_duplicate_numbers(client: TestClient):
     payload = {"grid": [[1, 2, 2], [4, 5, 6]]}
     res = client.post("/predict", json=payload)
     assert res.status_code == 500
     assert "duplicate" in res.json()["detail"].lower()
 
 
-def test_invalid_small_grid():
+def test_invalid_small_grid(client: TestClient):
     payload = {"grid": [[1]]}
     res = client.post("/predict", json=payload)
     assert res.status_code == 500
     assert "at least 2x2" in res.json()["detail"].lower()
 
 
-def test_target_num_out_of_range():
+def test_target_num_out_of_range(client: TestClient):
     grid = [[1, -1], [3, 4]]
     payload = {"grid": grid, "target_num": 5}
     res = client.post("/predict", json=payload)
