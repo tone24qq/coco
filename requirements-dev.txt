@@ -12,6 +12,10 @@ pip-audit>=2.7
 pytest>=8.2
 hypothesis>=6.100
 pytest-xdist>=3.5
-
+scipy>=1.8.0
 # Optional coverage
+openpyxl
 pytest-cov>=5.0
+orjson>=3.10.0
+ortools>=9.0.0
+scipy
