@@ -7,6 +7,7 @@ import math
 import os
 import sys
 import re
+import time
 import zipfile
 from collections import OrderedDict
 import threading
@@ -35,7 +36,7 @@ from brain import (
 from modules import FORMULA_REGISTRY, generate_unique_grid
 from weights import AGG_WEIGHTS
 from neighbor_stats import compute_neighbor_distribution, neighbor_compatibility_score
-from csp_solver import full_csp_probabilities
+from csp_solver import csp_with_hint, full_csp_probabilities
 
 # Logger configuration
 logging.basicConfig(
@@ -1499,13 +1500,18 @@ def predict_scratch_card(
 
     nbr_probs = {(int(r), int(c)): float(nbr_score[r, c]) for r, c in blanks}
     reference = find_reference_board(grid_np.tolist(), history_dir)
-    csp_probs = full_csp_probabilities(
+    mc_probs = mc_fullboard_fast(
         grid_np.tolist(),
         target_num,
-        samples=iterations or 1000,
+        n_iter=iterations or 300,
         reference=reference,
     )
-
+    csp_probs = csp_with_hint(
+        grid_np.tolist(),
+        target_num,
+        max_solutions=iterations or 300,
+        reference=reference,
+    )
     scores_uniform = False
     neighbor_counts = []
     if blanks:
@@ -1541,12 +1547,13 @@ def predict_scratch_card(
         for r, c in blanks:
             final_score_map[r, c] = float(heat[r, c])
     else:
-        alpha = 0.7
+        alpha = 0.5
+        beta = 0.3
         for r, c in blanks:
             final_score_map[r, c] += alpha * nbr_probs.get((r, c), 0.0)
+            final_score_map[r, c] += beta * mc_probs.get((r, c), 0.0)
         for (r, c), p in csp_probs.items():
-            final_score_map[r, c] += (1 - alpha) * p
-
+            final_score_map[r, c] += (1 - alpha - beta) * p
     top_k = result_top_k or int(os.getenv("RESULT_TOP_K", "3"))
     rings = BoardAnalyzerUtils.ring_index(*grid_np.shape)
     ranked_all = sorted(
@@ -1679,6 +1686,46 @@ def monte_carlo_prob_map(
         arr[g != -1] = 0.0
         prob_all[int(val)] = arr
     return prob_all
+
+
+def mc_fullboard_fast(
+    grid: List[List[int]],
+    target: int,
+    n_iter: int = 300,
+    *,
+    sample_prob: float = 0.3,
+    time_limit: float = 0.6,
+    reference: Optional[List[List[int]]] = None,
+) -> Dict[Tuple[int, int], float]:
+    """Fast Monte-Carlo full board sampling with optional reference board."""
+
+    arr = np.asarray(grid, dtype=int)
+    rows, cols = arr.shape
+    blanks = np.argwhere(arr == -1)
+    if blanks.size == 0:
+        return {}
+
+    rng = np.random.default_rng()
+    all_vals = np.arange(1, rows * cols + 1)
+    remain = np.setdiff1d(all_vals, arr[arr != -1], assume_unique=True)
+    counts = {tuple(map(int, pos)): 0 for pos in blanks}
+
+    start = time.time()
+    for it in range(max(1, n_iter)):
+        if reference is not None and rng.random() < sample_prob:
+            board = np.asarray(reference, dtype=int)
+        else:
+            board = arr.copy()
+            perm = rng.permutation(remain)
+            board[blanks[:, 0], blanks[:, 1]] = perm[: blanks.shape[0]]
+        for r, c in blanks:
+            if board[int(r), int(c)] == target:
+                counts[(int(r), int(c))] += 1
+        if time.time() - start > time_limit:
+            break
+
+    total = max(1, it + 1)
+    return {pos: cnt / total for pos, cnt in counts.items()}
 
 
 def prob_map_to_png(prob_map: np.ndarray) -> bytes:
