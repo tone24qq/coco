@@ -50,6 +50,7 @@ jobs:
           pip install -r requirements.txt
           # CI 需要的額外工具
           pip install ruff mypy pytest hypothesis pytest-xdist pytest-cov vulture
+          pip install .
 
       # ▒▒▒ 下載隱藏測資（若 SECRET_ZIP_URL 有設值） ▒▒▒
       - name: Download secret cases
