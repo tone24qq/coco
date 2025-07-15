@@ -52,3 +52,37 @@ Build and run using Docker:
 docker build -t predictor .
 docker run -p 8000:8000 predictor
 ```
+
+## RandomForest Inference Utility
+
+The `rf_infer` package loads a trained RandomForest model and predicts the best
+cells for a target value. Install the package and run `rf-infer`:
+
+```bash
+rf-infer --input boards/4x5_input.json --output results/out.json --k 3
+```
+
+`boards/4x5_input.json` should contain either a single object or a list of
+objects with the fields:
+
+```json
+{
+  "board": [[1, -1], [3, -1]],
+  "target": 4
+}
+```
+
+The output JSON will be a list of results with the structure:
+
+```json
+[
+  {
+    "rows": 2,
+    "cols": 2,
+    "target": 4,
+    "predictions": [{"r": 1, "c": 1, "prob": 0.75}]
+  }
+]
+```
+
+A helper Dockerfile (`Dockerfile.rf`) builds a minimal image with the CLI.
