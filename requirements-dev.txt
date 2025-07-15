@@ -21,3 +21,6 @@ ortools>=9.0.0
 scipy
 fastapi>=0.111
 uvicorn>=0.30
+scikit-learn>=1.2.0
+joblib
+numpy
