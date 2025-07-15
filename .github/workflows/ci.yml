@@ -2,24 +2,25 @@
 name: CI
 
 on:
-  push:                # 任何分支推送時都跑
-    branches: ['*']
-  pull_request:        # 任何分支發起 PR、包括 Draft→Ready 都跑
-    branches: ['*']
+  push:
+    branches: ['main']
+  pull_request:
+    branches: ['main']
     types: [opened, synchronize, ready_for_review]
-  workflow_dispatch: {}      # 手動觸發
-  schedule:                  # 定期排程跑一次壓力測
-    - cron: '0 3 * * *'      # 每天 03:00 UTC（台灣 11:00）
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 3 * * *'   # 每天 03:00 UTC（台灣 11:00）
 
 env:
   PIP_CACHE_DIR: ~/.cache/pip
-  FAST_TEST: "1"             # app.py 可讀取此變數以縮短迭代次數
+  FAST_TEST: "1"          # app.py 可讀此變數以縮短迭代次數
+  # 若你要私有下載隱藏測資，請在 GitHub Settings → Secrets 加入 SECRET_ZIP_URL
+  SECRET_ZIP_URL: ${{ secrets.SECRET_ZIP_URL }}
 
+##############################################################################
+# 1️⃣  Lint / Unit / Reliability / Quality Gate
+##############################################################################
 jobs:
-
-  ##############################################################################
-  # 1️⃣  Lint & Unit + Reliability Tests（最關鍵；失敗就停）
-  ##############################################################################
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -35,8 +36,7 @@ jobs:
         with:
           path: ${{ env.PIP_CACHE_DIR }}
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          restore-keys: ${{ runner.os }}-pip-
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -48,18 +48,50 @@ jobs:
         run: |
           pip install -U pip
           pip install -r requirements.txt
-          pip install ruff mypy pytest hypothesis pytest-xdist pytest-cov
+          # CI 需要的額外工具
+          pip install ruff mypy pytest hypothesis pytest-xdist pytest-cov vulture
+
+      # ▒▒▒ 下載隱藏測資（若 SECRET_ZIP_URL 有設值） ▒▒▒
+      - name: Download secret cases
+        if: env.SECRET_ZIP_URL != ''
+        run: |
+          mkdir -p evaluation
+          curl -sSL "$SECRET_ZIP_URL" -o evaluation/secret_cases.zip
 
       - name: Ruff & MyPy
         run: |
           ruff check .
           mypy . --strict
 
+      - name: Weights smoke test
+        run: |
+          python - <<'PY'
+import brain
+want = {"gdiff": 0.4, "conn": 0.05}
+got = {k: round(brain.AGG_WEIGHTS.get(k, 0.0), 2) for k in want}
+assert got == want, f"weights mismatch {got}"
+PY
+
+      - name: Dead code scan
+        run: |
+          python dead_code_autorun.py --root .
+          if [ $(wc -l < dead_code_report.md) -gt 6 ]; then
+            cat dead_code_report.md
+            exit 1
+          fi
+
+      # ▒▒▒ Quality Gate：命中率 ≥93%、單次 <100 ms ▒▒▒
+      - name: Quality Gate
+        run: |
+          python quality_gate.py \
+            --zip evaluation/secret_cases.zip \
+            --n-random 1000
+
       - name: Run unit & quick tests
         run: |
           pytest -q -n auto -m "not slow" --cov=./ --cov-report=xml
 
-      - name: Run reliability convergence tests
+      - name: Run convergence tests
         run: |
           pytest -q tests/test_reliable_accuracy.py
 
@@ -74,9 +106,9 @@ jobs:
           files: coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  ##############################################################################
-  # 2️⃣  Extended / Slow / Stress tests（僅 schedule 或手動觸發時跑）
-  ##############################################################################
+##############################################################################
+# 2️⃣  Extended / Slow / Stress tests（排程或手動觸發才跑）
+##############################################################################
   slow-and-stress:
     needs: test
     runs-on: ubuntu-latest
@@ -96,33 +128,13 @@ jobs:
           pip install -r requirements.txt
           pip install pytest hypothesis
 
-      - name: Run slow tests
+      - name: Run all slow tests
         run: |
           pytest -q -m slow --durations=20
 
       - name: Run infinite stress test
         run: |
-          # 如果你把 run_infinite_test 寫在 tests/reliability_utils.py
           python - << 'EOF'
 import tests.reliability_utils as ru
 ru.run_infinite_test()
 EOF
-
-  ##############################################################################
-  # 3️⃣  Deploy to Render（合併到 main 且 PR Ready 時才觸發）
-  ##############################################################################
-  deploy:
-    needs: test
-    runs-on: ubuntu-latest
-    if: >
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'pull_request' &&
-       github.event.action == 'ready_for_review' &&
-       github.base_ref == 'main')
-    steps:
-      - name: Trigger Render deploy
-        run: |
-          curl -X POST \
-            -H "Accept: application/json" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
-            https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys
