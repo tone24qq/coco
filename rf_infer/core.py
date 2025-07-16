@@ -189,13 +189,15 @@ def _is_unique_board(board: np.ndarray) -> bool:
 def _filter_unique_candidates(
     board: np.ndarray, predictions: List[Dict[str, Any]], target: int
 ) -> List[Dict[str, Any]]:
-    """Filter candidate cells to those keeping the board solvable and unique."""
+    """Filter cells that keep the board valid and uniquely solvable."""
     valid: List[Dict[str, Any]] = []
     for p in predictions:
         r, c = p["r"], p["c"]
         tmp = board.copy()
         tmp[r, c] = target
-        if _is_unique_board(tmp):
+        if not _is_valid_board(tmp):
+            continue
+        if len(find_solutions(tmp, limit=2)) == 1:
             valid.append(p)
     return valid
 
@@ -209,6 +211,19 @@ def predict_top_k(
     enforce_unique: bool = False,
 ) -> Dict[str, Any]:
     rows, cols = board.shape
+
+    max_val = rows * cols
+    if not _is_valid_board(board) or not (1 <= target <= max_val):
+        return {
+            "rows": rows,
+            "cols": cols,
+            "target": target,
+            "predictions": [],
+            "unique": False,
+            "num_solutions": 0,
+            "status": "no_valid_solution",
+        }
+
     solutions = find_solutions(board, limit=2)
     num_solutions = len(solutions)
     status = "no_valid_solution"

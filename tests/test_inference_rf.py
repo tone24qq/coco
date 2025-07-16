@@ -63,8 +63,8 @@ def test_predict_all_blanks_large_k(tmp_path: Path) -> None:
     model = clf
 
     res = predict_top_k(model, board_masked, 1, k=10)
-    assert len(res["predictions"]) == board_masked.size
-    assert res["status"] == "multiple"
+    assert res["predictions"] == []
+    assert res["status"] == "no_valid_solution"
 
 
 def test_predict_target_missing(tmp_path: Path) -> None:

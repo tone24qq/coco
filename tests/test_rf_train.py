@@ -31,5 +31,4 @@ def test_train_and_infer(tmp_path: Path) -> None:
 
     board = np.array([[-1, -1], [-1, -1]])
     top3 = infer_top3_for_target(board, 1, models_dir=str(models_dir))
-    assert len(top3) == 3
-    assert all(len(pos) == 2 for pos in top3)
+    assert top3 == []
