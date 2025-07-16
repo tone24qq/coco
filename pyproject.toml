@@ -13,3 +13,4 @@ dependencies = [
 
 [project.scripts]
 rf-infer = "rf_infer.cli:main"
+rf-train = "rf_infer.train:main"

@@ -178,3 +178,14 @@ def batch_predict(
             failures,
         )
     return results
+
+
+def infer_top3_for_target(
+    board: np.ndarray, target: int, models_dir: str = "models"
+) -> List[tuple[int, int]]:
+    """Return the top-3 coordinates most likely to contain ``target``."""
+    rows, cols = board.shape
+    model_path = _select_model(models_dir, rows, cols)
+    model = _load_model(model_path)
+    res = predict_top_k(model, board, target, 3)
+    return [(p["r"], p["c"]) for p in res["predictions"]]

@@ -41,8 +41,9 @@ def test_cli_help() -> None:
 
 
 def test_cli_run(tmp_path: Path) -> None:
-    repo_root = Path(__file__).resolve().parent.parent
-    input_path = repo_root / "boards" / "2x2_input.json"
+    input_path = tmp_path / "input.json"
+    with open(input_path, "w", encoding="utf-8") as f:
+        json.dump({"board": [[-1, -1], [-1, -1]], "target": 3}, f)
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     model_file = models_dir / "2x2.pkl"
