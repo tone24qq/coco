@@ -159,6 +159,47 @@ def find_solutions(board: np.ndarray, limit: int = 2) -> List[np.ndarray]:
     return solutions
 
 
+def _is_valid_board(board: np.ndarray) -> bool:
+    """Return True if board has no duplicate or out-of-range numbers."""
+    rows, cols = board.shape
+    row_sets: List[Set[int]] = [set() for _ in range(rows)]
+    col_sets: List[Set[int]] = [set() for _ in range(cols)]
+    max_val = rows * cols
+    for r in range(rows):
+        for c in range(cols):
+            val = int(board[r, c])
+            if val == -1:
+                continue
+            if val < 1 or val > max_val:
+                return False
+            if val in row_sets[r] or val in col_sets[c]:
+                return False
+            row_sets[r].add(val)
+            col_sets[c].add(val)
+    return True
+
+
+def _is_unique_board(board: np.ndarray) -> bool:
+    """Return True if the board is valid and solvable."""
+    if not _is_valid_board(board):
+        return False
+    return bool(find_solutions(board, limit=1))
+
+
+def _filter_unique_candidates(
+    board: np.ndarray, predictions: List[Dict[str, Any]], target: int
+) -> List[Dict[str, Any]]:
+    """Filter candidate cells to those keeping the board solvable and unique."""
+    valid: List[Dict[str, Any]] = []
+    for p in predictions:
+        r, c = p["r"], p["c"]
+        tmp = board.copy()
+        tmp[r, c] = target
+        if _is_unique_board(tmp):
+            valid.append(p)
+    return valid
+
+
 def predict_top_k(
     model: ClassifierMixin,
     board: np.ndarray,
@@ -168,6 +209,14 @@ def predict_top_k(
     enforce_unique: bool = False,
 ) -> Dict[str, Any]:
     rows, cols = board.shape
+    solutions = find_solutions(board, limit=2)
+    num_solutions = len(solutions)
+    status = "no_valid_solution"
+    if num_solutions == 1:
+        status = "unique"
+    elif num_solutions > 1:
+        status = "multiple"
+
     feats_list: List[np.ndarray] = []
     coords: List[tuple[int, int]] = []
     for r in range(rows):
@@ -176,14 +225,30 @@ def predict_top_k(
                 feats_list.append(extract_features(board, r, c))
                 coords.append((r, c))
     if not feats_list:
-        return {"rows": rows, "cols": cols, "target": target, "predictions": []}
+        return {
+            "rows": rows,
+            "cols": cols,
+            "target": target,
+            "predictions": [],
+            "unique": num_solutions == 1,
+            "num_solutions": num_solutions,
+            "status": status,
+        }
     X = np.vstack(feats_list)
     probs = model.predict_proba(X)
     try:
         idx = list(model.classes_).index(target)
     except ValueError:
         logger.warning("target %s not in model classes", target)
-        return {"rows": rows, "cols": cols, "target": target, "predictions": []}
+        return {
+            "rows": rows,
+            "cols": cols,
+            "target": target,
+            "predictions": [],
+            "unique": num_solutions == 1,
+            "num_solutions": num_solutions,
+            "status": "no_valid_solution",
+        }
     target_probs = probs[:, idx]
     top_idx = np.argsort(target_probs)[-k:][::-1]
     results = [
@@ -194,6 +259,7 @@ def predict_top_k(
         }
         for i in top_idx
     ]
+    results = _filter_unique_candidates(board, results, target)
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
@@ -207,7 +273,18 @@ def predict_top_k(
                 ]
         else:
             results = []
-    return {"rows": rows, "cols": cols, "target": target, "predictions": results}
+
+    if not results:
+        status = "no_valid_solution"
+    return {
+        "rows": rows,
+        "cols": cols,
+        "target": target,
+        "predictions": results,
+        "unique": num_solutions == 1,
+        "num_solutions": num_solutions,
+        "status": status,
+    }
 
 
 def batch_predict(
