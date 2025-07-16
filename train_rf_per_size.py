@@ -96,7 +96,7 @@ def extract_all_features(
 
 def process_zip(zip_path: str, out_dir: str) -> None:
     """
-    逐个打开 zip，读取其中所有 *.json，按文件名 (e.g. 4x5.json) 
+    逐个打开 zip，读取其中所有 *.json，按文件名 (e.g. 4x5.json)
     确定尺寸，提取特征并保存为 compressed .npz
     """
     zf = zipfile.ZipFile(zip_path)
