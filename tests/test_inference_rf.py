@@ -71,3 +71,14 @@ def test_predict_target_missing(tmp_path: Path) -> None:
 
     res = predict_top_k(model, board_masked, 99, k=2)
     assert res["predictions"] == []
+
+
+def test_predict_enforce_unique(tmp_path: Path) -> None:
+    board_full = np.array([[1, 2], [3, 4]])
+    board_masked = np.array([[1, -1], [3, -1]])
+    clf = _train_simple_model(board_full, board_masked)
+    model = clf
+
+    res = predict_top_k(model, board_masked, 2, k=2, enforce_unique=True)
+    coords = {(p["r"], p["c"]) for p in res["predictions"]}
+    assert coords == {(0, 1), (1, 1)}

@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from glob import glob
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import joblib
 import numpy as np
@@ -99,8 +99,73 @@ def _select_model(models_dir: str, rows: int, cols: int) -> str:
     raise FileNotFoundError(f"No model for {rows}x{cols}")
 
 
+def _solve_boards(
+    board: np.ndarray,
+    row_sets: List[Set[int]],
+    col_sets: List[Set[int]],
+    digits: Set[int],
+    blanks: List[Tuple[int, int]],
+    solutions: List[np.ndarray],
+    limit: int,
+) -> None:
+    """Recursive helper to enumerate board solutions."""
+    if len(solutions) >= limit:
+        return
+    if not blanks:
+        if not digits:
+            solutions.append(board.copy())
+        return
+    # choose the most constrained blank
+    blanks.sort(key=lambda rc: len(digits - row_sets[rc[0]] - col_sets[rc[1]]))
+    r, c = blanks.pop(0)
+    allowed = digits - row_sets[r] - col_sets[c]
+    for num in sorted(allowed):
+        board[r, c] = num
+        digits.remove(num)
+        row_sets[r].add(num)
+        col_sets[c].add(num)
+        _solve_boards(board, row_sets, col_sets, digits, blanks, solutions, limit)
+        row_sets[r].remove(num)
+        col_sets[c].remove(num)
+        digits.add(num)
+        board[r, c] = -1
+        if len(solutions) >= limit:
+            break
+    blanks.insert(0, (r, c))
+
+
+def find_solutions(board: np.ndarray, limit: int = 2) -> List[np.ndarray]:
+    """Return up to ``limit`` complete boards satisfying uniqueness rules."""
+    rows, cols = board.shape
+    digits: Set[int] = set(range(1, rows * cols + 1))
+    row_sets: List[Set[int]] = [set() for _ in range(rows)]
+    col_sets: List[Set[int]] = [set() for _ in range(cols)]
+    blanks: List[Tuple[int, int]] = []
+
+    for r in range(rows):
+        for c in range(cols):
+            val = int(board[r, c])
+            if val == -1:
+                blanks.append((r, c))
+                continue
+            if val in row_sets[r] or val in col_sets[c]:
+                return []
+            row_sets[r].add(val)
+            col_sets[c].add(val)
+            digits.discard(val)
+
+    solutions: List[np.ndarray] = []
+    _solve_boards(board.copy(), row_sets, col_sets, digits, blanks, solutions, limit)
+    return solutions
+
+
 def predict_top_k(
-    model: ClassifierMixin, board: np.ndarray, target: int, k: int
+    model: ClassifierMixin,
+    board: np.ndarray,
+    target: int,
+    k: int,
+    *,
+    enforce_unique: bool = False,
 ) -> Dict[str, Any]:
     rows, cols = board.shape
     feats_list: List[np.ndarray] = []
@@ -129,6 +194,19 @@ def predict_top_k(
         }
         for i in top_idx
     ]
+    if enforce_unique:
+        solutions = find_solutions(board, limit=k + 1)
+        valid_coords = {
+            (int(r), int(c)) for sol in solutions for r, c in np.argwhere(sol == target)
+        }
+        if valid_coords:
+            results = [p for p in results if (p["r"], p["c"]) in valid_coords]
+            if not results:
+                results = [
+                    {"r": r, "c": c, "prob": 1.0} for r, c in sorted(valid_coords)
+                ]
+        else:
+            results = []
     return {"rows": rows, "cols": cols, "target": target, "predictions": results}
 
 
