@@ -3,21 +3,21 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
 
 from rf_infer.core import extract_features, predict_top_k
 
 
 def _train_simple_model(
     board_full: np.ndarray, board_masked: np.ndarray
-) -> RandomForestClassifier:
+) -> LGBMClassifier:
     feats = []
     labels = []
     for r in range(board_full.shape[0]):
         for c in range(board_full.shape[1]):
             feats.append(extract_features(board_masked, r, c))
             labels.append(board_full[r, c])
-    clf = RandomForestClassifier(n_estimators=10, random_state=0)
+    clf = LGBMClassifier(n_estimators=10, random_state=0)
     clf.fit(np.vstack(feats), np.array(labels))
     return clf
 

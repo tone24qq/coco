@@ -61,9 +61,9 @@ Install the package locally using pip:
 pip install .
 ```
 
-## RandomForest Inference Utility
+## LightGBM Inference Utility
 
-The `rf_infer` package loads a trained RandomForest model and predicts the best
+The `rf_infer` package now uses LightGBM models to predict the best
 cells for a target value. Install the package and run `rf-infer`:
 
 ```bash

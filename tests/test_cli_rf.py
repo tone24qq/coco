@@ -4,12 +4,12 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
 
 from rf_infer.core import extract_features
 
 
-def _train_simple_model() -> RandomForestClassifier:
+def _train_simple_model() -> LGBMClassifier:
     board_full = np.array([[1, 2], [3, 4]])
     board_masked = np.array([[1, -1], [3, -1]])
 
@@ -20,7 +20,7 @@ def _train_simple_model() -> RandomForestClassifier:
             feats.append(extract_features(board_masked, r, c))
             labels.append(board_full[r, c])
 
-    clf = RandomForestClassifier(n_estimators=10, random_state=0)
+    clf = LGBMClassifier(n_estimators=10, random_state=0)
     clf.fit(np.vstack(feats), np.array(labels))
     return clf
 
@@ -37,7 +37,7 @@ def test_cli_help() -> None:
         text=True,
         check=True,
     )
-    assert "RandomForest board inference" in result.stdout
+    assert "LightGBM board inference" in result.stdout
 
 
 def test_cli_run(tmp_path: Path) -> None:

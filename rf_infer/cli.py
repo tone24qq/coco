@@ -8,7 +8,7 @@ from .core import batch_predict
 
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="RandomForest board inference")
+    p = argparse.ArgumentParser(description="LightGBM board inference")
     p.add_argument("--input", required=True, help="input JSON file or glob pattern")
     p.add_argument("--output", required=True, help="output JSON file or directory")
     p.add_argument("--model", help="model path; auto select if omitted")

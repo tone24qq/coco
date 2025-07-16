@@ -24,3 +24,4 @@ uvicorn>=0.30
 scikit-learn>=1.2.0
 joblib
 numpy
+lightgbm>=4.3

@@ -4,15 +4,18 @@ from typing import List
 
 import joblib
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
 
 
 def train_from_features(
     features_dir: str = "features",
     models_dir: str = "models",
     n_estimators: int = 100,
+    max_depth: int | None = None,
+    learning_rate: float = 0.1,
+    feature_fraction: float = 1.0,
 ) -> None:
-    """Train RandomForest models from feature .npz files.
+    """Train LightGBM models from feature .npz files.
 
     Each subdirectory in ``features_dir`` should be named ``<rows>x<cols>`` and
     contain ``<rows>x<cols>_features.npz``. The trained models are saved to
@@ -25,8 +28,13 @@ def train_from_features(
             continue
         data = np.load(npz_path)
         X, y = data["X"], data["y"]
-        clf = RandomForestClassifier(
-            n_estimators=n_estimators, n_jobs=-1, random_state=0
+        clf = LGBMClassifier(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            feature_fraction=feature_fraction,
+            n_jobs=-1,
+            random_state=0,
         )
         clf.fit(X, y)
         out_path = os.path.join(models_dir, f"{size}.pkl")
@@ -35,12 +43,22 @@ def train_from_features(
 
 
 def main(argv: List[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Train RF models from features")
+    parser = argparse.ArgumentParser(description="Train LightGBM models from features")
     parser.add_argument("--features-dir", default="features")
     parser.add_argument("--models-dir", default="models")
     parser.add_argument("--n-estimators", type=int, default=100)
+    parser.add_argument("--max-depth", type=int)
+    parser.add_argument("--learning-rate", type=float, default=0.1)
+    parser.add_argument("--feature-fraction", type=float, default=1.0)
     args = parser.parse_args(argv)
-    train_from_features(args.features_dir, args.models_dir, args.n_estimators)
+    train_from_features(
+        args.features_dir,
+        args.models_dir,
+        args.n_estimators,
+        args.max_depth,
+        args.learning_rate,
+        args.feature_fraction,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover
