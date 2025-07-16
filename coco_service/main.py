@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -5,7 +6,7 @@ import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from coco_agents.predict_agent import predict as agent_predict
+from rf_infer.core import infer_top3_for_target
 
 
 async def initialize_resources() -> None:
@@ -35,6 +36,16 @@ class Prediction(BaseModel):
     score: float
 
 
+def _predict_lgbm(
+    board: list[list[int]], target: int, models_dir: str
+) -> list[dict[str, float]]:
+    """Return top-3 predictions using LightGBM models."""
+    coords = infer_top3_for_target(
+        np.array(board, dtype=int), target, models_dir=models_dir
+    )
+    return [{"row": r, "col": c, "score": 1.0} for r, c in coords]
+
+
 app = FastAPI(title="Matrix Factorization Service", lifespan=lifespan)
 
 
@@ -46,9 +57,9 @@ async def root() -> Dict[str, str]:
 
 @app.post("/predict", response_model=List[Prediction])
 async def predict(req: PredictRequest) -> List[Prediction]:
-    board = np.array(req.board)
     kwargs = req.kwargs or {}
-    predictions = agent_predict(board, req.target, **kwargs)
+    models_dir = kwargs.pop("models_dir", os.getenv("MODELS_DIR", "models"))
+    predictions = _predict_lgbm(req.board, req.target, models_dir)
     return [Prediction(**p) for p in predictions]
 
 
