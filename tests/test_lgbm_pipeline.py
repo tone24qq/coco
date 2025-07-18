@@ -40,6 +40,8 @@ def test_train_pipeline(tmp_path: Path) -> None:
     model_file = out_model / "2x2.pkl"
     assert model_file.exists()
     data = np.load(parts[0])
+    assert "bid" in data
+    assert data["bid"].shape[0] == data["y"].shape[0]
     assert data["X"].shape[1] >= 25
 
 
@@ -76,6 +78,8 @@ def test_plain_text_board(tmp_path: Path) -> None:
     assert parts
     model_file = out_model / "4x5.pkl"
     assert model_file.exists()
+    data = np.load(parts[0])
+    assert "bid" in data
 
 
 def test_mask_ratio(tmp_path: Path) -> None:
@@ -114,6 +118,8 @@ def test_mask_ratio(tmp_path: Path) -> None:
     assert parts
     model_file = out_model / "2x2.pkl"
     assert model_file.exists()
+    data = np.load(parts[0])
+    assert "bid" in data
 
 
 def test_mask_range(tmp_path: Path) -> None:
@@ -151,5 +157,7 @@ def test_mask_range(tmp_path: Path) -> None:
 
     parts = list(out_feat.rglob("part_*.npz"))
     assert parts
+    data = np.load(parts[0])
+    assert "bid" in data
     model_file = out_model / "2x2.pkl"
     assert model_file.exists()

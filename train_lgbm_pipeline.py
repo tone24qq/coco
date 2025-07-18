@@ -18,6 +18,8 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 try:
     from tqdm.auto import tqdm
@@ -160,19 +162,33 @@ def _board_features(
     else:
         board_min = board_max = board_range = 0.0
     feats.extend([board_min, board_max, board_range, rg3, rg5])
+
+    # 1) count duplicates of target value on the board
+    vals = masked[masked != -1]
+    count_duplicate = float(np.sum(vals == target))
+    feats.append(count_duplicate)
+
+    # 2) check if target within [1, R*C]
+    max_val = masked.shape[0] * masked.shape[1]
+    in_range = 1.0 if 1 <= target <= max_val else 0.0
+    feats.append(in_range)
     return feats
 
 
 def _flush(
-    size: str, buf: list[Tuple[List[float], int]], out_root: Path, cnt: dict[str, int]
+    size: str,
+    buf: list[Tuple[List[float], int, int]],
+    out_root: Path,
+    cnt: dict[str, int],
 ) -> None:
     if not buf:
         return
-    X = np.asarray([x for x, _ in buf], dtype=np.float32)
-    y = np.asarray([y for _, y in buf], dtype=np.uint8)
+    X = np.asarray([x for x, _, _ in buf], dtype=np.float32)
+    y = np.asarray([y for _, y, _ in buf], dtype=np.uint8)
+    bid = np.asarray([b for _, _, b in buf], dtype=np.int32)
     dest = out_root / size
     dest.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(dest / f"part_{cnt[size]:04d}.npz", X=X, y=y)
+    np.savez_compressed(dest / f"part_{cnt[size]:04d}.npz", X=X, y=y, bid=bid)
     cnt[size] += 1
     buf.clear()
 
@@ -202,8 +218,9 @@ def extract_features(
     mask_ratio: float,
     mask_range: tuple[float, float] | None,
 ) -> None:
-    buf: dict[str, list[Tuple[List[float], int]]] = defaultdict(list)
+    buf: dict[str, list[Tuple[List[float], int, int]]] = defaultdict(list)
     cnt: dict[str, int] = defaultdict(int)
+    board_idx: dict[str, int] = defaultdict(int)
 
     for sd in out_feat.iterdir():
         if not sd.is_dir():
@@ -217,12 +234,16 @@ def extract_features(
     for board, target in tqdm(iter_objects(root), unit="board"):
         R, C = board.shape
         key = f"{R}x{C}"
+        bid = board_idx[key]
+        board_idx[key] += 1
         if target is not None:
             pos = tuple(zip(*np.where(board == -1)))[0]
             for r in range(R):
                 for c in range(C):
                     lbl = 1 if (r, c) == pos else 0
-                    buf[key].append((_board_features(board, int(target), (r, c)), lbl))
+                    buf[key].append(
+                        (_board_features(board, int(target), (r, c)), lbl, bid)
+                    )
         else:
             ratio = mask_ratio
             if mask_range is not None:
@@ -232,18 +253,18 @@ def extract_features(
                 masked, slots = _apply_random_mask(board, ratio, rng)
                 coords = [(rr, cc) for rr in range(R) for cc in range(C)]
                 for mr, mc, tv in slots:
-                    buf[key].append((_board_features(masked, tv, (mr, mc)), 1))
+                    buf[key].append((_board_features(masked, tv, (mr, mc)), 1, bid))
                     negs = [p for p in coords if p != (mr, mc)]
                     rng.shuffle(negs)
                     for rr, cc in negs[:NEG_RATIO]:
-                        buf[key].append((_board_features(masked, tv, (rr, cc)), 0))
+                        buf[key].append((_board_features(masked, tv, (rr, cc)), 0, bid))
             else:
                 for r in range(R):
                     for c in range(C):
                         tv = int(board[r, c])
                         masked = board.copy()
                         masked[r, c] = -1
-                        buf[key].append((_board_features(masked, tv, (r, c)), 1))
+                        buf[key].append((_board_features(masked, tv, (r, c)), 1, bid))
                         negs = [
                             (rr, cc)
                             for rr in range(R)
@@ -252,23 +273,29 @@ def extract_features(
                         ]
                         rng.shuffle(negs)
                         for rr, cc in negs[:NEG_RATIO]:
-                            buf[key].append((_board_features(masked, tv, (rr, cc)), 0))
+                            buf[key].append(
+                                (_board_features(masked, tv, (rr, cc)), 0, bid)
+                            )
         if len(buf[key]) >= shard_size:
             _flush(key, buf[key], out_feat, cnt)
     for k in list(buf.keys()):
         _flush(k, buf[k], out_feat, cnt)
 
 
-def _ensure_labels(X: np.ndarray, y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _ensure_labels(
+    X: np.ndarray, y: np.ndarray, bid: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     if np.all(y == 0) or np.all(y == 1):
         X_fix = X[:1].copy()
         y_fix = np.array([1 - y[0]], dtype=y.dtype)
+        bid_fix = np.array([bid[0]], dtype=bid.dtype)
         X = np.vstack([X, X_fix])
         y = np.concatenate([y, y_fix])
-    return X, y
+        bid = np.concatenate([bid, bid_fix])
+    return X, y, bid
 
 
-def train_models(out_feat: Path, out_model: Path, trees_per: int) -> None:
+def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) -> None:
     params = dict(
         objective="binary",
         learning_rate=0.05,
@@ -288,31 +315,85 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int) -> None:
         npzs = sorted(sd.glob("part_*.npz"))
         if not npzs:
             continue
-        booster = None
         all_X: list[np.ndarray] = []
         all_y: list[np.ndarray] = []
+        all_bid: list[np.ndarray] = []
         for npz in npzs:
             data = np.load(npz)
-            X, y = _ensure_labels(data["X"], data["y"])
-            ds = lgb.Dataset(X, y)
-            booster = lgb.train(
-                params,
-                ds,
-                num_boost_round=trees_per,
-                init_model=booster,
-                keep_training_booster=True,
-            )
+            X, y, bid = _ensure_labels(data["X"], data["y"], data["bid"])
             all_X.append(X)
             all_y.append(y)
-        joblib.dump(booster, out_model / f"{sd.name}.pkl")
+            all_bid.append(bid)
         X_all = np.concatenate(all_X)
         y_all = np.concatenate(all_y)
-        preds = booster.predict(X_all)
-        auc = roc_auc_score(y_all, preds)
-        acc = accuracy_score(y_all, preds > 0.5)
-        f1 = f1_score(y_all, preds > 0.5)
+        bid_all = np.concatenate(all_bid)
+
+        uniq = np.unique(bid_all)
+        if uniq.size < 2:
+            train_b = valid_b = uniq
+        else:
+            train_b, valid_b = train_test_split(uniq, test_size=0.2, random_state=42)
+        train_mask = np.isin(bid_all, train_b)
+        valid_mask = ~train_mask
+
+        X_train = X_all[train_mask]
+        y_train = y_all[train_mask]
+        X_valid = X_all[valid_mask]
+        y_valid = y_all[valid_mask]
+        if X_valid.size == 0:
+            X_valid = X_train
+            y_valid = y_train
+            valid_b = train_b
+
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_valid = scaler.transform(X_valid)
+
+        pos = float(np.sum(y_train == 1))
+        neg = float(np.sum(y_train == 0))
+        scale_pos_weight = neg / pos if pos else 1.0
+
+        train_ds = lgb.Dataset(X_train, y_train)
+        valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
+
+        params.update({"num_threads": workers, "scale_pos_weight": scale_pos_weight})
+
+        booster = lgb.train(
+            params,
+            train_ds,
+            num_boost_round=trees_per,
+            valid_sets=[train_ds, valid_ds],
+            valid_names=["train", "valid"],
+            callbacks=[lgb.early_stopping(50)],
+        )
+
+        joblib.dump({"model": booster, "scaler": scaler}, out_model / f"{sd.name}.pkl")
+
+        preds = booster.predict(X_valid, num_iteration=booster.best_iteration)
+        auc = roc_auc_score(y_valid, preds)
+        acc = accuracy_score(y_valid, preds > 0.5)
+        f1 = f1_score(y_valid, preds > 0.5)
+
+        def top_k_hit_rate(k: int) -> float:
+            hit = 0
+            total = 0
+            for b in valid_b:
+                idx = np.where(bid_all == b)[0]
+                lbls = y_all[idx]
+                p = booster.predict(
+                    scaler.transform(X_all[idx]), num_iteration=booster.best_iteration
+                )
+                pos_idx = idx[np.argmax(lbls)]
+                rank = idx[np.argsort(-p)][:k]
+                if pos_idx in rank:
+                    hit += 1
+                total += 1
+            return hit / total if total else 0.0
+
+        hit1 = top_k_hit_rate(1)
+        hit3 = top_k_hit_rate(3)
         print(
-            f"✔ {sd.name} | trees={booster.num_trees()} | AUC={auc:.3f} | acc={acc:.3f} | f1={f1:.3f}"
+            f"✔ {sd.name} | trees={booster.best_iteration} | AUC={auc:.3f} | acc={acc:.3f} | f1={f1:.3f} | hit@1={hit1:.3f} | hit@3={hit3:.3f}"
         )
 
 
@@ -354,7 +435,7 @@ def main(argv: List[str] | None = None) -> None:
         )
 
     print("\n🏋️  Training models …")
-    train_models(out_feat, out_model, args.trees_per_shard)
+    train_models(out_feat, out_model, args.trees_per_shard, args.workers)
     print("✅ Done. Models in", out_model)
 
 
