@@ -40,6 +40,7 @@ def test_train_pipeline(tmp_path: Path) -> None:
     model_file = out_model / "2x2.pkl"
     assert model_file.exists()
     data = np.load(parts[0])
+    assert "bid" in data
     assert data["X"].shape[1] >= 25
 
 
