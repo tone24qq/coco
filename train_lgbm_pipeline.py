@@ -162,6 +162,16 @@ def _board_features(
     else:
         board_min = board_max = board_range = 0.0
     feats.extend([board_min, board_max, board_range, rg3, rg5])
+
+    # 1) 已出現重複次數
+    vals = masked[masked != -1]
+    count_duplicate = float(np.sum(vals == target))
+    feats.append(count_duplicate)
+
+    # 2) target 是否在合法範圍 [1, R*C]
+    max_val = masked.shape[0] * masked.shape[1]
+    in_range = 1.0 if 1 <= target <= max_val else 0.0
+    feats.append(in_range)
     return feats
 
 
