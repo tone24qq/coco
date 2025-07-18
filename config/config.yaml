@@ -1,0 +1,15 @@
+# Default configuration for LightGBM pipeline
+seed: 42
+train_data: 'data/train.csv'
+target_col: 'target'
+board_shape: [4, 4]
+model:
+  num_leaves: 31
+  learning_rate: 0.1
+  n_estimators: 100
+  max_depth: -1
+  subsample: 0.8
+  colsample_bytree: 0.8
+optuna:
+  n_trials: 10
+  timeout: 600
