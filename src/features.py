@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from multiprocessing import Pool
+
 import numpy as np
 import pandas as pd
 from scipy.ndimage import uniform_filter
+from sklearn.utils.extmath import randomized_svd
 
 
 def _board_features(board: np.ndarray) -> np.ndarray:
@@ -31,7 +34,7 @@ def _board_features(board: np.ndarray) -> np.ndarray:
     col_mean_avg = np.nanmean(col_means)
     col_mean_std = np.nanstd(col_means)
     filled = np.nan_to_num(board, nan=global_mean)
-    _, s, _ = np.linalg.svd(filled, full_matrices=False)
+    _, s, _ = randomized_svd(filled, n_components=4, random_state=0)
     svd_3 = s[:3]
     local_mean = uniform_filter(filled, size=3)
     local_mean_avg = local_mean.mean()
@@ -56,12 +59,30 @@ def _board_features(board: np.ndarray) -> np.ndarray:
     return features
 
 
-def build_features(df: pd.DataFrame, board_shape: tuple[int, int]) -> pd.DataFrame:
-    """Build features for the entire dataframe."""
+def build_features(
+    df: pd.DataFrame, board_shape: tuple[int, int], n_jobs: int = 1
+) -> pd.DataFrame:
+    """Build features for the entire dataframe.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe containing board cells.
+    board_shape : tuple[int, int]
+        Shape of the board (rows, cols).
+    n_jobs : int, optional
+        Number of worker processes for feature extraction, by default ``1``.
+    """
     board_cols = [f"cell_{i}" for i in range(board_shape[0] * board_shape[1])]
     boards = (
         df[board_cols].to_numpy(dtype=float).reshape(-1, board_shape[0], board_shape[1])
     )
-    feats = np.vstack([_board_features(b) for b in boards])
+    if n_jobs == 1:
+        feats = np.vstack([_board_features(b) for b in boards])
+    else:
+        with Pool(n_jobs) as pool:
+            feats = np.vstack(
+                list(pool.imap_unordered(_board_features, boards, chunksize=500))
+            )
     feat_df = pd.DataFrame(feats, columns=[f"f{i}" for i in range(feats.shape[1])])
     return feat_df

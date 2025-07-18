@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import hydra
@@ -25,11 +26,21 @@ LOGGER = logging.getLogger(__name__)
 
 
 def train_model(cfg: Any) -> dict[str, float]:
-    """Train LightGBM model and return evaluation metrics."""
+    """Train LightGBM model and return evaluation metrics.
+
+    Parameters
+    ----------
+    cfg : Any
+        Hydra configuration object. Optional keys include ``n_jobs`` for
+        feature extraction workers, ``use_gpu`` to enable GPU training and
+        ``num_threads`` to limit CPU threads.
+    """
     LOGGER.info("Configuration:\n%s", OmegaConf.to_yaml(cfg))
     set_seed(cfg.seed)
     X, y = load_data(cfg.train_data, cfg.target_col)
-    feature_df = build_features(X, tuple(cfg.board_shape))
+    feature_df = build_features(
+        X, tuple(cfg.board_shape), n_jobs=getattr(cfg, "n_jobs", 1)
+    )
     X_train, X_valid, y_train, y_valid = split_data(
         feature_df, y, test_size=0.2, seed=cfg.seed
     )
@@ -37,7 +48,16 @@ def train_model(cfg: Any) -> dict[str, float]:
     X_train = scaler.fit_transform(X_train)
     X_valid = scaler.transform(X_valid)
 
-    estimator = LGBMClassifier(random_state=cfg.seed, **cfg.model)
+    model_params = dict(cfg.model)
+    if getattr(cfg, "use_gpu", False):
+        model_params.update({"device": "gpu", "gpu_platform_id": 0, "gpu_device_id": 0})
+    num_threads = getattr(cfg, "num_threads", None)
+    if num_threads:
+        os.environ["OMP_NUM_THREADS"] = str(num_threads)
+        os.environ["MKL_NUM_THREADS"] = str(num_threads)
+        model_params["n_jobs"] = num_threads
+
+    estimator = LGBMClassifier(random_state=cfg.seed, **model_params)
 
     param_dist = {
         "num_leaves": sp_randint(15, 63),
