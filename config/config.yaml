@@ -1,0 +1,19 @@
+defaults:
+  - _self_
+
+data:
+  path: null
+  test_size: 0.2
+  random_seed: 42
+
+model:
+  objective: binary
+  n_estimators: 50
+  learning_rate: 0.1
+  num_leaves: 31
+  early_stopping_rounds: 10
+
+search:
+  n_iter: 5
+  scoring: hit_rate@3
+  cv: 3
