@@ -101,3 +101,26 @@ Sample models are provided under `models/` along with example boards in
 ```bash
 rf-infer --input boards/2x2_input.json --output results/out.json --k 2
 ```
+
+## LightGBM Training Pipeline
+
+For large offline datasets the repository includes `train_lgbm_pipeline.py`
+which extracts features and incrementally trains per-size LightGBM models.
+
+Run a full cycle on a directory of zipped JSON boards:
+
+```bash
+python train_lgbm_pipeline.py --root data --shard-size 20000 --trees-per-shard 200
+```
+
+To simulate partially revealed boards you can mask a portion of cells during feature extraction:
+
+```bash
+python train_lgbm_pipeline.py --root data --mask-ratio 0.5
+```
+
+To resume training with only existing feature shards:
+
+```bash
+python train_lgbm_pipeline.py --root data --train-only
+```
