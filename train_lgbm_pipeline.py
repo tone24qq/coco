@@ -385,14 +385,35 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
 
         params.update({"num_threads": workers, "scale_pos_weight": scale_pos_weight})
 
-        booster = lgb.train(
-            params,
-            train_ds,
-            num_boost_round=trees_per,
-            valid_sets=[train_ds, valid_ds],
-            valid_names=["train", "valid"],
-            callbacks=[lgb.early_stopping(50)],
-        )
+        try:
+            booster = lgb.train(
+                params,
+                train_ds,
+                num_boost_round=trees_per,
+                valid_sets=[train_ds, valid_ds],
+                valid_names=["train", "valid"],
+                callbacks=[lgb.early_stopping(50)],
+            )
+        except lgb.basic.LightGBMError as exc:  # FIXME handle unstable datasets
+            warnings.warn(
+                f"{sd.name} failed with {exc}; retrying with relaxed params",
+                stacklevel=1,
+            )
+            alt_params = params.copy()
+            alt_params.update(
+                {
+                    "min_data_in_bin": 1,
+                    "min_data_in_leaf": 1,
+                    "feature_fraction": 1.0,
+                }
+            )
+            booster = lgb.train(
+                alt_params,
+                train_ds,
+                num_boost_round=max(1, trees_per // 2),
+                valid_sets=[train_ds, valid_ds],
+                valid_names=["train", "valid"],
+            )
 
         joblib.dump({"model": booster, "scaler": scaler}, out_model / f"{sd.name}.pkl")
 
