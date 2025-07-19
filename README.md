@@ -125,3 +125,10 @@ To resume training with only existing feature shards:
 ```bash
 python train_lgbm_pipeline.py --root data --train-only
 ```
+
+If your LightGBM installation was compiled with GPU support you can add
+`--use-gpu` to accelerate training:
+
+```bash
+python train_lgbm_pipeline.py --root data --use-gpu
+```

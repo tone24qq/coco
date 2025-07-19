@@ -19,7 +19,34 @@ import lightgbm as lgb
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+
+
+class Float32StandardScaler:
+    """Lightweight scaler that keeps data in float32 precision."""
+
+    def __init__(self) -> None:
+        self.mean_: np.ndarray | None = None
+        self.scale_: np.ndarray | None = None
+
+    def fit(self, X: np.ndarray) -> "Float32StandardScaler":
+        X = X.astype(np.float32, copy=False)
+        self.mean_ = X.mean(axis=0)
+        self.scale_ = X.std(axis=0)
+        self.scale_[self.scale_ == 0] = 1.0
+        return self
+
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        if self.mean_ is None or self.scale_ is None:
+            raise ValueError("Scaler has not been fitted")
+        X = X.astype(np.float32, copy=False)
+        X -= self.mean_
+        X /= self.scale_
+        return X
+
+    def fit_transform(self, X: np.ndarray) -> np.ndarray:
+        self.fit(X)
+        return self.transform(X)
+
 
 try:
     from tqdm.auto import tqdm
@@ -295,7 +322,25 @@ def _ensure_labels(
     return X, y, bid
 
 
-def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) -> None:
+def train_models(
+    out_feat: Path, out_model: Path, trees_per: int, workers: int, use_gpu: bool
+) -> None:
+    """Train one LightGBM model per board size.
+
+    Parameters
+    ----------
+    out_feat : Path
+        Directory containing extracted feature shards.
+    out_model : Path
+        Output directory for trained models.
+    trees_per : int
+        Number of trees (boosting rounds) per size-specific model.
+    workers : int
+        Number of CPU threads for LightGBM.
+    use_gpu : bool
+        If ``True`` and LightGBM was built with GPU support, training will run on
+        the GPU.
+    """
     params = dict(
         objective="binary",
         learning_rate=0.05,
@@ -345,7 +390,7 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
             y_valid = y_train
             valid_b = train_b
 
-        scaler = StandardScaler()
+        scaler = Float32StandardScaler()
         X_train = scaler.fit_transform(X_train)
         X_valid = scaler.transform(X_valid)
 
@@ -357,6 +402,8 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
 
         params.update({"num_threads": workers, "scale_pos_weight": scale_pos_weight})
+        if use_gpu:
+            params["device"] = "gpu"
 
         booster = lgb.train(
             params,
@@ -416,6 +463,11 @@ def main(argv: List[str] | None = None) -> None:
         metavar=("MIN", "MAX"),
         help="Random mask ratio range for data augmentation",
     )
+    pa.add_argument(
+        "--use-gpu",
+        action="store_true",
+        help="Use GPU acceleration if LightGBM is built with GPU support",
+    )
     args = pa.parse_args(argv)
 
     root = Path(args.root)
@@ -435,7 +487,7 @@ def main(argv: List[str] | None = None) -> None:
         )
 
     print("\n🏋️  Training models …")
-    train_models(out_feat, out_model, args.trees_per_shard, args.workers)
+    train_models(out_feat, out_model, args.trees_per_shard, args.workers, args.use_gpu)
     print("✅ Done. Models in", out_model)
 
 
