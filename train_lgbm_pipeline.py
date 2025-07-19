@@ -156,6 +156,380 @@ def _svd_feats(masked: np.ndarray) -> List[float]:
     return approx[:6].tolist()
 
 
+def _exclusion_method_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Sudoku-style exclusion logic features."""
+    r, c = pos
+    R, C = masked.shape
+    total_nums = R * C
+
+    row_used = set(masked[r, :][masked[r, :] != -1])
+    col_used = set(masked[:, c][masked[:, c] != -1])
+    global_used = set(masked[masked != -1].flatten())
+
+    row_feasible = 1.0 if target not in row_used else 0.0
+    col_feasible = 1.0 if target not in col_used else 0.0
+    global_feasible = 1.0 if target not in global_used else 0.0
+    overall_feasible = row_feasible * col_feasible * global_feasible
+
+    all_nums = set(range(1, total_nums + 1))
+    row_candidates = all_nums - row_used
+    col_candidates = all_nums - col_used
+    global_candidates = all_nums - global_used
+    position_candidates = row_candidates & col_candidates & global_candidates
+
+    num_position_candidates = len(position_candidates)
+    candidate_density = num_position_candidates / total_nums
+
+    target_competition_score = 0.0
+    if target in global_candidates:
+        empty_positions = list(zip(*np.where(masked == -1)))
+        feasible_positions = 0
+        for er, ec in empty_positions:
+            if er == r and ec == c:
+                continue
+            row_ok = target not in set(masked[er, :][masked[er, :] != -1])
+            col_ok = target not in set(masked[:, ec][masked[:, ec] != -1])
+            if row_ok and col_ok:
+                feasible_positions += 1
+        total_empty = len(empty_positions) - 1
+        if total_empty > 0:
+            target_competition_score = 1.0 - (feasible_positions / total_empty)
+
+    return [
+        row_feasible,
+        col_feasible,
+        global_feasible,
+        overall_feasible,
+        num_position_candidates,
+        candidate_density,
+        target_competition_score,
+    ]
+
+
+def _naked_singles_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Features describing naked singles."""
+    r, c = pos
+    R, C = masked.shape
+    total_nums = R * C
+
+    all_nums = set(range(1, total_nums + 1))
+    row_used = set(masked[r, :][masked[r, :] != -1])
+    col_used = set(masked[:, c][masked[:, c] != -1])
+    global_used = set(masked[masked != -1].flatten())
+
+    candidates = all_nums - row_used - col_used - global_used
+
+    is_naked_single = 1.0 if len(candidates) == 1 else 0.0
+    target_is_only_choice = (
+        1.0 if len(candidates) == 1 and target in candidates else 0.0
+    )
+
+    candidates_count = len(candidates)
+    naked_single_proximity = 1.0 / (candidates_count + 1)
+
+    return [
+        is_naked_single,
+        target_is_only_choice,
+        candidates_count,
+        naked_single_proximity,
+    ]
+
+
+def _hidden_singles_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Features for hidden singles in row/column."""
+    r, c = pos
+    R, C = masked.shape
+
+    row_empty_cols = [j for j in range(C) if masked[r, j] == -1]
+    row_target_positions = []
+    for j in row_empty_cols:
+        col_used = set(masked[:, j][masked[:, j] != -1])
+        if target not in col_used:
+            row_target_positions.append(j)
+
+    row_hidden_single = (
+        1.0 if len(row_target_positions) == 1 and c in row_target_positions else 0.0
+    )
+
+    col_empty_rows = [i for i in range(R) if masked[i, c] == -1]
+    col_target_positions = []
+    for i in col_empty_rows:
+        row_used = set(masked[i, :][masked[i, :] != -1])
+        if target not in row_used:
+            col_target_positions.append(i)
+
+    col_hidden_single = (
+        1.0 if len(col_target_positions) == 1 and r in col_target_positions else 0.0
+    )
+
+    row_target_density = (
+        len(row_target_positions) / len(row_empty_cols) if row_empty_cols else 0.0
+    )
+    col_target_density = (
+        len(col_target_positions) / len(col_empty_rows) if col_empty_rows else 0.0
+    )
+
+    return [
+        row_hidden_single,
+        col_hidden_single,
+        len(row_target_positions),
+        len(col_target_positions),
+        row_target_density,
+        col_target_density,
+    ]
+
+
+def _forced_chain_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Forced chain logical inference features."""
+    r, c = pos
+    R, C = masked.shape
+
+    forced_moves = 0
+    contradiction_risk = 0.0
+
+    temp_board = masked.copy()
+    temp_board[r, c] = target
+
+    empty_positions = list(zip(*np.where(masked == -1)))
+    if (r, c) in empty_positions:
+        empty_positions.remove((r, c))
+
+    for er, ec in empty_positions:
+        all_nums = set(range(1, R * C + 1))
+        row_used = set(temp_board[er, :][temp_board[er, :] != -1])
+        col_used = set(temp_board[:, ec][temp_board[:, ec] != -1])
+
+        candidates = all_nums - row_used - col_used
+
+        if len(candidates) == 1:
+            forced_moves += 1
+        elif len(candidates) == 0:
+            contradiction_risk = 1.0
+            break
+
+    forced_moves_ratio = forced_moves / len(empty_positions) if empty_positions else 0.0
+
+    return [forced_moves, forced_moves_ratio, contradiction_risk]
+
+
+def _symmetry_pattern_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Symmetry and pattern based features."""
+    r, c = pos
+    R, C = masked.shape
+
+    center_r, center_c = R / 2, C / 2
+    center_distance = np.sqrt((r - center_r) ** 2 + (c - center_c) ** 2)
+    normalized_center_dist = center_distance / np.sqrt(center_r**2 + center_c**2)
+
+    main_diagonal = 1.0 if r == c else 0.0
+    anti_diagonal = 1.0 if r + c == min(R, C) - 1 else 0.0
+
+    known_positions = list(zip(*np.where(masked != -1)))
+    if len(known_positions) > 2:
+        values = []
+        distances_to_corner = []
+        for kr, kc in known_positions:
+            val = masked[kr, kc]
+            dist = np.sqrt(kr**2 + kc**2)
+            values.append(val)
+            distances_to_corner.append(dist)
+
+        if len(set(distances_to_corner)) > 1:
+            position_value_correlation = np.corrcoef(values, distances_to_corner)[0, 1]
+            if np.isnan(position_value_correlation):
+                position_value_correlation = 0.0
+        else:
+            position_value_correlation = 0.0
+
+        target_distance = np.sqrt(r**2 + c**2)
+        if values and distances_to_corner:
+            expected_value_by_pattern = np.mean(values) + position_value_correlation * (
+                target_distance - np.mean(distances_to_corner)
+            ) * np.std(values) / (np.std(distances_to_corner) + 1e-8)
+            pattern_consistency = 1.0 - abs(target - expected_value_by_pattern) / (
+                R * C
+            )
+        else:
+            pattern_consistency = 0.0
+    else:
+        position_value_correlation = 0.0
+        pattern_consistency = 0.0
+
+    return [
+        normalized_center_dist,
+        main_diagonal,
+        anti_diagonal,
+        position_value_correlation,
+        pattern_consistency,
+    ]
+
+
+def _constraint_propagation_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Advanced constraint propagation features."""
+    r, c = pos
+    R, C = masked.shape
+    total_nums = R * C
+
+    all_nums = set(range(1, total_nums + 1))
+    global_used = set(masked[masked != -1].flatten())
+    remaining_nums = all_nums - global_used
+
+    if target in remaining_nums:
+        empty_positions = list(zip(*np.where(masked == -1)))
+        target_feasible_positions = 0
+        for er, ec in empty_positions:
+            row_ok = target not in set(masked[er, :][masked[er, :] != -1])
+            col_ok = target not in set(masked[:, ec][masked[:, ec] != -1])
+            if row_ok and col_ok:
+                target_feasible_positions += 1
+        target_scarcity = 1.0 / (target_feasible_positions + 1)
+    else:
+        target_scarcity = 0.0
+
+    empty_positions = list(zip(*np.where(masked == -1)))
+    if (r, c) in empty_positions:
+        empty_positions.remove((r, c))
+
+    constraint_impact = 0
+    for er, ec in empty_positions:
+        if er == r or ec == c:
+            row_used = set(masked[er, :][masked[er, :] != -1])
+            col_used = set(masked[:, ec][masked[:, ec] != -1])
+            candidates = all_nums - row_used - col_used - global_used
+            if target in candidates:
+                constraint_impact += 1
+
+    normalized_constraint_impact = (
+        constraint_impact / len(empty_positions) if empty_positions else 0.0
+    )
+
+    row_completion = np.sum(masked[r, :] != -1) / C
+    col_completion = np.sum(masked[:, c] != -1) / R
+    local_completion = (row_completion + col_completion) / 2
+
+    return [
+        target_scarcity,
+        normalized_constraint_impact,
+        row_completion,
+        col_completion,
+        local_completion,
+    ]
+
+
+def _calculate_gap_score(known_values: np.ndarray, target: int, max_val: int) -> float:
+    """Score how well the target fills numerical gaps."""
+    if len(known_values) == 0:
+        return 0.5
+
+    sorted_known = np.sort(known_values)
+
+    insert_pos = np.searchsorted(sorted_known, target)
+
+    if insert_pos == 0:
+        gap_size = sorted_known[0] - 1
+    elif insert_pos == len(sorted_known):
+        gap_size = max_val - sorted_known[-1]
+    else:
+        gap_size = sorted_known[insert_pos] - sorted_known[insert_pos - 1] - 1
+
+    return min(1.0, gap_size / max_val)
+
+
+def _statistical_inference_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Statistical inference features based on board distribution."""
+    r, c = pos
+    R, C = masked.shape
+
+    row_known = masked[r, :][masked[r, :] != -1]
+    col_known = masked[:, c][masked[:, c] != -1]
+
+    if len(row_known) > 0:
+        row_mean = float(row_known.mean())
+        row_std = float(row_known.std()) if len(row_known) > 1 else 0.0
+        row_gap_score = _calculate_gap_score(row_known, target, R * C)
+    else:
+        row_mean = row_std = row_gap_score = 0.0
+
+    if len(col_known) > 0:
+        col_mean = float(col_known.mean())
+        col_std = float(col_known.std()) if len(col_known) > 1 else 0.0
+        col_gap_score = _calculate_gap_score(col_known, target, R * C)
+    else:
+        col_mean = col_std = col_gap_score = 0.0
+
+    global_known = masked[masked != -1]
+    if len(global_known) > 0:
+        global_mean = float(global_known.mean())
+        global_std = float(global_known.std()) if len(global_known) > 1 else 0.0
+        target_z_score = (target - global_mean) / (global_std + 1e-8)
+        target_percentile = (global_known < target).mean()
+    else:
+        global_mean = global_std = 0.0
+        target_z_score = target_percentile = 0.0
+
+    return [
+        row_mean / (R * C),
+        row_std / (R * C),
+        col_mean / (R * C),
+        col_std / (R * C),
+        global_mean / (R * C),
+        global_std / (R * C),
+        target_z_score,
+        target_percentile,
+        row_gap_score,
+        col_gap_score,
+    ]
+
+
+def comprehensive_excel_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Aggregate advanced features for the board."""
+
+    features: List[float] = []
+    features.extend(_exclusion_method_features(masked, target, pos))
+    features.extend(_naked_singles_features(masked, target, pos))
+    features.extend(_hidden_singles_features(masked, target, pos))
+    features.extend(_forced_chain_features(masked, target, pos))
+    features.extend(_constraint_propagation_features(masked, target, pos))
+    features.extend(_symmetry_pattern_features(masked, target, pos))
+    features.extend(_statistical_inference_features(masked, target, pos))
+
+    r, c = pos
+    R, C = masked.shape
+    basic_features = [
+        float(r / R),
+        float(c / C),
+        float(r * c / (R * C)),
+        float(target / (R * C)),
+        float(target % 10) / 10,
+        float(target // 10) / (R * C // 10 + 1),
+    ]
+    features.extend(basic_features)
+    return features
+
+
+def enhanced_board_features_v2(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Wrapper for the comprehensive feature extractor."""
+    return comprehensive_excel_features(masked, target, pos)
+
+
 def _board_features(
     masked: np.ndarray, target: int, pos: Tuple[int, int]
 ) -> List[float]:
@@ -164,7 +538,10 @@ def _board_features(
     col_sum = np.where(masked != -1, masked, 0).sum(axis=0)
     m3, v3, rg3 = _local_stats(masked, r, c, 1)
     m5, v5, rg5 = _local_stats(masked, r, c, 2)
-    feats = [
+
+    feats = comprehensive_excel_features(masked, target, pos)
+
+    basic = [
         float(r),
         float(c),
         float(r * c),
@@ -180,7 +557,9 @@ def _board_features(
         float(target % 10),
         float(target // 10),
     ]
+    feats.extend(basic)
     feats.extend(_svd_feats(masked))
+
     vals = masked[masked != -1]
     if vals.size:
         board_min = float(vals.min())
@@ -190,12 +569,10 @@ def _board_features(
         board_min = board_max = board_range = 0.0
     feats.extend([board_min, board_max, board_range, rg3, rg5])
 
-    # 1) count duplicates of target value on the board
     vals = masked[masked != -1]
     count_duplicate = float(np.sum(vals == target))
     feats.append(count_duplicate)
 
-    # 2) check if target within [1, R*C]
     max_val = masked.shape[0] * masked.shape[1]
     in_range = 1.0 if 1 <= target <= max_val else 0.0
     feats.append(in_range)
