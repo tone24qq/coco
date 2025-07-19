@@ -62,8 +62,8 @@ SHARD_SIZE = 100_000
 TREES_PER = 200
 
 # limit threads
-os.environ.setdefault("OMP_NUM_THREADS", "4")
-os.environ.setdefault("MKL_NUM_THREADS", "4")
+os.environ.setdefault("OMP_NUM_THREADS", "8")
+os.environ.setdefault("MKL_NUM_THREADS", "8")
 
 
 def _yield_json(fp) -> Iterator[object]:
@@ -807,6 +807,12 @@ def main(argv: List[str] | None = None) -> None:
     pa.add_argument("--shard-size", type=int, default=SHARD_SIZE)
     pa.add_argument("--trees-per-shard", type=int, default=TREES_PER)
     pa.add_argument("--workers", type=int, default=max(os.cpu_count() - 2, 1))
+    pa.add_argument(
+        "--threads",
+        type=int,
+        default=int(os.environ.get("OMP_NUM_THREADS", 8)),
+        help="Number of CPU threads to use",
+    )
     pa.add_argument("--train-only", action="store_true", help="Skip feature extraction")
     pa.add_argument("--out-feat", default="features")
     pa.add_argument("--out-model", default="models")
@@ -821,6 +827,9 @@ def main(argv: List[str] | None = None) -> None:
         help="Random mask ratio range for data augmentation",
     )
     args = pa.parse_args(argv)
+
+    os.environ["OMP_NUM_THREADS"] = str(args.threads)
+    os.environ["MKL_NUM_THREADS"] = str(args.threads)
 
     root = Path(args.root)
     out_feat = Path(args.out_feat)
