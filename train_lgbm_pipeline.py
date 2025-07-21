@@ -11,7 +11,7 @@ import random
 import zipfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterator, List, Set, Tuple
+from typing import Any, Iterator, List, Set, Tuple
 
 import joblib
 import lightgbm as lgb
@@ -478,6 +478,15 @@ def _flush(
     buf.clear()
 
 
+def _save_model(model: Any, scaler: Any | None, path: Path, n_features: int) -> None:
+    """Persist model dictionary including feature count."""
+
+    joblib.dump(
+        {"model": model, "scaler": scaler, "n_features_in_": int(n_features)},
+        path,
+    )
+
+
 def _apply_random_mask(
     board: np.ndarray, ratio: float, rng: random.Random
 ) -> Tuple[np.ndarray, list[Tuple[int, int, int]]]:
@@ -680,7 +689,7 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
             callbacks=[lgb.early_stopping(100)],  # More patience
         )
 
-        joblib.dump({"model": booster, "scaler": scaler}, out_model / f"{sd.name}.pkl")
+        _save_model(booster, scaler, out_model / f"{sd.name}.pkl", X_train.shape[1])
 
         preds = booster.predict(X_valid, num_iteration=booster.best_iteration)
         auc = roc_auc_score(y_valid, preds)

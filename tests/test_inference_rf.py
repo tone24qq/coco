@@ -6,7 +6,11 @@ import numpy as np
 from lightgbm import LGBMClassifier
 
 from coco_common.scalers import Float32StandardScaler
-from rf_infer.core import extract_features, infer_top3_for_target, predict_top_k
+# fmt: off
+from rf_infer.core import (_load_model, extract_features,
+                           infer_top3_for_target, predict_top_k)
+
+# fmt: on
 
 
 def _train_simple_model(
@@ -124,7 +128,16 @@ def test_load_model_dict(tmp_path: Path) -> None:
     ]
     scaler = Float32StandardScaler().fit(np.vstack(feats))
     model_path = tmp_path / "2x2.pkl"
-    joblib.dump({"model": clf.booster_, "scaler": scaler}, model_path)
+    joblib.dump(
+        {
+            "model": clf.booster_,
+            "scaler": scaler,
+            "n_features_in_": len(feats[0]),
+        },
+        model_path,
+    )
 
     coords = infer_top3_for_target(board_masked, 4, models_dir=str(tmp_path))
     assert coords and coords[0] == (1, 1)
+    m = _load_model(str(model_path))
+    assert getattr(m, "n_features_in_", None) == len(feats[0])

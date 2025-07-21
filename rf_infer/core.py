@@ -73,7 +73,11 @@ def _load_model(path: str) -> ClassifierMixin:
 
     class _ModelWrapper(ClassifierMixin):
         def __init__(
-            self, model: Any, scaler: Any | None, classes: List[int] | None
+            self,
+            model: Any,
+            scaler: Any | None,
+            classes: List[int] | None,
+            n_features: int | None = None,
         ) -> None:
             self.model = model
             self.scaler = scaler
@@ -81,6 +85,11 @@ def _load_model(path: str) -> ClassifierMixin:
                 self.classes_ = np.array(classes)
             else:
                 self.classes_ = getattr(model, "classes_", None)
+            self.n_features_in_ = (
+                int(n_features)
+                if n_features is not None
+                else getattr(model, "n_features_in_", None)
+            )
 
         def predict_proba(self, X: np.ndarray) -> np.ndarray:  # type: ignore[override]
             if self.scaler is not None:
@@ -106,7 +115,12 @@ def _load_model(path: str) -> ClassifierMixin:
     classes = _classes_from_path(path)
 
     if isinstance(obj, dict) and "model" in obj:
-        return _ModelWrapper(obj["model"], obj.get("scaler"), classes)
+        return _ModelWrapper(
+            obj["model"],
+            obj.get("scaler"),
+            classes,
+            obj.get("n_features_in_"),
+        )
     if isinstance(obj, tuple) and len(obj) == 2:
         return _ModelWrapper(obj[1], obj[0], classes)
     return obj
@@ -278,10 +292,21 @@ def predict_top_k(
 
     feats_list: List[np.ndarray] = []
     coords: List[tuple[int, int]] = []
+    n_features = getattr(model, "n_features_in_", None)
     for r in range(rows):
         for c in range(cols):
             if board[r, c] == -1:
-                feats_list.append(extract_features(board, r, c))
+                if n_features and n_features > 22:
+                    try:
+                        from train_lgbm_pipeline import _board_features
+
+                        feats = _board_features(board, target, (r, c))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("failed advanced feature extraction: %s", exc)
+                        feats = extract_features(board, r, c)
+                else:
+                    feats = extract_features(board, r, c)
+                feats_list.append(np.asarray(feats, dtype=float))
                 coords.append((r, c))
     if not feats_list:
         return {
