@@ -60,10 +60,9 @@ def test_features_saved(tmp_path: Path) -> None:
     data = np.load(parts[0])
     X = data["X"]
     y = data["y"]
-    assert X.shape[1] >= 27
-
     board_np = np.array(board["board"], dtype=int)
     expected = _board_features(board_np, 2, (0, 1))
+    assert X.shape[1] == len(expected)
     pos_row = X[y == 1][0]
     assert pos_row[-2] == expected[-2]
     assert pos_row[-1] == expected[-1]

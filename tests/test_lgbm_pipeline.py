@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 
+from train_lgbm_pipeline import _board_features
+
 
 def test_train_pipeline(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
@@ -42,7 +44,9 @@ def test_train_pipeline(tmp_path: Path) -> None:
     data = np.load(parts[0])
     assert "bid" in data
     assert data["bid"].shape[0] == data["y"].shape[0]
-    assert data["X"].shape[1] >= 25
+    board_np = np.array(board["board"], dtype=int)
+    expected = _board_features(board_np, 2, (0, 1))
+    assert data["X"].shape[1] == len(expected)
 
 
 def test_plain_text_board(tmp_path: Path) -> None:
