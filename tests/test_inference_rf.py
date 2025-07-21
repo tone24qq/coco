@@ -5,7 +5,8 @@ import joblib
 import numpy as np
 from lightgbm import LGBMClassifier
 
-from rf_infer.core import extract_features, predict_top_k
+from coco_common.scalers import Float32StandardScaler
+from rf_infer.core import extract_features, infer_top3_for_target, predict_top_k
 
 
 def _train_simple_model(
@@ -110,3 +111,20 @@ def test_filter_invalid_prediction(tmp_path: Path) -> None:
     res = predict_top_k(model, board_masked, 1, k=2)
     assert res["predictions"] == []
     assert res["status"] == "no_valid_solution"
+
+
+def test_load_model_dict(tmp_path: Path) -> None:
+    board_full = np.array([[1, 2], [3, 4]])
+    board_masked = np.array([[1, -1], [3, -1]])
+    clf = _train_simple_model(board_full, board_masked)
+    feats = [
+        extract_features(board_masked, r, c)
+        for r in range(board_full.shape[0])
+        for c in range(board_full.shape[1])
+    ]
+    scaler = Float32StandardScaler().fit(np.vstack(feats))
+    model_path = tmp_path / "2x2.pkl"
+    joblib.dump({"model": clf.booster_, "scaler": scaler}, model_path)
+
+    coords = infer_top3_for_target(board_masked, 4, models_dir=str(tmp_path))
+    assert coords and coords[0] == (1, 1)

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 import time
 from glob import glob
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -67,7 +68,48 @@ def _validate_path(
 def _load_model(path: str) -> ClassifierMixin:
     _validate_path(path, suffix=".pkl")
     logger.info("Loading model %s", path)
-    return joblib.load(path)
+    sys.modules["__main__"].Float32StandardScaler = Float32StandardScaler
+    obj = joblib.load(path)
+
+    class _ModelWrapper(ClassifierMixin):
+        def __init__(
+            self, model: Any, scaler: Any | None, classes: List[int] | None
+        ) -> None:
+            self.model = model
+            self.scaler = scaler
+            if classes is not None:
+                self.classes_ = np.array(classes)
+            else:
+                self.classes_ = getattr(model, "classes_", None)
+
+        def predict_proba(self, X: np.ndarray) -> np.ndarray:  # type: ignore[override]
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
+            if hasattr(self.model, "predict_proba"):
+                return self.model.predict_proba(X)
+            probs = self.model.predict(
+                X, num_iteration=getattr(self.model, "best_iteration", None)
+            )
+            if probs.ndim == 1:
+                return np.column_stack([1 - probs, probs])
+            return probs
+
+    def _classes_from_path(p: str) -> List[int] | None:
+        base = os.path.splitext(os.path.basename(p))[0]
+        if "x" in base:
+            a, b = base.split("x", 1)
+            if a.isdigit() and b.isdigit():
+                rows, cols = int(a), int(b)
+                return list(range(1, rows * cols + 1))
+        return None
+
+    classes = _classes_from_path(path)
+
+    if isinstance(obj, dict) and "model" in obj:
+        return _ModelWrapper(obj["model"], obj.get("scaler"), classes)
+    if isinstance(obj, tuple) and len(obj) == 2:
+        return _ModelWrapper(obj[1], obj[0], classes)
+    return obj
 
 
 def _load_board_file(path: str) -> List[Dict[str, Any]]:
