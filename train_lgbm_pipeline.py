@@ -519,6 +519,132 @@ def _entropy_reduction(
     return [before - after]
 
 
+def _spatial_offset_pattern_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Spatial progression features between sequential numbers."""
+
+    r, c = pos
+    R, C = masked.shape
+
+    offsets_prev: List[Tuple[int, int]] = []
+    offsets_next: List[Tuple[int, int]] = []
+
+    for rr in range(R):
+        for cc in range(C):
+            val = int(masked[rr, cc])
+            if val == -1:
+                continue
+            if val == target - 1:
+                offsets_prev.append((rr - r, cc - c))
+            elif val == target + 1:
+                offsets_next.append((rr - r, cc - c))
+
+    def _summarise(offsets: List[Tuple[int, int]]) -> List[float]:
+        if not offsets:
+            return [0.0, 0.0, 0.0]
+        dx_mean = np.mean([o[0] for o in offsets]) / R
+        dy_mean = np.mean([o[1] for o in offsets]) / C
+        dists = [math.sqrt(o[0] ** 2 + o[1] ** 2) for o in offsets]
+        progression_score = 1.0 / (min(dists) + 1.0)
+        return [dx_mean, dy_mean, progression_score]
+
+    return _summarise(offsets_prev) + _summarise(offsets_next)
+
+
+def _compute_conditional_probs(masked: np.ndarray, radius: int = 1) -> dict:
+    """Compute conditional co-occurrence probabilities within a radius."""
+
+    R, C = masked.shape
+    counts: dict[Tuple[int, int, int], dict[int, int]] = defaultdict(
+        lambda: defaultdict(int)
+    )
+    totals: dict[Tuple[int, int, int], int] = defaultdict(int)
+
+    for r in range(R):
+        for c in range(C):
+            a = int(masked[r, c])
+            if a == -1:
+                continue
+            for dx in range(-radius, radius + 1):
+                for dy in range(-radius, radius + 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    rr, cc = r + dx, c + dy
+                    if 0 <= rr < R and 0 <= cc < C:
+                        b = int(masked[rr, cc])
+                        if b == -1:
+                            continue
+                        key = (a, dx, dy)
+                        counts[key][b] += 1
+                        totals[key] += 1
+
+    cond_prob: dict[Tuple[int, int, int], dict[int, float]] = {}
+    for key, cdict in counts.items():
+        total = float(totals[key])
+        cond_prob[key] = {v: cnt / total for v, cnt in cdict.items()}
+    return cond_prob
+
+
+def _conditional_cooccurrence_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int], radius: int = 1
+) -> List[float]:
+    """Conditional probability of target given surrounding numbers."""
+
+    cond_prob = _compute_conditional_probs(masked, radius)
+    r, c = pos
+    R, C = masked.shape
+    scores: List[float] = []
+
+    for dx in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            if dx == 0 and dy == 0:
+                continue
+            rr, cc = r + dx, c + dy
+            if 0 <= rr < R and 0 <= cc < C:
+                a = int(masked[rr, cc])
+                if a == -1:
+                    continue
+                key = (a, -dx, -dy)
+                if key in cond_prob and target in cond_prob[key]:
+                    scores.append(cond_prob[key][target])
+
+    if not scores:
+        return [0.0, 0.0]
+    return [float(np.mean(scores)), float(np.max(scores))]
+
+
+def _advanced_position_hash_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Advanced hashing of position with expected value mapping."""
+
+    r, c = pos
+    R, C = masked.shape
+
+    prime1, prime2, prime3 = 31, 37, 41
+    modulus = max(R * C * 2 + 1, 101)
+
+    position_hash = (r * prime1 + c * prime2) % modulus
+    value_hash = (position_hash + target * prime3) % modulus
+
+    mapping: dict[int, List[int]] = defaultdict(list)
+    for rr in range(R):
+        for cc in range(C):
+            val = int(masked[rr, cc])
+            if val == -1:
+                continue
+            h = (rr * prime1 + cc * prime2) % modulus
+            mapping[h].append(val)
+
+    if mapping.get(position_hash):
+        expected_val = float(np.mean(mapping[position_hash])) / (R * C)
+    else:
+        expected_val = 0.0
+
+    return [position_hash / modulus, value_hash / modulus, expected_val]
+
+
 def _enhanced_board_features(
     masked: np.ndarray, target: int, pos: Tuple[int, int]
 ) -> List[float]:
@@ -542,6 +668,7 @@ def _enhanced_board_features(
     # Hash based on position and value
     position_hash = ((r * C + c) * target) % 97
     features.append(float(position_hash) / 97.0)
+    features.extend(_advanced_position_hash_features(masked, target, pos))
 
     # Add all specialized feature sets
     features.extend(_rank_percentile_features(masked, target, pos))
@@ -562,6 +689,8 @@ def _enhanced_board_features(
         tens_group_ratio = 0.0
         ones_group_ratio = 0.0
     features.extend([tens_group_ratio, ones_group_ratio])
+    features.extend(_spatial_offset_pattern_features(masked, target, pos))
+    features.extend(_conditional_cooccurrence_features(masked, target, pos))
     features.extend(_constraint_solving_features(masked, target, pos))
     features.extend(_numerical_sequence_features(masked, target, pos))
     features.extend(_spatial_reasoning_features(masked, target, pos))
