@@ -575,15 +575,16 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
 
         pos = float(np.sum(y_train == 1))
         neg = float(np.sum(y_train == 0))
-        scale_pos_weight = neg / pos if pos else 1.0
+        scale_pos_weight = neg / pos if pos > 0 else 1.0
 
         train_ds = lgb.Dataset(X_train, y_train)
         valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
 
+        # Fixed: Use either scale_pos_weight OR is_unbalance, not both
         params.update({
             "num_threads": workers, 
             "scale_pos_weight": scale_pos_weight,
-            "is_unbalance": True  # Handle class imbalance
+            # Remove is_unbalance since we're using scale_pos_weight
         })
 
         booster = lgb.train(

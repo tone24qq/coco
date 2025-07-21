@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python
 """Enhanced LightGBM pipeline for board completion with improved features and training strategy."""
 
@@ -8,11 +9,10 @@ import json
 import math
 import os
 import random
-import warnings
 import zipfile
 from collections import defaultdict
 from pathlib import Path
-from typing import Iterator, List, Tuple, Set
+from typing import Iterator, List, Set, Tuple
 
 import joblib
 import lightgbm as lgb
@@ -51,6 +51,7 @@ class Float32StandardScaler:
 try:
     from tqdm.auto import tqdm
 except Exception:
+
     def tqdm(x, **kwargs):
         return x
 
@@ -105,6 +106,7 @@ def _yield_json(fp) -> Iterator[object]:
 
 def iter_objects(root: Path) -> Iterator[Tuple[np.ndarray, int | None]]:
     """Iterate over board objects from files."""
+
     def _parse(obj: object) -> Iterator[Tuple[np.ndarray, int | None]]:
         if isinstance(obj, dict) and "board" in obj:
             bd = np.asarray(obj["board"], dtype=int)
@@ -141,52 +143,125 @@ def _get_all_candidates(masked: np.ndarray, pos: Tuple[int, int]) -> Set[int]:
     r, c = pos
     R, C = masked.shape
     max_val = R * C
-    
+
     all_nums = set(range(1, max_val + 1))
     row_used = set(masked[r, :][masked[r, :] != -1])
     col_used = set(masked[:, c][masked[:, c] != -1])
-    global_used = set(masked[masked != -1].flatten())
-    
     # For general boards, use intersection of constraints
     candidates = all_nums - row_used - col_used
     # Remove globally over-used numbers
     return candidates
 
 
-def _constraint_solving_features(masked: np.ndarray, target: int, pos: Tuple[int, int]) -> List[float]:
+def _get_8_neighbors(masked: np.ndarray, pos: Tuple[int, int]) -> List[int]:
+    """Return non-masked values from the 8-neighborhood."""
+    r, c = pos
+    R, C = masked.shape
+    neighbors = []
+    directions = [
+        (-1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+        (1, 0),
+        (1, -1),
+        (0, -1),
+        (-1, -1),
+    ]
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < R and 0 <= nc < C and masked[nr, nc] != -1:
+            neighbors.append(int(masked[nr, nc]))
+    return neighbors
+
+
+def _eight_neighbor_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Features derived from 8 surrounding cells."""
+    neighbors = _get_8_neighbors(masked, pos)
+
+    if not neighbors:
+        return [0.0] * 10
+
+    arr = np.asarray(neighbors, dtype=float)
+
+    neighbor_mean = float(np.mean(arr))
+    neighbor_std = float(np.std(arr)) if len(arr) > 1 else 0.0
+
+    diff = np.abs(arr - target)
+    diff_mean = float(np.mean(diff))
+    diff_std = float(np.std(diff)) if len(arr) > 1 else 0.0
+
+    odd_count = np.sum(arr % 2 == 1)
+    even_count = len(arr) - odd_count
+    odd_ratio = float(odd_count / len(arr))
+    even_ratio = float(even_count / len(arr))
+
+    continuity_score = 0.0
+    if len(arr) >= 2:
+        sorted_neighbors = np.sort(arr)
+        consecutive_pairs = 0
+        for i in range(len(sorted_neighbors) - 1):
+            if sorted_neighbors[i + 1] - sorted_neighbors[i] == 1:
+                consecutive_pairs += 1
+        continuity_score = float(consecutive_pairs / (len(sorted_neighbors) - 1))
+
+    min_neighbor = float(np.min(arr))
+    max_neighbor = float(np.max(arr))
+    target_to_min_diff = abs(target - min_neighbor)
+    target_to_max_diff = abs(target - max_neighbor)
+
+    return [
+        neighbor_mean,
+        neighbor_std,
+        diff_mean,
+        diff_std,
+        odd_ratio,
+        even_ratio,
+        continuity_score,
+        target_to_min_diff,
+        target_to_max_diff,
+        float(len(arr)),
+    ]
+
+
+def _constraint_solving_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
     """Advanced constraint solving features."""
     r, c = pos
     R, C = masked.shape
     max_val = R * C
-    
+
     # Get candidates for this position
     candidates = _get_all_candidates(masked, pos)
-    
+
     # Basic feasibility
     target_is_candidate = 1.0 if target in candidates else 0.0
     num_candidates = len(candidates)
     candidate_ratio = num_candidates / max_val
-    
+
     # Uniqueness scoring - how unique is this target placement?
     empty_positions = list(zip(*np.where(masked == -1)))
     target_possible_positions = 0
-    
+
     for er, ec in empty_positions:
         if (er, ec) == pos:
             continue
         pos_candidates = _get_all_candidates(masked, (er, ec))
         if target in pos_candidates:
             target_possible_positions += 1
-    
+
     target_uniqueness = 1.0 / (target_possible_positions + 1)
-    
+
     # Constraint propagation impact
     constraint_impact = 0.0
     if target_is_candidate > 0:
         # How many other positions would be affected by placing target here?
         temp_board = masked.copy()
         temp_board[r, c] = target
-        
+
         for er, ec in empty_positions:
             if (er, ec) == pos:
                 continue
@@ -195,42 +270,44 @@ def _constraint_solving_features(masked: np.ndarray, target: int, pos: Tuple[int
                 new_candidates = _get_all_candidates(temp_board, (er, ec))
                 if len(old_candidates) > len(new_candidates):
                     constraint_impact += 1.0
-    
+
     constraint_impact_ratio = constraint_impact / max(1, len(empty_positions) - 1)
-    
+
     return [
         target_is_candidate,
         num_candidates,
         candidate_ratio,
         target_uniqueness,
         target_possible_positions,
-        constraint_impact_ratio
+        constraint_impact_ratio,
     ]
 
 
-def _numerical_sequence_features(masked: np.ndarray, target: int, pos: Tuple[int, int]) -> List[float]:
+def _numerical_sequence_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
     """Features based on numerical sequences and patterns."""
     r, c = pos
     R, C = masked.shape
-    
+
     # Row sequence analysis
     row = masked[r, :]
     row_known = row[row != -1]
     row_sequence_score = 0.0
     row_gap_fill_score = 0.0
-    
+
     if len(row_known) > 0:
         # Check if target would create/continue arithmetic sequence
         row_with_target = row.copy()
         row_with_target[c] = target
         known_with_target = row_with_target[row_with_target != -1]
-        
+
         if len(known_with_target) >= 3:
             sorted_vals = np.sort(known_with_target)
             diffs = np.diff(sorted_vals)
             if len(set(diffs)) == 1:  # Arithmetic sequence
                 row_sequence_score = 1.0
-        
+
         # Gap filling score - how well does target fill numerical gaps?
         if len(row_known) > 0:
             sorted_known = np.sort(row_known)
@@ -240,24 +317,24 @@ def _numerical_sequence_features(masked: np.ndarray, target: int, pos: Tuple[int
                 gap_after = sorted_known[target_pos] - target
                 if gap_before > 0 and gap_after > 0:
                     row_gap_fill_score = 1.0 / (gap_before + gap_after)
-    
+
     # Column sequence analysis
     col = masked[:, c]
     col_known = col[col != -1]
     col_sequence_score = 0.0
     col_gap_fill_score = 0.0
-    
+
     if len(col_known) > 0:
         col_with_target = col.copy()
         col_with_target[r] = target
         known_with_target = col_with_target[col_with_target != -1]
-        
+
         if len(known_with_target) >= 3:
             sorted_vals = np.sort(known_with_target)
             diffs = np.diff(sorted_vals)
             if len(set(diffs)) == 1:
                 col_sequence_score = 1.0
-        
+
         if len(col_known) > 0:
             sorted_known = np.sort(col_known)
             target_pos = np.searchsorted(sorted_known, target)
@@ -266,31 +343,33 @@ def _numerical_sequence_features(masked: np.ndarray, target: int, pos: Tuple[int
                 gap_after = sorted_known[target_pos] - target
                 if gap_before > 0 and gap_after > 0:
                     col_gap_fill_score = 1.0 / (gap_before + gap_after)
-    
+
     return [
         row_sequence_score,
         col_sequence_score,
         row_gap_fill_score,
-        col_gap_fill_score
+        col_gap_fill_score,
     ]
 
 
-def _spatial_reasoning_features(masked: np.ndarray, target: int, pos: Tuple[int, int]) -> List[float]:
+def _spatial_reasoning_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
     """Spatial reasoning and neighborhood features."""
     r, c = pos
     R, C = masked.shape
-    
+
     features = []
-    
+
     # Multi-scale neighborhood analysis
     for radius in [1, 2, 3]:
         r_start = max(0, r - radius)
         r_end = min(R, r + radius + 1)
         c_start = max(0, c - radius)
         c_end = min(C, c + radius + 1)
-        
+
         neighborhood = masked[r_start:r_end, c_start:c_end]
-        
+
         # Neighborhood statistics
         known_vals = neighborhood[neighborhood != -1]
         if len(known_vals) > 0:
@@ -301,68 +380,81 @@ def _spatial_reasoning_features(masked: np.ndarray, target: int, pos: Tuple[int,
         else:
             target_density = 0.0
             target_deviation = 0.5
-        
+
         features.extend([target_density, target_deviation])
-    
+
     # Distance-based features
     known_positions = list(zip(*np.where(masked != -1)))
     if known_positions:
         distances_to_same_value = []
         distances_to_different_values = []
-        
+
         for kr, kc in known_positions:
-            dist = np.sqrt((r - kr)**2 + (c - kc)**2)
+            dist = np.sqrt((r - kr) ** 2 + (c - kc) ** 2)
             if masked[kr, kc] == target:
                 distances_to_same_value.append(dist)
             else:
                 distances_to_different_values.append(dist)
-        
-        min_dist_same = min(distances_to_same_value) if distances_to_same_value else R + C
-        min_dist_diff = min(distances_to_different_values) if distances_to_different_values else R + C
-        
+
+        min_dist_same = (
+            min(distances_to_same_value) if distances_to_same_value else R + C
+        )
+        min_dist_diff = (
+            min(distances_to_different_values)
+            if distances_to_different_values
+            else R + C
+        )
+
         features.extend([min_dist_same, min_dist_diff])
     else:
         features.extend([0.0, 0.0])
-    
+
     return features
 
 
-def _enhanced_board_features(masked: np.ndarray, target: int, pos: Tuple[int, int]) -> List[float]:
+def _enhanced_board_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
     """Enhanced feature extraction combining multiple reasoning approaches."""
     r, c = pos
     R, C = masked.shape
-    
+
     features = []
-    
+
     # Basic position features
-    features.extend([
-        float(r) / R,
-        float(c) / C,
-        float(r * c) / (R * C),
-        float(target) / (R * C),
-        float(target % 10) / 10 if target >= 10 else 0.0,
-    ])
-    
+    features.extend(
+        [
+            float(r) / R,
+            float(c) / C,
+            float(r * c) / (R * C),
+            float(target) / (R * C),
+            float(target % 10) / 10 if target >= 10 else 0.0,
+        ]
+    )
+
     # Add all specialized feature sets
     features.extend(_constraint_solving_features(masked, target, pos))
     features.extend(_numerical_sequence_features(masked, target, pos))
     features.extend(_spatial_reasoning_features(masked, target, pos))
-    
+    features.extend(_eight_neighbor_features(masked, target, pos))
+
     # Board completion features
     total_cells = R * C
     filled_cells = np.sum(masked != -1)
     completion_ratio = filled_cells / total_cells
-    
+
     row_completion = np.sum(masked[r, :] != -1) / C
     col_completion = np.sum(masked[:, c] != -1) / R
-    
-    features.extend([
-        completion_ratio,
-        row_completion,
-        col_completion,
-        abs(row_completion - col_completion)  # Balance between row/col completion
-    ])
-    
+
+    features.extend(
+        [
+            completion_ratio,
+            row_completion,
+            col_completion,
+            abs(row_completion - col_completion),  # Balance between row/col completion
+        ]
+    )
+
     # Target frequency analysis
     all_known = masked[masked != -1]
     if len(all_known) > 0:
@@ -371,10 +463,27 @@ def _enhanced_board_features(masked: np.ndarray, target: int, pos: Tuple[int, in
         frequency_deviation = abs(target_frequency - expected_frequency)
     else:
         frequency_deviation = 0.0
-    
+
     features.append(frequency_deviation)
-    
+
     return features
+
+
+def _board_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Wrapper adding duplicate and range checks to enhanced features."""
+    feats = _enhanced_board_features(masked, target, pos)
+
+    vals = masked[masked != -1]
+    duplicate_count = float(np.sum(vals == target))
+    feats.append(duplicate_count)
+
+    max_val = masked.shape[0] * masked.shape[1]
+    in_range = 1.0 if 1 <= target <= max_val else 0.0
+    feats.append(in_range)
+
+    return feats
 
 
 def _flush(
@@ -441,38 +550,38 @@ def extract_features(
         key = f"{R}x{C}"
         bid = board_idx[key]
         board_idx[key] += 1
-        
+
         if target is not None:
             pos = tuple(zip(*np.where(board == -1)))[0]
             for r in range(R):
                 for c in range(C):
                     lbl = 1 if (r, c) == pos else 0
                     buf[key].append(
-                        (_enhanced_board_features(board, int(target), (r, c)), lbl, bid)
+                        (_board_features(board, int(target), (r, c)), lbl, bid)
                     )
         else:
             ratio = mask_ratio
             if mask_range is not None:
                 lo, hi = mask_range
                 ratio = rng.uniform(min(lo, hi), max(lo, hi))
-            
+
             if ratio > 0:
                 masked, slots = _apply_random_mask(board, ratio, rng)
                 coords = [(rr, cc) for rr in range(R) for cc in range(C)]
-                
+
                 for mr, mc, tv in slots:
-                    buf[key].append((_enhanced_board_features(masked, tv, (mr, mc)), 1, bid))
+                    buf[key].append((_board_features(masked, tv, (mr, mc)), 1, bid))
                     negs = [p for p in coords if p != (mr, mc)]
                     rng.shuffle(negs)
                     for rr, cc in negs[:NEG_RATIO]:
-                        buf[key].append((_enhanced_board_features(masked, tv, (rr, cc)), 0, bid))
+                        buf[key].append((_board_features(masked, tv, (rr, cc)), 0, bid))
             else:
                 for r in range(R):
                     for c in range(C):
                         tv = int(board[r, c])
                         masked = board.copy()
                         masked[r, c] = -1
-                        buf[key].append((_enhanced_board_features(masked, tv, (r, c)), 1, bid))
+                        buf[key].append((_board_features(masked, tv, (r, c)), 1, bid))
                         negs = [
                             (rr, cc)
                             for rr in range(R)
@@ -482,12 +591,12 @@ def extract_features(
                         rng.shuffle(negs)
                         for rr, cc in negs[:NEG_RATIO]:
                             buf[key].append(
-                                (_enhanced_board_features(masked, tv, (rr, cc)), 0, bid)
+                                (_board_features(masked, tv, (rr, cc)), 0, bid)
                             )
-        
+
         if len(buf[key]) >= shard_size:
             _flush(key, buf[key], out_feat, cnt)
-    
+
     for k in list(buf.keys()):
         _flush(k, buf[k], out_feat, cnt)
 
@@ -524,28 +633,28 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         seed=42,
         boost_from_average=False,  # Important for imbalanced data
     )
-    
+
     out_model.mkdir(exist_ok=True)
-    
+
     for sd in sorted(out_feat.iterdir()):
         if not sd.is_dir():
             continue
-        
+
         npzs = sorted(sd.glob("part_*.npz"))
         if not npzs:
             continue
-        
+
         all_X: list[np.ndarray] = []
         all_y: list[np.ndarray] = []
         all_bid: list[np.ndarray] = []
-        
+
         for npz in npzs:
             data = np.load(npz)
             X, y, bid = _ensure_labels(data["X"], data["y"], data["bid"])
             all_X.append(X)
             all_y.append(y)
             all_bid.append(bid)
-        
+
         X_all = np.concatenate(all_X)
         y_all = np.concatenate(all_y)
         bid_all = np.concatenate(all_bid)
@@ -555,7 +664,7 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
             train_b = valid_b = uniq
         else:
             train_b, valid_b = train_test_split(uniq, test_size=0.2, random_state=42)
-        
+
         train_mask = np.isin(bid_all, train_b)
         valid_mask = ~train_mask
 
@@ -563,7 +672,7 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         y_train = y_all[train_mask]
         X_valid = X_all[valid_mask]
         y_valid = y_all[valid_mask]
-        
+
         if X_valid.size == 0:
             X_valid = X_train
             y_valid = y_train
@@ -581,11 +690,13 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
 
         # Fixed: Use either scale_pos_weight OR is_unbalance, not both
-        params.update({
-            "num_threads": workers, 
-            "scale_pos_weight": scale_pos_weight,
-            # Remove is_unbalance since we're using scale_pos_weight
-        })
+        params.update(
+            {
+                "num_threads": workers,
+                "scale_pos_weight": scale_pos_weight,
+                # Remove is_unbalance since we're using scale_pos_weight
+            }
+        )
 
         booster = lgb.train(
             params,
@@ -615,7 +726,7 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
                 pos_indices = np.where(lbls == 1)[0]
                 if len(pos_indices) == 0:
                     continue
-                
+
                 pos_idx = idx[pos_indices[0]]  # Get actual position
                 top_k_indices = idx[np.argsort(-p)[:k]]
                 if pos_idx in top_k_indices:
@@ -626,7 +737,7 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         hit1 = top_k_hit_rate(1)
         hit3 = top_k_hit_rate(3)
         hit5 = top_k_hit_rate(5)
-        
+
         print(
             f"✔ {sd.name} | trees={booster.best_iteration} | AUC={auc:.3f} | "
             f"acc={acc:.3f} | f1={f1:.3f} | hit@1={hit1:.3f} | hit@3={hit3:.3f} | hit@5={hit5:.3f}"
@@ -635,7 +746,9 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
 
 def main(argv: List[str] | None = None) -> None:
     """Main function."""
-    pa = argparse.ArgumentParser(description="Enhanced LightGBM board completion pipeline")
+    pa = argparse.ArgumentParser(
+        description="Enhanced LightGBM board completion pipeline"
+    )
     pa.add_argument("--root", default=".", help="Data root directory")
     pa.add_argument("--shard-size", type=int, default=SHARD_SIZE)
     pa.add_argument("--trees-per-shard", type=int, default=TREES_PER)
@@ -650,7 +763,10 @@ def main(argv: List[str] | None = None) -> None:
     pa.add_argument("--out-feat", default="features")
     pa.add_argument("--out-model", default="models")
     pa.add_argument(
-        "--mask-ratio", type=float, default=0.5, help="Default mask ratio for full boards"
+        "--mask-ratio",
+        type=float,
+        default=0.5,
+        help="Default mask ratio for full boards",
     )
     pa.add_argument(
         "--mask-range",
