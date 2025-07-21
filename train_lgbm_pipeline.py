@@ -385,6 +385,140 @@ def _spatial_reasoning_features(
     return features
 
 
+def _rank_percentile_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Ranking and percentile features for the target value."""
+    candidates = sorted(_get_all_candidates(masked, pos))
+    if candidates:
+        rank = candidates.index(target) if target in candidates else len(candidates)
+        target_rank = rank / len(candidates)
+    else:
+        target_rank = 0.0
+
+    remaining = masked[masked != -1]
+    if remaining.size > 0:
+        target_percentile = float(
+            np.searchsorted(np.sort(remaining), target) / remaining.size
+        )
+    else:
+        target_percentile = 0.0
+
+    return [target_rank, target_percentile]
+
+
+def _symmetry_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Features capturing board symmetry around the center."""
+    r, c = pos
+    R, C = masked.shape
+    mh = (r, C - 1 - c)
+    mv = (R - 1 - r, c)
+
+    same_h = 0.0
+    if 0 <= mh[1] < C and masked[mh] == target:
+        same_h = 1.0
+    same_v = 0.0
+    if 0 <= mv[0] < R and masked[mv] == target:
+        same_v = 1.0
+
+    center_distance = (abs(r - R // 2) + abs(c - C // 2)) / (R + C)
+    return [same_h, same_v, center_distance]
+
+
+def _number_field_potential(masked: np.ndarray, pos: Tuple[int, int]) -> float:
+    """Calculate potential based on known numbers acting as an inverse-square field."""
+    r, c = pos
+    potential = 0.0
+    for kr, kc in zip(*np.where(masked != -1)):
+        dist = abs(r - kr) + abs(c - kc)
+        potential += masked[kr, kc] / float(max(1, dist**2))
+    return potential
+
+
+def _potential_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Potential field related features."""
+    potential = _number_field_potential(masked, pos)
+    ratio = target / (potential + 1.0)  # avoid div zero
+    return [potential, ratio]
+
+
+def _connectivity_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Impact on connectivity of same-valued regions if placing the target."""
+
+    def _count_components(board: np.ndarray, val: int) -> int:
+        visited: Set[Tuple[int, int]] = set()
+        R, C = board.shape
+        count = 0
+        for sr, sc in zip(*np.where(board == val)):
+            if (sr, sc) in visited:
+                continue
+            count += 1
+            stack = [(sr, sc)]
+            visited.add((sr, sc))
+            while stack:
+                rr, cc = stack.pop()
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nr, nc = rr + dr, cc + dc
+                    if (
+                        0 <= nr < R
+                        and 0 <= nc < C
+                        and board[nr, nc] == val
+                        and (nr, nc) not in visited
+                    ):
+                        visited.add((nr, nc))
+                        stack.append((nr, nc))
+        return count
+
+    before = _count_components(masked, target)
+    temp = masked.copy()
+    r, c = pos
+    temp[r, c] = target
+    after = _count_components(temp, target)
+    return [float(after - before)]
+
+
+def _spectral_features(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Simple frequency domain features using FFT of the row and column."""
+    r, c = pos
+    row_vals = masked[r, :][masked[r, :] != -1]
+    col_vals = masked[:, c][masked[:, c] != -1]
+    row_freq = 0.0
+    col_freq = 0.0
+    if row_vals.size > 0:
+        row_fft = np.fft.fft(row_vals)
+        row_freq = float(np.argmax(np.abs(row_fft))) / row_vals.size
+    if col_vals.size > 0:
+        col_fft = np.fft.fft(col_vals)
+        col_freq = float(np.argmax(np.abs(col_fft))) / col_vals.size
+    return [row_freq, col_freq]
+
+
+def _entropy_reduction(
+    masked: np.ndarray, target: int, pos: Tuple[int, int]
+) -> List[float]:
+    """Entropy reduction after placing the target at the given position."""
+
+    def _entropy(board: np.ndarray) -> float:
+        vals, counts = np.unique(board[board != -1], return_counts=True)
+        probs = counts / counts.sum() if counts.sum() > 0 else np.array([])
+        return float(-np.sum(probs * np.log(probs))) if probs.size else 0.0
+
+    before = _entropy(masked)
+    temp = masked.copy()
+    r, c = pos
+    temp[r, c] = target
+    after = _entropy(temp)
+    return [before - after]
+
+
 def _enhanced_board_features(
     masked: np.ndarray, target: int, pos: Tuple[int, int]
 ) -> List[float]:
@@ -405,7 +539,29 @@ def _enhanced_board_features(
         ]
     )
 
+    # Hash based on position and value
+    position_hash = ((r * C + c) * target) % 97
+    features.append(float(position_hash) / 97.0)
+
     # Add all specialized feature sets
+    features.extend(_rank_percentile_features(masked, target, pos))
+    features.extend(_symmetry_features(masked, target, pos))
+    features.extend(_potential_features(masked, target, pos))
+    features.extend(_connectivity_features(masked, target, pos))
+    features.extend(_spectral_features(masked, target, pos))
+    features.extend(_entropy_reduction(masked, target, pos))
+    neighbors = _get_8_neighbors(masked, pos)
+    if neighbors:
+        tens_group_ratio = float(
+            np.mean([int(n // 10 == target // 10) for n in neighbors])
+        )
+        ones_group_ratio = float(
+            np.mean([int(n % 10 == target % 10) for n in neighbors])
+        )
+    else:
+        tens_group_ratio = 0.0
+        ones_group_ratio = 0.0
+    features.extend([tens_group_ratio, ones_group_ratio])
     features.extend(_constraint_solving_features(masked, target, pos))
     features.extend(_numerical_sequence_features(masked, target, pos))
     features.extend(_spatial_reasoning_features(masked, target, pos))
