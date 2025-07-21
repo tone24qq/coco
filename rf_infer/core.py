@@ -9,6 +9,8 @@ import joblib
 import numpy as np
 from sklearn.base import ClassifierMixin
 
+from coco_common.scalers import Float32StandardScaler  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 

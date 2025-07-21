@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python
 """Enhanced LightGBM pipeline for board completion with improved features and training strategy."""
 
@@ -20,33 +19,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from sklearn.model_selection import train_test_split
 
-
-class Float32StandardScaler:
-    """Lightweight scaler that keeps data in float32 precision."""
-
-    def __init__(self) -> None:
-        self.mean_: np.ndarray | None = None
-        self.scale_: np.ndarray | None = None
-
-    def fit(self, X: np.ndarray) -> "Float32StandardScaler":
-        X = X.astype(np.float32, copy=False)
-        self.mean_ = X.mean(axis=0)
-        self.scale_ = X.std(axis=0)
-        self.scale_[self.scale_ == 0] = 1.0
-        return self
-
-    def transform(self, X: np.ndarray) -> np.ndarray:
-        if self.mean_ is None or self.scale_ is None:
-            raise ValueError("Scaler has not been fitted")
-        X = X.astype(np.float32, copy=False)
-        X -= self.mean_
-        X /= self.scale_
-        return X
-
-    def fit_transform(self, X: np.ndarray) -> np.ndarray:
-        self.fit(X)
-        return self.transform(X)
-
+from coco_common.scalers import Float32StandardScaler
 
 try:
     from tqdm.auto import tqdm
