@@ -151,9 +151,27 @@ def load_boards(pattern: str) -> Iterable[Dict[str, Any]]:
 
 
 def _select_model(models_dir: str, rows: int, cols: int) -> str:
-    cand = os.path.join(models_dir, f"{rows}x{cols}.pkl")
-    if os.path.exists(cand):
-        return cand
+    """Return a model path for the given board size.
+
+    Priority:
+    1. exact:   "<rows>x<cols>.pkl"
+    2. fallback "<rows>x<cols>_*.pkl" (first sorted hit)
+
+    Rationale:
+    - keep backward compatibility
+    - deterministic choice
+    """
+
+    base = f"{rows}x{cols}"
+    exact = os.path.join(models_dir, f"{base}.pkl")
+    if os.path.exists(exact):
+        return exact
+
+    pattern = os.path.join(models_dir, f"{base}_*.pkl")
+    matches = sorted(glob(pattern))
+    if matches:
+        return matches[0]
+
     raise FileNotFoundError(f"No model for {rows}x{cols}")
 
 
@@ -182,7 +200,9 @@ def _solve_boards(
         digits.remove(num)
         row_sets[r].add(num)
         col_sets[c].add(num)
-        _solve_boards(board, row_sets, col_sets, digits, blanks, solutions, limit)
+        _solve_boards(
+            board, row_sets, col_sets, digits, blanks, solutions, limit
+        )
         row_sets[r].remove(num)
         col_sets[c].remove(num)
         digits.add(num)
@@ -213,7 +233,9 @@ def find_solutions(board: np.ndarray, limit: int = 2) -> List[np.ndarray]:
             digits.discard(val)
 
     solutions: List[np.ndarray] = []
-    _solve_boards(board.copy(), row_sets, col_sets, digits, blanks, solutions, limit)
+    _solve_boards(
+        board.copy(), row_sets, col_sets, digits, blanks, solutions, limit
+    )
     return solutions
 
 
@@ -302,7 +324,9 @@ def predict_top_k(
 
                         feats = _board_features(board, target, (r, c))
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning("failed advanced feature extraction: %s", exc)
+                        logger.warning(
+                            "failed advanced feature extraction: %s", exc
+                        )
                         feats = extract_features(board, r, c)
                 else:
                     feats = extract_features(board, r, c)
@@ -347,13 +371,16 @@ def predict_top_k(
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
-            (int(r), int(c)) for sol in solutions for r, c in np.argwhere(sol == target)
+            (int(r), int(c))
+            for sol in solutions
+            for r, c in np.argwhere(sol == target)
         }
         if valid_coords:
             results = [p for p in results if (p["r"], p["c"]) in valid_coords]
             if not results:
                 results = [
-                    {"r": r, "c": c, "prob": 1.0} for r, c in sorted(valid_coords)
+                    {"r": r, "c": c, "prob": 1.0}
+                    for r, c in sorted(valid_coords)
                 ]
         else:
             results = []
@@ -398,7 +425,9 @@ def batch_predict(
         try:
             res = predict_top_k(model, board, target, k)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("failed inference for %s: %s", data.get("__source__"), exc)
+            logger.warning(
+                "failed inference for %s: %s", data.get("__source__"), exc
+            )
             failures += 1
             res = {
                 "rows": board.shape[0],

@@ -7,7 +7,7 @@ from lightgbm import LGBMClassifier
 
 from coco_common.scalers import Float32StandardScaler
 # fmt: off
-from rf_infer.core import (_load_model, extract_features,
+from rf_infer.core import (_load_model, _select_model, extract_features,
                            infer_top3_for_target, predict_top_k)
 
 # fmt: on
@@ -141,3 +141,21 @@ def test_load_model_dict(tmp_path: Path) -> None:
     assert coords and coords[0] == (1, 1)
     m = _load_model(str(model_path))
     assert getattr(m, "n_features_in_", None) == len(feats[0])
+
+
+def test_select_model_with_suffix(tmp_path: Path) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    model_path = models_dir / "4x10_lgbm_best.pkl"
+    model_path.touch()
+    assert _select_model(str(models_dir), 4, 10) == str(model_path)
+
+
+def test_select_model_prefers_exact(tmp_path: Path) -> None:
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    exact = models_dir / "4x10.pkl"
+    with_suffix = models_dir / "4x10_lgbm_best.pkl"
+    exact.touch()
+    with_suffix.touch()
+    assert _select_model(str(models_dir), 4, 10) == str(exact)
