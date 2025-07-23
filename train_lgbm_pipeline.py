@@ -17,7 +17,6 @@ import joblib
 import lightgbm as lgb
 import numpy as np
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from sklearn.model_selection import train_test_split
 
 from coco_common.scalers import Float32StandardScaler
 
@@ -882,8 +881,28 @@ def _ensure_labels(
     return X, y, bid
 
 
-def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) -> None:
-    """Train LightGBM models with improved parameters."""
+def train_models(
+    out_feat: Path,
+    out_model: Path,
+    trees_per: int,
+    workers: int,
+    valid_shards: int = 1,
+) -> None:
+    """Train LightGBM models with improved parameters.
+
+    Parameters
+    ----------
+    out_feat : Path
+        Directory containing extracted feature shards.
+    out_model : Path
+        Directory to store trained models.
+    trees_per : int
+        Number of boosting rounds per shard.
+    workers : int
+        Number of worker threads for LightGBM.
+    valid_shards : int, optional
+        Number of shards to reserve for validation (default: 1).
+    """
     # Enhanced parameters for better performance
     params = dict(
         objective="binary",
@@ -903,6 +922,8 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
 
     out_model.mkdir(exist_ok=True)
 
+    rng = random.Random(42)
+
     for sd in sorted(out_feat.iterdir()):
         if not sd.is_dir():
             continue
@@ -911,70 +932,63 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         if not npzs:
             continue
 
-        all_X: list[np.ndarray] = []
-        all_y: list[np.ndarray] = []
-        all_bid: list[np.ndarray] = []
+        rng.shuffle(npzs)
+        valid_npzs = npzs[:valid_shards]
+        train_npzs = npzs[valid_shards:]
 
-        for npz in npzs:
-            data = np.load(npz)
-            X, y, bid = _ensure_labels(data["X"], data["y"], data["bid"])
-            all_X.append(X)
-            all_y.append(y)
-            all_bid.append(bid)
-
-        X_all = np.concatenate(all_X)
-        y_all = np.concatenate(all_y)
-        bid_all = np.concatenate(all_bid)
-
-        uniq = np.unique(bid_all)
-        if uniq.size < 2:
-            train_b = valid_b = uniq
-        else:
-            train_b, valid_b = train_test_split(uniq, test_size=0.2, random_state=42)
-
-        train_mask = np.isin(bid_all, train_b)
-        valid_mask = ~train_mask
-
-        X_train = X_all[train_mask]
-        y_train = y_all[train_mask]
-        X_valid = X_all[valid_mask]
-        y_valid = y_all[valid_mask]
-
-        if X_valid.size == 0:
-            X_valid = X_train
-            y_valid = y_train
-            valid_b = train_b
+        if not train_npzs:
+            train_npzs = valid_npzs
+            valid_npzs = [train_npzs[0]]
 
         scaler = Float32StandardScaler()
-        X_train = scaler.fit_transform(X_train)
-        X_valid = scaler.transform(X_valid)
+        pos_total = 0
+        neg_total = 0
+        for npz in train_npzs:
+            data = np.load(npz)
+            X, y, _ = _ensure_labels(data["X"], data["y"], data["bid"])
+            scaler.partial_fit(X)
+            pos_total += int(np.sum(y == 1))
+            neg_total += int(np.sum(y == 0))
 
-        pos = float(np.sum(y_train == 1))
-        neg = float(np.sum(y_train == 0))
-        scale_pos_weight = neg / pos if pos > 0 else 1.0
+        scale_pos_weight = neg_total / pos_total if pos_total > 0 else 1.0
 
-        train_ds = lgb.Dataset(X_train, y_train)
-        valid_ds = lgb.Dataset(X_valid, y_valid, reference=train_ds)
+        valid_X: list[np.ndarray] = []
+        valid_y: list[np.ndarray] = []
+        valid_bid: list[np.ndarray] = []
+        for npz in valid_npzs:
+            data = np.load(npz)
+            X, y, bid = _ensure_labels(data["X"], data["y"], data["bid"])
+            valid_X.append(scaler.transform(X))
+            valid_y.append(y)
+            valid_bid.append(bid)
 
-        # Fixed: Use either scale_pos_weight OR is_unbalance, not both
-        params.update(
-            {
-                "num_threads": workers,
-                "scale_pos_weight": scale_pos_weight,
-                # Remove is_unbalance since we're using scale_pos_weight
-            }
-        )
+        X_valid = np.concatenate(valid_X)
+        y_valid = np.concatenate(valid_y)
+        bid_valid = np.concatenate(valid_bid)
+        valid_ds = lgb.Dataset(X_valid, y_valid)
 
-        booster = lgb.train(
-            params,
-            train_ds,
-            num_boost_round=trees_per,
-            valid_sets=[train_ds, valid_ds],
-            valid_names=["train", "valid"],
-            callbacks=[lgb.early_stopping(100)],  # More patience
-        )
+        params.update({"num_threads": workers, "scale_pos_weight": scale_pos_weight})
 
-        _save_model(booster, scaler, out_model / f"{sd.name}.pkl", X_train.shape[1])
+        booster = None
+        first = True
+        for npz in train_npzs:
+            data = np.load(npz)
+            X, y, _ = _ensure_labels(data["X"], data["y"], data["bid"])
+            X = scaler.transform(X)
+            train_ds = lgb.Dataset(X, y)
+            booster = lgb.train(
+                params,
+                train_ds,
+                num_boost_round=trees_per,
+                valid_sets=[train_ds, valid_ds] if first else [valid_ds],
+                valid_names=["train", "valid"] if first else ["valid"],
+                init_model=booster,
+                keep_training_booster=True,
+                callbacks=[lgb.early_stopping(100)] if first else None,
+            )
+            first = False
+
+        _save_model(booster, scaler, out_model / f"{sd.name}.pkl", X_valid.shape[1])
 
         preds = booster.predict(X_valid, num_iteration=booster.best_iteration)
         auc = roc_auc_score(y_valid, preds)
@@ -984,17 +998,15 @@ def train_models(out_feat: Path, out_model: Path, trees_per: int, workers: int) 
         def top_k_hit_rate(k: int) -> float:
             hit = 0
             total = 0
-            for b in valid_b:
-                idx = np.where(bid_all == b)[0]
-                lbls = y_all[idx]
-                p = booster.predict(
-                    scaler.transform(X_all[idx]), num_iteration=booster.best_iteration
-                )
+            for b in np.unique(bid_valid):
+                idx = np.where(bid_valid == b)[0]
+                lbls = y_valid[idx]
+                p = booster.predict(X_valid[idx], num_iteration=booster.best_iteration)
                 pos_indices = np.where(lbls == 1)[0]
                 if len(pos_indices) == 0:
                     continue
 
-                pos_idx = idx[pos_indices[0]]  # Get actual position
+                pos_idx = idx[pos_indices[0]]
                 top_k_indices = idx[np.argsort(-p)[:k]]
                 if pos_idx in top_k_indices:
                     hit += 1
@@ -1042,6 +1054,12 @@ def main(argv: List[str] | None = None) -> None:
         metavar=("MIN", "MAX"),
         help="Random mask ratio range for data augmentation",
     )
+    pa.add_argument(
+        "--valid-shards",
+        type=int,
+        default=1,
+        help="Number of feature shards used for validation",
+    )
     args = pa.parse_args(argv)
 
     os.environ["OMP_NUM_THREADS"] = str(args.threads)
@@ -1064,7 +1082,13 @@ def main(argv: List[str] | None = None) -> None:
         )
 
     print("\n🏋️  Training enhanced models …")
-    train_models(out_feat, out_model, args.trees_per_shard, args.workers)
+    train_models(
+        out_feat,
+        out_model,
+        args.trees_per_shard,
+        args.workers,
+        valid_shards=args.valid_shards,
+    )
     print("✅ Done. Enhanced models in", out_model)
 
 

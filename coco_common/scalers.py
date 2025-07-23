@@ -17,3 +17,9 @@ class Float32StandardScaler(StandardScaler):
 
     def transform(self, X):
         return super().transform(X.astype(np.float32, copy=False))
+
+    def partial_fit(self, X, y=None, sample_weight=None):
+        """Incremental fit with float32 inputs."""
+        return super().partial_fit(
+            X.astype(np.float32, copy=False), y, sample_weight=sample_weight
+        )
