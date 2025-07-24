@@ -354,21 +354,24 @@ def predict_top_k(
                     feats = extract_features(board, r, c)
                 feats_list.append(np.asarray(feats, dtype=float))
                 coords.append((r, c))
-    if not feats_list:
-        return {
-            "rows": rows,
-            "cols": cols,
-            "target": target,
-            "predictions": [],
-            "unique": num_solutions == 1,
-            "num_solutions": num_solutions,
-            "status": status,
-        }
+    logger.info("[CHK] masked=%d coords=%d", int((board == -1).sum()), len(coords))
+    if not coords:
+        raise RuntimeError("No candidate cells: check your filtering logic.")
     # ――― 推理 ―――――――――――――――――――――――――――――――――――――――――――――――――
     X = np.vstack(feats_list)
+    logger.info("[CHK] coords=%d X.shape=%s", len(coords), X.shape)
     t_pred = time.time()
     probs = model.predict_proba(X)  # shape (n, C) or (n,)
     logger.info("[PRED] model.predict done in %.3fs", time.time() - t_pred)
+    if getattr(probs, "size", 0):
+        logger.info(
+            "[CHK] preds.shape=%s min=%.4f max=%.4f",
+            getattr(probs, "shape", None),
+            float(np.min(probs)),
+            float(np.max(probs)),
+        )
+    else:
+        logger.error("[CHK] preds EMPTY! coords=%d", len(coords))
 
     # 1）多類模型: 機率列數與 classes_ 一致
     if probs.ndim == 2 and probs.shape[1] == len(getattr(model, "classes_", [])):
@@ -392,7 +395,11 @@ def predict_top_k(
             target_probs = probs
         else:
             target_probs = probs[:, -1]
-    top_idx = np.argsort(target_probs)[-k:][::-1]
+    if k <= 0:
+        top_idx = np.array([], dtype=int)
+    else:
+        part = np.argpartition(-target_probs, min(k, len(target_probs) - 1))[:k]
+        top_idx = part[np.argsort(-target_probs[part])]
     results = [
         {
             "r": int(coords[i][0]),
@@ -402,6 +409,8 @@ def predict_top_k(
         for i in top_idx
     ]
     results = _filter_unique_candidates(board, results, target)
+    if not results:
+        logger.error("[CHK] results empty after top-k, check filtering.")
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
