@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import sys
 import time
 from glob import glob
@@ -94,6 +95,12 @@ def _load_model(path: str) -> ClassifierMixin:
         def predict_proba(self, X: np.ndarray) -> np.ndarray:  # type: ignore[override]
             if self.scaler is not None:
                 X = self.scaler.transform(X)
+            if self.n_features_in_ is not None and X.shape[1] != self.n_features_in_:
+                if X.shape[1] < self.n_features_in_:
+                    pad = self.n_features_in_ - X.shape[1]
+                    X = np.pad(X, ((0, 0), (0, pad)), constant_values=0)
+                else:
+                    X = X[:, : self.n_features_in_]
             if hasattr(self.model, "predict_proba"):
                 return self.model.predict_proba(X)
             probs = self.model.predict(
@@ -105,11 +112,10 @@ def _load_model(path: str) -> ClassifierMixin:
 
     def _classes_from_path(p: str) -> List[int] | None:
         base = os.path.splitext(os.path.basename(p))[0]
-        if "x" in base:
-            a, b = base.split("x", 1)
-            if a.isdigit() and b.isdigit():
-                rows, cols = int(a), int(b)
-                return list(range(1, rows * cols + 1))
+        m = re.search(r"(\d+)x(\d+)", base)
+        if m:
+            rows, cols = int(m.group(1)), int(m.group(2))
+            return list(range(1, rows * cols + 1))
         return None
 
     classes = _classes_from_path(path)
@@ -123,6 +129,13 @@ def _load_model(path: str) -> ClassifierMixin:
         )
     if isinstance(obj, tuple) and len(obj) == 2:
         return _ModelWrapper(obj[1], obj[0], classes)
+    try:
+        from lightgbm import Booster  # type: ignore
+
+        if isinstance(obj, Booster):
+            return _ModelWrapper(obj, None, classes, obj.num_feature())
+    except Exception:  # noqa: BLE001
+        pass
     return obj
 
 
@@ -200,9 +213,7 @@ def _solve_boards(
         digits.remove(num)
         row_sets[r].add(num)
         col_sets[c].add(num)
-        _solve_boards(
-            board, row_sets, col_sets, digits, blanks, solutions, limit
-        )
+        _solve_boards(board, row_sets, col_sets, digits, blanks, solutions, limit)
         row_sets[r].remove(num)
         col_sets[c].remove(num)
         digits.add(num)
@@ -233,9 +244,7 @@ def find_solutions(board: np.ndarray, limit: int = 2) -> List[np.ndarray]:
             digits.discard(val)
 
     solutions: List[np.ndarray] = []
-    _solve_boards(
-        board.copy(), row_sets, col_sets, digits, blanks, solutions, limit
-    )
+    _solve_boards(board.copy(), row_sets, col_sets, digits, blanks, solutions, limit)
     return solutions
 
 
@@ -324,9 +333,7 @@ def predict_top_k(
 
                         feats = _board_features(board, target, (r, c))
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "failed advanced feature extraction: %s", exc
-                        )
+                        logger.warning("failed advanced feature extraction: %s", exc)
                         feats = extract_features(board, r, c)
                 else:
                     feats = extract_features(board, r, c)
@@ -371,16 +378,13 @@ def predict_top_k(
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
-            (int(r), int(c))
-            for sol in solutions
-            for r, c in np.argwhere(sol == target)
+            (int(r), int(c)) for sol in solutions for r, c in np.argwhere(sol == target)
         }
         if valid_coords:
             results = [p for p in results if (p["r"], p["c"]) in valid_coords]
             if not results:
                 results = [
-                    {"r": r, "c": c, "prob": 1.0}
-                    for r, c in sorted(valid_coords)
+                    {"r": r, "c": c, "prob": 1.0} for r, c in sorted(valid_coords)
                 ]
         else:
             results = []
@@ -425,9 +429,7 @@ def batch_predict(
         try:
             res = predict_top_k(model, board, target, k)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "failed inference for %s: %s", data.get("__source__"), exc
-            )
+            logger.warning("failed inference for %s: %s", data.get("__source__"), exc)
             failures += 1
             res = {
                 "rows": board.shape[0],
