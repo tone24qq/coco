@@ -55,3 +55,18 @@ def test_top3_not_empty(monkeypatch) -> None:
     assert len(res) > 0
     for r, c in res:
         assert isinstance(r, int) and isinstance(c, int)
+
+
+def test_only_mask_cells_predicted(monkeypatch) -> None:
+    board = np.array([[1, -1, 3], [-1, 5, 6], [7, 8, -1]])
+
+    class _Dummy(DummyModel):
+        def predict_proba(self, X: np.ndarray) -> np.ndarray:
+            # return uniform probabilities
+            return np.tile(np.array([[0.5, 0.5]]), (X.shape[0], 1))
+
+    monkeypatch.setattr(core, "_select_model", lambda d, r, c: "dummy")
+    monkeypatch.setattr(core, "_load_model", lambda p: _Dummy())
+
+    res = core.infer_top3_for_target(board, 5, models_dir="m")
+    assert res == []

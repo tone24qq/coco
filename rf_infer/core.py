@@ -16,6 +16,39 @@ from coco_common.scalers import Float32StandardScaler  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _number_sets(board: np.ndarray) -> tuple[set[int], set[int]]:
+    """Return numbers already used and remaining numbers."""
+    r, c = board.shape
+    all_vals = set(range(1, r * c + 1))
+    used = set(int(v) for v in board[board != -1])
+    remain = all_vals - used
+    return used, remain
+
+
+def _candidate_coords(board: np.ndarray, target: int) -> list[tuple[int, int]]:
+    """Return candidate coordinates for prediction."""
+    mask = board == -1
+    coords = list(zip(*np.where(mask)))
+    return coords
+
+
+def build_feature_matrix(
+    board: np.ndarray, target: int
+) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """Return feature matrix and candidate coordinates."""
+    used, _ = _number_sets(board)
+    if target in used:
+        return np.empty((0, 0), dtype=np.float32), []
+
+    coords = _candidate_coords(board, target)
+    if not coords:
+        return np.empty((0, 0), dtype=np.float32), []
+
+    feats = [extract_features(board, r, c) for r, c in coords]
+    X = np.asarray(feats, dtype=np.float32, order="C")
+    return X, coords
+
+
 def _unify_pred_output(raw: np.ndarray) -> np.ndarray:
     """Return a one-dimensional probability vector from LightGBM output."""
 
@@ -349,33 +382,25 @@ def predict_top_k(
     status = "skipped_check"
 
     logger.info("[PRED] building feature matrix …")
-    feats_list: List[np.ndarray] = []
-    coords: List[tuple[int, int]] = []
-    n_features = getattr(model, "n_features_in_", None)
-    for r in range(rows):
-        for c in range(cols):
-            if board[r, c] == -1:
-                if n_features and n_features > 22:
-                    try:
-                        from train_lgbm_pipeline import _board_features
-
-                        feats = _board_features(board, target, (r, c))
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("failed advanced feature extraction: %s", exc)
-                        feats = extract_features(board, r, c)
-                else:
-                    feats = extract_features(board, r, c)
-                feats_list.append(np.asarray(feats, dtype=float))
-                coords.append((r, c))
-    logger.info("[CHK] masked=%d coords=%d", int((board == -1).sum()), len(coords))
+    X, coords = build_feature_matrix(board, target)
     if not coords:
-        raise RuntimeError("No candidate cells: check your filtering logic.")
-    # ――― 推理 ―――――――――――――――――――――――――――――――――――――――――――――――――
-    X = np.vstack(feats_list)
+        if np.count_nonzero(board == -1) == 0:
+            raise RuntimeError("No candidate cells: check your filtering logic.")
+        return {
+            "rows": rows,
+            "cols": cols,
+            "target": target,
+            "predictions": [],
+            "unique": False,
+            "num_solutions": 0,
+            "status": "target_already_open",
+        }
     logger.info("[CHK] coords=%d X.shape=%s", len(coords), X.shape)
     t_pred = time.time()
-    raw = model.predict(X, num_iteration=None)
-    if isinstance(raw, np.ndarray) and raw.ndim == 2:
+    best_iter = getattr(model, "best_iteration", None)
+    raw = model.predict(X, num_iteration=best_iter)
+    raw = np.asarray(raw)
+    if raw.ndim == 2:
         preds = raw[:, 1] if raw.shape[1] == 2 else raw.max(axis=1)
     else:
         preds = raw
@@ -389,6 +414,17 @@ def predict_top_k(
         )
     else:
         logger.error("[CHK] preds EMPTY! coords=%d", len(coords))
+
+    if preds.size == 0:
+        return {
+            "rows": rows,
+            "cols": cols,
+            "target": target,
+            "predictions": [],
+            "unique": False,
+            "num_solutions": 0,
+            "status": status,
+        }
 
     k = min(k, preds.size)
     if k <= 0:
