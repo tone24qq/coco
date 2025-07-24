@@ -16,6 +16,18 @@ from coco_common.scalers import Float32StandardScaler  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _unify_pred_output(raw: np.ndarray) -> np.ndarray:
+    """Return a one-dimensional probability vector from LightGBM output."""
+
+    if raw.ndim == 1:
+        return raw
+    if raw.ndim == 2:
+        if raw.shape[1] == 2:
+            return raw[:, 1]
+        return raw.max(axis=1)
+    raise ValueError(f"Unexpected prediction shape: {raw.shape}")
+
+
 def extract_features(board: np.ndarray, r: int, c: int) -> np.ndarray:
     """Return feature vector for position (r, c)."""
     rows, cols = board.shape
@@ -361,40 +373,20 @@ def predict_top_k(
     X = np.vstack(feats_list)
     logger.info("[CHK] coords=%d X.shape=%s", len(coords), X.shape)
     t_pred = time.time()
-    probs = model.predict_proba(X)  # shape (n, C) or (n,)
+    raw = model.predict_proba(X)
+    preds = _unify_pred_output(np.asarray(raw))
     logger.info("[PRED] model.predict done in %.3fs", time.time() - t_pred)
-    if getattr(probs, "size", 0):
+    if getattr(preds, "size", 0):
         logger.info(
-            "[CHK] preds.shape=%s min=%.4f max=%.4f",
-            getattr(probs, "shape", None),
-            float(np.min(probs)),
-            float(np.max(probs)),
+            "[CHK] prob.shape=%s min=%.4f max=%.4f",
+            getattr(preds, "shape", None),
+            float(np.min(preds)),
+            float(np.max(preds)),
         )
     else:
         logger.error("[CHK] preds EMPTY! coords=%d", len(coords))
 
-    # 1）多類模型: 機率列數與 classes_ 一致
-    if probs.ndim == 2 and probs.shape[1] == len(getattr(model, "classes_", [])):
-        try:
-            idx = list(model.classes_).index(target)
-            target_probs = probs[:, idx]
-        except ValueError:
-            logger.warning("target %s not in model classes", target)
-            return {
-                "rows": rows,
-                "cols": cols,
-                "target": target,
-                "predictions": [],
-                "unique": num_solutions == 1,
-                "num_solutions": num_solutions,
-                "status": status,
-            }
-    # 2）二元(OVA)或 shape 不相符: 取最後一欄/一維向量當正類機率
-    else:
-        if probs.ndim == 1:
-            target_probs = probs
-        else:
-            target_probs = probs[:, -1]
+    target_probs = preds
     if k <= 0:
         top_idx = np.array([], dtype=int)
     else:
@@ -410,7 +402,11 @@ def predict_top_k(
     ]
     results = _filter_unique_candidates(board, results, target)
     if not results:
-        logger.error("[CHK] results empty after top-k, check filtering.")
+        logger.error(
+            "[CHK] results empty after top-k. k=%d preds.size=%d",
+            k,
+            preds.size,
+        )
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
