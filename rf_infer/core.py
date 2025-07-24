@@ -56,6 +56,79 @@ def extract_features(board: np.ndarray, r: int, c: int) -> np.ndarray:
     return np.array(feats, dtype=float)
 
 
+def _extract_features(board: np.ndarray, target: int) -> np.ndarray:
+    """Return feature matrix for all cells on ``board`` for ``target``.
+
+    \u6703\u5617\u8a66\u7528\u8a13\u7df4\u6d41\u7a0b\u7684 _board_features\uff1b\u5931\u6557\u5247\u9000\u56de extract_features\u3002
+    \uff08\u9019\u88e1\u4e0d\u53ea\u9650 blank\uff0c\u4fdd\u6301\u548c\u820a\u884c\u70ba\u4e00\u81f4\uff1b\u5982\u8981\u53ea\u5c0d blank\uff0c\u53ef\u81ea\u884c\u8abf\u6574\uff09
+    """
+    feats_list: List[np.ndarray] = []
+    rows, cols = board.shape
+    try:
+        from train_lgbm_pipeline import _board_features  # type: ignore
+
+        use_pipeline = True
+    except Exception:  # pragma: no cover - pipeline absent
+        use_pipeline = False
+
+    for r in range(rows):
+        for c in range(cols):
+            masked = board.copy()
+            masked[r, c] = -1
+            if use_pipeline:
+                try:
+                    feats = _board_features(masked, int(target), (r, c))
+                except Exception:  # pragma: no cover
+                    feats = extract_features(masked, r, c)
+            else:
+                feats = extract_features(masked, r, c)
+            feats_list.append(np.asarray(feats, dtype=float))
+
+    return np.vstack(feats_list)
+
+
+def _predict_proba_any(model: Any, X: np.ndarray) -> np.ndarray:
+    """Predict class probabilities for ``X`` using diverse model types (sklearn / lgb.Booster / dict bundle)."""
+
+    # unwrap dict bundle
+    if isinstance(model, dict):
+        scaler = model.get("scaler")
+        if scaler is not None:
+            X = scaler.transform(X)
+        model = model.get("model")
+
+    # \u5c0d\u9f4a\u7279\u5fb5\u7dad\u5ea6
+    n_feat = getattr(model, "n_features_in_", None)
+    if n_feat is None and hasattr(model, "num_feature"):
+        try:
+            n_feat = int(model.num_feature())
+        except Exception:
+            n_feat = None
+    if n_feat is not None and X.shape[1] != n_feat:
+        if X.shape[1] > n_feat:
+            X = X[:, :n_feat]
+        else:
+            pad = np.zeros((X.shape[0], n_feat - X.shape[1]), dtype=X.dtype)
+            X = np.column_stack([X, pad])
+
+    # \u9996\u9078 predict_proba
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X)
+
+    # LightGBM Booster -> predict
+    if hasattr(model, "predict"):
+        probs = model.predict(
+            X,
+            num_iteration=getattr(model, "best_iteration", None),
+        )
+        probs = np.asarray(probs)
+        if probs.ndim == 1:  # binary \u6a5f\u7387(\u6b63\u985e)
+            return np.column_stack([1 - probs, probs])
+        return probs
+
+    raise AttributeError("model object lacks predict methods")
+
+
 def _validate_path(
     path: str, *, must_exist: bool = True, suffix: Optional[str] = None
 ) -> None:
@@ -200,9 +273,7 @@ def _solve_boards(
         digits.remove(num)
         row_sets[r].add(num)
         col_sets[c].add(num)
-        _solve_boards(
-            board, row_sets, col_sets, digits, blanks, solutions, limit
-        )
+        _solve_boards(board, row_sets, col_sets, digits, blanks, solutions, limit)
         row_sets[r].remove(num)
         col_sets[c].remove(num)
         digits.add(num)
@@ -233,9 +304,7 @@ def find_solutions(board: np.ndarray, limit: int = 2) -> List[np.ndarray]:
             digits.discard(val)
 
     solutions: List[np.ndarray] = []
-    _solve_boards(
-        board.copy(), row_sets, col_sets, digits, blanks, solutions, limit
-    )
+    _solve_boards(board.copy(), row_sets, col_sets, digits, blanks, solutions, limit)
     return solutions
 
 
@@ -324,9 +393,7 @@ def predict_top_k(
 
                         feats = _board_features(board, target, (r, c))
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "failed advanced feature extraction: %s", exc
-                        )
+                        logger.warning("failed advanced feature extraction: %s", exc)
                         feats = extract_features(board, r, c)
                 else:
                     feats = extract_features(board, r, c)
@@ -343,11 +410,37 @@ def predict_top_k(
             "status": status,
         }
     X = np.vstack(feats_list)
-    probs = model.predict_proba(X)
-    try:
-        idx = list(model.classes_).index(target)
-    except ValueError:
-        logger.warning("target %s not in model classes", target)
+    # ---- NEW: robust probability prediction ----
+    probs = _predict_proba_any(model, X)
+
+    # map to target column
+    def _target_probs_from(probs: np.ndarray) -> np.ndarray:
+        # sklearn-style
+        if hasattr(model, "classes_"):
+            try:
+                idx = list(model.classes_).index(target)
+                return probs[:, idx]
+            except Exception:
+                logger.warning("target %s not in model classes", target)
+                return np.array([])
+
+        # Booster w/o classes_: try common layouts
+        if probs.shape[1] == 2:
+            # binary -> assume col 1 is positive class
+            return probs[:, 1]
+
+        total = rows * cols
+        if probs.shape[1] == total and 1 <= target <= total:
+            # classes are 1..total
+            return probs[:, target - 1]
+
+        logger.error(
+            "Cannot map target %s to prob column (probs.shape=%s)", target, probs.shape
+        )
+        return np.array([])
+
+    target_probs = _target_probs_from(probs)
+    if target_probs.size == 0:
         return {
             "rows": rows,
             "cols": cols,
@@ -357,7 +450,6 @@ def predict_top_k(
             "num_solutions": num_solutions,
             "status": "no_valid_solution",
         }
-    target_probs = probs[:, idx]
     top_idx = np.argsort(target_probs)[-k:][::-1]
     results = [
         {
@@ -371,16 +463,13 @@ def predict_top_k(
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
-            (int(r), int(c))
-            for sol in solutions
-            for r, c in np.argwhere(sol == target)
+            (int(r), int(c)) for sol in solutions for r, c in np.argwhere(sol == target)
         }
         if valid_coords:
             results = [p for p in results if (p["r"], p["c"]) in valid_coords]
             if not results:
                 results = [
-                    {"r": r, "c": c, "prob": 1.0}
-                    for r, c in sorted(valid_coords)
+                    {"r": r, "c": c, "prob": 1.0} for r, c in sorted(valid_coords)
                 ]
         else:
             results = []
@@ -425,9 +514,7 @@ def batch_predict(
         try:
             res = predict_top_k(model, board, target, k)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "failed inference for %s: %s", data.get("__source__"), exc
-            )
+            logger.warning("failed inference for %s: %s", data.get("__source__"), exc)
             failures += 1
             res = {
                 "rows": board.shape[0],
