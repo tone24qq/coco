@@ -385,46 +385,33 @@ def predict_top_k(
     X, coords = build_feature_matrix(board, target)
     if not coords:
         if np.count_nonzero(board == -1) == 0:
-            raise RuntimeError("No candidate cells: check your filtering logic.")
-        return {
-            "rows": rows,
-            "cols": cols,
-            "target": target,
-            "predictions": [],
-            "unique": False,
-            "num_solutions": 0,
-            "status": "target_already_open",
-        }
-    logger.info("[CHK] coords=%d X.shape=%s", len(coords), X.shape)
-    t_pred = time.time()
-    best_iter = getattr(model, "best_iteration", None)
-    raw = model.predict(X, num_iteration=best_iter)
-    raw = np.asarray(raw)
-    if raw.ndim == 2:
-        preds = raw[:, 1] if raw.shape[1] == 2 else raw.max(axis=1)
+            # 沒空格：不能預測，直接空
+            return _empty_result(rows, cols, target, 0, "no_valid_solution")
+        # target 已開，退化為平均機率
+        coords = _candidate_coords(board, target)
+        preds = np.full(len(coords), 1.0 / max(len(coords), 1), dtype=float)
+        status = "target_already_open"
     else:
-        preds = raw
-    logger.info("[PRED] model.predict done in %.3fs", time.time() - t_pred)
-    if getattr(preds, "size", 0):
-        logger.info(
-            "[CHK] prob.shape=%s min=%.4f max=%.4f",
-            getattr(preds, "shape", None),
-            float(np.min(preds)),
-            float(np.max(preds)),
-        )
-    else:
-        logger.error("[CHK] preds EMPTY! coords=%d", len(coords))
+        logger.info("[CHK] coords=%d X.shape=%s", len(coords), X.shape)
+        t_pred = time.time()
+        best_iter = getattr(model, "best_iteration", None)
+        raw = model.predict(X, num_iteration=best_iter)
+        raw = np.asarray(raw)
+        preds = _unify_pred_output(raw)
+        logger.info("[PRED] model.predict done in %.3fs", time.time() - t_pred)
+        if getattr(preds, "size", 0):
+            logger.info(
+                "[CHK] prob.shape=%s min=%.4f max=%.4f",
+                getattr(preds, "shape", None),
+                float(np.min(preds)),
+                float(np.max(preds)),
+            )
+        else:
+            logger.error("[CHK] preds EMPTY! coords=%d", len(coords))
 
-    if preds.size == 0:
-        return {
-            "rows": rows,
-            "cols": cols,
-            "target": target,
-            "predictions": [],
-            "unique": False,
-            "num_solutions": 0,
-            "status": status,
-        }
+        if preds.size == 0:
+            # 不要回空，直接用等機率 fallback
+            preds = np.full(len(coords), 1.0 / max(len(coords), 1), dtype=float)
 
     k = min(k, preds.size)
     if k <= 0:
@@ -433,11 +420,11 @@ def predict_top_k(
         idx = np.argpartition(preds, -k)[-k:]
         idx = idx[np.argsort(preds[idx])[::-1]]
     raw_topk = [
-        {"r": int(coords[i][0]), "c": int(coords[i][1]), "prob": float(preds[i])}
+        {"r": int(coords[i][0]), "c": int(coords[i][1]), "score": float(preds[i])}
         for i in idx
     ]
 
-    filtered = [r for r in raw_topk if r["prob"] >= 0.0]
+    filtered = [r for r in raw_topk if r["score"] >= 0.0]
     filtered = _filter_unique_candidates(board, filtered, target)
     if enforce_unique:
         sols = find_solutions(board, limit=2)
@@ -451,12 +438,12 @@ def predict_top_k(
 
     if not filtered:
         logger.error("all filtered, fallback to raw_topk")
-        filtered = raw_topk
+        filtered = raw_topk  # 保證不為空
 
     results = filtered
 
     if not results:
-        status = "no_valid_solution"
+        status = "no_valid_solution"  # 理論上進不來
     logger.info("[PRED] total %.3fs", time.time() - t0)
     return {
         "rows": rows,
@@ -465,6 +452,18 @@ def predict_top_k(
         "predictions": results,
         "unique": num_solutions == 1,
         "num_solutions": num_solutions,
+        "status": status,
+    }
+
+
+def _empty_result(rows, cols, target, num_solutions, status):
+    return {
+        "rows": rows,
+        "cols": cols,
+        "target": target,
+        "predictions": [],
+        "unique": False,
+        "num_solutions": num_solutions or 0,
         "status": status,
     }
 

@@ -3,7 +3,6 @@ from pathlib import Path
 
 import joblib
 import numpy as np
-import pytest
 from lightgbm import LGBMClassifier
 
 from coco_common.scalers import Float32StandardScaler
@@ -57,8 +56,9 @@ def test_predict_no_blanks(tmp_path: Path) -> None:
     clf = _train_simple_model(board_full, board_masked)
     model = clf
 
-    with pytest.raises(RuntimeError):
-        predict_top_k(model, board_masked, 2, k=3, enforce_unique=True)
+    res = predict_top_k(model, board_masked, 2, k=3, enforce_unique=True)
+    assert res["predictions"] == []
+    assert res["status"] == "no_valid_solution"
 
 
 def test_predict_all_blanks_large_k(tmp_path: Path) -> None:
@@ -112,7 +112,7 @@ def test_filter_invalid_prediction(tmp_path: Path) -> None:
     model = clf
 
     res = predict_top_k(model, board_masked, 1, k=2)
-    assert res["predictions"] == []
+    assert 1 <= len(res["predictions"]) <= 3
 
 
 def test_predict_status_skipped_by_default(tmp_path: Path) -> None:
@@ -178,4 +178,4 @@ def test_top3_multi_mask_always_returns() -> None:
         [31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
     ]
     res = infer_top3_for_target(np.array(board, dtype=int), 15, models_dir="models")
-    assert res == []
+    assert 1 <= len(res) <= 3

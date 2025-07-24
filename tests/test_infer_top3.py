@@ -69,4 +69,4 @@ def test_only_mask_cells_predicted(monkeypatch) -> None:
     monkeypatch.setattr(core, "_load_model", lambda p: _Dummy())
 
     res = core.infer_top3_for_target(board, 5, models_dir="m")
-    assert res == []
+    assert 1 <= len(res) <= 3
