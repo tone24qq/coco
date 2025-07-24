@@ -3,11 +3,20 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-from fastapi import FastAPI
-from pydantic import BaseModel
+for v in (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+):
+    os.environ.setdefault(v, "1")
 
-from rf_infer.core import infer_top3_for_target
+import numpy as np  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+from starlette.concurrency import run_in_threadpool  # noqa: E402
+
+from rf_infer.core import infer_top3_for_target  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,7 +78,9 @@ async def predict(req: PredictRequest) -> List[Prediction]:
     )
     kwargs = req.kwargs or {}
     models_dir = kwargs.pop("models_dir", os.getenv("MODELS_DIR", "models"))
-    predictions = _predict_lgbm(req.board, req.target, models_dir)
+    predictions = await run_in_threadpool(
+        _predict_lgbm, req.board, req.target, models_dir
+    )
     logger.info("Returning %d predictions", len(predictions))
     return [Prediction(**p) for p in predictions]
 

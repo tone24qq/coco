@@ -40,7 +40,7 @@ def test_predict_top_k_simple(tmp_path: Path) -> None:
         json.dump({"board": board_masked.tolist(), "target": 4}, f)
 
     model = joblib.load(model_path)
-    res = predict_top_k(model, board_masked, 4, k=1)
+    res = predict_top_k(model, board_masked, 4, k=1, enforce_unique=True)
 
     assert res["target"] == 4
     assert res["status"] == "multiple"
@@ -56,7 +56,7 @@ def test_predict_no_blanks(tmp_path: Path) -> None:
     clf = _train_simple_model(board_full, board_masked)
     model = clf
 
-    res = predict_top_k(model, board_masked, 2, k=3)
+    res = predict_top_k(model, board_masked, 2, k=3, enforce_unique=True)
     assert res["predictions"] == []
     assert res["status"] == "unique"
 
@@ -115,6 +115,16 @@ def test_filter_invalid_prediction(tmp_path: Path) -> None:
     res = predict_top_k(model, board_masked, 1, k=2)
     assert res["predictions"] == []
     assert res["status"] == "no_valid_solution"
+
+
+def test_predict_status_skipped_by_default(tmp_path: Path) -> None:
+    board_full = np.array([[1, 2], [3, 4]])
+    board_masked = np.array([[1, -1], [3, -1]])
+    clf = _train_simple_model(board_full, board_masked)
+    model = clf
+
+    res = predict_top_k(model, board_masked, 4, k=1)
+    assert res["status"] == "skipped_check"
 
 
 def test_load_model_dict(tmp_path: Path) -> None:

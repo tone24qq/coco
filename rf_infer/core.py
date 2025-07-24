@@ -299,6 +299,10 @@ def predict_top_k(
     *,
     enforce_unique: bool = False,
 ) -> Dict[str, Any]:
+    import time
+
+    t0 = time.time()
+    logger.info("[PRED] start predict_top_k")
     rows, cols = board.shape
 
     max_val = rows * cols
@@ -313,14 +317,25 @@ def predict_top_k(
             "status": "no_valid_solution",
         }
 
-    solutions = find_solutions(board, limit=2)
-    num_solutions = len(solutions)
-    status = "no_valid_solution"
-    if num_solutions == 1:
-        status = "unique"
-    elif num_solutions > 1:
-        status = "multiple"
+    num_solutions = None
+    status = "skipped_check"
+    if enforce_unique:
+        t_uni = time.time()
+        solutions = find_solutions(board, limit=2)
+        num_solutions = len(solutions)
+        status = (
+            "unique"
+            if num_solutions == 1
+            else ("multiple" if num_solutions > 1 else "no_valid_solution")
+        )
+        logger.info(
+            "[PRED] uniqueness check done in %.3fs (status=%s, num=%s)",
+            time.time() - t_uni,
+            status,
+            num_solutions,
+        )
 
+    logger.info("[PRED] building feature matrix …")
     feats_list: List[np.ndarray] = []
     coords: List[tuple[int, int]] = []
     n_features = getattr(model, "n_features_in_", None)
@@ -351,7 +366,9 @@ def predict_top_k(
         }
     # ――― 推理 ―――――――――――――――――――――――――――――――――――――――――――――――――
     X = np.vstack(feats_list)
+    t_pred = time.time()
     probs = model.predict_proba(X)  # shape (n, C) or (n,)
+    logger.info("[PRED] model.predict done in %.3fs", time.time() - t_pred)
 
     # 1）多類模型: 機率列數與 classes_ 一致
     if probs.ndim == 2 and probs.shape[1] == len(getattr(model, "classes_", [])):
@@ -401,6 +418,7 @@ def predict_top_k(
 
     if not results:
         status = "no_valid_solution"
+    logger.info("[PRED] total %.3fs", time.time() - t0)
     return {
         "rows": rows,
         "cols": cols,
