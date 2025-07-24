@@ -49,3 +49,17 @@ def test_root_endpoint():
     response = client.get("/")
     assert response.status_code == 200
     assert response.json() == {"message": "Hello World"}
+
+
+def test_predict_logging(tmp_path: Path, monkeypatch, caplog) -> None:
+    client = TestClient(app)
+    board_full = np.array([[1, 2], [3, 4]])
+    board_masked = np.array([[1, -1], [3, -1]])
+    model_dir = tmp_path / "models"
+    model_dir.mkdir()
+    joblib.dump(_train_simple_model(board_full, board_masked), model_dir / "2x2.pkl")
+    monkeypatch.setenv("MODELS_DIR", str(model_dir))
+
+    caplog.set_level("INFO")
+    client.post("/predict", json={"board": board_masked.tolist(), "target": 4})
+    assert any("Received predict request" in r.message for r in caplog.records)

@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -7,6 +8,9 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from rf_infer.core import infer_top3_for_target
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 async def initialize_resources() -> None:
@@ -57,9 +61,16 @@ async def root() -> Dict[str, str]:
 
 @app.post("/predict", response_model=List[Prediction])
 async def predict(req: PredictRequest) -> List[Prediction]:
+    logger.info(
+        "Received predict request: target=%s board=%dx%d",
+        req.target,
+        len(req.board),
+        len(req.board[0]) if req.board else 0,
+    )
     kwargs = req.kwargs or {}
     models_dir = kwargs.pop("models_dir", os.getenv("MODELS_DIR", "models"))
     predictions = _predict_lgbm(req.board, req.target, models_dir)
+    logger.info("Returning %d predictions", len(predictions))
     return [Prediction(**p) for p in predictions]
 
 
