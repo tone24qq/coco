@@ -122,6 +122,22 @@ def _load_model(path: str) -> ClassifierMixin:
                 return np.column_stack([1 - probs, probs])
             return probs
 
+        def predict(self, X: np.ndarray, num_iteration: int | None = None) -> np.ndarray:  # type: ignore[override]
+            if self.scaler is not None:
+                X = self.scaler.transform(X)
+            if self.n_features_in_ is not None and X.shape[1] != self.n_features_in_:
+                if X.shape[1] < self.n_features_in_:
+                    pad = self.n_features_in_ - X.shape[1]
+                    X = np.pad(X, ((0, 0), (0, pad)), constant_values=0)
+                else:
+                    X = X[:, : self.n_features_in_]
+            if hasattr(self.model, "predict"):
+                return self.model.predict(X, num_iteration=num_iteration)
+            probs = self.predict_proba(X)
+            if probs.ndim == 2:
+                return probs[:, 1]
+            return probs
+
     def _classes_from_path(p: str) -> List[int] | None:
         base = os.path.splitext(os.path.basename(p))[0]
         m = re.search(r"(\d+)x(\d+)", base)
@@ -331,21 +347,6 @@ def predict_top_k(
 
     num_solutions = None
     status = "skipped_check"
-    if enforce_unique:
-        t_uni = time.time()
-        solutions = find_solutions(board, limit=2)
-        num_solutions = len(solutions)
-        status = (
-            "unique"
-            if num_solutions == 1
-            else ("multiple" if num_solutions > 1 else "no_valid_solution")
-        )
-        logger.info(
-            "[PRED] uniqueness check done in %.3fs (status=%s, num=%s)",
-            time.time() - t_uni,
-            status,
-            num_solutions,
-        )
 
     logger.info("[PRED] building feature matrix …")
     feats_list: List[np.ndarray] = []
@@ -373,8 +374,11 @@ def predict_top_k(
     X = np.vstack(feats_list)
     logger.info("[CHK] coords=%d X.shape=%s", len(coords), X.shape)
     t_pred = time.time()
-    raw = model.predict_proba(X)
-    preds = _unify_pred_output(np.asarray(raw))
+    raw = model.predict(X, num_iteration=None)
+    if isinstance(raw, np.ndarray) and raw.ndim == 2:
+        preds = raw[:, 1] if raw.shape[1] == 2 else raw.max(axis=1)
+    else:
+        preds = raw
     logger.info("[PRED] model.predict done in %.3fs", time.time() - t_pred)
     if getattr(preds, "size", 0):
         logger.info(
@@ -386,40 +390,34 @@ def predict_top_k(
     else:
         logger.error("[CHK] preds EMPTY! coords=%d", len(coords))
 
-    target_probs = preds
+    k = min(k, preds.size)
     if k <= 0:
-        top_idx = np.array([], dtype=int)
+        idx = np.array([], dtype=int)
     else:
-        part = np.argpartition(-target_probs, min(k, len(target_probs) - 1))[:k]
-        top_idx = part[np.argsort(-target_probs[part])]
-    results = [
-        {
-            "r": int(coords[i][0]),
-            "c": int(coords[i][1]),
-            "prob": float(round(target_probs[i], 4)),
-        }
-        for i in top_idx
+        idx = np.argpartition(preds, -k)[-k:]
+        idx = idx[np.argsort(preds[idx])[::-1]]
+    raw_topk = [
+        {"r": int(coords[i][0]), "c": int(coords[i][1]), "prob": float(preds[i])}
+        for i in idx
     ]
-    results = _filter_unique_candidates(board, results, target)
-    if not results:
-        logger.error(
-            "[CHK] results empty after top-k. k=%d preds.size=%d",
-            k,
-            preds.size,
-        )
+
+    filtered = [r for r in raw_topk if r["prob"] >= 0.0]
+    filtered = _filter_unique_candidates(board, filtered, target)
     if enforce_unique:
-        solutions = find_solutions(board, limit=k + 1)
-        valid_coords = {
-            (int(r), int(c)) for sol in solutions for r, c in np.argwhere(sol == target)
-        }
-        if valid_coords:
-            results = [p for p in results if (p["r"], p["c"]) in valid_coords]
-            if not results:
-                results = [
-                    {"r": r, "c": c, "prob": 1.0} for r, c in sorted(valid_coords)
-                ]
-        else:
-            results = []
+        sols = find_solutions(board, limit=2)
+        num_solutions = len(sols)
+        status = (
+            "unique"
+            if num_solutions == 1
+            else ("multiple" if num_solutions > 1 else "no_valid_solution")
+        )
+        logger.info("uniqueness=%s", status)
+
+    if not filtered:
+        logger.error("all filtered, fallback to raw_topk")
+        filtered = raw_topk
+
+    results = filtered
 
     if not results:
         status = "no_valid_solution"

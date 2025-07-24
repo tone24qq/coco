@@ -12,6 +12,9 @@ class DummyModel:
         neg = 1 - pos
         return np.vstack([neg, pos]).T
 
+    def predict(self, X: np.ndarray, num_iteration: int | None = None) -> np.ndarray:
+        return (X[:, 0] + X[:, 1]) / 10.0
+
 
 def test_binary_model_ok() -> None:
     board = np.array([[-1, -1], [-1, -1]])

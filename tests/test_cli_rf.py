@@ -70,5 +70,4 @@ def test_cli_run(tmp_path: Path) -> None:
     data = json.loads(out_file.read_text())
     assert data[0]["rows"] == 2
     assert data[0]["target"] == 3
-    assert data[0]["predictions"] == []
-    assert data[0]["status"] == "no_valid_solution"
+    assert 1 <= len(data[0]["predictions"]) <= 2

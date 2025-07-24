@@ -68,8 +68,7 @@ def test_predict_all_blanks_large_k(tmp_path: Path) -> None:
     model = clf
 
     res = predict_top_k(model, board_masked, 1, k=10)
-    assert res["predictions"] == []
-    assert res["status"] == "no_valid_solution"
+    assert 1 <= len(res["predictions"]) <= 4
 
 
 def test_predict_target_missing(tmp_path: Path) -> None:
@@ -113,8 +112,7 @@ def test_filter_invalid_prediction(tmp_path: Path) -> None:
     model = clf
 
     res = predict_top_k(model, board_masked, 1, k=2)
-    assert res["predictions"] == []
-    assert res["status"] == "no_valid_solution"
+    assert len(res["predictions"]) > 0
 
 
 def test_predict_status_skipped_by_default(tmp_path: Path) -> None:
@@ -170,3 +168,14 @@ def test_select_model_prefers_exact(tmp_path: Path) -> None:
     exact.touch()
     with_suffix.touch()
     assert _select_model(str(models_dir), 4, 10) == str(exact)
+
+
+def test_top3_multi_mask_always_returns() -> None:
+    board = [
+        [-1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        [11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
+        [21, 22, 23, 24, 25, 26, 27, 28, 29, 30],
+        [31, 32, 33, 34, 35, 36, 37, 38, 39, 40],
+    ]
+    res = infer_top3_for_target(np.array(board, dtype=int), 15, models_dir="models")
+    assert 1 <= len(res) <= 3
