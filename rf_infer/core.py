@@ -15,6 +15,43 @@ from coco_common.scalers import Float32StandardScaler  # noqa: F401
 logger = logging.getLogger(__name__)
 
 
+def _extract_features(board: np.ndarray, target: int) -> np.ndarray:
+    """Return feature matrix for all cells of ``board``."""
+
+    try:
+        from train_lgbm_pipeline import _board_features  # type: ignore
+
+        def _feats(r: int, c: int) -> List[float]:
+            return _board_features(board, target, (r, c))
+
+    except Exception:  # pragma: no cover - optional pipeline not available
+
+        def _feats(r: int, c: int) -> List[float]:
+            return extract_features(board, r, c).tolist()
+
+    feats_list: List[np.ndarray] = []
+    for r in range(board.shape[0]):
+        for c in range(board.shape[1]):
+            feats_list.append(np.asarray(_feats(r, c), dtype=float))
+    return np.vstack(feats_list)
+
+
+def _predict_proba_any(model: Any, X: np.ndarray) -> np.ndarray:
+    """Return probability predictions for ``X`` from any supported model."""
+
+    if hasattr(model, "predict_proba"):
+        return model.predict_proba(X)
+
+    probs = model.predict(
+        X,
+        num_iteration=getattr(model, "best_iteration", None),
+        predict_disable_shape_check=True,
+    )
+    if probs.ndim == 1:
+        return np.column_stack([1 - probs, probs])
+    return probs
+
+
 def extract_features(board: np.ndarray, r: int, c: int) -> np.ndarray:
     """Return feature vector for position (r, c)."""
     rows, cols = board.shape
@@ -200,9 +237,7 @@ def _solve_boards(
         digits.remove(num)
         row_sets[r].add(num)
         col_sets[c].add(num)
-        _solve_boards(
-            board, row_sets, col_sets, digits, blanks, solutions, limit
-        )
+        _solve_boards(board, row_sets, col_sets, digits, blanks, solutions, limit)
         row_sets[r].remove(num)
         col_sets[c].remove(num)
         digits.add(num)
@@ -233,9 +268,7 @@ def find_solutions(board: np.ndarray, limit: int = 2) -> List[np.ndarray]:
             digits.discard(val)
 
     solutions: List[np.ndarray] = []
-    _solve_boards(
-        board.copy(), row_sets, col_sets, digits, blanks, solutions, limit
-    )
+    _solve_boards(board.copy(), row_sets, col_sets, digits, blanks, solutions, limit)
     return solutions
 
 
@@ -324,9 +357,7 @@ def predict_top_k(
 
                         feats = _board_features(board, target, (r, c))
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "failed advanced feature extraction: %s", exc
-                        )
+                        logger.warning("failed advanced feature extraction: %s", exc)
                         feats = extract_features(board, r, c)
                 else:
                     feats = extract_features(board, r, c)
@@ -371,16 +402,13 @@ def predict_top_k(
     if enforce_unique:
         solutions = find_solutions(board, limit=k + 1)
         valid_coords = {
-            (int(r), int(c))
-            for sol in solutions
-            for r, c in np.argwhere(sol == target)
+            (int(r), int(c)) for sol in solutions for r, c in np.argwhere(sol == target)
         }
         if valid_coords:
             results = [p for p in results if (p["r"], p["c"]) in valid_coords]
             if not results:
                 results = [
-                    {"r": r, "c": c, "prob": 1.0}
-                    for r, c in sorted(valid_coords)
+                    {"r": r, "c": c, "prob": 1.0} for r, c in sorted(valid_coords)
                 ]
         else:
             results = []
@@ -425,9 +453,7 @@ def batch_predict(
         try:
             res = predict_top_k(model, board, target, k)
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "failed inference for %s: %s", data.get("__source__"), exc
-            )
+            logger.warning("failed inference for %s: %s", data.get("__source__"), exc)
             failures += 1
             res = {
                 "rows": board.shape[0],
