@@ -465,7 +465,19 @@ def infer_top3_for_target(
 ) -> List[tuple[int, int]]:
     """Return the top-3 coordinates most likely to contain ``target``."""
     rows, cols = board.shape
+    logger.info(
+        "infer_top3_for_target: board=%dx%d target=%s",
+        rows,
+        cols,
+        target,
+    )
     model_path = _select_model(models_dir, rows, cols)
+    logger.info("Selected model path: %s", model_path)
     model = _load_model(model_path)
+    logger.info("Model loaded, running predict_top_k …")
     res = predict_top_k(model, board, target, 3)
+    logger.info(
+        "predict_top_k returned %d candidates",
+        len(res.get("predictions", [])),
+    )
     return [(p["r"], p["c"]) for p in res["predictions"]]
