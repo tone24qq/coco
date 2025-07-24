@@ -349,22 +349,32 @@ def predict_top_k(
             "num_solutions": num_solutions,
             "status": status,
         }
+    # ――― 推理 ―――――――――――――――――――――――――――――――――――――――――――――――――
     X = np.vstack(feats_list)
-    probs = model.predict_proba(X)
-    try:
-        idx = list(model.classes_).index(target)
-    except ValueError:
-        logger.warning("target %s not in model classes", target)
-        return {
-            "rows": rows,
-            "cols": cols,
-            "target": target,
-            "predictions": [],
-            "unique": num_solutions == 1,
-            "num_solutions": num_solutions,
-            "status": "no_valid_solution",
-        }
-    target_probs = probs[:, idx]
+    probs = model.predict_proba(X)  # shape (n, C) or (n,)
+
+    # 1）多類模型: 機率列數與 classes_ 一致
+    if probs.ndim == 2 and probs.shape[1] == len(getattr(model, "classes_", [])):
+        try:
+            idx = list(model.classes_).index(target)
+            target_probs = probs[:, idx]
+        except ValueError:
+            logger.warning("target %s not in model classes", target)
+            return {
+                "rows": rows,
+                "cols": cols,
+                "target": target,
+                "predictions": [],
+                "unique": num_solutions == 1,
+                "num_solutions": num_solutions,
+                "status": status,
+            }
+    # 2）二元(OVA)或 shape 不相符: 取最後一欄/一維向量當正類機率
+    else:
+        if probs.ndim == 1:
+            target_probs = probs
+        else:
+            target_probs = probs[:, -1]
     top_idx = np.argsort(target_probs)[-k:][::-1]
     results = [
         {
