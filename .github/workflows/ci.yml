@@ -120,6 +120,8 @@ EOF
        github.event.action == 'ready_for_review' &&
        github.base_ref == 'main')
     steps:
+      - name: Build container image
+        run: docker build -t ghcr.io/${{ github.repository_owner }}/sudoku-service:${{ github.sha }} .
       - name: Trigger Render deploy
         run: |
           curl -X POST \
