@@ -15,11 +15,28 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from coco_common.csp_utils import get_subgrid_indices
+
 
 @dataclass(frozen=True)
 class Cell:
     row: int
     col: int
+
+
+class ChangeStack(list):
+    """Simple stack recording domain changes for fast undo."""
+
+    def snapshot(self) -> int:
+        return len(self)
+
+    def push(self, cell: Tuple[int, int], value: int) -> None:
+        self.append((cell, value))
+
+    def undo(self, domains: Dict[Tuple[int, int], set], snap: int) -> None:
+        while len(self) > snap:
+            cell, value = self.pop()
+            domains[cell].add(value)
 
 
 def _get_subgrid_size(n: int) -> int:
@@ -39,7 +56,7 @@ def _peers(n: int) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
             peer_set.update(((r, j) for j in range(n) if j != c))
             peer_set.update(((i, c) for i in range(n) if i != r))
             # subgrid
-            sg_r, sg_c = (r // sub) * sub, (c // sub) * sub
+            sg_r, sg_c = get_subgrid_indices(r, c, sub)
             for i in range(sg_r, sg_r + sub):
                 for j in range(sg_c, sg_c + sub):
                     if i == r and j == c:
@@ -52,11 +69,12 @@ def _peers(n: int) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
 def _ac3(
     domains: Dict[Tuple[int, int], set],
     peers: Dict[Tuple[int, int], List[Tuple[int, int]]],
+    stack: ChangeStack,
 ) -> bool:
     queue = [(xi, xj) for xi in domains for xj in peers[xi]]
     while queue:
         xi, xj = queue.pop(0)
-        if _revise(domains, xi, xj):
+        if _revise(domains, xi, xj, stack):
             if not domains[xi]:
                 return False
             for xk in peers[xi]:
@@ -66,12 +84,16 @@ def _ac3(
 
 
 def _revise(
-    domains: Dict[Tuple[int, int], set], xi: Tuple[int, int], xj: Tuple[int, int]
+    domains: Dict[Tuple[int, int], set],
+    xi: Tuple[int, int],
+    xj: Tuple[int, int],
+    stack: ChangeStack,
 ) -> bool:
     revised = False
     for x in set(domains[xi]):
         if all(x == y for y in domains[xj]):
             domains[xi].remove(x)
+            stack.push(xi, x)
             revised = True
     return revised
 
@@ -90,25 +112,18 @@ def _forward_check(
     peers: Dict[Tuple[int, int], List[Tuple[int, int]]],
     cell: Tuple[int, int],
     value: int,
-) -> Dict[Tuple[int, int], set]:
-    removed: Dict[Tuple[int, int], set] = {}
+    stack: ChangeStack,
+) -> None:
     for peer in peers[cell]:
         if value in domains[peer]:
             domains[peer].remove(value)
-            removed.setdefault(peer, set()).add(value)
-    return removed
-
-
-def _restore(
-    domains: Dict[Tuple[int, int], set], removed: Dict[Tuple[int, int], set]
-) -> None:
-    for cell, values in removed.items():
-        domains[cell].update(values)
+            stack.push(peer, value)
 
 
 def _backtrack(
     domains: Dict[Tuple[int, int], set],
     peers: Dict[Tuple[int, int], List[Tuple[int, int]]],
+    stack: ChangeStack,
 ) -> Optional[Dict[Tuple[int, int], int]]:
     if all(len(v) == 1 for v in domains.values()):
         return {cell: next(iter(values)) for cell, values in domains.items()}
@@ -117,15 +132,19 @@ def _backtrack(
     if cell is None:
         return None
 
-    for value in list(domains[cell]):
-        removed = _forward_check(domains, peers, cell, value)
-        domains[cell] = {value}
-        if _ac3(domains, peers):
-            result = _backtrack(domains, peers)
+    values = list(domains[cell])
+    for value in values:
+        snap = stack.snapshot()
+        for val in values:
+            if val != value:
+                domains[cell].remove(val)
+                stack.push(cell, val)
+        _forward_check(domains, peers, cell, value, stack)
+        if _ac3(domains, peers, stack):
+            result = _backtrack(domains, peers, stack)
             if result:
                 return result
-        _restore(domains, removed)
-        domains[cell].add(value)
+        stack.undo(domains, snap)
     return None
 
 
@@ -157,9 +176,9 @@ def solve(board: np.ndarray) -> Optional[np.ndarray]:
             else:
                 domains[(r, c)] = {int(value)}
 
-    if not _ac3(domains, peers):
+    if not _ac3(domains, peers, ChangeStack()):
         return None
-    result = _backtrack(domains, peers)
+    result = _backtrack(domains, peers, ChangeStack())
     if result is None:
         return None
     solved = np.full_like(board, -1)

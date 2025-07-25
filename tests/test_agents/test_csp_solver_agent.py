@@ -14,20 +14,15 @@ def _is_valid(board: np.ndarray) -> bool:
     return True
 
 
-def test_csp_solver_on_simple_board():
-    board = np.array(
-        [
-            [1, -1, -1, 4],
-            [-1, 4, 1, -1],
-            [-1, 1, 4, -1],
-            [4, -1, -1, 1],
-        ]
-    )
+def test_csp_solver_on_simple_board(board_and_solution):
+    board, _solution = board_and_solution
     solved = solve(board)
     assert solved is not None
     assert _is_valid(solved)
-    preds = predict(board, target=3)
-    solved_positions = set(zip(*np.where(solved == 3)))
+    rng = np.random.default_rng(0)
+    target = int(solved.flat[rng.integers(solved.size)])
+    preds = predict(board, target=target)
+    solved_positions = set(zip(*np.where(solved == target)))
     assert {(p["row"], p["col"]) for p in preds} == solved_positions
 
 
