@@ -32,3 +32,17 @@ def test_hints_endpoint():
     data = res.json()
     assert "hints" in data
     assert isinstance(data["hints"], list)
+
+
+def test_solve_endpoint():
+    board = [
+        [1, -1, -1, 4],
+        [-1, 4, 1, -1],
+        [-1, 1, 4, -1],
+        [4, -1, -1, 1],
+    ]
+    res = client.post("/solve", json={"board": board})
+    assert res.status_code == 200
+    data = res.json()
+    assert "solution" in data
+    assert isinstance(data["solution"], list)
