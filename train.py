@@ -1,4 +1,5 @@
 import argparse
+import os
 
 import torch
 import yaml
@@ -43,6 +44,14 @@ def main() -> None:
     cfg = yaml.safe_load(open(args.config))
     if args.epochs:
         cfg["training"]["epochs"] = args.epochs
+
+    rows_env = os.environ.get("BOARD_ROWS")
+    cols_env = os.environ.get("BOARD_COLS")
+    max_val_env = os.environ.get("MAX_VALUE")
+    if rows_env and cols_env:
+        cfg["model"]["num_fields"] = int(rows_env) * int(cols_env)
+    if max_val_env:
+        cfg["model"]["num_values"] = int(max_val_env)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     boards = load_boards_from_archives(cfg["data"]["data_dir"])
