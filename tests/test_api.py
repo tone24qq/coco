@@ -7,17 +7,23 @@ client = TestClient(app)
 
 def test_predict_endpoint():
     board = [
-        [1, -1, -1, 4],
-        [-1, 4, 1, -1],
-        [-1, 1, 4, -1],
-        [4, -1, -1, 1],
+        [1, 2, -1, 4],
+        [5, -1, -1, 8],
+        [9, -1, -1, 12],
+        [13, 14, 15, -1],
     ]
     response = client.post("/predict", json={"board": board, "target": 3})
     assert response.status_code == 200
     data = response.json()
     assert "predictions" in data
     assert isinstance(data["predictions"], list)
-    assert len(data["predictions"]) == 4
+    assert len(data["predictions"]) == 3
+
+
+def test_predict_invalid_board():
+    board = [[1, 1], [-1, 2]]
+    res = client.post("/predict", json={"board": board, "target": 3})
+    assert res.status_code == 400
 
 
 def test_hints_endpoint():
