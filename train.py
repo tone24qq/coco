@@ -1,7 +1,4 @@
-
 import argparse
-import os
-import time
 from pathlib import Path
 
 import torch
@@ -49,10 +46,6 @@ def main() -> None:
     if args.epochs:
         cfg["training"]["epochs"] = args.epochs
     epochs = int(cfg["training"]["epochs"])
-
-    # Read environment variables
-    rows_env = int(os.environ.get("BOARD_ROWS", 0))
-    cols_env = int(os.environ.get("BOARD_COLS", 0))
 
     # Load all boards
     boards = load_boards_from_archives(cfg["data"]["data_dir"])
@@ -107,14 +100,12 @@ def main() -> None:
 
         # Epoch loop with progress bar
         for epoch in range(1, epochs + 1):
-            epoch_start = time.time()
             pbar = tqdm(
                 loader,
                 desc=f"{model_name} Epoch {epoch}/{epochs}",
                 unit="batch",
             )
             total_loss = 0.0
-            # Use enumerate to avoid division by zero
             for batch_idx, batch in enumerate(pbar, start=1):
                 inp = batch["input_vals"].to(device)
                 orig = batch["orig_vals"].to(device)
@@ -129,11 +120,7 @@ def main() -> None:
                 avg_loss = total_loss / batch_idx
                 pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
 
-            epoch_time = time.time() - epoch_start
-            avg_loss = total_loss / len(loader)
-            logger.info(
-                f"[{model_name}] Epoch {epoch}/{epochs} completed in {epoch_time:.1f}s - avg_loss={avg_loss:.4f}"
-            )
+            # Save epoch checkpoint
             save_checkpoint(model, optimizer, epoch, prefix=model_name)
 
         # Save final checkpoint
