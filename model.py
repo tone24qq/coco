@@ -34,10 +34,17 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         self.num_values = num_values
         if TORCH_AVAILABLE:
             super().__init__()  # type: ignore[misc]
+            # Embeddings for values and positions
             self.value_embed = nn.Embedding(num_values + 1, d_model)
             self.field_embed = nn.Embedding(num_fields, d_model)
-            encoder_layer = TransformerEncoderLayer(d_model, nhead)
-            self.transformer = TransformerEncoder(encoder_layer, num_layers=depth)
+            # Use batch_first to support nested tensor optimization
+            encoder_layer = TransformerEncoderLayer(
+                d_model, nhead, batch_first=True
+            )
+            # Enable nested tensor for potential speed and memory benefits
+            self.transformer = TransformerEncoder(
+                encoder_layer, num_layers=depth, enable_nested_tensor=True
+            )
             self.head = nn.Linear(d_model, num_values + 1)
 
     def forward(self, input_vals):  # type: ignore[override]
@@ -45,15 +52,16 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         if TORCH_AVAILABLE:
             assert isinstance(input_vals, torch.Tensor)
             bsz, fields = input_vals.shape
+            # value embedding + positional embedding
             x = self.value_embed(input_vals)
             pos = self.field_embed(torch.arange(fields, device=x.device))
             x = x + pos.unsqueeze(0)
-            x = x.permute(1, 0, 2)
+            # Transformer expects (batch, seq, dim) with batch_first
             z = self.transformer(x)
-            z = z.permute(1, 0, 2)
             return self.head(z)
         import numpy as np
 
+        # Fallback: return zeros
         bsz, fields = input_vals.shape
         return np.zeros((bsz, fields, self.num_values + 1), dtype=float)
 

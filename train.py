@@ -1,10 +1,13 @@
+
 import argparse
 import os
+import time
 from pathlib import Path
 
 import torch
 import yaml
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from dataset import MASK_TOKEN_ID, ScratchCardDataset
 from model import DynamicMET
@@ -18,14 +21,13 @@ def train_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
 ) -> float:
-    """Train ``model`` for one epoch and return average loss."""
+    """Train `model` for one epoch and return average loss."""
     model.train()
     total_loss = 0.0
     for batch in loader:
         inp = batch["input_vals"].to(device)
         orig = batch["orig_vals"].to(device)
         logits = model(inp)
-        # logits: (B, F, N+1); labels: (B, F) with 0 as mask
         loss = torch.nn.functional.cross_entropy(
             logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
         )
@@ -37,68 +39,118 @@ def train_epoch(
 
 
 def main() -> None:
-    """Entry point for training."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/tabular.yaml")
     parser.add_argument("--epochs", type=int)
     args = parser.parse_args()
 
+    # Load configuration
     cfg = yaml.safe_load(open(args.config))
     if args.epochs:
         cfg["training"]["epochs"] = args.epochs
+    epochs = int(cfg["training"]["epochs"])
 
-    rows = int(os.environ.get("BOARD_ROWS", 0))
-    cols = int(os.environ.get("BOARD_COLS", 0))
+    # Read environment variables
+    rows_env = int(os.environ.get("BOARD_ROWS", 0))
+    cols_env = int(os.environ.get("BOARD_COLS", 0))
 
+    # Load all boards
     boards = load_boards_from_archives(cfg["data"]["data_dir"])
-    if not rows or not cols:
-        if not boards:
-            raise ValueError("No boards loaded from data_dir")
-        shape = boards[0].shape
-        if not all(b.shape == shape for b in boards):
-            raise ValueError("Boards must all have the same shape")
-        rows, cols = shape
+    if not boards:
+        raise ValueError("No boards loaded from data_dir")
 
-    cfg["model"]["num_fields"] = rows * cols
-    cfg["model"]["num_values"] = rows * cols
+    # Group boards by shape
+    shape_groups = {}
+    for b in boards:
+        shape_groups.setdefault(b.shape, []).append(b)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = ScratchCardDataset(boards, cfg["training"]["mask_ratio"])
-    loader = DataLoader(dataset, batch_size=cfg["training"]["batch_size"], shuffle=True)
-    model = DynamicMET(
-        num_fields=cfg["model"]["num_fields"],
-        num_values=cfg["model"]["num_values"],
-        d_model=cfg["model"]["d_model"],
-        nhead=cfg["model"]["nhead"],
-        depth=cfg["model"]["depth"],
-    ).to(device)
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=cfg["training"]["lr"],
-        weight_decay=cfg["training"]["weight_decay"],
-    )
     logger = setup_logger()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    for epoch in range(cfg["training"]["epochs"]):
-        loss = train_epoch(model, loader, optimizer, device)
-        logger.info("Epoch %s: loss=%.4f", epoch, loss)
-        save_checkpoint(model, optimizer, epoch)
+    # Extract and parse training hyperparams
+    mask_ratio = float(cfg["training"]["mask_ratio"])
+    batch_size = int(cfg["training"]["batch_size"])
+    lr = float(cfg["training"]["lr"])
+    weight_decay = float(cfg["training"]["weight_decay"])
 
-    out_dir = Path("checkpoints")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    final_path = out_dir / f"met_{rows}x{cols}.pth"
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "epoch": cfg["training"]["epochs"],
-            "rows": rows,
-            "cols": cols,
-        },
-        final_path,
-    )
-    logger.info("Saved final checkpoint to %s", final_path)
+    # Train a model for each board shape
+    for shape, group in shape_groups.items():
+        rows, cols = shape
+        model_name = f"{rows}x{cols}"
+        logger.info(f"Starting training for shape {model_name} with {len(group)} samples")
+
+        # Prepare model fields
+        cfg["model"]["num_fields"] = rows * cols
+        cfg["model"]["num_values"] = rows * cols
+
+        # Prepare dataset and loader
+        dataset = ScratchCardDataset(group, mask_ratio)
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+        )
+
+        # Initialize model and optimizer
+        model = DynamicMET(
+            num_fields=int(cfg["model"]["num_fields"]),
+            num_values=int(cfg["model"]["num_values"]),
+            d_model=int(cfg["model"]["d_model"]),
+            nhead=int(cfg["model"]["nhead"]),
+            depth=int(cfg["model"]["depth"]),
+        ).to(device)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+
+        # Epoch loop with progress bar
+        for epoch in range(1, epochs + 1):
+            epoch_start = time.time()
+            pbar = tqdm(
+                loader,
+                desc=f"{model_name} Epoch {epoch}/{epochs}",
+                unit="batch",
+            )
+            total_loss = 0.0
+            # Use enumerate to avoid division by zero
+            for batch_idx, batch in enumerate(pbar, start=1):
+                inp = batch["input_vals"].to(device)
+                orig = batch["orig_vals"].to(device)
+                optimizer.zero_grad()
+                logits = model(inp)
+                loss = torch.nn.functional.cross_entropy(
+                    logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
+                )
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                avg_loss = total_loss / batch_idx
+                pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
+
+            epoch_time = time.time() - epoch_start
+            avg_loss = total_loss / len(loader)
+            logger.info(
+                f"[{model_name}] Epoch {epoch}/{epochs} completed in {epoch_time:.1f}s - avg_loss={avg_loss:.4f}"
+            )
+            save_checkpoint(model, optimizer, epoch, prefix=model_name)
+
+        # Save final checkpoint
+        out_dir = Path("checkpoints")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        final_path = out_dir / f"met_{model_name}.pth"
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "epoch": epochs,
+                "rows": rows,
+                "cols": cols,
+            },
+            final_path,
+        )
+        logger.info(f"Saved final checkpoint to {final_path}")
 
 
 if __name__ == "__main__":
