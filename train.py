@@ -49,12 +49,20 @@ def main() -> None:
 
     rows = int(os.environ.get("BOARD_ROWS", 0))
     cols = int(os.environ.get("BOARD_COLS", 0))
-    if rows and cols:
-        cfg["model"]["num_fields"] = rows * cols
-        cfg["model"]["num_values"] = rows * cols
+
+    boards = load_boards_from_archives(cfg["data"]["data_dir"])
+    if not rows or not cols:
+        if not boards:
+            raise ValueError("No boards loaded from data_dir")
+        shape = boards[0].shape
+        if not all(b.shape == shape for b in boards):
+            raise ValueError("Boards must all have the same shape")
+        rows, cols = shape
+
+    cfg["model"]["num_fields"] = rows * cols
+    cfg["model"]["num_values"] = rows * cols
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    boards = load_boards_from_archives(cfg["data"]["data_dir"])
     dataset = ScratchCardDataset(boards, cfg["training"]["mask_ratio"])
     loader = DataLoader(dataset, batch_size=cfg["training"]["batch_size"], shuffle=True)
     model = DynamicMET(
