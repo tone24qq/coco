@@ -1,0 +1,17 @@
+model:
+  name: DynamicMET
+  num_fields: ${BOARD_ROWS}*${BOARD_COLS}
+  num_values: ${MAX_VALUE}
+  d_model: 128
+  nhead: 4
+  depth: 6
+
+training:
+  mask_ratio: 0.6
+  batch_size: 64
+  epochs: 20
+  lr: 1e-4
+  weight_decay: 1e-5
+
+data:
+  data_dir: ./data_archives
