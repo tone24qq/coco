@@ -1,13 +1,29 @@
 import os
 
 import numpy as np
-import torch
+
+try:
+    import torch
+except Exception:  # torch may be unavailable in minimal runtimes
+    torch = None  # type: ignore[assignment]
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from model import DynamicMET
 
 app = FastAPI()
+
+
+@app.get("/health")
+def health():
+    """Simple readiness/liveness probe.
+
+    Returns the loaded model shapes so ops can verify startup state.
+    """
+    return {
+        "status": "ok",
+        "models": [{"rows": r, "cols": c} for (r, c) in models.keys()],
+    }
 
 
 class BoardInput(BaseModel):

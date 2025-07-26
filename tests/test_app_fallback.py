@@ -1,6 +1,7 @@
 import asyncio
 import importlib
 import sys
+import types
 
 import numpy as np
 
@@ -10,14 +11,14 @@ import model
 
 def test_app_predict_numpy(monkeypatch):
     orig_torch = sys.modules.get("torch")
+    # Simulate environment without torch *before* importing modules that depend on it.
     monkeypatch.setitem(sys.modules, "torch", None)
-    model_no_torch = importlib.reload(model)
-    monkeypatch.setattr(appmod, "torch", None, raising=False)
-    monkeypatch.setattr(appmod, "DynamicMET", model_no_torch.DynamicMET, raising=False)
+    importlib.reload(model)
+    importlib.reload(appmod)
     appmod.models.clear()
-    appmod.models[(2, 2)] = model_no_torch.DynamicMET(4, 5)
+    appmod.models[(2, 2)] = model.DynamicMET(4, 5)
     board = np.array([[1, 2], [3, -1]]).tolist()
-    payload = appmod.BoardInput(board=board, target_value=1)
+    payload = types.SimpleNamespace(board=board, target_value=1)
     result = asyncio.get_event_loop().run_until_complete(appmod.predict(payload))
     assert isinstance(result, list) and len(result) == 3
     for item in result:
