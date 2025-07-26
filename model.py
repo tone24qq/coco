@@ -14,8 +14,10 @@ except Exception:  # pragma: no cover - torch missing
 class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
     """Dynamic Masked Encoding Transformer for scratch-card boards.
 
-    If ``torch`` is unavailable, operations fall back to NumPy and return
-    zeros so that dependent services remain functional.
+    類別索引規則：
+    - 0 = MASK（保留，不作為實際數字）
+    - 1..N = 盤面實際數字（唯一）
+    因此輸出維度為 N+1，訓緻時使用 ``ignore_index=0``。
     """
 
     def __init__(
@@ -26,6 +28,8 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         nhead: int = 4,
         depth: int = 6,
     ) -> None:
+        # num_values = N (R*C)
+        # logits dimension is N+1 with class 0 reserved for MASK
         self.num_fields = num_fields
         self.num_values = num_values
         if TORCH_AVAILABLE:
@@ -34,10 +38,10 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             self.field_embed = nn.Embedding(num_fields, d_model)
             encoder_layer = TransformerEncoderLayer(d_model, nhead)
             self.transformer = TransformerEncoder(encoder_layer, num_layers=depth)
-            self.head = nn.Linear(d_model, num_values)
+            self.head = nn.Linear(d_model, num_values + 1)
 
-    def __call__(self, input_vals):
-        """Return logits for each position with optional NumPy fallback."""
+    def forward(self, input_vals):  # type: ignore[override]
+        """Forward pass returning logits for each position."""
         if TORCH_AVAILABLE:
             assert isinstance(input_vals, torch.Tensor)
             bsz, fields = input_vals.shape
@@ -51,8 +55,6 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         import numpy as np
 
         bsz, fields = input_vals.shape
-        return np.zeros((bsz, fields, self.num_values), dtype=float)
+        return np.zeros((bsz, fields, self.num_values + 1), dtype=float)
 
-    # retain PyTorch-style API when torch is missing
-    def eval(self):  # type: ignore[override]
-        return self
+    __call__ = forward

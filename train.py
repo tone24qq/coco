@@ -1,5 +1,6 @@
 import argparse
 import os
+from pathlib import Path
 
 import torch
 import yaml
@@ -24,6 +25,7 @@ def train_epoch(
         inp = batch["input_vals"].to(device)
         orig = batch["orig_vals"].to(device)
         logits = model(inp)
+        # logits: (B, F, N+1); labels: (B, F) with 0 as mask
         loss = torch.nn.functional.cross_entropy(
             logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
         )
@@ -45,13 +47,11 @@ def main() -> None:
     if args.epochs:
         cfg["training"]["epochs"] = args.epochs
 
-    rows_env = os.environ.get("BOARD_ROWS")
-    cols_env = os.environ.get("BOARD_COLS")
-    max_val_env = os.environ.get("MAX_VALUE")
-    if rows_env and cols_env:
-        cfg["model"]["num_fields"] = int(rows_env) * int(cols_env)
-    if max_val_env:
-        cfg["model"]["num_values"] = int(max_val_env)
+    rows = int(os.environ.get("BOARD_ROWS", 0))
+    cols = int(os.environ.get("BOARD_COLS", 0))
+    if rows and cols:
+        cfg["model"]["num_fields"] = rows * cols
+        cfg["model"]["num_values"] = rows * cols
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     boards = load_boards_from_archives(cfg["data"]["data_dir"])
@@ -76,6 +76,21 @@ def main() -> None:
         loss = train_epoch(model, loader, optimizer, device)
         logger.info("Epoch %s: loss=%.4f", epoch, loss)
         save_checkpoint(model, optimizer, epoch)
+
+    out_dir = Path("checkpoints")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final_path = out_dir / f"met_{rows}x{cols}.pth"
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "epoch": cfg["training"]["epochs"],
+            "rows": rows,
+            "cols": cols,
+        },
+        final_path,
+    )
+    logger.info("Saved final checkpoint to %s", final_path)
 
 
 if __name__ == "__main__":

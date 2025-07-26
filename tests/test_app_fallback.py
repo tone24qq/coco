@@ -20,7 +20,7 @@ def test_app_predict_numpy(monkeypatch):
     board = np.array([[1, 2], [3, -1]]).tolist()
     payload = types.SimpleNamespace(board=board, target_value=1)
     result = asyncio.get_event_loop().run_until_complete(appmod.predict(payload))
-    assert isinstance(result, list) and len(result) == 3
+    assert isinstance(result, list) and len(result) == 1
     for item in result:
         assert {"row", "col", "score"} <= set(item.keys())
     monkeypatch.setitem(sys.modules, "torch", orig_torch)
