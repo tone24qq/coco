@@ -54,8 +54,8 @@ def main() -> None:
 
     # Group boards by shape
     shape_groups = {}
-    for b in boards:
-        shape_groups.setdefault(b.shape, []).append(b)
+    for board, target in boards:
+        shape_groups.setdefault(board.shape, []).append((board, target))
 
     logger = setup_logger()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -70,7 +70,9 @@ def main() -> None:
     for shape, group in shape_groups.items():
         rows, cols = shape
         model_name = f"{rows}x{cols}"
-        logger.info(f"Starting training for shape {model_name} with {len(group)} samples")
+        logger.info(
+            f"Starting training for shape {model_name} with {len(group)} samples"
+        )
 
         # Prepare model fields
         cfg["model"]["num_fields"] = rows * cols

@@ -38,9 +38,7 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             self.value_embed = nn.Embedding(num_values + 1, d_model)
             self.field_embed = nn.Embedding(num_fields, d_model)
             # Use batch_first to support nested tensor optimization
-            encoder_layer = TransformerEncoderLayer(
-                d_model, nhead, batch_first=True
-            )
+            encoder_layer = TransformerEncoderLayer(d_model, nhead, batch_first=True)
             # Enable nested tensor for potential speed and memory benefits
             self.transformer = TransformerEncoder(
                 encoder_layer, num_layers=depth, enable_nested_tensor=True

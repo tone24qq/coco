@@ -1,13 +1,13 @@
 import json
 import os
 import zipfile
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 import numpy as np
 
 
-def _extract_boards(obj: object) -> Iterable[np.ndarray]:
-    """Yield ``numpy`` boards from ``obj``.
+def _extract_boards(obj: object) -> Iterable[Tuple[np.ndarray, int]]:
+    """Yield ``(board, target)`` pairs from ``obj``.
 
     Supported structures:
     - ``{"board": [...]}``
@@ -16,26 +16,27 @@ def _extract_boards(obj: object) -> Iterable[np.ndarray]:
     """
 
     if isinstance(obj, dict):
-        if "board" in obj:
-            yield np.array(obj["board"], dtype=int)
+        if "board" in obj and "target" in obj:
+            yield (np.array(obj["board"], dtype=int), int(obj["target"]))
         elif "boards" in obj:
-            for board in obj["boards"]:
-                yield np.array(board, dtype=int)
+            for item in obj["boards"]:
+                if isinstance(item, dict) and "board" in item and "target" in item:
+                    yield (np.array(item["board"], dtype=int), int(item["target"]))
     elif isinstance(obj, list):
-        if obj and isinstance(obj[0], list) and obj[0] and isinstance(obj[0][0], list):
-            for board in obj:
-                yield np.array(board, dtype=int)
+        for item in obj:
+            if isinstance(item, dict) and "board" in item and "target" in item:
+                yield (np.array(item["board"], dtype=int), int(item["target"]))
 
 
-def load_boards_from_archives(data_dir: str) -> List[np.ndarray]:
-    """Recursively load boards from ``data_dir``.
+def load_boards_from_archives(data_dir: str) -> List[Tuple[np.ndarray, int]]:
+    """Recursively load boards and targets from ``data_dir``.
 
     All ``.json`` files and JSON files inside ``.zip`` archives are read and
     converted to ``numpy`` arrays. Files may contain a single object with a
     ``board`` field or a list of boards.
     """
 
-    boards: List[np.ndarray] = []
+    boards: List[Tuple[np.ndarray, int]] = []
     for root, _, files in os.walk(data_dir):
         for fname in files:
             path = os.path.join(root, fname)

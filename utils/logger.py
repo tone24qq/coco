@@ -1,13 +1,13 @@
 import logging
 from pathlib import Path
+
 import torch
 
 
 def setup_logger() -> logging.Logger:
     """Configure and return a simple logger."""
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s: %(message)s"
+        level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s"
     )
     return logging.getLogger("scratch")
 
@@ -17,7 +17,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     epoch: int,
     directory: str = "checkpoints",
-    prefix: str = ""
+    prefix: str = "",
 ) -> None:
     """Save model checkpoint, optionally with a filename prefix."""
     # Ensure the directory exists
