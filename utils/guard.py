@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Sequence
 
 import numpy as np
 
+from dataset import BLANK_VALUE
 
-def ensure_only_blank(board: np.ndarray, preds: Iterable[Any], blank_value: int = -1):
+
+def ensure_only_blank(
+    board: np.ndarray, preds: Iterable[Any], blank_value: int = BLANK_VALUE
+) -> List[Any]:
     """Filter predictions to ensure returned positions are blank."""
     rows, cols = board.shape
     flat = board.ravel()
-    out = []
-    bad = []
+    out: List[Any] = []
+    bad: List[Sequence[int]] = []
     for p in preds:
         r = p["row"] if isinstance(p, dict) else getattr(p, "row")
         c = p["col"] if isinstance(p, dict) else getattr(p, "col")
@@ -23,5 +27,9 @@ def ensure_only_blank(board: np.ndarray, preds: Iterable[Any], blank_value: int 
         else:
             bad.append((r, c))
     if bad:
-        logging.getLogger(__name__).error("[GUARD] filtered non-blank cells: %s", bad)
+        logging.getLogger(__name__).error(
+            "[GUARD] filtered non-blank cells: %s values=%s",
+            bad,
+            [int(flat[r * cols + c]) for (r, c) in bad],
+        )
     return out

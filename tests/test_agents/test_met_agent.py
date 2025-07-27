@@ -1,6 +1,7 @@
 import numpy as np
 
 from agents.met_agent import predict
+from dataset import BLANK_VALUE
 from model import DynamicMET
 
 
@@ -11,8 +12,8 @@ def test_met_agent_predict_on_10x12() -> None:
     blank_indices = rng.choice(rows * cols, size=rng.integers(15, 26), replace=False)
     for idx in blank_indices:
         r, c = divmod(idx, cols)
-        grid[r, c] = -1
-    non_blanks = np.argwhere(grid != -1)
+        grid[r, c] = BLANK_VALUE
+    non_blanks = np.argwhere(grid != BLANK_VALUE)
     target_r, target_c = non_blanks[rng.integers(len(non_blanks))]
     target = int(grid[target_r, target_c])
     model = DynamicMET(rows * cols, 100)
@@ -28,10 +29,10 @@ def test_met_agent_only_returns_blank() -> None:
     rows, cols = 4, 5
     board = np.array(
         [
-            [1, -1, 3, 4, 5],
-            [6, 7, -1, 9, 10],
-            [11, 12, 13, -1, 15],
-            [16, -1, 18, 19, 20],
+            [1, BLANK_VALUE, 3, 4, 5],
+            [6, 7, BLANK_VALUE, 9, 10],
+            [11, 12, 13, BLANK_VALUE, 15],
+            [16, BLANK_VALUE, 18, 19, 20],
         ]
     )
     model = DynamicMET(rows * cols, rows * cols + 1)
@@ -39,4 +40,4 @@ def test_met_agent_only_returns_blank() -> None:
     res = predict(board.copy(), target=target, model=model, topk=3)
     assert len(res) <= 3
     for item in res:
-        assert board[item["row"], item["col"]] == -1
+        assert board[item["row"], item["col"]] == BLANK_VALUE

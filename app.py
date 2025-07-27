@@ -247,6 +247,13 @@ def predict(req: PredictRequest):
     top_indices = mask_pos[topk_local]
     logger.info("[CHK] top_indices=%s", top_indices.tolist())
 
+    picked_vals = [int(flat[idx]) for idx in top_indices]
+    logger.info(
+        "[CHK] picked vals=%s (should all be BLANK_VALUE=%s)",
+        picked_vals,
+        BLANK_VALUE,
+    )
+
     raw = [
         Prediction(
             row=int(idx // cols), col=int(idx % cols), score=float(scores_np[idx])
