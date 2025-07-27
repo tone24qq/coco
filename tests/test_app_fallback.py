@@ -1,7 +1,5 @@
-import asyncio
 import importlib
 import sys
-import types
 
 import numpy as np
 
@@ -18,10 +16,10 @@ def test_app_predict_numpy(monkeypatch):
     appmod.models.clear()
     appmod.models[(2, 2)] = model.DynamicMET(4, 5)
     board = np.array([[1, 2], [3, -1]]).tolist()
-    payload = types.SimpleNamespace(board=board, target_value=1)
-    result = asyncio.get_event_loop().run_until_complete(appmod.predict(payload))
+    payload = appmod.PredictRequest(board=board, target_value=1)
+    result = appmod.predict(payload)
     assert isinstance(result, list) and len(result) == 1
     for item in result:
-        assert {"row", "col", "score"} <= set(item.keys())
+        assert {"row", "col", "score"} <= set(item.model_dump().keys())
     monkeypatch.setitem(sys.modules, "torch", orig_torch)
     importlib.reload(model)
