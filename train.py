@@ -6,7 +6,7 @@ import yaml
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset import MASK_TOKEN_ID, ScratchCardDataset
+from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
@@ -51,6 +51,8 @@ def main() -> None:
     boards = load_boards_from_archives(cfg["data"]["data_dir"])
     if not boards:
         raise ValueError("No boards loaded from data_dir")
+    for b, _ in boards:
+        validate_board(b)
 
     # Group boards by shape
     shape_groups = {}

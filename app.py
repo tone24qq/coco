@@ -13,6 +13,7 @@ except Exception:  # torch may be unavailable in minimal runtimes
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
+from dataset import BLANK_VALUE
 from model import DynamicMET
 
 logging.basicConfig(
@@ -42,7 +43,9 @@ def health():
 
 
 class PredictRequest(BaseModel):
-    board: List[List[int]] = Field(..., description="2D grid, blanks use -1.")
+    board: List[List[int]] = Field(
+        ..., description=f"2D grid, blanks use {BLANK_VALUE}."
+    )
     # 兩個欄位都接受，擇一或兩者皆送都行
     target: Optional[int] = Field(None, description="Preferred. Target number.")
     target_value: Optional[int] = Field(
@@ -146,9 +149,9 @@ def predict(req: PredictRequest):
     flat_all = board.flatten()
     valid_values = set(range(1, n + 1))
     for v in flat_all:
-        if v != -1 and v not in valid_values:
+        if v != BLANK_VALUE and v not in valid_values:
             raise HTTPException(status_code=422, detail="board values out of range")
-    non_blank = flat_all[flat_all != -1]
+    non_blank = flat_all[flat_all != BLANK_VALUE]
     if non_blank.size != len(set(non_blank.tolist())):
         raise HTTPException(status_code=422, detail="board has duplicate numbers")
     target = req.target
@@ -163,9 +166,11 @@ def predict(req: PredictRequest):
     )  # 中文log：記錄盤面大小與目標數字
 
     flat = board.flatten()
-    mask_pos = np.where(flat == -1)[0]
+    mask_pos = np.where(flat == BLANK_VALUE)[0]
     if mask_pos.size == 0:
-        raise HTTPException(status_code=422, detail="no blank cells (-1) to predict")
+        raise HTTPException(
+            status_code=422, detail=f"no blank cells ({BLANK_VALUE}) to predict"
+        )
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
     flat_input = np.where(flat < 0, 0, flat).astype(np.int64, copy=False)
