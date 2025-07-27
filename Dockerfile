@@ -14,7 +14,7 @@ WORKDIR /app
 
 # 先複製 requirements.txt，獨立安裝可利用快取
 COPY requirements.txt ./
-
+RUN pip install --force-reinstall numpy
 # 先安裝對齊版本的 PyTorch 三件組（CPU）
 # 注意：使用官方 PyTorch CPU 索引，版本彼此對應：torch 2.1.2 / torchvision 0.16.2 / torchaudio 2.1.2
 RUN pip install --upgrade pip setuptools wheel \
