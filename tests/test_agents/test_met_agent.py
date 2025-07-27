@@ -22,3 +22,21 @@ def test_met_agent_predict_on_10x12() -> None:
     for item in result:
         assert isinstance(item, dict)
         assert "row" in item and "col" in item and "score" in item
+
+
+def test_met_agent_only_returns_blank() -> None:
+    rows, cols = 4, 5
+    board = np.array(
+        [
+            [1, -1, 3, 4, 5],
+            [6, 7, -1, 9, 10],
+            [11, 12, 13, -1, 15],
+            [16, -1, 18, 19, 20],
+        ]
+    )
+    model = DynamicMET(rows * cols, rows * cols + 1)
+    target = 15
+    res = predict(board.copy(), target=target, model=model, topk=3)
+    assert len(res) <= 3
+    for item in res:
+        assert board[item["row"], item["col"]] == -1

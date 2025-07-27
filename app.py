@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from dataset import BLANK_VALUE
 from model import DynamicMET
+from utils import ensure_only_blank
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -144,6 +145,10 @@ def predict(req: PredictRequest):
         )
 
     board = np.asarray(req.board, dtype=int)
+    uniq, cnt = np.unique(board, return_counts=True)
+    logger.info(
+        "[CHK] uniq=%s cnt=%s BLANK_VALUE=%s", uniq.tolist(), cnt.tolist(), BLANK_VALUE
+    )
     rows, cols = board.shape
     n = rows * cols
     flat_all = board.flatten()
@@ -171,6 +176,7 @@ def predict(req: PredictRequest):
         raise HTTPException(
             status_code=422, detail=f"no blank cells ({BLANK_VALUE}) to predict"
         )
+    logger.info("[CHK] mask_pos=%s", mask_pos.tolist())
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
     flat_input = np.where(flat < 0, 0, flat).astype(np.int64, copy=False)
@@ -239,10 +245,12 @@ def predict(req: PredictRequest):
         "從 %s 個候選格中挑選前 %s 名", len(candidate_scores), len(topk_local)
     )  # 中文log：候選格與返回數量
     top_indices = mask_pos[topk_local]
+    logger.info("[CHK] top_indices=%s", top_indices.tolist())
 
-    return [
+    raw = [
         Prediction(
             row=int(idx // cols), col=int(idx % cols), score=float(scores_np[idx])
         )
         for idx in top_indices
     ]
+    return ensure_only_blank(board, raw, BLANK_VALUE)

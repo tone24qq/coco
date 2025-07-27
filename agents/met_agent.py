@@ -12,53 +12,49 @@ except Exception:  # pragma: no cover - torch missing
     torch = None  # type: ignore[assignment]
     TORCH_AVAILABLE = False
 
+from dataset import BLANK_VALUE
 from model import DynamicMET
+from utils import ensure_only_blank
 
 
 def predict(
-    board: np.ndarray, target: int, *, model: DynamicMET, topk: int = 3
+    board: np.ndarray, *, target: int, model: DynamicMET, topk: int = 3
 ) -> List[Dict[str, Any]]:
-    """Predict top-k positions for ``target`` using ``model``.
-
-    Parameters
-    ----------
-    board : np.ndarray
-        Board array containing integers. ``-1`` denotes empty cells.
-    target : int
-        Target value to locate.
-    model : DynamicMET
-        Pretrained model used for prediction.
-    topk : int, optional
-        Number of positions to return, by default ``3``.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        Each dictionary contains ``row``, ``col`` and ``score`` fields.
-    """
+    """Predict top-k blank positions for ``target`` using ``model``."""
 
     shape = board.shape
-    board_proc = np.where(board < 0, 0, board).astype(int)
+    flat = board.flatten()
 
-    if TORCH_AVAILABLE:
-        inp = torch.tensor(board_proc.flatten()).long().unsqueeze(0)
-        if hasattr(model, "eval"):
-            model.eval()
-        with torch.no_grad():
-            logits = model(inp)
-            probs = torch.softmax(logits, dim=-1)[0, :, target]
-            scores, indices = torch.topk(probs, k=topk)
-        scores_list = scores.tolist()
-        indices_list = indices.tolist()
-    else:
-        inp = board_proc.flatten().reshape(1, -1)
+    mask_pos = np.where(flat == BLANK_VALUE)[0]
+    if mask_pos.size == 0:
+        return []
+
+    if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+        inp = torch.as_tensor(np.where(flat < 0, 0, flat), dtype=torch.long).unsqueeze(
+            0
+        )
         logits = model(inp)
-        probs = np.asarray(logits)[0, :, target]
-        indices_list = np.argsort(probs)[-topk:][::-1].tolist()
-        scores_list = probs[indices_list].tolist()
+        probs = torch.softmax(logits, dim=-1)
+        V = probs.shape[-1]
+        target_idx = target if V == flat.size + 1 else target - 1
+        scores_all = probs[0, :, target_idx].detach().cpu().numpy()
+    else:
+        inp = np.where(flat < 0, 0, flat).reshape(1, -1).astype(np.int64, copy=False)
+        logits = model(inp)
+        arr = np.asarray(logits)
+        V = arr.shape[-1]
+        target_idx = target if V == flat.size + 1 else target - 1
+        scores_all = arr[0, :, target_idx]
+
+    cand_scores = scores_all[mask_pos]
+    k = min(topk, cand_scores.size)
+    if k == 0:
+        return []
+    local_idx = np.argsort(cand_scores)[-k:][::-1]
+    top_indices = mask_pos[local_idx]
 
     results: List[Dict[str, Any]] = []
-    for score, idx in zip(scores_list, indices_list):
+    for idx in top_indices:
         r, c = divmod(int(idx), shape[1])
-        results.append({"row": r, "col": c, "score": float(score)})
-    return results
+        results.append({"row": r, "col": c, "score": float(scores_all[idx])})
+    return ensure_only_blank(board, results, BLANK_VALUE)
