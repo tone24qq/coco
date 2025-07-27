@@ -252,7 +252,11 @@ def predict(req: PredictRequest):
 
     picked_vals = [int(flat[idx]) for idx in top_indices]
     # 中文 log：以 row-col 形式列出 top3 名次，並確認格子皆為空白
-    pos_str = " ".join(f"{int(idx // cols)}-{int(idx % cols)}" for idx in top_indices)
+    pos_str = " ".join(
+        f"{r}-{c}"
+        for idx in top_indices
+        for r, c in [np.unravel_index(int(idx), board.shape)]
+    )
     logger.info("top3=%s %s格皆為空格（符合預期）", pos_str, len(top_indices))
     logger.info(
         "[CHK] picked vals=%s (should all be BLANK_VALUE=%s)",
@@ -260,7 +264,7 @@ def predict(req: PredictRequest):
         BLANK_VALUE,
     )
     violations = [
-        (int(idx // cols), int(idx % cols), int(flat[idx]))
+        (*np.unravel_index(int(idx), board.shape), int(flat[idx]))
         for idx in top_indices
         if flat[idx] != BLANK_VALUE
     ]
@@ -271,14 +275,16 @@ def predict(req: PredictRequest):
             detail={"error": "non-blank-selected", "violations": violations},
         )
 
-    raw = [
-        Prediction(
-            row=int(idx // cols),
-            col=int(idx % cols),
-            score=float(scores_np[idx]),
-            idx=int(idx),
-            cell_value=int(flat[idx]),
+    raw = []
+    for idx in top_indices:
+        r, c = np.unravel_index(int(idx), board.shape)
+        raw.append(
+            Prediction(
+                row=r,
+                col=c,
+                score=float(scores_np[idx]),
+                idx=int(idx),
+                cell_value=int(flat[idx]),
+            )
         )
-        for idx in top_indices
-    ]
     return ensure_only_blank(board, raw, BLANK_VALUE)

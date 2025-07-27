@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover - torch missing
 
 from dataset import BLANK_VALUE
 from model import DynamicMET
-from utils import ensure_only_blank
+from utils import ensure_only_blank, index_to_coord
 
 
 def predict(
@@ -62,6 +62,6 @@ def predict(
 
     results: List[Dict[str, Any]] = []
     for idx in top_indices:
-        r, c = divmod(int(idx), cols)
+        r, c = index_to_coord(int(idx), board.shape)
         results.append({"row": r, "col": c, "score": float(scores_all[idx])})
     return ensure_only_blank(board, results, BLANK_VALUE)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable, List, Sequence
+from typing import Any, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
@@ -33,3 +33,23 @@ def ensure_only_blank(
             [int(flat[r * cols + c]) for (r, c) in bad],
         )
     return out
+
+
+def index_to_coord(idx: int, shape: Tuple[int, int]) -> Tuple[int, int]:
+    """Return ``(row, col)`` coordinate for a flattened ``idx``.
+
+    Parameters
+    ----------
+    idx:
+        Flat index in ``0``..``rows*cols-1``.
+    shape:
+        ``(rows, cols)`` shape of the board.
+
+    Returns
+    -------
+    tuple[int, int]
+        Row and column index corresponding to ``idx``.
+    """
+
+    r, c = np.unravel_index(idx, shape)
+    return int(r), int(c)
