@@ -77,6 +77,9 @@ class Prediction(BaseModel):
     row: int
     col: int
     score: float  # 0~1 之間的置信度
+    # 方便前端與除錯
+    idx: Optional[int] = None
+    cell_value: Optional[int] = None
 
 
 MODEL_GLOB = os.environ.get("MODEL_GLOB", os.path.join("checkpoints", "met_*x*.pth"))
@@ -253,10 +256,25 @@ def predict(req: PredictRequest):
         picked_vals,
         BLANK_VALUE,
     )
+    violations = [
+        (int(idx // cols), int(idx % cols), int(flat[idx]))
+        for idx in top_indices
+        if flat[idx] != BLANK_VALUE
+    ]
+    if violations:
+        logger.error("[FATAL] non-blank selected! violations=%s", violations)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "non-blank-selected", "violations": violations},
+        )
 
     raw = [
         Prediction(
-            row=int(idx // cols), col=int(idx % cols), score=float(scores_np[idx])
+            row=int(idx // cols),
+            col=int(idx % cols),
+            score=float(scores_np[idx]),
+            idx=int(idx),
+            cell_value=int(flat[idx]),
         )
         for idx in top_indices
     ]
