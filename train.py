@@ -36,6 +36,8 @@ def train_epoch(
 
 
 def main() -> None:
+    """Train DynamicMET models and save checkpoints for prediction service."""
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/tabular.yaml")
     parser.add_argument("--epochs", type=int)
@@ -141,6 +143,7 @@ def main() -> None:
             },
             final_path,
         )
+        # 中文註釋：儲存訓練完成的模型，供實戰預測服務載入使用
         logger.info(f"Saved final checkpoint to {final_path}")
 
 
