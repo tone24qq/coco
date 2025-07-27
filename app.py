@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field, model_validator
 
 from model import DynamicMET
 
+logging.basicConfig(
+    level=os.environ.get("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Matrix Factorization Service", version="0.1.0")
@@ -71,7 +75,14 @@ class Prediction(BaseModel):
     score: float  # 0~1 之間的置信度
 
 
-MODEL_GLOB = os.environ.get("MODEL_GLOB", "met_*x*.pth")
+class FillRequest(PredictRequest):
+    """Request schema for ``/fill`` endpoint."""
+
+    row: int = Field(..., ge=0, description="Row index to fill")
+    col: int = Field(..., ge=0, description="Column index to fill")
+
+
+MODEL_GLOB = os.environ.get("MODEL_GLOB", os.path.join("checkpoints", "met_*x*.pth"))
 _PATTERN = re.compile(r"met_(\d+)x(\d+)\.pth$")
 models: Dict[Tuple[int, int], DynamicMET] = {}
 
@@ -85,11 +96,20 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
         model.load_state_dict(state, strict=False)
         if hasattr(model, "eval"):
             model.eval()
+        logger.info(
+            "載入模型檔案 %s，尺寸 %sx%s", path, rows, cols
+        )  # 中文log：載入已存在的模型
+    else:
+        logger.info(
+            "建立新模型，尺寸 %sx%s", rows, cols
+        )  # 中文log：未找到檔案時新建模型
     return model
 
 
 def _discover_models() -> None:
+    """Locate all checkpoint files under ``MODEL_GLOB`` and load them."""
     found = False
+    logger.info("開始搜尋模型檔案，樣式: %s", MODEL_GLOB)  # 中文log：啟動時掃描模型檔
     for path in glob.glob(MODEL_GLOB):
         m = _PATTERN.match(os.path.basename(path))
         if not m:
@@ -102,11 +122,15 @@ def _discover_models() -> None:
         models[(r, c)] = DynamicMET(r * c, r * c)
         if hasattr(models[(r, c)], "eval"):
             models[(r, c)].eval()
+        logger.warning(
+            "未找到模型檔案，使用預設模型 %sx%s", r, c
+        )  # 中文log：沒有模型時使用預設
 
 
 @app.on_event("startup")
 def load_models() -> None:
     """Search and load checkpoints following pattern met_{R}x{C}.pth."""
+    logger.info("應用啟動，準備載入模型")  # 中文log：啟動事件
     _discover_models()
 
 
@@ -133,6 +157,9 @@ def predict(req: PredictRequest):
         raise HTTPException(
             status_code=422, detail=f"target must be in [1, {n}], got {target}"
         )
+    logger.info(
+        "盤面尺寸 %sx%s，目標數字 %s", rows, cols, target
+    )  # 中文log：記錄盤面大小與目標數字
 
     flat = board.flatten()
     mask_pos = np.where(flat == -1)[0]
@@ -148,13 +175,19 @@ def predict(req: PredictRequest):
         flat_input.dtype,
         flat_input[: min(10, flat_input.size)].tolist(),
     )
+    # 中文log：檢查輸入資料
 
     model = models.get((rows, cols))
     if model is None:
+        logger.info(
+            "尚未載入 %sx%s 的模型，立即建立", rows, cols
+        )  # 中文log：動態建立模型
         model = DynamicMET(n, n)
         if hasattr(model, "eval"):
             model.eval()
         models[(rows, cols)] = model
+    else:
+        logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
     if torch is not None:
         # use as_tensor to avoid copy and specify dtype explicitly
@@ -196,6 +229,9 @@ def predict(req: PredictRequest):
 
     candidate_scores = scores_np[mask_pos]
     topk_local = np.argsort(candidate_scores)[-min(3, len(candidate_scores)) :][::-1]
+    logger.info(
+        "從 %s 個候選格中挑選前 %s 名", len(candidate_scores), len(topk_local)
+    )  # 中文log：候選格與返回數量
     top_indices = mask_pos[topk_local]
 
     return [
@@ -204,3 +240,41 @@ def predict(req: PredictRequest):
         )
         for idx in top_indices
     ]
+
+
+@app.post("/fill", response_model=List[List[int]])
+def fill_cell(req: FillRequest):
+    """Fill a board cell with ``target`` if it is blank and unused."""
+
+    if not req.board or not all(isinstance(r, list) and r for r in req.board):
+        raise HTTPException(
+            status_code=422, detail="`board` must be a non-empty 2D list."
+        )
+    lens = {len(r) for r in req.board}
+    if len(lens) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"`board` rows must have equal length, got lengths={sorted(lens)}",
+        )
+
+    board = np.asarray(req.board, dtype=int)
+    rows, cols = board.shape
+    n = rows * cols
+    if not (0 <= req.row < rows and 0 <= req.col < cols):
+        raise HTTPException(status_code=422, detail="row/col out of range")
+
+    target = req.target
+    if target is None or not (1 <= target <= n):
+        raise HTTPException(status_code=422, detail=f"target must be in [1, {n}]")
+
+    if board[req.row, req.col] != -1:
+        raise HTTPException(status_code=422, detail="cell not blank (-1)")
+
+    if (board == target).any():
+        raise HTTPException(status_code=422, detail="target already present on board")
+
+    board[req.row, req.col] = target
+    logger.info(
+        "填入數字 %s 於 (%s, %s)", target, req.row, req.col
+    )  # 中文log：填入數字
+    return board.tolist()
