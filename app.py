@@ -112,7 +112,18 @@ def load_models() -> None:
 
 @app.post("/predict", response_model=List[Prediction])
 def predict(req: PredictRequest):
-    board = np.array(req.board)
+    if not req.board or not all(isinstance(r, list) and r for r in req.board):
+        raise HTTPException(
+            status_code=422, detail="`board` must be a non-empty 2D list."
+        )
+    lens = {len(r) for r in req.board}
+    if len(lens) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"`board` rows must have equal length, got lengths={sorted(lens)}",
+        )
+
+    board = np.asarray(req.board, dtype=int)
     rows, cols = board.shape
     n = rows * cols
     target = req.target
@@ -128,7 +139,15 @@ def predict(req: PredictRequest):
     if mask_pos.size == 0:
         raise HTTPException(status_code=422, detail="no blank cells (-1) to predict")
 
-    flat_input = np.where(flat < 0, 0, flat)
+    # ensure contiguous int64 array to avoid torch dtype inference errors
+    flat_input = np.where(flat < 0, 0, flat).astype(np.int64, copy=False)
+    flat_input = np.ascontiguousarray(flat_input)
+    logger.info(
+        "[CHK] flat_input: shape=%s dtype=%s sample=%s",
+        flat_input.shape,
+        flat_input.dtype,
+        flat_input[: min(10, flat_input.size)].tolist(),
+    )
 
     model = models.get((rows, cols))
     if model is None:
@@ -138,15 +157,42 @@ def predict(req: PredictRequest):
         models[(rows, cols)] = model
 
     if torch is not None:
-        inp = torch.tensor(flat_input).long().unsqueeze(0)
+        # use as_tensor to avoid copy and specify dtype explicitly
+        inp = torch.as_tensor(flat_input, dtype=torch.long).unsqueeze(0)
         logits = model(inp)  # type: ignore[misc]
         probs = torch.softmax(logits, dim=-1)
-        scores_all = probs[0, :, target]
+        logger.info(
+            "[PRED] torch path: inp=%s logits=%s probs=%s",
+            tuple(inp.shape),
+            tuple(logits.shape),
+            tuple(probs.shape),
+        )
+        V = probs.shape[-1]
+        target_idx = target if V == n + 1 else target - 1
+        if not (0 <= target_idx < V):
+            raise HTTPException(
+                status_code=422,
+                detail=f"target index out of range: target={target}, mapped={target_idx}, V={V}",
+            )
+        scores_all = probs[0, :, target_idx]
         scores_np = scores_all.detach().cpu().numpy()
     else:
         inp = flat_input.reshape(1, -1)
         logits = model(inp)
-        scores_np = logits[0, :, target]
+        arr = np.asarray(logits)
+        logger.info(
+            "[PRED] numpy path: inp=%s logits=%s",
+            inp.shape,
+            arr.shape,
+        )
+        V = arr.shape[-1]
+        target_idx = target if V == n + 1 else target - 1
+        if not (0 <= target_idx < V):
+            raise HTTPException(
+                status_code=422,
+                detail=f"target index out of range: target={target}, mapped={target_idx}, V={V}",
+            )
+        scores_np = arr[0, :, target_idx]
 
     candidate_scores = scores_np[mask_pos]
     topk_local = np.argsort(candidate_scores)[-min(3, len(candidate_scores)) :][::-1]

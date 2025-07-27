@@ -1,8 +1,16 @@
 from typing import Dict, List, Tuple
 
 import numpy as np
-import torch
-from torch.utils.data import Dataset
+
+try:
+    import torch
+    from torch.utils.data import Dataset
+
+    TORCH_AVAILABLE = True
+except Exception:  # pragma: no cover - torch missing
+    torch = None  # type: ignore[assignment]
+    Dataset = object  # type: ignore[misc]
+    TORCH_AVAILABLE = False
 
 MASK_TOKEN_ID = 0
 
@@ -28,8 +36,11 @@ class ScratchCardDataset(Dataset):
         """Return dataset size."""
         return len(self.boards)
 
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> Dict[str, "torch.Tensor"]:
         """Return masked input, target and original board for ``idx``."""
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("Torch is required for ScratchCardDataset")
+
         board = torch.from_numpy(self.boards[idx].flatten()).long()
         target = torch.tensor(int(self.targets[idx])).long()
         mask = torch.rand(board.shape) < self.mask_ratio

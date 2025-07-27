@@ -3,7 +3,14 @@
 from typing import Any, Dict, List
 
 import numpy as np
-import torch
+
+try:
+    import torch
+
+    TORCH_AVAILABLE = True
+except Exception:  # pragma: no cover - torch missing
+    torch = None  # type: ignore[assignment]
+    TORCH_AVAILABLE = False
 
 from model import DynamicMET
 
@@ -32,15 +39,26 @@ def predict(
 
     shape = board.shape
     board_proc = np.where(board < 0, 0, board).astype(int)
-    inp = torch.tensor(board_proc.flatten()).long().unsqueeze(0)
-    model.eval()
-    with torch.no_grad():
+
+    if TORCH_AVAILABLE:
+        inp = torch.tensor(board_proc.flatten()).long().unsqueeze(0)
+        if hasattr(model, "eval"):
+            model.eval()
+        with torch.no_grad():
+            logits = model(inp)
+            probs = torch.softmax(logits, dim=-1)[0, :, target]
+            scores, indices = torch.topk(probs, k=topk)
+        scores_list = scores.tolist()
+        indices_list = indices.tolist()
+    else:
+        inp = board_proc.flatten().reshape(1, -1)
         logits = model(inp)
-        probs = torch.softmax(logits, dim=-1)[0, :, target]
-        scores, indices = torch.topk(probs, k=topk)
+        probs = np.asarray(logits)[0, :, target]
+        indices_list = np.argsort(probs)[-topk:][::-1].tolist()
+        scores_list = probs[indices_list].tolist()
 
     results: List[Dict[str, Any]] = []
-    for score, idx in zip(scores.tolist(), indices.tolist()):
-        r, c = divmod(idx, shape[1])
+    for score, idx in zip(scores_list, indices_list):
+        r, c = divmod(int(idx), shape[1])
         results.append({"row": r, "col": c, "score": float(score)})
     return results

@@ -1,6 +1,8 @@
-import torch
+import pytest
 
 from model import DynamicMET
+
+torch = pytest.importorskip("torch")
 
 
 def test_dynamic_met_forward() -> None:

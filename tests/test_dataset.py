@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
-import torch
 
 from dataset import MASK_TOKEN_ID, ScratchCardDataset
+
+torch = pytest.importorskip("torch")
 
 
 def test_dataset_mask_ratio() -> None:
