@@ -3,6 +3,7 @@ from pathlib import Path
 
 import torch
 import yaml
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -10,6 +11,7 @@ from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
+from utils.training import EarlyStopping, masked_topk_accuracy
 
 
 def train_epoch(
@@ -33,6 +35,37 @@ def train_epoch(
         optimizer.step()
         total_loss += loss.item()
     return total_loss / len(loader)
+
+
+def evaluate_epoch(
+    model: DynamicMET,
+    loader: DataLoader,
+    device: torch.device,
+) -> tuple[float, dict[str, float]]:
+    """Evaluate ``model`` and return loss and top-k accuracy."""
+    model.eval()
+    total_loss = 0.0
+    metrics = {"top1": 0.0, "top3": 0.0, "top5": 0.0}
+    batches = 0
+    with torch.no_grad():
+        for batch in loader:
+            inp = batch["input_vals"].to(device)
+            orig = batch["orig_vals"].to(device)
+            mask = batch["mask"].to(device)
+            logits = model(inp)
+            loss = torch.nn.functional.cross_entropy(
+                logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
+            )
+            total_loss += loss.item()
+            m = masked_topk_accuracy(logits, orig, mask)
+            for k, v in m.items():
+                if not torch.isnan(torch.tensor(v)):
+                    metrics[k] += v
+            batches += 1
+    if batches:
+        for k in metrics:
+            metrics[k] /= batches
+    return total_loss / len(loader), metrics
 
 
 def main() -> None:
@@ -87,13 +120,28 @@ def main() -> None:
         cfg["model"]["num_fields"] = rows * cols
         cfg["model"]["num_values"] = rows * cols
 
-        # Prepare dataset and loader
-        dataset = ScratchCardDataset(group, mask_ratio)
-        loader = DataLoader(
-            dataset,
+        # Prepare datasets and loaders with a validation split
+        n_items = len(group)
+        if n_items < 2:
+            train_pairs = val_pairs = list(group)
+        else:
+            perm = torch.randperm(n_items)
+            split = max(1, int(0.8 * n_items))
+            train_pairs = [group[i] for i in perm[:split]]
+            val_pairs = [group[i] for i in perm[split:]]
+
+        train_ds = ScratchCardDataset(train_pairs, mask_ratio)
+        train_loader = DataLoader(
+            train_ds,
             batch_size=batch_size,
             shuffle=True,
         )
+        val_loaders = [
+            DataLoader(
+                ScratchCardDataset(val_pairs, mask_ratio=r), batch_size=batch_size
+            )
+            for r in (0.3, 0.7)
+        ]
 
         # Initialize model and optimizer
         model = DynamicMET(
@@ -110,9 +158,15 @@ def main() -> None:
         )
 
         # Epoch loop with progress bar
+        scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.5)
+        early_stop = EarlyStopping(
+            patience=5, min_delta=0.001, restore_best_weights=True
+        )
+
+        trained_epochs = 0
         for epoch in range(1, epochs + 1):
             pbar = tqdm(
-                loader,
+                train_loader,
                 desc=f"{model_name} Epoch {epoch}/{epochs}",
                 unit="batch",
             )
@@ -131,6 +185,37 @@ def main() -> None:
                 avg_loss = total_loss / batch_idx
                 pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
 
+            avg_loss = total_loss / len(train_loader)
+
+            # Validation phase over multiple loaders
+            val_losses = []
+            topk = {"top1": 0.0, "top3": 0.0, "top5": 0.0}
+            for v_loader in val_loaders:
+                v_loss, v_metrics = evaluate_epoch(model, v_loader, device)
+                val_losses.append(v_loss)
+                for k in topk:
+                    topk[k] += v_metrics.get(k, 0.0)
+            val_loss = sum(val_losses) / len(val_losses)
+            for k in topk:
+                topk[k] /= len(val_loaders)
+            scheduler.step(val_loss)
+            logger.info(
+                "%s epoch %s: train_loss=%.4f val_loss=%.4f top1=%.3f top3=%.3f top5=%.3f",
+                model_name,
+                epoch,
+                avg_loss,
+                val_loss,
+                topk["top1"],
+                topk["top3"],
+                topk["top5"],
+            )
+            if early_stop.step(val_loss, model):
+                logger.info("Early stopping triggered for %s", model_name)
+                trained_epochs = epoch
+                break
+
+            trained_epochs = epoch
+
             # Save epoch checkpoint
             save_checkpoint(model, optimizer, epoch, prefix=model_name)
 
@@ -142,7 +227,7 @@ def main() -> None:
             {
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-                "epoch": epochs,
+                "epoch": trained_epochs or epochs,
                 "rows": rows,
                 "cols": cols,
             },
