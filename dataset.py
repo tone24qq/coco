@@ -90,8 +90,18 @@ class ScratchCardDataset(Dataset):
             ratio = torch.rand(1).mul_(high - low).add_(low).item()
         else:
             ratio = self.mask_ratio
-        mask = torch.rand(board.shape) < ratio
-        mask |= board == BLANK_VALUE
+        mask = torch.zeros_like(board, dtype=torch.bool)
+        blank_positions = board == BLANK_VALUE
+        mask |= blank_positions
+        target_pos = board == target
+        mask |= target_pos
+        candidates = (~blank_positions) & (~target_pos)
+        candidate_idx = torch.nonzero(candidates, as_tuple=False).squeeze(-1)
+        if candidate_idx.numel() > 0 and ratio > 0.0:
+            num_mask = int(ratio * float(candidate_idx.numel()))
+            if num_mask > 0:
+                perm = torch.randperm(candidate_idx.numel())[:num_mask]
+                mask[candidate_idx[perm]] = True
         inp = board.clone()
         inp[mask] = MASK_TOKEN_ID
         orig = torch.where(board == BLANK_VALUE, MASK_TOKEN_ID, board)

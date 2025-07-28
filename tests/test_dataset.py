@@ -18,6 +18,15 @@ def test_dataset_mask_ratio() -> None:
     assert item["target"].item() == 7
 
 
+def test_dataset_masks_target() -> None:
+    board = np.arange(1, 13).reshape(3, 4)
+    ds = ScratchCardDataset([(board, 7)], mask_ratio=0.0)
+    item = ds[0]
+    mask = item["mask"].reshape(board.shape)
+    target_pos = np.argwhere(board == 7)[0]
+    assert mask[tuple(target_pos)]
+
+
 def test_dataset_mask_ratio_range() -> None:
     data = [(np.arange(1, 13).reshape(3, 4), 7)]
     torch.manual_seed(0)
