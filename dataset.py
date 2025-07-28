@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -40,17 +40,37 @@ class ScratchCardDataset(Dataset):
     ----------
     boards : list of Tuple[np.ndarray, int]
         List of ``(board, target)`` pairs.
-    mask_ratio : float, optional
-        Fraction of fields to mask, by default ``0.6``.
+    mask_ratio : float or Sequence[float], optional
+        Fraction of fields to mask. When a sequence ``(min, max)`` is given,
+        a ratio is uniformly sampled from the range ``min..max`` for each item.
+        Defaults to ``0.6``.
     """
 
     def __init__(
-        self, boards: List[Tuple[np.ndarray, int]], mask_ratio: float = 0.6
+        self,
+        boards: List[Tuple[np.ndarray, int]],
+        mask_ratio: Union[float, Sequence[float]] = 0.6,
     ) -> None:
         self.boards, self.targets = zip(*boards)
         for b in self.boards:
             validate_board(np.asarray(b))
-        self.mask_ratio = mask_ratio
+
+        if isinstance(mask_ratio, Sequence) and not isinstance(
+            mask_ratio, (bytes, str)
+        ):
+            if len(mask_ratio) != 2:
+                raise ValueError("mask_ratio range must have two elements")
+            low, high = float(mask_ratio[0]), float(mask_ratio[1])
+            if not 0.0 <= low <= high <= 1.0:
+                raise ValueError("mask_ratio values must be between 0 and 1")
+            self.mask_ratio = None
+            self.mask_ratio_range = (low, high)
+        else:
+            ratio = float(mask_ratio)
+            if not 0.0 <= ratio <= 1.0:
+                raise ValueError("mask_ratio must be between 0 and 1")
+            self.mask_ratio = ratio
+            self.mask_ratio_range = None
 
     def __len__(self) -> int:  # noqa: D401
         """Return dataset size."""
@@ -64,7 +84,13 @@ class ScratchCardDataset(Dataset):
         board_arr = self.boards[idx].flatten()
         board = torch.from_numpy(board_arr).long()
         target = torch.tensor(int(self.targets[idx])).long()
-        mask = torch.rand(board.shape) < self.mask_ratio
+        if self.mask_ratio is None:
+            assert self.mask_ratio_range is not None  # noqa: S101
+            low, high = self.mask_ratio_range
+            ratio = torch.rand(1).mul_(high - low).add_(low).item()
+        else:
+            ratio = self.mask_ratio
+        mask = torch.rand(board.shape) < ratio
         mask |= board == BLANK_VALUE
         inp = board.clone()
         inp[mask] = MASK_TOKEN_ID

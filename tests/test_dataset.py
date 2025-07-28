@@ -18,6 +18,15 @@ def test_dataset_mask_ratio() -> None:
     assert item["target"].item() == 7
 
 
+def test_dataset_mask_ratio_range() -> None:
+    data = [(np.arange(1, 13).reshape(3, 4), 7)]
+    torch.manual_seed(0)
+    ds = ScratchCardDataset(data, mask_ratio=(0.3, 0.7))
+    item = ds[0]
+    mask = item["mask"].numpy()
+    assert 0.3 <= mask.mean() <= 0.7
+
+
 def test_dataset_validation_duplicate() -> None:
     board = np.array([[1, 2], [2, BLANK_VALUE]])
     with pytest.raises(ValueError):

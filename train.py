@@ -49,8 +49,9 @@ def main() -> None:
         cfg["training"]["epochs"] = args.epochs
     epochs = int(cfg["training"]["epochs"])
 
-    # Load all boards
-    boards = load_boards_from_archives(cfg["data"]["data_dir"])
+    # Load all boards and mask out the target number so the model learns to
+    # infer it from surrounding numbers
+    boards = load_boards_from_archives(cfg["data"]["data_dir"], mask_target=True)
     if not boards:
         raise ValueError("No boards loaded from data_dir")
     for b, _ in boards:
@@ -65,7 +66,11 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Extract and parse training hyperparams
-    mask_ratio = float(cfg["training"]["mask_ratio"])
+    if "mask_ratio_range" in cfg["training"]:
+        mask_ratio_cfg = cfg["training"]["mask_ratio_range"]
+        mask_ratio = (float(mask_ratio_cfg[0]), float(mask_ratio_cfg[1]))
+    else:
+        mask_ratio = float(cfg["training"].get("mask_ratio", 0.6))
     batch_size = int(cfg["training"]["batch_size"])
     lr = float(cfg["training"]["lr"])
     weight_decay = float(cfg["training"]["weight_decay"])
