@@ -64,4 +64,8 @@ def predict(
     for idx in top_indices:
         r, c = index_to_coord(int(idx), board.shape)
         results.append({"row": r, "col": c, "score": float(scores_all[idx])})
-    return ensure_only_blank(board, results, BLANK_VALUE)
+    results = ensure_only_blank(board, results, BLANK_VALUE)
+    for item in results:
+        item["row"] += 1
+        item["col"] += 1
+    return results

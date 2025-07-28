@@ -40,4 +40,5 @@ def test_met_agent_only_returns_blank() -> None:
     res = predict(board.copy(), target=target, model=model, topk=3)
     assert len(res) <= 3
     for item in res:
-        assert board[item["row"], item["col"]] == BLANK_VALUE
+        r0, c0 = item["row"] - 1, item["col"] - 1
+        assert board[r0, c0] == BLANK_VALUE

@@ -287,4 +287,8 @@ def predict(req: PredictRequest):
                 cell_value=int(flat[idx]),
             )
         )
-    return ensure_only_blank(board, raw, BLANK_VALUE)
+    validated = ensure_only_blank(board, raw, BLANK_VALUE)
+    for item in validated:
+        item.row += 1
+        item.col += 1
+    return validated

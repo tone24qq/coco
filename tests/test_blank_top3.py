@@ -13,5 +13,5 @@ def test_predict_only_blank_top3():
     payload = appmod.PredictRequest(board=board, target=1)
     result = appmod.predict(payload)
     assert len(result) == 2
-    blank_positions = {(0, 1), (1, 0)}
+    blank_positions = {(1, 2), (2, 1)}
     assert all((item.row, item.col) in blank_positions for item in result)

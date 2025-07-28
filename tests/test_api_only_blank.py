@@ -19,7 +19,7 @@ def test_api_predict_only_blank() -> None:
     # 應至少回傳一筆
     assert isinstance(data, list) and len(data) > 0
     for item in data:
-        r0, c0 = item["row"], item["col"]
+        r0, c0 = item["row"] - 1, item["col"] - 1
         assert board[r0][c0] == BLANK_VALUE
         # 驗證 debug 欄位
         assert item.get("idx") is not None
