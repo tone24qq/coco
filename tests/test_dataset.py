@@ -7,21 +7,21 @@ from dataset import ScratchCardDataset, validate_board
 torch = pytest.importorskip("torch")
 
 
-def test_dataset_mask_ratio() -> None:
+def test_dataset_reconstruct_ratio() -> None:
     data = [(np.arange(1, 13).reshape(3, 4), 7)]
     torch.manual_seed(0)  # ensure deterministic mask
-    ds = ScratchCardDataset(data, mask_ratio=0.6)
+    ds = ScratchCardDataset(data, mask_ratio=0.6, mode="reconstruct")
     item = ds[0]
     mask = item["mask"].numpy()
     assert mask.mean() == pytest.approx(0.6, rel=0.3)
     assert (item["input_vals"][mask] == MASK_TOKEN_ID).all()
-    assert item["target"].item() == 7
+    assert item["orig_vals"][mask].ne(MASK_TOKEN_ID).all()
 
 
 def test_dataset_mask_ratio_range() -> None:
     data = [(np.arange(1, 13).reshape(3, 4), 7)]
     torch.manual_seed(0)
-    ds = ScratchCardDataset(data, mask_ratio=(0.3, 0.7))
+    ds = ScratchCardDataset(data, mask_ratio=(0.3, 0.7), mode="reconstruct")
     item = ds[0]
     mask = item["mask"].numpy()
     assert 0.3 <= mask.mean() <= 0.7
@@ -37,3 +37,12 @@ def test_dataset_validation_range() -> None:
     board = np.array([[0, 1], [2, BLANK_VALUE]])
     with pytest.raises(ValueError):
         validate_board(board)
+
+
+def test_dataset_target_mode() -> None:
+    data = [(np.arange(1, 13).reshape(3, 4), 7)]
+    ds = ScratchCardDataset(data, mode="target")
+    item = ds[0]
+    mask = item["mask"].nonzero().squeeze().tolist()
+    assert mask == 6  # only the target position is masked (flattened index)
+    assert item["orig_vals"].sum().item() == 7

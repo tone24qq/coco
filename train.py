@@ -11,8 +11,11 @@ from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
-from utils.training import (EarlyStopping, cosine_schedule_with_warmup,
-                            masked_topk_accuracy)
+from utils.training import (
+    EarlyStopping,
+    cosine_schedule_with_warmup,
+    masked_topk_accuracy,
+)
 
 
 def train_epoch(
@@ -75,6 +78,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/tabular.yaml")
     parser.add_argument("--epochs", type=int)
+    parser.add_argument(
+        "--mode",
+        choices=["target", "reconstruct"],
+        default="target",
+        help="Masking mode: 'target' only masks the target cell,"
+        " 'reconstruct' masks a random portion of the board",
+    )
     args = parser.parse_args()
 
     # Load configuration
@@ -83,9 +93,8 @@ def main() -> None:
         cfg["training"]["epochs"] = args.epochs
     epochs = int(cfg["training"]["epochs"])
 
-    # Load all boards and mask out the target number so the model learns to
-    # infer it from surrounding numbers
-    boards = load_boards_from_archives(cfg["data"]["data_dir"], mask_target=True)
+    # Load all boards; masking is handled by the dataset according to mode
+    boards = load_boards_from_archives(cfg["data"]["data_dir"], mask_target=False)
     if not boards:
         raise ValueError("No boards loaded from data_dir")
     for b, _ in boards:
@@ -100,11 +109,14 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Extract and parse training hyperparams
-    if "mask_ratio_range" in cfg["training"]:
-        mask_ratio_cfg = cfg["training"]["mask_ratio_range"]
-        mask_ratio = (float(mask_ratio_cfg[0]), float(mask_ratio_cfg[1]))
+    if args.mode == "reconstruct":
+        if "mask_ratio_range" in cfg["training"]:
+            mask_ratio_cfg = cfg["training"]["mask_ratio_range"]
+            mask_ratio = (float(mask_ratio_cfg[0]), float(mask_ratio_cfg[1]))
+        else:
+            mask_ratio = float(cfg["training"].get("mask_ratio", 0.6))
     else:
-        mask_ratio = float(cfg["training"].get("mask_ratio", 0.6))
+        mask_ratio = 0.0
     batch_size = int(cfg["training"]["batch_size"])
     lr = float(cfg["training"]["lr"])
     weight_decay = float(cfg["training"]["weight_decay"])
@@ -131,17 +143,22 @@ def main() -> None:
             train_pairs = [group[i] for i in perm[:split]]
             val_pairs = [group[i] for i in perm[split:]]
 
-        train_ds = ScratchCardDataset(train_pairs, mask_ratio)
+        train_ds = ScratchCardDataset(train_pairs, mask_ratio, mode=args.mode)
         train_loader = DataLoader(
             train_ds,
             batch_size=batch_size,
             shuffle=True,
         )
+        if args.mode == "reconstruct":
+            val_ratios = (0.3, 0.7)
+        else:
+            val_ratios = (0.0,)
         val_loaders = [
             DataLoader(
-                ScratchCardDataset(val_pairs, mask_ratio=r), batch_size=batch_size
+                ScratchCardDataset(val_pairs, mask_ratio=r, mode=args.mode),
+                batch_size=batch_size,
             )
-            for r in (0.3, 0.7)
+            for r in val_ratios
         ]
 
         # Initialize model and optimizer
