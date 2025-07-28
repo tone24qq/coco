@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 import yaml
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -11,7 +11,8 @@ from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
-from utils.training import EarlyStopping, masked_topk_accuracy
+from utils.training import (EarlyStopping, cosine_schedule_with_warmup,
+                            masked_topk_accuracy)
 
 
 def train_epoch(
@@ -150,15 +151,22 @@ def main() -> None:
             d_model=int(cfg["model"]["d_model"]),
             nhead=int(cfg["model"]["nhead"]),
             depth=int(cfg["model"]["depth"]),
+            dropout=float(cfg["model"].get("dropout", 0.0)),
         ).to(device)
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=lr,
+            betas=(0.9, 0.95),
             weight_decay=weight_decay,
         )
 
+        total_steps = epochs * len(train_loader)
+        scheduler = LambdaLR(
+            optimizer,
+            lr_lambda=cosine_schedule_with_warmup(total_steps, warmup_steps=500),
+        )
         # Epoch loop with progress bar
-        scheduler = ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.5)
+
         early_stop = EarlyStopping(
             patience=5, min_delta=0.001, restore_best_weights=True
         )
@@ -181,6 +189,7 @@ def main() -> None:
                 )
                 loss.backward()
                 optimizer.step()
+                scheduler.step()
                 total_loss += loss.item()
                 avg_loss = total_loss / batch_idx
                 pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
@@ -198,7 +207,6 @@ def main() -> None:
             val_loss = sum(val_losses) / len(val_losses)
             for k in topk:
                 topk[k] /= len(val_loaders)
-            scheduler.step(val_loss)
             logger.info(
                 "%s epoch %s: train_loss=%.4f val_loss=%.4f top1=%.3f top3=%.3f top5=%.3f",
                 model_name,

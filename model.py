@@ -30,6 +30,8 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         if TORCH_AVAILABLE:
             super().__init__()  # type: ignore[misc]
             self.token_emb = nn.Embedding(num_values + 1, d_model)
+            self.field_embed = nn.Embedding(self.num_fields, d_model)
+            self.embed_dropout = nn.Dropout(dropout)
             self.blocks = nn.ModuleList(
                 [
                     TransformerBlock(
@@ -44,10 +46,19 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             )
             self.norm_out = nn.LayerNorm(d_model)
             self.head = nn.Linear(d_model, num_values + 1)
+        else:
+            self.token_emb = None
+            self.field_embed = None
+            self.embed_dropout = None
 
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":  # type: ignore[override]
         if TORCH_AVAILABLE:
+            _, N = x.shape
             tok = self.token_emb(x)
+            pos_ids = torch.arange(N, device=x.device)
+            pos = self.field_embed(pos_ids)
+            tok = tok + pos.unsqueeze(0)
+            tok = self.embed_dropout(tok)
             h = tok
             for blk in self.blocks:
                 h = blk(h, attn_mask=None)

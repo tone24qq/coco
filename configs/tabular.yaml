@@ -5,13 +5,14 @@ model:
   d_model: 128
   nhead: 4
   depth: 6
+  dropout: 0.1
 
 training:
   mask_ratio_range: [0.3, 0.7]
   batch_size: 64
   epochs: 20
-  lr: 1e-4
-  weight_decay: 1e-5
+  lr: 3e-4
+  weight_decay: 0.1
 
 data:
   data_dir: ./data_archives

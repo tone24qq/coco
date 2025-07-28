@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Dict, Sequence
+import math
+from typing import Callable, Dict, Sequence
 
 try:
     import torch
@@ -66,3 +67,17 @@ def masked_topk_accuracy(
             masked.float().mean().item() if masked.numel() > 0 else float("nan")
         )
     return metrics
+
+
+def cosine_schedule_with_warmup(
+    total_steps: int, warmup_steps: int = 500
+) -> "Callable[[int], float]":
+    """Return a LR lambda implementing warmup then cosine decay."""
+
+    def _lambda(step: int) -> float:
+        if step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+        progress = (step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+    return _lambda
