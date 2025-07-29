@@ -10,7 +10,7 @@ model:
 training:
   mask_ratio_range: [0.3, 0.7]
   batch_size: 64
-  epochs: 20
+  epochs: 10
   lr: 3e-4
   weight_decay: 0.01
   label_smoothing: 0.1
