@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
-from utils import load_heatmap
+from utils import bucket_of, load_heatmap
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
 
@@ -192,6 +192,13 @@ def main() -> None:
         ]
 
         target = group[0][1]
+        logger.info(
+            "[INFO] Loading heatmap: bucket=%s, file=heatmap_%s_%dx%d.npy",
+            bucket_of(target),
+            bucket_of(target),
+            rows,
+            cols,
+        )
         heat = load_heatmap(rows, cols, target).to(device)
         prior = torch.log(heat.flatten() + 1e-6).view(1, -1, 1)
 
@@ -226,6 +233,7 @@ def main() -> None:
         )
 
         trained_epochs = 0
+        zero_loss_epochs = 0
         for epoch in range(1, epochs + 1):
             pbar = tqdm(
                 train_loader,
@@ -292,6 +300,18 @@ def main() -> None:
             )
             if early_stop.step(val_loss, model):
                 logger.info("Early stopping triggered for %s", model_name)
+                trained_epochs = epoch
+                break
+
+            if avg_loss <= 1e-4:
+                zero_loss_epochs += 1
+            else:
+                zero_loss_epochs = 0
+            if zero_loss_epochs >= 3:
+                logger.info(
+                    "Loss below threshold for 3 consecutive epochs, stopping early for %s",
+                    model_name,
+                )
                 trained_epochs = epoch
                 break
 

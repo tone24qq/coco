@@ -64,6 +64,7 @@ def load_heatmap(
         return torch.full((rows, cols), 1.0 / (rows * cols), device=device)
 
     arr = np.load(path)
+    print(f"Loaded heatmap: {fname}")
     if arr.shape != (rows, cols):
         raise ValueError("heatmap shape mismatch")
     if torch is not None:
