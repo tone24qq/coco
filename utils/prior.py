@@ -28,11 +28,46 @@ def build_heatmap(
     return mat
 
 
-def load_heatmap(rows: int, cols: int, directory: str = "priors") -> "torch.Tensor":
-    """Load heatmap ``rows`` x ``cols`` from ``directory``."""
-    path = Path(directory) / f"heatmap_{rows}x{cols}.npy"
+def bucket_of(val: int) -> str:
+    """Return ``"small"`` | ``"mid"`` | ``"large"`` for ``val``."""
+
+    return "small" if val <= 5 else "mid" if val <= 15 else "large"
+
+
+def load_heatmap(
+    rows: int,
+    cols: int,
+    target: int | None = None,
+    device: str | "torch.device" = "cpu",
+) -> "torch.Tensor":
+    """Load a smoothed heatmap prior.
+
+    Parameters
+    ----------
+    rows, cols
+        Board shape.
+    target
+        Target value.  ``None`` uses the legacy single-map path.
+    device
+        Torch device string or object for output tensor.
+    """
+
+    if target is None:
+        fname = f"heatmap_{rows}x{cols}.npy"
+    else:
+        fname = f"heatmap_{bucket_of(target)}_{rows}x{cols}.npy"
+
+    path = Path("priors") / fname
+    if not path.exists():  # graceful fallback to uniform prior
+        if torch is None:  # pragma: no cover - torch missing
+            raise FileNotFoundError(path)
+        return torch.full((rows, cols), 1.0 / (rows * cols), device=device)
+
     arr = np.load(path)
     if arr.shape != (rows, cols):
         raise ValueError("heatmap shape mismatch")
-    tensor = torch.from_numpy(arr.astype(np.float32)) if TORCH_AVAILABLE else arr
+    if torch is not None:
+        tensor = torch.tensor(arr, device=device, dtype=torch.float32)
+    else:  # pragma: no cover - torch missing
+        tensor = arr
     return tensor

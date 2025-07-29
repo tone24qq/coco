@@ -1,5 +1,3 @@
-
-
 """Precompute heatmap and cell frequency statistics from datasets."""
 
 from __future__ import annotations
@@ -24,8 +22,8 @@ CONSIDER_BLANK_ONLY = True  # True ➔ 只把「還沒翻的格子」算進分�
 
 
 class Bucket(Enum):
-    SMALL = "small"  #  1–5
-    MID = "mid"  #  6–15
+    SMALL = "small"  # 1–5
+    MID = "mid"  # 6–15
     LARGE = "large"  # 16–20
 
 
