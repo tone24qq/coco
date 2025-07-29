@@ -3,19 +3,40 @@ from pathlib import Path
 
 import torch
 import yaml
+from torch import nn
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
+from utils import load_heatmap
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
-from utils.training import (
-    EarlyStopping,
-    cosine_schedule_with_warmup,
-    masked_topk_accuracy,
-)
+
+# fmt: off
+# isort: off
+from utils.training import (EarlyStopping, cosine_schedule_with_warmup, masked_topk_accuracy)
+# isort: on
+# fmt: on
+
+
+class FocalLoss(nn.Module):
+    """Compute Focal Loss for classification."""
+
+    def __init__(self, gamma: float = 1.5, reduction: str = "mean") -> None:
+        super().__init__()
+        self.gamma = float(gamma)
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        logp = nn.functional.log_softmax(logits, dim=-1)
+        gather = logp.gather(1, target.unsqueeze(1))
+        pt = gather.exp()
+        loss = -((1 - pt) ** self.gamma) * gather
+        if self.reduction == "mean":
+            return loss.mean()
+        return loss.sum()
 
 
 def train_epoch(
@@ -45,6 +66,9 @@ def evaluate_epoch(
     model: DynamicMET,
     loader: DataLoader,
     device: torch.device,
+    *,
+    prior: torch.Tensor | None = None,
+    alpha: float = 0.0,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate ``model`` and return loss and top-k accuracy."""
     model.eval()
@@ -57,6 +81,8 @@ def evaluate_epoch(
             orig = batch["orig_vals"].to(device)
             mask = batch["mask"].to(device)
             logits = model(inp)
+            if prior is not None:
+                logits = logits + alpha * prior
             loss = torch.nn.functional.cross_entropy(
                 logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
             )
@@ -78,6 +104,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/tabular.yaml")
     parser.add_argument("--epochs", type=int)
+    parser.add_argument("--alpha", type=float, default=0.4)
+    parser.add_argument("--gamma", type=float, default=1.5)
+    parser.add_argument("--margin", type=float, default=0.2)
+    parser.add_argument("--lambda_rank", type=float, default=0.3)
     parser.add_argument(
         "--mode",
         choices=["target", "reconstruct"],
@@ -161,6 +191,12 @@ def main() -> None:
             for r in val_ratios
         ]
 
+        heat = load_heatmap(rows, cols).to(device)
+        prior = torch.log(heat.flatten() + 1e-6)
+
+        criterion_cls = FocalLoss(gamma=args.gamma)
+        criterion_rank = nn.MarginRankingLoss(margin=args.margin)
+
         # Initialize model and optimizer
         model = DynamicMET(
             num_fields=int(cfg["model"]["num_fields"]),
@@ -201,9 +237,26 @@ def main() -> None:
                 orig = batch["orig_vals"].to(device)
                 optimizer.zero_grad()
                 logits = model(inp)
-                loss = torch.nn.functional.cross_entropy(
-                    logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
+                logits = logits + args.alpha * prior
+
+                flat_logits = logits.view(-1, logits.size(-1))
+                flat_target = orig.view(-1)
+                valid = flat_target.ne(MASK_TOKEN_ID)
+                clf_loss = criterion_cls(flat_logits[valid], flat_target[valid])
+
+                k = 3
+                neg_idx = torch.randint(
+                    0, logits.size(-1), (int(valid.sum().item()), k), device=device
                 )
+                pos_sc = (
+                    flat_logits[valid]
+                    .gather(1, flat_target[valid].unsqueeze(1))
+                    .squeeze(1)
+                )
+                neg_sc = flat_logits[valid].gather(1, neg_idx).mean(1)
+                rank_loss = criterion_rank(pos_sc, neg_sc, torch.ones_like(pos_sc))
+
+                loss = clf_loss + args.lambda_rank * rank_loss
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
@@ -217,7 +270,9 @@ def main() -> None:
             val_losses = []
             topk = {"top1": 0.0, "top3": 0.0, "top5": 0.0}
             for v_loader in val_loaders:
-                v_loss, v_metrics = evaluate_epoch(model, v_loader, device)
+                v_loss, v_metrics = evaluate_epoch(
+                    model, v_loader, device, prior=prior, alpha=args.alpha
+                )
                 val_losses.append(v_loss)
                 for k in topk:
                     topk[k] += v_metrics.get(k, 0.0)

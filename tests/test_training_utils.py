@@ -1,5 +1,7 @@
+import numpy as np
 import pytest
 
+from utils import load_heatmap
 from utils.training import EarlyStopping, masked_topk_accuracy
 
 torch = pytest.importorskip("torch")
@@ -22,3 +24,11 @@ def test_early_stopping_restore() -> None:
     model.weight.data.add_(1.0)
     assert es.step(0.6, model)
     assert torch.allclose(model.weight, initial)
+
+
+def test_load_heatmap(tmp_path) -> None:
+    arr = np.arange(9, dtype=np.float32).reshape(3, 3)
+    path = tmp_path / "heatmap_3x3.npy"
+    np.save(path, arr)
+    hm = load_heatmap(3, 3, directory=str(tmp_path))
+    assert hm.shape == (3, 3)
