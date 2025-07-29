@@ -191,7 +191,8 @@ def main() -> None:
             for r in val_ratios
         ]
 
-        heat = load_heatmap(rows, cols).to(device)
+        target = group[0][1]
+        heat = load_heatmap(rows, cols, target).to(device)
         prior = torch.log(heat.flatten() + 1e-6)
 
         criterion_cls = FocalLoss(gamma=args.gamma)

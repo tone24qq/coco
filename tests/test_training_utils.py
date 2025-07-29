@@ -26,9 +26,22 @@ def test_early_stopping_restore() -> None:
     assert torch.allclose(model.weight, initial)
 
 
-def test_load_heatmap(tmp_path) -> None:
+def test_load_heatmap(tmp_path, monkeypatch) -> None:
     arr = np.arange(9, dtype=np.float32).reshape(3, 3)
-    path = tmp_path / "heatmap_3x3.npy"
-    np.save(path, arr)
-    hm = load_heatmap(3, 3, directory=str(tmp_path))
+    arr = arr / arr.sum()
+    priors = tmp_path / "priors"
+    priors.mkdir()
+    np.save(priors / "heatmap_small_3x3.npy", arr)
+    monkeypatch.chdir(tmp_path)
+    hm = load_heatmap(3, 3, target=4, device="cpu")
     assert hm.shape == (3, 3)
+    assert abs(float(hm.sum()) - 1) < 1e-6
+    cv = float(hm.std() / hm.mean())
+    assert cv > 0.05
+
+
+def test_load_heatmap_fallback(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    hm = load_heatmap(2, 2, target=1, device="cpu")
+    assert hm.shape == (2, 2)
+    assert abs(float(hm.sum()) - 1) < 1e-6
