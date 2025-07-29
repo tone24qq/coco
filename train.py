@@ -154,6 +154,7 @@ def main() -> None:
     # Train a model for each board shape
     for shape, group in shape_groups.items():
         rows, cols = shape
+        target = group[0][1]
         model_name = f"{rows}x{cols}"
         logger.info(
             f"Starting training for shape {model_name} with {len(group)} samples"
@@ -191,7 +192,7 @@ def main() -> None:
             for r in val_ratios
         ]
 
-        heat = load_heatmap(rows, cols).to(device)
+        heat = load_heatmap(rows, cols, target, device=device)
         prior = torch.log(heat.flatten() + 1e-6)
 
         criterion_cls = FocalLoss(gamma=args.gamma)

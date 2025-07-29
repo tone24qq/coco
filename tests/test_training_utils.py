@@ -28,7 +28,7 @@ def test_early_stopping_restore() -> None:
 
 def test_load_heatmap(tmp_path) -> None:
     arr = np.arange(9, dtype=np.float32).reshape(3, 3)
-    path = tmp_path / "heatmap_3x3.npy"
+    path = tmp_path / "heatmap_mid_3x3.npy"
     np.save(path, arr)
-    hm = load_heatmap(3, 3, directory=str(tmp_path))
+    hm = load_heatmap(3, 3, target=7, directory=str(tmp_path))
     assert hm.shape == (3, 3)
