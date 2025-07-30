@@ -3,22 +3,20 @@ model:
   num_fields: ${BOARD_ROWS}*${BOARD_COLS}
   num_values: ${MAX_VALUE}
   d_model: 128
-  nhead: 4          # 128/4=32 維/頭，屬常見穩定配置
+  nhead: 4
   depth: 6
   dropout: 0.1
 
 training:
-  # 高遮蔽但非極端，覆蓋實戰分佈；可配課表（見下）
   mask_ratio_range: [0.30, 0.70]
-  batch_size: 64     # 若顯存足夠可到 128，LR 可線性放大
-  epochs: 20         # 曲線若仍上升可延長至 30
-  lr: 3e-4           # AdamW
-  weight_decay: 0.01 # PyTorch AdamW 預設值，視過擬合再調
-  label_smoothing: 0.1   # 建議開啟
+  batch_size: 64
+  epochs: 20
+  lr: 3e-4
+  weight_decay: 0.01
+  label_smoothing: 0.1
   scheduler:
     type: cosine
     warmup_epochs: 2
-  #（可選）微調/多任務時使用層別 LR 衰減
   layerwise_lr_decay: 0.65
 
 data:
