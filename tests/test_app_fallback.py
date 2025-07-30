@@ -15,6 +15,11 @@ def test_app_predict_numpy(monkeypatch):
     importlib.reload(appmod)
     appmod.models.clear()
     appmod.models[(2, 2)] = model.DynamicMET(4, 5)
+    monkeypatch.setattr(
+        appmod,
+        "load_heatmap",
+        lambda r, c, target=None: np.full((r, c), 1.0 / (r * c), dtype=np.float32),
+    )
     board = np.array([[1, 2], [3, -1]]).tolist()
     payload = appmod.PredictRequest(board=board, target_value=1)
     result = appmod.predict(payload)

@@ -15,13 +15,17 @@ from pydantic import BaseModel, Field, model_validator
 
 from dataset import BLANK_VALUE
 from model import DynamicMET
-from utils import ensure_only_blank
+from utils import (ensure_only_blank, fuse_predictions_with_heatmap,
+                   load_heatmap)
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+MODEL_WEIGHT = float(os.environ.get("MODEL_WEIGHT", "0.8"))
+HEATMAP_WEIGHT = float(os.environ.get("HEATMAP_WEIGHT", "0.2"))
 
 app = FastAPI(title="Matrix Factorization Service", version="0.1.0")
 
@@ -242,7 +246,20 @@ def predict(req: PredictRequest):
             )
         scores_np = arr[0, :, target_idx]
 
-    candidate_scores = scores_np[mask_pos]
+    heat = load_heatmap(rows, cols, target=None)
+    if torch is not None and hasattr(heat, "cpu"):
+        heat_np = heat.cpu().numpy()
+    else:
+        heat_np = np.asarray(heat)
+    fused_scores = fuse_predictions_with_heatmap(
+        scores_np,
+        heat_np,
+        board,
+        model_weight=MODEL_WEIGHT,
+        heatmap_weight=HEATMAP_WEIGHT,
+    )
+
+    candidate_scores = fused_scores[mask_pos]
     topk_local = np.argsort(candidate_scores)[-min(3, len(candidate_scores)) :][::-1]
     logger.info(
         "從 %s 個候選格中挑選前 %s 名", len(candidate_scores), len(topk_local)
@@ -282,7 +299,7 @@ def predict(req: PredictRequest):
             Prediction(
                 row=r,
                 col=c,
-                score=float(scores_np[idx]),
+                score=float(fused_scores[idx]),
                 idx=int(idx),
                 cell_value=int(flat[idx]),
             )
