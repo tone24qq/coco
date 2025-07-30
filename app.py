@@ -291,4 +291,10 @@ def predict(req: PredictRequest):
     for item in validated:
         item.row += 1
         item.col += 1
+    # 中文 log：列印前三名位置與機率百分比
+    percent_msg = " ".join(
+        f"top{i + 1}={item.row}-{item.col}({item.score * 100:.0f}%)"
+        for i, item in enumerate(validated)
+    )
+    logger.info("預測機率 %s", percent_msg)
     return validated

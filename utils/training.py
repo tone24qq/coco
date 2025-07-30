@@ -81,3 +81,10 @@ def cosine_schedule_with_warmup(
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
     return _lambda
+
+
+def is_zero_loss(loss: float, eps: float = 1e-4) -> bool:
+    """Return ``True`` if ``loss`` is close to zero."""
+
+    # 中文註釋：允許極小的浮點誤差視為零損失
+    return abs(loss) <= eps

@@ -1,6 +1,6 @@
 import pytest
 
-from utils.training import EarlyStopping, masked_topk_accuracy
+from utils.training import EarlyStopping, is_zero_loss, masked_topk_accuracy
 
 torch = pytest.importorskip("torch")
 
@@ -22,3 +22,9 @@ def test_early_stopping_restore() -> None:
     model.weight.data.add_(1.0)
     assert es.step(0.6, model)
     assert torch.allclose(model.weight, initial)
+
+
+def test_is_zero_loss() -> None:
+    assert is_zero_loss(0.0)
+    assert is_zero_loss(5e-05)
+    assert not is_zero_loss(1e-3)

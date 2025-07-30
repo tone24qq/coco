@@ -11,11 +11,16 @@ from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
+
+# isort: off
 from utils.training import (
     EarlyStopping,
     cosine_schedule_with_warmup,
+    is_zero_loss,
     masked_topk_accuracy,
 )
+
+# isort: on
 
 
 def train_epoch(
@@ -196,6 +201,7 @@ def main() -> None:
                 unit="batch",
             )
             total_loss = 0.0
+            zero_loss = False  # 中文註釋：偵測是否出現零損失
             for batch_idx, batch in enumerate(pbar, start=1):
                 inp = batch["input_vals"].to(device)
                 orig = batch["orig_vals"].to(device)
@@ -208,8 +214,16 @@ def main() -> None:
                 optimizer.step()
                 scheduler.step()
                 total_loss += loss.item()
+                if is_zero_loss(loss.item()):
+                    logger.info("偵測到 loss=0.000，提前結束此尺寸訓練")
+                    zero_loss = True
+                    break
                 avg_loss = total_loss / batch_idx
                 pbar.set_postfix({"loss": f"{avg_loss:.4f}"})
+
+            if zero_loss:
+                trained_epochs = epoch
+                break
 
             avg_loss = total_loss / len(train_loader)
 
