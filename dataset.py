@@ -16,6 +16,22 @@ MASK_TOKEN_ID = 0
 BLANK_VALUE = -1
 
 
+def mask_target_patch(
+    board: np.ndarray, target_pos: tuple[int, int], patch_size: int = 3
+) -> np.ndarray:
+    """Return a boolean mask for ``board`` masking a square patch around target."""
+    rows, cols = board.shape
+    half = patch_size // 2
+    r0, c0 = target_pos
+    mask = np.zeros_like(board, dtype=bool)
+    for dr in range(-half, half + 1):
+        for dc in range(-half, half + 1):
+            r, c = r0 + dr, c0 + dc
+            if 0 <= r < rows and 0 <= c < cols:
+                mask[r, c] = True
+    return mask
+
+
 def validate_board(board: np.ndarray) -> None:
     """Validate board contents.
 
@@ -56,14 +72,16 @@ class ScratchCardDataset(Dataset):
         mask_ratio: Union[float, Sequence[float]] = 0.6,
         *,
         mode: str = "reconstruct",
+        patch_size: int = 3,
     ) -> None:
         self.boards, self.targets = zip(*boards)
         for b in self.boards:
             validate_board(np.asarray(b))
 
-        if mode not in {"target", "reconstruct"}:
-            raise ValueError("mode must be 'target' or 'reconstruct'")
+        if mode not in {"target", "reconstruct", "patch"}:
+            raise ValueError("mode must be 'target', 'patch' or 'reconstruct'")
         self.mode = mode
+        self.patch_size = int(patch_size)
 
         if self.mode == "reconstruct":
             if isinstance(mask_ratio, Sequence) and not isinstance(
@@ -110,8 +128,14 @@ class ScratchCardDataset(Dataset):
             mask = torch.rand(board.shape) < ratio
             mask |= board == target_val
             mask |= board == BLANK_VALUE
-        else:  # target mode
+        elif self.mode == "target":
             mask = (board == target_val) | (board == BLANK_VALUE)
+        else:  # patch mode
+            board2d = self.boards[idx]
+            r, c = np.argwhere(board2d == target_val)[0]
+            mask_np = mask_target_patch(board2d, (r, c), patch_size=self.patch_size)
+            mask_np |= board2d == BLANK_VALUE
+            mask = torch.from_numpy(mask_np.flatten())
 
         inp = board.clone()
         inp[mask] = MASK_TOKEN_ID

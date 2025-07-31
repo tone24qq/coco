@@ -46,3 +46,14 @@ def test_dataset_target_mode() -> None:
     mask = item["mask"].nonzero().squeeze().tolist()
     assert mask == 6  # only the target position is masked (flattened index)
     assert item["orig_vals"].sum().item() == 7
+
+
+def test_dataset_patch_mode() -> None:
+    board = np.arange(1, 13).reshape(3, 4)
+    ds = ScratchCardDataset([(board, 6)], mode="patch", patch_size=3)
+    item = ds[0]
+    mask = item["mask"].numpy().reshape(3, 4)
+    expected = np.zeros((3, 4), dtype=bool)
+    expected[0:3, 0:3] = True
+    assert np.array_equal(mask, expected)
+    assert item["input_vals"][mask].eq(MASK_TOKEN_ID).all()

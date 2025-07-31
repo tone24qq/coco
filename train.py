@@ -85,11 +85,14 @@ def main() -> None:
     parser.add_argument("--epochs", type=int)
     parser.add_argument(
         "--mode",
-        choices=["target", "reconstruct"],
+        choices=["target", "reconstruct", "patch"],
         default="target",
-        help="Masking mode: 'target' only masks the target cell,"
-        " 'reconstruct' masks a random portion of the board",
+        help=(
+            "Masking mode: 'target' only masks the target cell, 'patch' masks a "
+            "3x3 area around it, 'reconstruct' masks a random portion of the board"
+        ),
     )
+    parser.add_argument("--patch-size", type=int, default=3)
     args = parser.parse_args()
 
     # Load configuration
@@ -148,7 +151,12 @@ def main() -> None:
             train_pairs = [group[i] for i in perm[:split]]
             val_pairs = [group[i] for i in perm[split:]]
 
-        train_ds = ScratchCardDataset(train_pairs, mask_ratio, mode=args.mode)
+        train_ds = ScratchCardDataset(
+            train_pairs,
+            mask_ratio,
+            mode=args.mode,
+            patch_size=args.patch_size,
+        )
         train_loader = DataLoader(
             train_ds,
             batch_size=batch_size,
@@ -160,7 +168,9 @@ def main() -> None:
             val_ratios = (0.0,)
         val_loaders = [
             DataLoader(
-                ScratchCardDataset(val_pairs, mask_ratio=r, mode=args.mode),
+                ScratchCardDataset(
+                    val_pairs, mask_ratio=r, mode=args.mode, patch_size=args.patch_size
+                ),
                 batch_size=batch_size,
             )
             for r in val_ratios
