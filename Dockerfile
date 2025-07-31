@@ -25,7 +25,7 @@ RUN pip install --upgrade pip setuptools wheel \
 
 # 再把專案原始碼放進來
 COPY . .
-ENV LOG_LEVEL=debug
+ENV LOG_LEVEL=DEBUG
 # 預設執行指令（依你的專案入口）
 # 若採方案4，app 模組是 app:app；若改用 coco_service.main，請調整為 coco_service.main:app
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
