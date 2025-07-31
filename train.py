@@ -287,6 +287,15 @@ def main() -> None:
                 topk["top3"],
                 topk["top5"],
             )
+            # 如果在 validation 上 top1/top3/top5 都達到 1.0，就提早結束此尺寸訓練
+            if topk["top1"] == 1.0 and topk["top3"] == 1.0 and topk["top5"] == 1.0:
+                logger.info(
+                    "Validation perfect for %s at epoch %s → stopping early.",
+                    model_name,
+                    epoch,
+                )
+                trained_epochs = epoch
+                break
             if early_stop.step(val_loss, model):
                 logger.info("Early stopping triggered for %s", model_name)
                 trained_epochs = epoch
