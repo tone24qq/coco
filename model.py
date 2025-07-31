@@ -23,14 +23,24 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         depth: int = 6,
         dropout: float = 0.0,
         use_flash: bool = False,
+        *,
+        rows: int = 1,
+        cols: int | None = None,
     ) -> None:
         self.num_fields = int(num_fields)
         self.num_values = int(num_values)
         self.d_model = int(d_model)
+        self.rows = int(rows)
+        self.cols = int(cols if cols is not None else rows if rows > 0 else 1)
+        if self.rows * self.cols != self.num_fields:
+            raise ValueError("rows*cols must equal num_fields")
         if TORCH_AVAILABLE:
             super().__init__()  # type: ignore[misc]
             self.token_emb = nn.Embedding(num_values + 1, d_model)
-            self.field_embed = nn.Embedding(self.num_fields, d_model)
+            row_dim = d_model // 2
+            col_dim = d_model - row_dim
+            self.row_emb = nn.Embedding(self.rows, row_dim)
+            self.col_emb = nn.Embedding(self.cols, col_dim)
             self.embed_dropout = nn.Dropout(dropout)
             self.blocks = nn.ModuleList(
                 [
@@ -40,6 +50,8 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
                         dropout=dropout,
                         hidden_mult=2.0,
                         use_flash=use_flash,
+                        rows=self.rows,
+                        cols=self.cols,
                     )
                     for _ in range(depth)
                 ]
@@ -48,7 +60,8 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             self.head = nn.Linear(d_model, num_values + 1)
         else:
             self.token_emb = None
-            self.field_embed = None
+            self.row_emb = None
+            self.col_emb = None
             self.embed_dropout = None
 
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":  # type: ignore[override]
@@ -56,12 +69,14 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             _, N = x.shape
             tok = self.token_emb(x)
             pos_ids = torch.arange(N, device=x.device)
-            pos = self.field_embed(pos_ids)
+            row_ids = torch.div(pos_ids, self.cols, rounding_mode="floor")
+            col_ids = pos_ids % self.cols
+            pos = torch.cat([self.row_emb(row_ids), self.col_emb(col_ids)], dim=-1)
             tok = tok + pos.unsqueeze(0)
             tok = self.embed_dropout(tok)
             h = tok
             for blk in self.blocks:
-                h = blk(h, attn_mask=None)
+                h = blk(h, row_ids, col_ids, attn_mask=None)
             h = self.norm_out(h)
             logits = self.head(h)
             return logits

@@ -20,7 +20,7 @@ def main() -> None:
         board = np.array(json.load(f)["board"], dtype=int)
 
     rows, cols = board.shape
-    model = DynamicMET(rows * cols, 80)
+    model = DynamicMET(rows * cols, 80, rows=rows, cols=cols)
     ckpt = torch.load(args.model, map_location="cpu")
     model.load_state_dict(ckpt["model"])  # type: ignore[arg-type]
 

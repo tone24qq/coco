@@ -89,7 +89,7 @@ models: Dict[Tuple[int, int], DynamicMET] = {}
 
 def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
     n = rows * cols
-    model = DynamicMET(n, n)
+    model = DynamicMET(n, n, rows=rows, cols=cols)
     if torch is not None and os.path.exists(path):
         ckpt = torch.load(path, map_location="cpu")
         state = ckpt.get("model", ckpt)
@@ -119,7 +119,7 @@ def _discover_models() -> None:
         found = True
     if not found:
         r, c = 8, 10
-        models[(r, c)] = DynamicMET(r * c, r * c)
+        models[(r, c)] = DynamicMET(r * c, r * c, rows=r, cols=c)
         if hasattr(models[(r, c)], "eval"):
             models[(r, c)].eval()
         logger.warning(
@@ -130,6 +130,12 @@ def _discover_models() -> None:
 @app.on_event("startup")
 def load_models() -> None:
     """Search and load checkpoints following pattern met_{R}x{C}.pth."""
+    root_logger = logging.getLogger()
+    env_level = os.environ.get("LOG_LEVEL")
+    if env_level:
+        root_logger.setLevel(env_level.upper())
+    else:
+        root_logger.setLevel(logging.getLogger("uvicorn").level)
     logger.info("應用啟動，準備載入模型")  # 中文log：啟動事件
     _discover_models()
 
@@ -197,7 +203,7 @@ def predict(req: PredictRequest):
         logger.info(
             "尚未載入 %sx%s 的模型，立即建立", rows, cols
         )  # 中文log：動態建立模型
-        model = DynamicMET(n, n)
+        model = DynamicMET(n, n, rows=rows, cols=cols)
         if hasattr(model, "eval"):
             model.eval()
         models[(rows, cols)] = model
@@ -208,6 +214,17 @@ def predict(req: PredictRequest):
         # use as_tensor to avoid copy and specify dtype explicitly
         inp = torch.as_tensor(flat_input, dtype=torch.long).unsqueeze(0)
         logits = model(inp)  # type: ignore[misc]
+        if logger.isEnabledFor(logging.DEBUG):
+            n_f = logits.size(1)
+            pos_ids = torch.arange(n_f, device=logits.device)
+            row_ids = torch.div(pos_ids, cols, rounding_mode="floor")
+            col_ids = pos_ids % cols
+            logger.debug(
+                "[RoPE] row_ids=%s col_ids=%s sample_q=%s",
+                row_ids[:10].tolist(),
+                col_ids[:10].tolist(),
+                logits[0, :5, :5].detach().cpu().numpy().round(4),
+            )
         probs = torch.softmax(logits, dim=-1)
         logger.info(
             "[PRED] torch path: inp=%s logits=%s probs=%s",

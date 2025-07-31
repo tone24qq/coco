@@ -174,6 +174,8 @@ def main() -> None:
             nhead=int(cfg["model"]["nhead"]),
             depth=int(cfg["model"]["depth"]),
             dropout=float(cfg["model"].get("dropout", 0.0)),
+            rows=rows,
+            cols=cols,
         ).to(device)
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -236,7 +238,7 @@ def main() -> None:
             for k in topk:
                 topk[k] /= len(val_loaders)
             logger.info(
-                "%s epoch %s: train_loss=%.4f val_loss=%.4f top1=%.3f top3=%.3f top5=%.3f",
+                "%s epoch %s: train_loss=%.4f val_loss=%.4f top1_acc=%.3f top3=%.3f top5=%.3f",
                 model_name,
                 epoch,
                 avg_loss,
