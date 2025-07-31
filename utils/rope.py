@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Tuple
+
+logger = logging.getLogger(__name__)
+_rope2d_logged = False
 
 try:
     import torch
@@ -34,8 +38,10 @@ def build_rope_cache(
     return cos[:, :dim], sin[:, :dim]
 
 
-def apply_rope(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
-    """對 q,k 套用 RoPE"""
+def apply_rope(
+    q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply 1D RoPE to ``q`` and ``k``."""
     cos = cos.unsqueeze(0).unsqueeze(0)
     sin = sin.unsqueeze(0).unsqueeze(0)
 
@@ -55,4 +61,39 @@ def apply_rope(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.T
     k_rot = _rotate(k)
     q_out = q * cos + q_rot * sin
     k_out = k * cos + k_rot * sin
+    return q_out, k_out
+
+
+def apply_rope_2d(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    cos_row: torch.Tensor,
+    sin_row: torch.Tensor,
+    cos_col: torch.Tensor,
+    sin_col: torch.Tensor,
+    row_ids: torch.Tensor,
+    col_ids: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply 2D RoPE using row and column caches."""
+
+    global _rope2d_logged
+    if logger.isEnabledFor(logging.DEBUG) and not _rope2d_logged:
+        logger.debug("已套用二維相對位置編碼，張量形狀：%s", tuple(q.shape))
+        _rope2d_logged = True
+
+    row_dim = q.shape[-1] // 2
+
+    q_row, q_col = q[..., :row_dim], q[..., row_dim:]
+    k_row, k_col = k[..., :row_dim], k[..., row_dim:]
+
+    row_cos = cos_row[row_ids]
+    row_sin = sin_row[row_ids]
+    col_cos = cos_col[col_ids]
+    col_sin = sin_col[col_ids]
+
+    q_row, k_row = apply_rope(q_row, k_row, row_cos, row_sin)
+    q_col, k_col = apply_rope(q_col, k_col, col_cos, col_sin)
+
+    q_out = torch.cat([q_row, q_col], dim=-1)
+    k_out = torch.cat([k_row, k_col], dim=-1)
     return q_out, k_out

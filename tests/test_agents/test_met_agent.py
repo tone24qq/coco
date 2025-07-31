@@ -16,7 +16,7 @@ def test_met_agent_predict_on_10x12() -> None:
     non_blanks = np.argwhere(grid != BLANK_VALUE)
     target_r, target_c = non_blanks[rng.integers(len(non_blanks))]
     target = int(grid[target_r, target_c])
-    model = DynamicMET(rows * cols, 100)
+    model = DynamicMET(rows * cols, 100, rows=rows, cols=cols)
     result = predict(grid.copy(), target=target, model=model)
     assert isinstance(result, list)
     assert len(result) > 0
@@ -35,7 +35,7 @@ def test_met_agent_only_returns_blank() -> None:
             [16, BLANK_VALUE, 18, 19, 20],
         ]
     )
-    model = DynamicMET(rows * cols, rows * cols + 1)
+    model = DynamicMET(rows * cols, rows * cols + 1, rows=rows, cols=cols)
     target = 15
     res = predict(board.copy(), target=target, model=model, topk=3)
     assert len(res) <= 3

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -22,7 +23,9 @@ try:
 except Exception:  # pragma: no cover
     HAS_FLASH = False
 
-from utils.rope import apply_rope, build_rope_cache
+from utils.rope import apply_rope_2d, build_rope_cache
+
+logger = logging.getLogger(__name__)
 
 if not TORCH_AVAILABLE:
 
@@ -91,9 +94,9 @@ else:
         use_flash: bool = False
 
     class RoPEAttention(nn.Module):
-        """多頭注意力，內建 RoPE，可選 FlashAttention-2。"""
+        """Multi-head attention with optional 2D RoPE."""
 
-        def __init__(self, cfg: AttnConfig):
+        def __init__(self, cfg: AttnConfig, *, rows: int = 1, cols: int | None = None):
             super().__init__()
             assert cfg.dim % cfg.n_heads == 0, "dim must be divisible by n_heads"
             self.cfg = cfg
@@ -104,24 +107,53 @@ else:
             self.resid_dropout = nn.Dropout(cfg.dropout)
             self.register_buffer("_cos", torch.empty(0), persistent=False)
             self.register_buffer("_sin", torch.empty(0), persistent=False)
+            self.register_buffer("_cos_row", torch.empty(0), persistent=False)
+            self.register_buffer("_sin_row", torch.empty(0), persistent=False)
+            self.register_buffer("_cos_col", torch.empty(0), persistent=False)
+            self.register_buffer("_sin_col", torch.empty(0), persistent=False)
+            self.rows = int(rows)
+            self.cols = int(cols if cols is not None else rows)
+            if self.rows * self.cols <= 0:
+                raise ValueError("rows and cols must be positive")
 
-        def _rope_cache(
-            self, seq_len: int, device: torch.device
-        ) -> Tuple[torch.Tensor, torch.Tensor]:
+        def _rope_cache_2d(
+            self, device: torch.device
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            row_dim = self.head_dim // 2
+            col_dim = self.head_dim - row_dim
             if (
-                self._cos.numel() == 0
-                or self._cos.size(0) < seq_len
-                or self._cos.device != device
+                self._cos_row.numel() == 0
+                or self._cos_row.size(0) < self.rows
+                or self._cos_row.device != device
             ):
-                cos, sin = build_rope_cache(
-                    seq_len, self.head_dim, base=self.cfg.rope_base, device=device
+                cos_r, sin_r = build_rope_cache(
+                    self.rows, row_dim, base=self.cfg.rope_base, device=device
                 )
-                self._cos = cos
-                self._sin = sin
-            return self._cos[:seq_len], self._sin[:seq_len]
+                self._cos_row = cos_r
+                self._sin_row = sin_r
+            if (
+                self._cos_col.numel() == 0
+                or self._cos_col.size(0) < self.cols
+                or self._cos_col.device != device
+            ):
+                cos_c, sin_c = build_rope_cache(
+                    self.cols, col_dim, base=self.cfg.rope_base, device=device
+                )
+                self._cos_col = cos_c
+                self._sin_col = sin_c
+            return (
+                self._cos_row[: self.rows],
+                self._sin_row[: self.rows],
+                self._cos_col[: self.cols],
+                self._sin_col[: self.cols],
+            )
 
         def forward(
-            self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None
+            self,
+            x: torch.Tensor,
+            row_ids: torch.Tensor,
+            col_ids: torch.Tensor,
+            attn_mask: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
             B, N, D = x.shape
             qkv = self.qkv(x)
@@ -131,8 +163,16 @@ else:
             k = k.view(B, N, H, self.head_dim).transpose(1, 2)
             v = v.view(B, N, H, self.head_dim).transpose(1, 2)
 
-            cos, sin = self._rope_cache(N, x.device)
-            q, k = apply_rope(q, k, cos, sin)
+            cos_r, sin_r, cos_c, sin_c = self._rope_cache_2d(x.device)
+            q, k = apply_rope_2d(q, k, cos_r, sin_r, cos_c, sin_c, row_ids, col_ids)
+            if logger.isEnabledFor(logging.DEBUG):
+                dr = row_ids[1:] - row_ids[:-1]
+                dc = col_ids[1:] - col_ids[:-1]
+                logger.debug(
+                    "q/k 已旋轉，行(row)變動均值=%.2f，列(col)變動均值=%.2f",
+                    dr.float().abs().mean().item(),
+                    dc.float().abs().mean().item(),
+                )
 
             if self.cfg.use_flash and HAS_FLASH and x.is_cuda:
                 q_f = q.transpose(1, 2)
@@ -167,20 +207,29 @@ else:
             dropout: float = 0.0,
             hidden_mult: float = 2.0,
             use_flash: bool = False,
+            *,
+            rows: int = 1,
+            cols: int | None = None,
         ):
             super().__init__()
             self.norm1 = RMSNorm(dim)
             self.attn = RoPEAttention(
                 AttnConfig(
                     dim=dim, n_heads=n_heads, dropout=dropout, use_flash=use_flash
-                )
+                ),
+                rows=rows,
+                cols=cols,
             )
             self.norm2 = RMSNorm(dim)
             self.ff = SwiGLU(dim, hidden_mult=hidden_mult, dropout=dropout)
 
         def forward(
-            self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None
+            self,
+            x: torch.Tensor,
+            row_ids: torch.Tensor,
+            col_ids: torch.Tensor,
+            attn_mask: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:  # noqa: D401
-            x = x + self.attn(self.norm1(x), attn_mask)
+            x = x + self.attn(self.norm1(x), row_ids, col_ids, attn_mask)
             x = x + self.ff(self.norm2(x))
             return x
