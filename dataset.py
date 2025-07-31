@@ -130,12 +130,15 @@ class ScratchCardDataset(Dataset):
             mask |= board == BLANK_VALUE
         elif self.mode == "target":
             mask = (board == target_val) | (board == BLANK_VALUE)
-        else:  # patch mode
+        elif self.mode == "patch":
             board2d = self.boards[idx]
             r, c = np.argwhere(board2d == target_val)[0]
             mask_np = mask_target_patch(board2d, (r, c), patch_size=self.patch_size)
             mask_np |= board2d == BLANK_VALUE
             mask = torch.from_numpy(mask_np.flatten())
+            print(f"[DEBUG] mask_count = {mask.sum()}")
+        else:
+            raise ValueError(f"Unsupported mode: {self.mode}")
 
         inp = board.clone()
         inp[mask] = MASK_TOKEN_ID
