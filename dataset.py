@@ -136,7 +136,7 @@ class ScratchCardDataset(Dataset):
             mask_np = mask_target_patch(board2d, (r, c), patch_size=self.patch_size)
             mask_np |= board2d == BLANK_VALUE
             mask = torch.from_numpy(mask_np.flatten())
-            print(f"[DEBUG] mask_count = {mask.sum()}")
+            # debug 輸出已移除
         else:
             raise ValueError(f"Unsupported mode: {self.mode}")
 
