@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import yaml
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -28,6 +29,7 @@ def train_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    criterion: torch.nn.Module,
 ) -> float:
     """Train `model` for one epoch and return average loss."""
     model.train()
@@ -36,9 +38,7 @@ def train_epoch(
         inp = batch["input_vals"].to(device)
         orig = batch["orig_vals"].to(device)
         logits = model(inp)
-        loss = torch.nn.functional.cross_entropy(
-            logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
-        )
+        loss = criterion(logits.permute(0, 2, 1), orig)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -50,6 +50,7 @@ def evaluate_epoch(
     model: DynamicMET,
     loader: DataLoader,
     device: torch.device,
+    criterion: torch.nn.Module,
 ) -> tuple[float, dict[str, float]]:
     """Evaluate ``model`` and return loss and top-k accuracy."""
     model.eval()
@@ -62,9 +63,7 @@ def evaluate_epoch(
             orig = batch["orig_vals"].to(device)
             mask = batch["mask"].to(device)
             logits = model(inp)
-            loss = torch.nn.functional.cross_entropy(
-                logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
-            )
+            loss = criterion(logits.permute(0, 2, 1), orig)
             total_loss += loss.item()
             m = masked_topk_accuracy(logits, orig, mask)
             for k, v in m.items():
@@ -187,17 +186,50 @@ def main() -> None:
             rows=rows,
             cols=cols,
         ).to(device)
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=lr,
-            betas=(0.9, 0.95),
-            weight_decay=weight_decay,
+        layer_decay = float(cfg["training"].get("layerwise_lr_decay", 1.0))
+        if layer_decay != 1.0 and hasattr(model, "blocks"):
+            param_groups = []
+            n_layers = len(model.blocks)
+            for i, block in enumerate(model.blocks):
+                scale = layer_decay ** (n_layers - i - 1)
+                param_groups.append({"params": block.parameters(), "lr": lr * scale})
+
+            other_params = []
+            for mod in [
+                model.token_emb,
+                model.row_emb,
+                model.col_emb,
+                model.embed_dropout,
+                model.norm_out,
+                model.head,
+            ]:
+                if mod is not None:
+                    other_params += list(mod.parameters())
+            param_groups.append({"params": other_params, "lr": lr})
+            optimizer = torch.optim.AdamW(
+                param_groups, betas=(0.9, 0.95), weight_decay=weight_decay
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=lr,
+                betas=(0.9, 0.95),
+                weight_decay=weight_decay,
+            )
+
+        criterion = nn.CrossEntropyLoss(
+            ignore_index=MASK_TOKEN_ID,
+            label_smoothing=float(cfg["training"].get("label_smoothing", 0.0)),
         )
 
         total_steps = epochs * len(train_loader)
+        warmup_epochs = float(
+            cfg["training"].get("scheduler", {}).get("warmup_epochs", 0)
+        )
+        warmup_steps = int(warmup_epochs * len(train_loader))
         scheduler = LambdaLR(
             optimizer,
-            lr_lambda=cosine_schedule_with_warmup(total_steps, warmup_steps=500),
+            lr_lambda=cosine_schedule_with_warmup(total_steps, warmup_steps),
         )
         # Epoch loop with progress bar
 
@@ -218,9 +250,7 @@ def main() -> None:
                 orig = batch["orig_vals"].to(device)
                 optimizer.zero_grad()
                 logits = model(inp)
-                loss = torch.nn.functional.cross_entropy(
-                    logits.permute(0, 2, 1), orig, ignore_index=MASK_TOKEN_ID
-                )
+                loss = criterion(logits.permute(0, 2, 1), orig)
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
@@ -240,7 +270,7 @@ def main() -> None:
             val_losses = []
             topk = {"top1": 0.0, "top3": 0.0, "top5": 0.0}
             for v_loader in val_loaders:
-                v_loss, v_metrics = evaluate_epoch(model, v_loader, device)
+                v_loss, v_metrics = evaluate_epoch(model, v_loader, device, criterion)
                 val_losses.append(v_loss)
                 for k in topk:
                     topk[k] += v_metrics.get(k, 0.0)
