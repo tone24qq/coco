@@ -14,7 +14,7 @@ except Exception:  # pragma: no cover - torch missing
 
 MASK_TOKEN_ID = 0
 BLANK_VALUE = -1
-MAX_VALUE = 80
+# Maximum board value is derived from board size at runtime
 
 
 def mask_target_patch(
@@ -36,10 +36,11 @@ def mask_target_patch(
 def validate_board(board: np.ndarray) -> None:
     """Validate board contents.
 
-    Ensures numbers are unique and within ``1..MAX_VALUE``. ``BLANK_VALUE``
+    Ensures numbers are unique and within ``1..board.size``. ``BLANK_VALUE``
     (-1) is allowed to denote empty cells.
     """
-    valid_values = set(range(1, MAX_VALUE + 1))
+    max_value = board.size
+    valid_values = set(range(1, max_value + 1))
     flat = board.ravel()
     for v in flat:
         if v != BLANK_VALUE and v not in valid_values:

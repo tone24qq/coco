@@ -144,15 +144,17 @@ def main() -> None:
         logger.info(
             f"Starting training for shape {model_name} with {len(group)} samples"
         )
+        num_fields = rows * cols
         logger.info(
-            "TRAIN cfg: num_values=81, MASK_TOKEN_ID=%s, BLANK_VALUE=%s",
+            "TRAIN cfg: num_values=%s, MASK_TOKEN_ID=%s, BLANK_VALUE=%s",
+            num_fields,
             MASK_TOKEN_ID,
             BLANK_VALUE,
         )
 
         # Prepare model fields
-        cfg["model"]["num_fields"] = rows * cols
-        cfg["model"]["num_values"] = 81
+        cfg["model"]["num_fields"] = num_fields
+        cfg["model"]["num_values"] = num_fields
 
         # Prepare datasets and loaders with a validation split
         n_items = len(group)

@@ -8,10 +8,14 @@ torch = pytest.importorskip("torch")
 
 
 def test_model_output_dim_and_mapping():
-    model = DynamicMET(num_fields=80, num_values=81, rows=8, cols=10)
-    assert model.classifier.out_features == 81
+    rows, cols = 8, 10
+    num_fields = rows * cols
+    model = DynamicMET(
+        num_fields=num_fields, num_values=num_fields, rows=rows, cols=cols
+    )
+    assert model.classifier.out_features == model.num_values
 
-    board = np.full((8, 10), BLANK_VALUE, dtype=int)
+    board = np.full((rows, cols), BLANK_VALUE, dtype=int)
     board[3, 5] = 17
     x = np.where(board == BLANK_VALUE, MASK_TOKEN_ID, board).astype(np.int64)
     y = np.where(board == BLANK_VALUE, MASK_TOKEN_ID, board).astype(np.int64)
@@ -19,9 +23,9 @@ def test_model_output_dim_and_mapping():
 
     inp = torch.from_numpy(x.flatten()).unsqueeze(0)
     logits = model(inp)
-    assert logits.shape == (1, 80, 81)
+    assert logits.shape == (1, num_fields, model.num_values)
     dist = logits[0, 3 * 10 + 5]
-    assert dist.shape[0] == 81
+    assert dist.shape[0] == model.num_values
     # bias to force argmax at 17 to smoke-test index semantics
     model.classifier.bias.data.zero_()
     model.classifier.bias.data[17] = 1.0

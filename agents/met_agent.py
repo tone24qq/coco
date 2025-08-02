@@ -38,8 +38,11 @@ def predict(
         model.eval()
         with torch.no_grad():
             logits = model(inp)
+        n = model.num_fields
         logger.info(
-            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            "IDX semantics: 0=blank(ignored), 1..%s=numbers 1..%s ; logits.shape=%s",
+            n,
+            n,
             tuple(logits.shape),
         )
         probs = torch.softmax(logits, dim=-1)
@@ -53,8 +56,11 @@ def predict(
     else:
         inp = arr_inp.reshape(1, -1)
         logits = model(inp)
+        n = model.num_fields
         logger.info(
-            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            "IDX semantics: 0=blank(ignored), 1..%s=numbers 1..%s ; logits.shape=%s",
+            n,
+            n,
             tuple(logits.shape),
         )
         arr = np.asarray(logits)

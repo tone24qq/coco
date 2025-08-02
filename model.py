@@ -17,7 +17,7 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
     def __init__(
         self,
         num_fields: int,
-        num_values: int = 81,
+        num_values: int | None = None,
         d_model: int = 128,
         nhead: int = 4,
         depth: int = 6,
@@ -27,10 +27,8 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         rows: int = 1,
         cols: int | None = None,
     ) -> None:
-        if num_values != 81:
-            raise ValueError("num_values must be 81 (including blank)")
         self.num_fields = int(num_fields)
-        self.num_values = int(num_values)
+        self.num_values = int(num_values if num_values is not None else num_fields) + 1
         self.d_model = int(d_model)
         self.rows = int(rows)
         self.cols = int(cols if cols is not None else rows if rows > 0 else 1)
@@ -38,7 +36,7 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             raise ValueError("rows*cols must equal num_fields")
         if TORCH_AVAILABLE:
             super().__init__()  # type: ignore[misc]
-            self.token_emb = nn.Embedding(num_values, d_model)
+            self.token_emb = nn.Embedding(self.num_values, d_model)
             row_dim = d_model // 2
             col_dim = d_model - row_dim
             self.row_emb = nn.Embedding(self.rows, row_dim)
@@ -59,8 +57,10 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
                 ]
             )
             self.norm_out = nn.LayerNorm(d_model)
-            self.classifier = nn.Linear(d_model, num_values)
-            assert self.classifier.out_features == 81, "num_values 必須是 81 (含空白)"
+            self.classifier = nn.Linear(d_model, self.num_values)
+            assert (
+                self.classifier.out_features == self.num_values
+            ), "classifier dim mismatch"
         else:
             self.token_emb = None
             self.row_emb = None

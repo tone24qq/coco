@@ -98,24 +98,33 @@ models: Dict[Tuple[int, int], DynamicMET] = {}
 
 def _create_model(rows: int, cols: int) -> DynamicMET:
     """Return a :class:`DynamicMET` with training hyperparameters."""
+    num_fields = rows * cols
     logger.info(
-        "Model: shape=%sx%s, d_model=%s, depth=%s, nhead=%s, num_values=81",
+        "Model: shape=%sx%s, d_model=%s, depth=%s, nhead=%s, num_values=%s",
         rows,
         cols,
         MODEL_PARAMS["d_model"],
         MODEL_PARAMS["depth"],
         MODEL_PARAMS["nhead"],
+        num_fields,
     )
     logger.info(
-        "Mapping: BLANK_VALUE=%s -> MASK_TOKEN_ID=%s ; labels 1..80",
+        "Mapping: BLANK_VALUE=%s -> MASK_TOKEN_ID=%s ; labels 1..%s",
         BLANK_VALUE,
         MASK_TOKEN_ID,
+        num_fields,
     )
     det = False
     if torch is not None and hasattr(torch, "are_deterministic_algorithms_enabled"):
         det = torch.are_deterministic_algorithms_enabled()
     logger.info("Deterministic: %s", det)
-    return DynamicMET(rows * cols, num_values=81, rows=rows, cols=cols, **MODEL_PARAMS)
+    return DynamicMET(
+        num_fields=num_fields,
+        num_values=num_fields,
+        rows=rows,
+        cols=cols,
+        **MODEL_PARAMS,
+    )
 
 
 def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
@@ -128,7 +137,9 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
         model.load_state_dict(state, strict=False)
         if hasattr(model, "eval"):
             model.eval()
-        assert model.classifier.out_features == 81, "num_values 必須是 81 (含空白)"
+        assert (
+            model.classifier.out_features == model.num_values
+        ), "classifier dim mismatch"
         logger.info(
             "載入模型檔案 %s，尺寸 %sx%s", path, rows, cols
         )  # 中文log：載入已存在的模型
@@ -136,7 +147,9 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
         logger.info(
             "建立新模型，尺寸 %sx%s", rows, cols
         )  # 中文log：未找到檔案時新建模型
-        assert model.classifier.out_features == 81, "num_values 必須是 81 (含空白)"
+        assert (
+            model.classifier.out_features == model.num_values
+        ), "classifier dim mismatch"
     return model
 
 
@@ -253,7 +266,9 @@ def predict(req: PredictRequest):
         with torch.no_grad():
             logits = model(inp)  # type: ignore[misc]
         logger.info(
-            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            "IDX semantics: 0=blank(ignored), 1..%s=numbers 1..%s ; logits.shape=%s",
+            n,
+            n,
             tuple(logits.shape),
         )
         if logger.isEnabledFor(logging.DEBUG):
@@ -293,7 +308,9 @@ def predict(req: PredictRequest):
             arr.shape,
         )
         logger.info(
-            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            "IDX semantics: 0=blank(ignored), 1..%s=numbers 1..%s ; logits.shape=%s",
+            n,
+            n,
             arr.shape,
         )
         V = arr.shape[-1]
