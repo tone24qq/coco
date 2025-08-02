@@ -10,7 +10,8 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset import BLANK_VALUE, MASK_TOKEN_ID, ScratchCardDataset, validate_board
+from dataset import (BLANK_VALUE, MASK_TOKEN_ID, ScratchCardDataset,
+                     validate_board)
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
@@ -114,7 +115,7 @@ def main() -> None:
     if not boards:
         raise ValueError("No boards loaded from data_dir")
     for b, _ in boards:
-        validate_board(b)
+        validate_board(b, allow_blank=False, require_complete=True)
 
     # Group boards by shape
     shape_groups = {}

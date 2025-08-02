@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover - torch missing
     torch = None  # type: ignore[assignment]
     TORCH_AVAILABLE = False
 
-from dataset import BLANK_VALUE, MASK_TOKEN_ID
+from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
 from model import DynamicMET
 from utils import ensure_only_blank, index_to_coord
 
@@ -24,6 +24,7 @@ def predict(
     board: np.ndarray, *, target: int, model: DynamicMET, topk: int = 3
 ) -> List[Dict[str, Any]]:
     """Predict top-k blank positions for ``target`` using ``model``."""
+    validate_board(board, allow_blank=True)
     rows, cols = board.shape
     flat = board.flatten()
 

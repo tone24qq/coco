@@ -13,7 +13,7 @@ except Exception:  # torch may be unavailable in minimal runtimes
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from dataset import BLANK_VALUE, MASK_TOKEN_ID
+from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
 from model import DynamicMET
 from utils import ensure_only_blank
 
@@ -205,16 +205,12 @@ def predict(req: PredictRequest):
     logger.info(
         "[CHK] uniq=%s cnt=%s BLANK_VALUE=%s", uniq.tolist(), cnt.tolist(), BLANK_VALUE
     )
+    try:
+        validate_board(board, allow_blank=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     rows, cols = board.shape
     n = rows * cols
-    flat_all = board.flatten()
-    valid_values = set(range(1, n + 1))
-    for v in flat_all:
-        if v != BLANK_VALUE and v not in valid_values:
-            raise HTTPException(status_code=422, detail="board values out of range")
-    non_blank = flat_all[flat_all != BLANK_VALUE]
-    if non_blank.size != len(set(non_blank.tolist())):
-        raise HTTPException(status_code=422, detail="board has duplicate numbers")
     target = req.target
     if target is None:
         raise HTTPException(status_code=422, detail="`target` is required.")

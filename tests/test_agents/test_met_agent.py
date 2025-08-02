@@ -8,7 +8,7 @@ from model import DynamicMET
 def test_met_agent_predict_on_10x12() -> None:
     rng = np.random.default_rng(42)
     rows, cols = 10, 12
-    grid = rng.integers(1, 100, size=(rows, cols))
+    grid = np.arange(1, rows * cols + 1).reshape(rows, cols)
     blank_indices = rng.choice(rows * cols, size=rng.integers(15, 26), replace=False)
     for idx in blank_indices:
         r, c = divmod(idx, cols)

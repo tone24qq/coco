@@ -33,21 +33,42 @@ def mask_target_patch(
     return mask
 
 
-def validate_board(board: np.ndarray) -> None:
-    """Validate board contents.
+def validate_board(
+    board: np.ndarray,
+    *,
+    allow_blank: bool = True,
+    require_complete: bool = False,
+) -> None:
+    """Validate board contents using dynamic dimensions.
 
-    Ensures numbers are unique and within ``1..board.size``. ``BLANK_VALUE``
-    (-1) is allowed to denote empty cells.
+    Parameters
+    ----------
+    board:
+        2D array representing the board. ``BLANK_VALUE`` denotes empty cells.
+    allow_blank:
+        Whether ``BLANK_VALUE`` is permitted in ``board``.
+    require_complete:
+        When ``True`` the board must contain every number from ``1`` to
+        ``rows*cols`` exactly once with **no** blanks.
     """
-    max_value = board.size
-    valid_values = set(range(1, max_value + 1))
+
+    rows, cols = board.shape
+    num_fields = rows * cols
     flat = board.ravel()
-    for v in flat:
-        if v != BLANK_VALUE and v not in valid_values:
-            raise ValueError("board values out of range")
-    non_blank = flat[flat != BLANK_VALUE]
+    mask = flat != BLANK_VALUE
+    if not allow_blank and np.any(~mask):
+        raise ValueError("board contains blank values")
+
+    non_blank = flat[mask]
+    if np.any(non_blank < 1) or np.any(non_blank > num_fields):
+        raise ValueError("board values out of range")
     if non_blank.size != len(set(non_blank.tolist())):
         raise ValueError("board has duplicate numbers")
+    if require_complete:
+        if non_blank.size != num_fields:
+            raise ValueError("board must contain numbers 1..N exactly once")
+        if set(non_blank.tolist()) != set(range(1, num_fields + 1)):
+            raise ValueError("board must be a permutation of 1..N")
 
 
 class ScratchCardDataset(Dataset):
@@ -77,7 +98,7 @@ class ScratchCardDataset(Dataset):
     ) -> None:
         self.boards, self.targets = zip(*boards)
         for b in self.boards:
-            validate_board(np.asarray(b))
+            validate_board(np.asarray(b), allow_blank=False, require_complete=True)
 
         if mode not in {"target", "reconstruct", "patch"}:
             raise ValueError("mode must be 'target', 'patch' or 'reconstruct'")
