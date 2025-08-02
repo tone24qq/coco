@@ -42,20 +42,28 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             self.row_emb = nn.Embedding(self.rows, row_dim)
             self.col_emb = nn.Embedding(self.cols, col_dim)
             self.embed_dropout = nn.Dropout(dropout)
-            self.blocks = nn.ModuleList(
-                [
+            from models.relative_attn import Relative2DAttention
+
+            self.blocks = nn.ModuleList()
+            for _ in range(depth):
+                self.blocks.append(
                     TransformerBlock(
                         d_model,
                         nhead,
                         dropout=dropout,
                         hidden_mult=2.0,
                         use_flash=use_flash,
+                        attn_module=Relative2DAttention(
+                            d_model,
+                            nhead,
+                            max_rel_row=self.rows - 1,
+                            max_rel_col=self.cols - 1,
+                            dropout=dropout,
+                        ),
                         rows=self.rows,
                         cols=self.cols,
                     )
-                    for _ in range(depth)
-                ]
-            )
+                )
             self.norm_out = nn.LayerNorm(d_model)
             self.classifier = nn.Linear(d_model, self.num_values)
             assert (

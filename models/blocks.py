@@ -210,16 +210,45 @@ else:
             *,
             rows: int = 1,
             cols: int | None = None,
-        ):
+            attn_module: Optional[nn.Module] = None,
+        ) -> None:
+            """Initialize transformer block.
+
+            Parameters
+            ----------
+            dim:
+                Model dimensionality.
+            n_heads:
+                Number of attention heads.
+            dropout:
+                Dropout rate.
+            hidden_mult:
+                Expansion factor for the feedforward network.
+            use_flash:
+                Whether to enable flash attention for the default attention
+                module.
+            rows, cols:
+                Grid shape for positional encodings.
+            attn_module:
+                Optional custom attention module. When provided, this module is
+                used instead of the default :class:`RoPEAttention`.
+            """
+
             super().__init__()
             self.norm1 = RMSNorm(dim)
-            self.attn = RoPEAttention(
-                AttnConfig(
-                    dim=dim, n_heads=n_heads, dropout=dropout, use_flash=use_flash
-                ),
-                rows=rows,
-                cols=cols,
-            )
+            if attn_module is None:
+                self.attn = RoPEAttention(
+                    AttnConfig(
+                        dim=dim,
+                        n_heads=n_heads,
+                        dropout=dropout,
+                        use_flash=use_flash,
+                    ),
+                    rows=rows,
+                    cols=cols,
+                )
+            else:
+                self.attn = attn_module
             self.norm2 = RMSNorm(dim)
             self.ff = SwiGLU(dim, hidden_mult=hidden_mult, dropout=dropout)
 
