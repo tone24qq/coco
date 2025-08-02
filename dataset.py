@@ -14,6 +14,7 @@ except Exception:  # pragma: no cover - torch missing
 
 MASK_TOKEN_ID = 0
 BLANK_VALUE = -1
+MAX_VALUE = 80
 
 
 def mask_target_patch(
@@ -35,11 +36,10 @@ def mask_target_patch(
 def validate_board(board: np.ndarray) -> None:
     """Validate board contents.
 
-    Ensures numbers are unique and within ``1..N`` where ``N`` is the board
-    size. ``BLANK_VALUE`` (-1) is allowed to denote empty cells.
+    Ensures numbers are unique and within ``1..MAX_VALUE``. ``BLANK_VALUE``
+    (-1) is allowed to denote empty cells.
     """
-    n = board.size
-    valid_values = set(range(1, n + 1))
+    valid_values = set(range(1, MAX_VALUE + 1))
     flat = board.ravel()
     for v in flat:
         if v != BLANK_VALUE and v not in valid_values:
@@ -114,7 +114,9 @@ class ScratchCardDataset(Dataset):
             raise RuntimeError("Torch is required for ScratchCardDataset")
 
         board_arr = self.boards[idx].flatten()
-        board = torch.from_numpy(board_arr).long()
+        board_arr_mapped = np.where(board_arr == BLANK_VALUE, MASK_TOKEN_ID, board_arr)
+        board = torch.from_numpy(board_arr_mapped).long()
+        board_orig = torch.from_numpy(board_arr).long()
         target_val = int(self.targets[idx])
         target = torch.tensor(target_val).long()
 
@@ -126,10 +128,10 @@ class ScratchCardDataset(Dataset):
             else:
                 ratio = self.mask_ratio
             mask = torch.rand(board.shape) < ratio
-            mask |= board == target_val
-            mask |= board == BLANK_VALUE
+            mask |= board_orig == target_val
+            mask |= board_orig == BLANK_VALUE
         elif self.mode == "target":
-            mask = (board == target_val) | (board == BLANK_VALUE)
+            mask = (board_orig == target_val) | (board_orig == BLANK_VALUE)
         elif self.mode == "patch":
             board2d = self.boards[idx]
             r, c = np.argwhere(board2d == target_val)[0]
@@ -143,9 +145,7 @@ class ScratchCardDataset(Dataset):
         inp = board.clone()
         inp[mask] = MASK_TOKEN_ID
 
-        orig = torch.full_like(board, MASK_TOKEN_ID)
-        valid_mask = mask & (board != BLANK_VALUE)
-        orig[valid_mask] = board[valid_mask]
+        orig = torch.where(mask, board, torch.full_like(board, MASK_TOKEN_ID))
 
         return {
             "input_vals": inp,

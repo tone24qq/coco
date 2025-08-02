@@ -13,7 +13,7 @@ except Exception:  # torch may be unavailable in minimal runtimes
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from dataset import BLANK_VALUE
+from dataset import BLANK_VALUE, MASK_TOKEN_ID
 from model import DynamicMET
 from utils import ensure_only_blank
 
@@ -98,8 +98,24 @@ models: Dict[Tuple[int, int], DynamicMET] = {}
 
 def _create_model(rows: int, cols: int) -> DynamicMET:
     """Return a :class:`DynamicMET` with training hyperparameters."""
-
-    return DynamicMET(rows * cols, rows * cols, rows=rows, cols=cols, **MODEL_PARAMS)
+    logger.info(
+        "Model: shape=%sx%s, d_model=%s, depth=%s, nhead=%s, num_values=81",
+        rows,
+        cols,
+        MODEL_PARAMS["d_model"],
+        MODEL_PARAMS["depth"],
+        MODEL_PARAMS["nhead"],
+    )
+    logger.info(
+        "Mapping: BLANK_VALUE=%s -> MASK_TOKEN_ID=%s ; labels 1..80",
+        BLANK_VALUE,
+        MASK_TOKEN_ID,
+    )
+    det = False
+    if torch is not None and hasattr(torch, "are_deterministic_algorithms_enabled"):
+        det = torch.are_deterministic_algorithms_enabled()
+    logger.info("Deterministic: %s", det)
+    return DynamicMET(rows * cols, num_values=81, rows=rows, cols=cols, **MODEL_PARAMS)
 
 
 def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
@@ -112,6 +128,7 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
         model.load_state_dict(state, strict=False)
         if hasattr(model, "eval"):
             model.eval()
+        assert model.classifier.out_features == 81, "num_values 必須是 81 (含空白)"
         logger.info(
             "載入模型檔案 %s，尺寸 %sx%s", path, rows, cols
         )  # 中文log：載入已存在的模型
@@ -119,6 +136,7 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
         logger.info(
             "建立新模型，尺寸 %sx%s", rows, cols
         )  # 中文log：未找到檔案時新建模型
+        assert model.classifier.out_features == 81, "num_values 必須是 81 (含空白)"
     return model
 
 
@@ -204,7 +222,9 @@ def predict(req: PredictRequest):
     logger.info("[CHK] mask_pos=%s", mask_pos.tolist())
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
-    flat_input = np.where(flat < 0, 0, flat).astype(np.int64, copy=False)
+    flat_input = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(
+        np.int64, copy=False
+    )
     flat_input = np.ascontiguousarray(flat_input)
     logger.info(
         "[CHK] flat_input: shape=%s dtype=%s sample=%s",
@@ -229,7 +249,13 @@ def predict(req: PredictRequest):
     if torch is not None:
         # use as_tensor to avoid copy and specify dtype explicitly
         inp = torch.as_tensor(flat_input, dtype=torch.long).unsqueeze(0)
-        logits = model(inp)  # type: ignore[misc]
+        model.eval()
+        with torch.no_grad():
+            logits = model(inp)  # type: ignore[misc]
+        logger.info(
+            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            tuple(logits.shape),
+        )
         if logger.isEnabledFor(logging.DEBUG):
             n_f = logits.size(1)
             pos_ids = torch.arange(n_f, device=logits.device)
@@ -249,7 +275,7 @@ def predict(req: PredictRequest):
             tuple(probs.shape),
         )
         V = probs.shape[-1]
-        target_idx = target if V == n + 1 else target - 1
+        target_idx = target
         if not (0 <= target_idx < V):
             raise HTTPException(
                 status_code=422,
@@ -266,8 +292,12 @@ def predict(req: PredictRequest):
             inp.shape,
             arr.shape,
         )
+        logger.info(
+            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            arr.shape,
+        )
         V = arr.shape[-1]
-        target_idx = target if V == n + 1 else target - 1
+        target_idx = target
         if not (0 <= target_idx < V):
             raise HTTPException(
                 status_code=422,
@@ -275,12 +305,13 @@ def predict(req: PredictRequest):
             )
         scores_np = arr[0, :, target_idx]
 
-    candidate_scores = scores_np[mask_pos]
-    topk_local = np.argsort(candidate_scores)[-min(3, len(candidate_scores)) :][::-1]
-    logger.info(
-        "從 %s 個候選格中挑選前 %s 名", len(candidate_scores), len(topk_local)
-    )  # 中文log：候選格與返回數量
-    top_indices = mask_pos[topk_local]
+    candidate_idx = mask_pos
+    candidate_scores = scores_np[candidate_idx]
+    k = min(3, len(candidate_scores))
+    topk_local = np.argpartition(candidate_scores, -k)[-k:]
+    order = np.lexsort((candidate_idx[topk_local], -candidate_scores[topk_local]))
+    top_indices = candidate_idx[topk_local][order][-k:][::-1]
+    logger.info("TopK: candidates = %s, k=%s", len(candidate_scores), k)
     logger.info("[CHK] top_indices=%s", top_indices.tolist())
 
     picked_vals = [int(flat[idx]) for idx in top_indices]

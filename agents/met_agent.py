@@ -1,5 +1,6 @@
 """Agent that predicts scratch card positions using a DynamicMET model."""
 
+import logging
 from typing import Any, Dict, List
 
 import numpy as np
@@ -12,9 +13,11 @@ except Exception:  # pragma: no cover - torch missing
     torch = None  # type: ignore[assignment]
     TORCH_AVAILABLE = False
 
-from dataset import BLANK_VALUE
+from dataset import BLANK_VALUE, MASK_TOKEN_ID
 from model import DynamicMET
 from utils import ensure_only_blank, index_to_coord
+
+logger = logging.getLogger(__name__)
 
 
 def predict(
@@ -24,41 +27,52 @@ def predict(
     rows, cols = board.shape
     flat = board.flatten()
 
-    mask_pos = np.where(flat == BLANK_VALUE)[0]
-    if mask_pos.size == 0:
+    candidate_idx = np.where(flat == BLANK_VALUE)[0]
+    if candidate_idx.size == 0:
         return []
 
-    arr_inp = np.where(flat < 0, 0, flat)
+    arr_inp = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(np.int64)
 
     if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
         inp = torch.as_tensor(arr_inp, dtype=torch.long).unsqueeze(0)
-        logits = model(inp)
+        model.eval()
+        with torch.no_grad():
+            logits = model(inp)
+        logger.info(
+            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            tuple(logits.shape),
+        )
         probs = torch.softmax(logits, dim=-1)
         V = probs.shape[-1]
-        target_idx = target if V == flat.size + 1 else target - 1
+        target_idx = target
         if not (0 <= target_idx < V):
             raise RuntimeError(
                 f"target_idx out of range: target={target} -> {target_idx}, V={V}"
             )
         scores_all = probs[0, :, target_idx].detach().cpu().numpy()
     else:
-        inp = arr_inp.reshape(1, -1).astype(np.int64, copy=False)
+        inp = arr_inp.reshape(1, -1)
         logits = model(inp)
+        logger.info(
+            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            tuple(logits.shape),
+        )
         arr = np.asarray(logits)
         V = arr.shape[-1]
-        target_idx = target if V == flat.size + 1 else target - 1
+        target_idx = target
         if not (0 <= target_idx < V):
             raise RuntimeError(
                 f"target_idx out of range: target={target} -> {target_idx}, V={V}"
             )
         scores_all = arr[0, :, target_idx]
 
-    cand_scores = scores_all[mask_pos]
-    k = min(topk, cand_scores.size)
+    candidate_scores = scores_all[candidate_idx]
+    k = min(topk, candidate_scores.size)
     if k == 0:
         return []
-    local_idx = np.argsort(cand_scores)[-k:][::-1]
-    top_indices = mask_pos[local_idx]
+    topk_local = np.argpartition(candidate_scores, -k)[-k:]
+    order = np.lexsort((candidate_idx[topk_local], -candidate_scores[topk_local]))
+    top_indices = candidate_idx[topk_local][order][-k:][::-1]
 
     results: List[Dict[str, Any]] = []
     for idx in top_indices:

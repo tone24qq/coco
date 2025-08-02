@@ -1,6 +1,8 @@
 import argparse
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import yaml
@@ -8,7 +10,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
+from dataset import BLANK_VALUE, MASK_TOKEN_ID, ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
@@ -100,6 +102,13 @@ def main() -> None:
         cfg["training"]["epochs"] = args.epochs
     epochs = int(cfg["training"]["epochs"])
 
+    seed = 20250802
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.benchmark = False
+
     # Load all boards; masking is handled by the dataset according to mode
     boards = load_boards_from_archives(cfg["data"]["data_dir"], mask_target=False)
     if not boards:
@@ -135,10 +144,15 @@ def main() -> None:
         logger.info(
             f"Starting training for shape {model_name} with {len(group)} samples"
         )
+        logger.info(
+            "TRAIN cfg: num_values=81, MASK_TOKEN_ID=%s, BLANK_VALUE=%s",
+            MASK_TOKEN_ID,
+            BLANK_VALUE,
+        )
 
         # Prepare model fields
         cfg["model"]["num_fields"] = rows * cols
-        cfg["model"]["num_values"] = rows * cols
+        cfg["model"]["num_values"] = 81
 
         # Prepare datasets and loaders with a validation split
         n_items = len(group)
@@ -201,7 +215,7 @@ def main() -> None:
                 model.col_emb,
                 model.embed_dropout,
                 model.norm_out,
-                model.head,
+                model.classifier,
             ]:
                 if mod is not None:
                     other_params += list(mod.parameters())
@@ -217,10 +231,7 @@ def main() -> None:
                 weight_decay=weight_decay,
             )
 
-        criterion = nn.CrossEntropyLoss(
-            ignore_index=MASK_TOKEN_ID,
-            label_smoothing=float(cfg["training"].get("label_smoothing", 0.0)),
-        )
+        criterion = nn.CrossEntropyLoss(ignore_index=MASK_TOKEN_ID)
 
         total_steps = epochs * len(train_loader)
         warmup_epochs = float(
