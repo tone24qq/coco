@@ -84,12 +84,28 @@ class Prediction(BaseModel):
 
 MODEL_GLOB = os.environ.get("MODEL_GLOB", os.path.join("checkpoints", "met_*x*.pth"))
 _PATTERN = re.compile(r"met_(\d+)x(\d+)\.pth$")
+
+# Training-time hyperparameters required for loading checkpoints
+MODEL_PARAMS = {
+    "d_model": 256,
+    "nhead": 8,
+    "depth": 8,
+    "dropout": 0.1,
+}
+
 models: Dict[Tuple[int, int], DynamicMET] = {}
 
 
+def _create_model(rows: int, cols: int) -> DynamicMET:
+    """Return a :class:`DynamicMET` with training hyperparameters."""
+
+    return DynamicMET(rows * cols, rows * cols, rows=rows, cols=cols, **MODEL_PARAMS)
+
+
 def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
-    n = rows * cols
-    model = DynamicMET(n, n, rows=rows, cols=cols)
+    """Load checkpoint at ``path`` or initialize a new model."""
+
+    model = _create_model(rows, cols)
     if torch is not None and os.path.exists(path):
         ckpt = torch.load(path, map_location="cpu")
         state = ckpt.get("model", ckpt)
@@ -119,7 +135,7 @@ def _discover_models() -> None:
         found = True
     if not found:
         r, c = 8, 10
-        models[(r, c)] = DynamicMET(r * c, r * c, rows=r, cols=c)
+        models[(r, c)] = _create_model(r, c)
         if hasattr(models[(r, c)], "eval"):
             models[(r, c)].eval()
         logger.warning(
@@ -203,7 +219,7 @@ def predict(req: PredictRequest):
         logger.info(
             "尚未載入 %sx%s 的模型，立即建立", rows, cols
         )  # 中文log：動態建立模型
-        model = DynamicMET(n, n, rows=rows, cols=cols)
+        model = _create_model(rows, cols)
         if hasattr(model, "eval"):
             model.eval()
         models[(rows, cols)] = model
