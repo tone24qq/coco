@@ -35,6 +35,39 @@ def ensure_only_blank(
     return out
 
 
+def ensure_unique(preds: Iterable[Any]) -> List[Any]:
+    """Return predictions with duplicate coordinates removed.
+
+    Parameters
+    ----------
+    preds:
+        Iterable of prediction objects or dictionaries. Each item must
+        provide ``row`` and ``col`` attributes or keys.
+
+    Returns
+    -------
+    list
+        Filtered predictions where each ``(row, col)`` pair appears only
+        once. Duplicates are dropped with an error log for observability.
+    """
+
+    seen = set()
+    out: List[Any] = []
+    dup: List[Tuple[int, int]] = []
+    for p in preds:
+        r = p["row"] if isinstance(p, dict) else getattr(p, "row")
+        c = p["col"] if isinstance(p, dict) else getattr(p, "col")
+        key = (r, c)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+        else:
+            dup.append(key)
+    if dup:
+        logging.getLogger(__name__).error("[GUARD] filtered duplicate coords: %s", dup)
+    return out
+
+
 def index_to_coord(idx: int, shape: Tuple[int, int]) -> Tuple[int, int]:
     """Return ``(row, col)`` coordinate for a flattened ``idx``.
 

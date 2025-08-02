@@ -17,6 +17,8 @@ def _ok(resp):
     data = resp.json()
     assert isinstance(data, list) and len(data) == 3
     assert {"row", "col", "score"} <= data[0].keys()
+    for item in data:
+        assert 0.0 <= item["score"] <= 100.0
 
 
 def test_predict_target_only():

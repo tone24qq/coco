@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
 from model import DynamicMET
-from utils import ensure_only_blank
+from utils import ensure_only_blank, ensure_unique
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -76,7 +76,7 @@ class PredictRequest(BaseModel):
 class Prediction(BaseModel):
     row: int
     col: int
-    score: float  # 0~1 之間的置信度
+    score: float  # 0~100 信心百分比
     # 方便前端與除錯
     idx: Optional[int] = None
     cell_value: Optional[int] = None
@@ -320,10 +320,16 @@ def predict(req: PredictRequest):
 
     candidate_idx = mask_pos
     candidate_scores = scores_np[candidate_idx]
+    total = float(candidate_scores.sum())
+    if total > 0:
+        norm_scores = candidate_scores / total
+    else:
+        norm_scores = np.full_like(candidate_scores, 1 / len(candidate_scores))
     k = min(3, len(candidate_scores))
     topk_local = np.argpartition(candidate_scores, -k)[-k:]
     order = np.lexsort((candidate_idx[topk_local], -candidate_scores[topk_local]))
     top_indices = candidate_idx[topk_local][order][-k:][::-1]
+    top_scores = norm_scores[topk_local][order][-k:][::-1]
     logger.info("TopK: candidates = %s, k=%s", len(candidate_scores), k)
     logger.info("[CHK] top_indices=%s", top_indices.tolist())
 
@@ -353,24 +359,25 @@ def predict(req: PredictRequest):
         )
 
     raw = []
-    for idx in top_indices:
+    for idx, sc in zip(top_indices, top_scores):
         r, c = np.unravel_index(int(idx), board.shape)
         raw.append(
             Prediction(
                 row=r,
                 col=c,
-                score=float(scores_np[idx]),
+                score=round(float(sc * 100), 2),
                 idx=int(idx),
                 cell_value=int(flat[idx]),
             )
         )
     validated = ensure_only_blank(board, raw, BLANK_VALUE)
+    validated = ensure_unique(validated)
     for item in validated:
         item.row += 1
         item.col += 1
     # 中文 log：列印前三名位置與機率百分比
     percent_msg = " ".join(
-        f"top{i + 1}={item.row}-{item.col}({item.score * 100:.0f}%)"
+        f"top{i + 1}={item.row}-{item.col}({item.score:.0f}%)"
         for i, item in enumerate(validated)
     )
     logger.info("預測機率 %s", percent_msg)
