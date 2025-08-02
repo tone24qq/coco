@@ -8,7 +8,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from dataset import MASK_TOKEN_ID, ScratchCardDataset, validate_board
+from dataset import ScratchCardDataset, validate_board
 from model import DynamicMET
 from utils.io_utils import load_boards_from_archives
 from utils.logger import save_checkpoint, setup_logger
@@ -114,6 +114,7 @@ def main() -> None:
 
     logger = setup_logger()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info("TRAIN cfg: num_values=81, MASK_TOKEN_ID=0, BLANK_VALUE=-1")
 
     # Extract and parse training hyperparams
     if args.mode == "reconstruct":
@@ -138,7 +139,7 @@ def main() -> None:
 
         # Prepare model fields
         cfg["model"]["num_fields"] = rows * cols
-        cfg["model"]["num_values"] = rows * cols
+        cfg["model"]["num_values"] = 81
 
         # Prepare datasets and loaders with a validation split
         n_items = len(group)
@@ -201,7 +202,7 @@ def main() -> None:
                 model.col_emb,
                 model.embed_dropout,
                 model.norm_out,
-                model.head,
+                model.classifier,
             ]:
                 if mod is not None:
                     other_params += list(mod.parameters())
@@ -217,10 +218,7 @@ def main() -> None:
                 weight_decay=weight_decay,
             )
 
-        criterion = nn.CrossEntropyLoss(
-            ignore_index=MASK_TOKEN_ID,
-            label_smoothing=float(cfg["training"].get("label_smoothing", 0.0)),
-        )
+        criterion = nn.CrossEntropyLoss(ignore_index=0)
 
         total_steps = epochs * len(train_loader)
         warmup_epochs = float(

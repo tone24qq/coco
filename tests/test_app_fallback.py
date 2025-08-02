@@ -14,7 +14,7 @@ def test_app_predict_numpy(monkeypatch):
     importlib.reload(model)
     importlib.reload(appmod)
     appmod.models.clear()
-    appmod.models[(2, 2)] = model.DynamicMET(4, 5, rows=2, cols=2)
+    appmod.models[(2, 2)] = model.DynamicMET(4, rows=2, cols=2)
     board = np.array([[1, 2], [3, -1]]).tolist()
     payload = appmod.PredictRequest(board=board, target_value=1)
     result = appmod.predict(payload)

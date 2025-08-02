@@ -5,10 +5,10 @@ from dataset import BLANK_VALUE
 from model import DynamicMET
 
 
-def test_met_agent_predict_on_10x12() -> None:
+def test_met_agent_predict_on_board() -> None:
     rng = np.random.default_rng(42)
-    rows, cols = 10, 12
-    grid = rng.integers(1, 100, size=(rows, cols))
+    rows, cols = 8, 10
+    grid = rng.integers(1, 81, size=(rows, cols))
     blank_indices = rng.choice(rows * cols, size=rng.integers(15, 26), replace=False)
     for idx in blank_indices:
         r, c = divmod(idx, cols)
@@ -16,7 +16,7 @@ def test_met_agent_predict_on_10x12() -> None:
     non_blanks = np.argwhere(grid != BLANK_VALUE)
     target_r, target_c = non_blanks[rng.integers(len(non_blanks))]
     target = int(grid[target_r, target_c])
-    model = DynamicMET(rows * cols, 100, rows=rows, cols=cols)
+    model = DynamicMET(rows * cols, rows=rows, cols=cols)
     result = predict(grid.copy(), target=target, model=model)
     assert isinstance(result, list)
     assert len(result) > 0
@@ -35,7 +35,7 @@ def test_met_agent_only_returns_blank() -> None:
             [16, BLANK_VALUE, 18, 19, 20],
         ]
     )
-    model = DynamicMET(rows * cols, rows * cols + 1, rows=rows, cols=cols)
+    model = DynamicMET(rows * cols, rows=rows, cols=cols)
     target = 15
     res = predict(board.copy(), target=target, model=model, topk=3)
     assert len(res) <= 3

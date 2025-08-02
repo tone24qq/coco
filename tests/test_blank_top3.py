@@ -9,7 +9,7 @@ import app as appmod
 def test_predict_only_blank_top3(caplog):
     importlib.reload(appmod)
     appmod.models.clear()
-    appmod.models[(2, 3)] = appmod.DynamicMET(6, 6, rows=2, cols=3)
+    appmod.models[(2, 3)] = appmod.DynamicMET(6, rows=2, cols=3)
     board = np.array([[1, -1, 2], [-1, 3, 4]]).tolist()
     payload = appmod.PredictRequest(board=board, target=1)
     with caplog.at_level(logging.INFO):

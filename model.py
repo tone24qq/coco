@@ -17,7 +17,7 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
     def __init__(
         self,
         num_fields: int,
-        num_values: int,
+        num_values: int = 81,
         d_model: int = 128,
         nhead: int = 4,
         depth: int = 6,
@@ -29,14 +29,17 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
     ) -> None:
         self.num_fields = int(num_fields)
         self.num_values = int(num_values)
+        assert self.num_values == 81, "num_values 必須是 81 (含空白)"
         self.d_model = int(d_model)
+        self.nhead = int(nhead)
+        self.depth = int(depth)
         self.rows = int(rows)
         self.cols = int(cols if cols is not None else rows if rows > 0 else 1)
         if self.rows * self.cols != self.num_fields:
             raise ValueError("rows*cols must equal num_fields")
         if TORCH_AVAILABLE:
             super().__init__()  # type: ignore[misc]
-            self.token_emb = nn.Embedding(num_values + 1, d_model)
+            self.token_emb = nn.Embedding(self.num_values, d_model)
             row_dim = d_model // 2
             col_dim = d_model - row_dim
             self.row_emb = nn.Embedding(self.rows, row_dim)
@@ -57,12 +60,13 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
                 ]
             )
             self.norm_out = nn.LayerNorm(d_model)
-            self.head = nn.Linear(d_model, num_values + 1)
+            self.classifier = nn.Linear(d_model, self.num_values)
         else:
             self.token_emb = None
             self.row_emb = None
             self.col_emb = None
             self.embed_dropout = None
+            self.classifier = None
 
     def forward(self, x: "torch.Tensor") -> "torch.Tensor":  # type: ignore[override]
         if TORCH_AVAILABLE:
@@ -78,11 +82,11 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             for blk in self.blocks:
                 h = blk(h, row_ids, col_ids, attn_mask=None)
             h = self.norm_out(h)
-            logits = self.head(h)
+            logits = self.classifier(h)
             return logits
         import numpy as np
 
         bsz, fields = x.shape
-        return np.zeros((bsz, fields, self.num_values + 1), dtype=float)
+        return np.zeros((bsz, fields, self.num_values), dtype=float)
 
     __call__ = forward

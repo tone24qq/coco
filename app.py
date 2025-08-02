@@ -13,7 +13,7 @@ except Exception:  # torch may be unavailable in minimal runtimes
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
-from dataset import BLANK_VALUE
+from dataset import BLANK_VALUE, MASK_TOKEN_ID
 from model import DynamicMET
 from utils import ensure_only_blank
 
@@ -99,7 +99,7 @@ models: Dict[Tuple[int, int], DynamicMET] = {}
 def _create_model(rows: int, cols: int) -> DynamicMET:
     """Return a :class:`DynamicMET` with training hyperparameters."""
 
-    return DynamicMET(rows * cols, rows * cols, rows=rows, cols=cols, **MODEL_PARAMS)
+    return DynamicMET(rows * cols, 81, rows=rows, cols=cols, **MODEL_PARAMS)
 
 
 def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
@@ -196,15 +196,17 @@ def predict(req: PredictRequest):
     )  # 中文log：記錄盤面大小與目標數字
 
     flat = board.flatten()
-    mask_pos = np.where(flat == BLANK_VALUE)[0]
-    if mask_pos.size == 0:
+    candidate_idx = np.where(flat == BLANK_VALUE)[0]
+    if candidate_idx.size == 0:
         raise HTTPException(
             status_code=422, detail=f"no blank cells ({BLANK_VALUE}) to predict"
         )
-    logger.info("[CHK] mask_pos=%s", mask_pos.tolist())
+    logger.info("[CHK] mask_pos=%s", candidate_idx.tolist())
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
-    flat_input = np.where(flat < 0, 0, flat).astype(np.int64, copy=False)
+    flat_input = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(
+        np.int64, copy=False
+    )
     flat_input = np.ascontiguousarray(flat_input)
     logger.info(
         "[CHK] flat_input: shape=%s dtype=%s sample=%s",
@@ -226,61 +228,54 @@ def predict(req: PredictRequest):
     else:
         logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
+    logger.info(
+        "Model: shape=%sx%s, d_model=%s, depth=%s, nhead=%s, num_values=%s",
+        rows,
+        cols,
+        getattr(model, "d_model", "?"),
+        getattr(model, "depth", "?"),
+        getattr(model, "nhead", "?"),
+        getattr(getattr(model, "classifier", None), "out_features", "?"),
+    )
+    logger.info(
+        "Mapping: BLANK_VALUE=%s -> MASK_TOKEN_ID=%s ; labels 1..80",
+        BLANK_VALUE,
+        MASK_TOKEN_ID,
+    )
+    det = torch.are_deterministic_algorithms_enabled() if torch is not None else False
+    logger.info("Deterministic: %s", det)
+
     if torch is not None:
         # use as_tensor to avoid copy and specify dtype explicitly
-        inp = torch.as_tensor(flat_input, dtype=torch.long).unsqueeze(0)
-        logits = model(inp)  # type: ignore[misc]
-        if logger.isEnabledFor(logging.DEBUG):
-            n_f = logits.size(1)
-            pos_ids = torch.arange(n_f, device=logits.device)
-            row_ids = torch.div(pos_ids, cols, rounding_mode="floor")
-            col_ids = pos_ids % cols
-            logger.debug(
-                "[RoPE] row_ids=%s col_ids=%s sample_q=%s",
-                row_ids[:10].tolist(),
-                col_ids[:10].tolist(),
-                logits[0, :5, :5].detach().cpu().numpy().round(4),
-            )
-        probs = torch.softmax(logits, dim=-1)
+        model.eval()
+        with torch.no_grad():
+            inp = torch.as_tensor(flat_input, dtype=torch.long).unsqueeze(0)
+            logits = model(inp)  # type: ignore[misc]
         logger.info(
-            "[PRED] torch path: inp=%s logits=%s probs=%s",
-            tuple(inp.shape),
+            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
             tuple(logits.shape),
-            tuple(probs.shape),
         )
-        V = probs.shape[-1]
-        target_idx = target if V == n + 1 else target - 1
-        if not (0 <= target_idx < V):
-            raise HTTPException(
-                status_code=422,
-                detail=f"target index out of range: target={target}, mapped={target_idx}, V={V}",
-            )
-        scores_all = probs[0, :, target_idx]
-        scores_np = scores_all.detach().cpu().numpy()
+        probs = torch.softmax(logits, dim=-1)
+        scores_np = probs[0, :, target].detach().cpu().numpy()
     else:
         inp = flat_input.reshape(1, -1)
         logits = model(inp)
-        arr = np.asarray(logits)
         logger.info(
-            "[PRED] numpy path: inp=%s logits=%s",
-            inp.shape,
-            arr.shape,
+            "IDX semantics: 0=blank(ignored), 1..80=numbers 1..80 ; logits.shape=%s",
+            np.shape(logits),
         )
-        V = arr.shape[-1]
-        target_idx = target if V == n + 1 else target - 1
-        if not (0 <= target_idx < V):
-            raise HTTPException(
-                status_code=422,
-                detail=f"target index out of range: target={target}, mapped={target_idx}, V={V}",
-            )
-        scores_np = arr[0, :, target_idx]
+        arr = np.asarray(logits)
+        exp_arr = np.exp(arr - arr.max(axis=-1, keepdims=True))
+        probs = exp_arr / exp_arr.sum(axis=-1, keepdims=True)
+        scores_np = probs[0, :, target]
 
-    candidate_scores = scores_np[mask_pos]
-    topk_local = np.argsort(candidate_scores)[-min(3, len(candidate_scores)) :][::-1]
-    logger.info(
-        "從 %s 個候選格中挑選前 %s 名", len(candidate_scores), len(topk_local)
-    )  # 中文log：候選格與返回數量
-    top_indices = mask_pos[topk_local]
+    candidate_scores = scores_np[candidate_idx]
+    k = min(3, candidate_scores.size)
+    logger.info("TopK: candidates=%s, k=%s", candidate_idx.size, k)
+    logger.info("從 %s 個候選格中挑選前 %s 名", candidate_idx.size, k)
+    topk_local = np.argpartition(candidate_scores, -k)[-k:]
+    order = np.lexsort((candidate_idx[topk_local], -candidate_scores[topk_local]))
+    top_indices = candidate_idx[topk_local][order][-k:][::-1]
     logger.info("[CHK] top_indices=%s", top_indices.tolist())
 
     picked_vals = [int(flat[idx]) for idx in top_indices]

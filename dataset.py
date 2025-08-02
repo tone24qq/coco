@@ -114,7 +114,11 @@ class ScratchCardDataset(Dataset):
             raise RuntimeError("Torch is required for ScratchCardDataset")
 
         board_arr = self.boards[idx].flatten()
-        board = torch.from_numpy(board_arr).long()
+        board_orig = torch.from_numpy(board_arr).long()
+        board_tokens = np.where(
+            board_arr == BLANK_VALUE, MASK_TOKEN_ID, board_arr
+        ).astype(np.int64)
+        board = torch.from_numpy(board_tokens)
         target_val = int(self.targets[idx])
         target = torch.tensor(target_val).long()
 
@@ -126,10 +130,10 @@ class ScratchCardDataset(Dataset):
             else:
                 ratio = self.mask_ratio
             mask = torch.rand(board.shape) < ratio
-            mask |= board == target_val
-            mask |= board == BLANK_VALUE
+            mask |= board_orig == target_val
+            mask |= board_orig == BLANK_VALUE
         elif self.mode == "target":
-            mask = (board == target_val) | (board == BLANK_VALUE)
+            mask = (board_orig == target_val) | (board_orig == BLANK_VALUE)
         elif self.mode == "patch":
             board2d = self.boards[idx]
             r, c = np.argwhere(board2d == target_val)[0]
@@ -144,7 +148,7 @@ class ScratchCardDataset(Dataset):
         inp[mask] = MASK_TOKEN_ID
 
         orig = torch.full_like(board, MASK_TOKEN_ID)
-        valid_mask = mask & (board != BLANK_VALUE)
+        valid_mask = mask & (board != MASK_TOKEN_ID)
         orig[valid_mask] = board[valid_mask]
 
         return {
