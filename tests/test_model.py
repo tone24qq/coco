@@ -14,6 +14,14 @@ def test_dynamic_met_forward() -> None:
     assert out.shape == (2, num_fields, model.num_values)
 
 
+def test_dynamic_met_get_hidden_state() -> None:
+    num_fields = 20
+    model = DynamicMET(num_fields=num_fields, num_values=num_fields, rows=4, cols=5)
+    board = torch.randint(0, model.num_values, (num_fields,))
+    h = model.get_hidden_state(board.numpy())
+    assert h.shape == (model.d_model,)
+
+
 def test_relative_2d_attention_forward() -> None:
     d_model, nhead = 32, 4
     attn = Relative2DAttention(d_model, nhead, max_rel_row=3, max_rel_col=3)
