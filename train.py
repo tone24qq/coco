@@ -1,23 +1,55 @@
-import argparse
+"""Training script for DynamicMET with deterministic behavior."""
+
+# isort: off
+import os
 import random
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
-import yaml
-from torch.optim.lr_scheduler import LambdaLR
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
-from dataset import (BLANK_VALUE, MASK_TOKEN_ID, ScratchCardDataset,
-                     validate_board)
-from model import DynamicMET
-from utils.io_utils import load_boards_from_archives
-from utils.logger import save_checkpoint, setup_logger
+SEED = 20250802
+
+# 0. Python hash seed
+os.environ["PYTHONHASHSEED"] = str(SEED)
+
+# 1. Seeds for Python, NumPy and Torch (CPU & GPU)
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+
+# 2. Ensure cuDNN determinism
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+
+# 3. PyTorch deterministic algorithms API
+try:
+    torch.use_deterministic_algorithms(True)
+except AttributeError:  # pragma: no cover - older torch versions
+    pass
+
+# isort: on
+
+import argparse  # noqa: E402
+
+import torch.nn as nn  # noqa: E402
+import yaml  # noqa: E402
+from torch.optim.lr_scheduler import LambdaLR  # noqa: E402
+from torch.utils.data import DataLoader  # noqa: E402
+from tqdm import tqdm  # noqa: E402
+
+# fmt: off
+from dataset import validate_board  # noqa: E402
+from dataset import (BLANK_VALUE, MASK_TOKEN_ID,  # noqa: E402
+                     ScratchCardDataset)
+# fmt: on
+from model import DynamicMET  # noqa: E402
+from utils.io_utils import load_boards_from_archives  # noqa: E402
+from utils.logger import save_checkpoint, setup_logger  # noqa: E402
 
 # isort: off
-from utils.training import (
+from utils.training import (  # noqa: E402
     EarlyStopping,
     cosine_schedule_with_warmup,
     is_zero_loss,
@@ -25,6 +57,14 @@ from utils.training import (
 )
 
 # isort: on
+
+
+def worker_init_fn(worker_id: int) -> None:
+    """Seed each worker for deterministic data loading."""
+    s = SEED + worker_id
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
 
 
 def train_epoch(
@@ -103,13 +143,6 @@ def main() -> None:
         cfg["training"]["epochs"] = args.epochs
     epochs = int(cfg["training"]["epochs"])
 
-    seed = 20250802
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.use_deterministic_algorithms(True)
-    torch.backends.cudnn.benchmark = False
-
     # Load all boards; masking is handled by the dataset according to mode
     boards = load_boards_from_archives(cfg["data"]["data_dir"], mask_target=False)
     if not boards:
@@ -137,6 +170,8 @@ def main() -> None:
     batch_size = int(cfg["training"]["batch_size"])
     lr = float(cfg["training"]["lr"])
     weight_decay = float(cfg["training"]["weight_decay"])
+
+    generator = torch.Generator().manual_seed(SEED)
 
     # Train a model for each board shape
     for shape, group in shape_groups.items():
@@ -177,6 +212,8 @@ def main() -> None:
             train_ds,
             batch_size=batch_size,
             shuffle=True,
+            worker_init_fn=worker_init_fn,
+            generator=generator,
         )
         if args.mode == "reconstruct":
             val_ratios = (0.3, 0.7)
@@ -185,9 +222,15 @@ def main() -> None:
         val_loaders = [
             DataLoader(
                 ScratchCardDataset(
-                    val_pairs, mask_ratio=r, mode=args.mode, patch_size=args.patch_size
+                    val_pairs,
+                    mask_ratio=r,
+                    mode=args.mode,
+                    patch_size=args.patch_size,
                 ),
                 batch_size=batch_size,
+                shuffle=False,
+                worker_init_fn=worker_init_fn,
+                generator=generator,
             )
             for r in val_ratios
         ]
