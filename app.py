@@ -320,16 +320,24 @@ def predict(req: PredictRequest):
 
     candidate_idx = mask_pos
     candidate_scores = scores_np[candidate_idx]
+    assert (
+        candidate_scores.shape[0] == candidate_idx.shape[0]
+    ), f"空白格 {candidate_idx.shape[0]} 个，却只打分了 {candidate_scores.shape[0]} 个！"
+    logger.debug("✅ 完整打分：空白格共 %s 个，已收到分数", candidate_idx.shape[0])
+    order = np.argsort(-candidate_scores)
+    top5_idx = order[: min(5, candidate_scores.size)]
+    logger.debug(
+        "Top-5 raw scores: %s",
+        ", ".join(f"{candidate_scores[i]:.4f}" for i in top5_idx),
+    )
     total = float(candidate_scores.sum())
     if total > 0:
         norm_scores = candidate_scores / total
     else:
         norm_scores = np.full_like(candidate_scores, 1 / len(candidate_scores))
     k = min(3, len(candidate_scores))
-    topk_local = np.argpartition(candidate_scores, -k)[-k:]
-    order = np.lexsort((candidate_idx[topk_local], -candidate_scores[topk_local]))
-    top_indices = candidate_idx[topk_local][order][-k:][::-1]
-    top_scores = norm_scores[topk_local][order][-k:][::-1]
+    top_indices = candidate_idx[order][:k]
+    top_scores = norm_scores[order][:k]
     logger.info("TopK: candidates = %s, k=%s", len(candidate_scores), k)
     logger.info("[CHK] top_indices=%s", top_indices.tolist())
 

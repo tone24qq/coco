@@ -1,7 +1,7 @@
 """Agent that predicts scratch card positions using a DynamicMET model."""
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -21,9 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 def predict(
-    board: np.ndarray, *, target: int, model: DynamicMET, topk: int = 3
+    board: np.ndarray,
+    *,
+    target: int,
+    model: DynamicMET,
+    topk: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Predict top-k blank positions for ``target`` using ``model``."""
+    """Predict blank positions for ``target`` using ``model``.
+
+    The function scores **all** cells on the board in a single forward pass
+    and then selects the scores corresponding to blank cells.  Returned
+    results are sorted by score in descending order.  ``topk`` can be used to
+    limit the number of returned positions (e.g. ``topk=3`` for top-3).
+    """
     validate_board(board, allow_blank=True)
     rows, cols = board.shape
     flat = board.flatten()
@@ -74,12 +84,19 @@ def predict(
         scores_all = arr[0, :, target_idx]
 
     candidate_scores = scores_all[candidate_idx]
-    k = min(topk, candidate_scores.size)
-    if k == 0:
-        return []
-    topk_local = np.argpartition(candidate_scores, -k)[-k:]
-    order = np.lexsort((candidate_idx[topk_local], -candidate_scores[topk_local]))
-    top_indices = candidate_idx[topk_local][order][-k:][::-1]
+    assert (
+        candidate_scores.shape[0] == candidate_idx.shape[0]
+    ), f"空白格 {candidate_idx.shape[0]} 个，却只打分了 {candidate_scores.shape[0]} 个！"
+    logger.debug("✅ 完整打分：空白格共 %s 个，已收到分数", candidate_idx.shape[0])
+    order = np.argsort(-candidate_scores)
+    top5_idx = order[: min(5, candidate_scores.size)]
+    logger.debug(
+        "Top-5 raw scores: %s",
+        ", ".join(f"{candidate_scores[i]:.4f}" for i in top5_idx),
+    )
+    top_indices = candidate_idx[order]
+    if topk is not None:
+        top_indices = top_indices[:topk]
 
     results: List[Dict[str, Any]] = []
     for idx in top_indices:

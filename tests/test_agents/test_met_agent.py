@@ -19,10 +19,10 @@ def test_met_agent_predict_on_10x12() -> None:
     model = DynamicMET(rows * cols, num_values=rows * cols, rows=rows, cols=cols)
     result = predict(grid.copy(), target=target, model=model)
     assert isinstance(result, list)
-    assert len(result) > 0
-    for item in result:
-        assert isinstance(item, dict)
-        assert "row" in item and "col" in item and "score" in item
+    blank_count = np.sum(grid == BLANK_VALUE)
+    assert len(result) == blank_count
+    scores = [item["score"] for item in result]
+    assert scores == sorted(scores, reverse=True)
 
 
 def test_met_agent_only_returns_blank() -> None:
@@ -38,7 +38,31 @@ def test_met_agent_only_returns_blank() -> None:
     model = DynamicMET(rows * cols, num_values=rows * cols, rows=rows, cols=cols)
     target = 15
     res = predict(board.copy(), target=target, model=model, topk=3)
-    assert len(res) <= 3
+    blank_count = np.sum(board == BLANK_VALUE)
+    assert len(res) == min(3, blank_count)
     for item in res:
         r0, c0 = item["row"] - 1, item["col"] - 1
         assert board[r0, c0] == BLANK_VALUE
+
+
+def test_met_agent_scoring_and_order() -> None:
+    rng = np.random.default_rng(123)
+    rows, cols = rng.integers(4, 8), rng.integers(4, 8)
+    vals = np.arange(1, rows * cols + 1)
+    rng.shuffle(vals)
+    grid = vals.reshape(rows, cols)
+    blank_indices = rng.choice(
+        rows * cols, size=rng.integers(1, rows * cols // 2), replace=False
+    )
+    for idx in blank_indices:
+        r, c = divmod(idx, cols)
+        grid[r, c] = BLANK_VALUE
+    non_blanks = np.argwhere(grid != BLANK_VALUE)
+    target_r, target_c = non_blanks[rng.integers(len(non_blanks))]
+    target = int(grid[target_r, target_c])
+    model = DynamicMET(rows * cols, num_values=rows * cols, rows=rows, cols=cols)
+    results = predict(grid.copy(), target=target, model=model)
+    blank_count = np.sum(grid == BLANK_VALUE)
+    assert len(results) == blank_count
+    scores = [item["score"] for item in results]
+    assert scores == sorted(scores, reverse=True)
