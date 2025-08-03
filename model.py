@@ -8,6 +8,8 @@ except Exception:  # pragma: no cover - torch missing
     nn = object  # type: ignore[misc]
     TORCH_AVAILABLE = False
 
+import numpy as np
+
 from models.blocks import TransformerBlock
 
 
@@ -75,8 +77,12 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             self.col_emb = None
             self.embed_dropout = None
 
-    def forward(self, x: "torch.Tensor") -> "torch.Tensor":  # type: ignore[override]
+    def forward(self, x: "torch.Tensor | np.ndarray") -> "torch.Tensor | np.ndarray":  # type: ignore[override]
         if TORCH_AVAILABLE:
+            if isinstance(x, np.ndarray):
+                x = torch.as_tensor(x, dtype=torch.long).unsqueeze(0)
+            elif x.dim() == 1:
+                x = x.unsqueeze(0)
             _, N = x.shape
             tok = self.token_emb(x)
             pos_ids = torch.arange(N, device=x.device)
@@ -91,9 +97,30 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             h = self.norm_out(h)
             logits = self.classifier(h)
             return logits
-        import numpy as np
 
+        if isinstance(x, np.ndarray) and x.ndim == 1:
+            x = x[None, :]
         bsz, fields = x.shape
         return np.zeros((bsz, fields, self.num_values), dtype=float)
+
+    def get_hidden_state(self, board_flat: np.ndarray) -> np.ndarray:
+        """Return pooled hidden representation for ``board_flat``."""
+        if TORCH_AVAILABLE:
+            with torch.no_grad():
+                x = torch.as_tensor(board_flat, dtype=torch.long).unsqueeze(0)
+                tok = self.token_emb(x)
+                pos_ids = torch.arange(self.num_fields, device=x.device)
+                row_ids = torch.div(pos_ids, self.cols, rounding_mode="floor")
+                col_ids = pos_ids % self.cols
+                pos = torch.cat([self.row_emb(row_ids), self.col_emb(col_ids)], dim=-1)
+                tok = tok + pos.unsqueeze(0)
+                tok = self.embed_dropout(tok)
+                h = tok
+                for blk in self.blocks:
+                    h = blk(h, row_ids, col_ids, attn_mask=None)
+                h = self.norm_out(h)
+                pooled = h.mean(dim=1)
+                return pooled.squeeze(0).cpu().numpy()
+        return np.zeros(self.d_model, dtype=float)
 
     __call__ = forward
