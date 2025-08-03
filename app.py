@@ -1,5 +1,8 @@
+import json
 import os
 import random
+import threading
+from pathlib import Path
 
 import numpy as np
 
@@ -31,6 +34,8 @@ from typing import Dict, List, Optional, Tuple  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field, model_validator  # noqa: E402
 
+from agents.memory_agent import build_memory as build_memory_agent  # noqa: E402
+from agents.memory_agent import predict as memory_predict  # noqa: E402
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
 from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
@@ -112,6 +117,17 @@ MODEL_PARAMS = {
 }
 
 models: Dict[Tuple[int, int], DynamicMET] = {}
+memories: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
+
+_mem_limit_env = os.environ.get("MEMORY_SAMPLE_LIMIT")
+MEMORY_SAMPLE_LIMIT: Optional[int]
+if _mem_limit_env:
+    try:
+        MEMORY_SAMPLE_LIMIT = int(_mem_limit_env)
+    except ValueError:  # pragma: no cover - invalid env input
+        MEMORY_SAMPLE_LIMIT = None
+else:
+    MEMORY_SAMPLE_LIMIT = None
 
 
 def _create_model(rows: int, cols: int) -> DynamicMET:
@@ -171,6 +187,22 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
     return model
 
 
+def _load_memory_for_shape(rows: int, cols: int, model: DynamicMET) -> None:
+    """Build memory bank for ``(rows, cols)`` if archive exists."""
+    file_path = Path("data_archives") / f"{rows}x{cols}.json"
+    if not file_path.is_file():
+        logger.warning("未找到記憶庫檔案：%s", file_path)
+        return
+    data = json.load(open(file_path, "r", encoding="utf-8"))
+    if MEMORY_SAMPLE_LIMIT is not None and len(data) > MEMORY_SAMPLE_LIMIT:
+        logger.info("限制記憶庫樣本 %s -> %s", len(data), MEMORY_SAMPLE_LIMIT)
+        data = data[:MEMORY_SAMPLE_LIMIT]
+    samples = [(np.array(e["board"], dtype=int), int(e["target"])) for e in data]
+    keys, values = build_memory_agent(samples, model)
+    memories[(rows, cols)] = (keys, values)
+    logger.info("✅ 記憶庫就緒：keys=%s values=%s", keys.shape, values.shape)
+
+
 def _discover_models() -> None:
     """Locate all checkpoint files under ``MODEL_GLOB`` and load them."""
     found = False
@@ -192,6 +224,15 @@ def _discover_models() -> None:
         )  # 中文log：沒有模型時使用預設
 
 
+def _preload_memories() -> None:
+    """Load memory banks in background after startup."""
+    for (r, c), model in list(models.items()):
+        try:
+            _load_memory_for_shape(r, c, model)
+        except Exception:
+            logger.exception("記憶庫載入失敗：%sx%s", r, c)
+
+
 @app.on_event("startup")
 def load_models() -> None:
     """Search and load checkpoints following pattern met_{R}x{C}.pth."""
@@ -203,6 +244,7 @@ def load_models() -> None:
         root_logger.setLevel(logging.getLogger("uvicorn").level)
     logger.info("應用啟動，準備載入模型")  # 中文log：啟動事件
     _discover_models()
+    threading.Thread(target=_preload_memories, daemon=True).start()
 
 
 @app.post("/predict", response_model=List[Prediction])
@@ -248,6 +290,71 @@ def predict(req: PredictRequest):
         )
     logger.info("[CHK] mask_pos=%s", mask_pos.tolist())
 
+    model = models.get((rows, cols))
+    if model is None:
+        logger.info(
+            "尚未載入 %sx%s 的模型，立即建立", rows, cols
+        )  # 中文log：動態建立模型
+        model = _create_model(rows, cols)
+        if hasattr(model, "eval"):
+            model.eval()
+        models[(rows, cols)] = model
+        _load_memory_for_shape(rows, cols, model)
+    else:
+        logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
+
+    memory = memories.get((rows, cols))
+    if memory is None:
+        _load_memory_for_shape(rows, cols, model)
+        memory = memories.get((rows, cols))
+    if memory is not None:
+        memory_keys, memory_values = memory
+        fused = memory_predict(
+            board.copy(),
+            target=target,
+            model=model,
+            memory_keys=memory_keys,
+            memory_values=memory_values,
+            alpha=0.5,
+            k_neighbors=2,
+            topk=3,
+        )
+        coords = []
+        for item in fused:
+            r0 = int(item["row"]) - 1
+            c0 = int(item["col"]) - 1
+            idx = r0 * cols + c0
+            coords.append((r0, c0, float(item["score"]), idx))
+        if coords:
+            total = float(sum(sc for _, _, sc, _ in coords))
+            if total > 0:
+                norm_scores = [sc / total for _, _, sc, _ in coords]
+            else:
+                norm_scores = [1 / len(coords)] * len(coords)
+            raw_preds = [
+                Prediction(
+                    row=r0,
+                    col=c0,
+                    score=round(ns * 100, 2),
+                    idx=idx,
+                    cell_value=BLANK_VALUE,
+                )
+                for (r0, c0, _, idx), ns in zip(coords, norm_scores)
+            ]
+            validated = ensure_only_blank(board, raw_preds, BLANK_VALUE)
+            validated = ensure_unique(validated)
+            expected = min(3, mask_pos.size)
+            if len(validated) == expected:
+                for item in validated:
+                    item.row += 1
+                    item.col += 1
+                percent_msg = " ".join(
+                    f"top{i + 1}={item.row}-{item.col}({item.score:.0f}%)"
+                    for i, item in enumerate(validated)
+                )
+                logger.info("預測機率 %s", percent_msg)
+                return validated
+
     # ensure contiguous int64 array to avoid torch dtype inference errors
     flat_input = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(
         np.int64, copy=False
@@ -260,18 +367,6 @@ def predict(req: PredictRequest):
         flat_input[: min(10, flat_input.size)].tolist(),
     )
     # 中文log：檢查輸入資料
-
-    model = models.get((rows, cols))
-    if model is None:
-        logger.info(
-            "尚未載入 %sx%s 的模型，立即建立", rows, cols
-        )  # 中文log：動態建立模型
-        model = _create_model(rows, cols)
-        if hasattr(model, "eval"):
-            model.eval()
-        models[(rows, cols)] = model
-    else:
-        logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
     if torch is not None:
         # use as_tensor to avoid copy and specify dtype explicitly
