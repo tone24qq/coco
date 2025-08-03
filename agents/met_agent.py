@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover - torch missing
 
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
 from model import DynamicMET
-from utils import ensure_only_blank, index_to_coord
+from utils import ensure_only_blank
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +88,18 @@ def predict(
         candidate_scores.shape[0] == candidate_idx.shape[0]
     ), f"空白格 {candidate_idx.shape[0]} 个，却只打分了 {candidate_scores.shape[0]} 个！"
     logger.debug("✅ 完整打分：空白格共 %s 个，已收到分数", candidate_idx.shape[0])
-    order = np.argsort(-candidate_scores)
-    top5_idx = order[: min(5, candidate_scores.size)]
-    logger.debug(
-        "Top-5 raw scores: %s",
-        ", ".join(f"{candidate_scores[i]:.4f}" for i in top5_idx),
-    )
-    top_indices = candidate_idx[order]
+
+    coord_scores = []
+    for idx, sc in zip(candidate_idx, candidate_scores):
+        r, c = divmod(int(idx), cols)
+        coord_scores.append((r, c, float(sc)))
+    coord_scores.sort(key=lambda x: (-x[2], x[0], x[1]))
     if topk is not None:
-        top_indices = top_indices[:topk]
+        coord_scores = coord_scores[:topk]
 
     results: List[Dict[str, Any]] = []
-    for idx in top_indices:
-        r, c = index_to_coord(int(idx), board.shape)
-        results.append({"row": r, "col": c, "score": float(scores_all[idx])})
+    for r, c, sc in coord_scores:
+        results.append({"row": r, "col": c, "score": sc})
     results = ensure_only_blank(board, results, BLANK_VALUE)
     for item in results:
         item["row"] += 1

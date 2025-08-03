@@ -1,21 +1,39 @@
-import glob
-import logging
 import os
-import re
-from typing import Dict, List, Optional, Tuple
+import random
 
 import numpy as np
+
+# 1. OS / Python level determinism
+os.environ["PYTHONHASHSEED"] = "42"
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
+random.seed(42)
+np.random.seed(42)
 
 try:
     import torch
 except Exception:  # torch may be unavailable in minimal runtimes
     torch = None  # type: ignore[assignment]
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, model_validator
+else:  # pragma: no branch - executed when torch is available
+    torch.manual_seed(42)
+    torch.cuda.manual_seed_all(42)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    try:
+        torch.use_deterministic_algorithms(True)
+    except AttributeError:  # pragma: no cover - older torch
+        pass
 
-from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
-from model import DynamicMET
-from utils import ensure_only_blank, ensure_unique
+import glob  # noqa: E402
+import logging  # noqa: E402
+import re  # noqa: E402
+from typing import Dict, List, Optional, Tuple  # noqa: E402
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from pydantic import BaseModel, Field, model_validator  # noqa: E402
+
+from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
+from model import DynamicMET  # noqa: E402
+from utils import ensure_only_blank, ensure_unique  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -324,40 +342,35 @@ def predict(req: PredictRequest):
         candidate_scores.shape[0] == candidate_idx.shape[0]
     ), f"空白格 {candidate_idx.shape[0]} 个，却只打分了 {candidate_scores.shape[0]} 个！"
     logger.debug("✅ 完整打分：空白格共 %s 个，已收到分数", candidate_idx.shape[0])
-    order = np.argsort(-candidate_scores)
-    top5_idx = order[: min(5, candidate_scores.size)]
-    logger.debug(
-        "Top-5 raw scores: %s",
-        ", ".join(f"{candidate_scores[i]:.4f}" for i in top5_idx),
-    )
-    total = float(candidate_scores.sum())
-    if total > 0:
-        norm_scores = candidate_scores / total
-    else:
-        norm_scores = np.full_like(candidate_scores, 1 / len(candidate_scores))
-    k = min(3, len(candidate_scores))
-    top_indices = candidate_idx[order][:k]
-    top_scores = norm_scores[order][:k]
-    logger.info("TopK: candidates = %s, k=%s", len(candidate_scores), k)
-    logger.info("[CHK] top_indices=%s", top_indices.tolist())
 
-    picked_vals = [int(flat[idx]) for idx in top_indices]
+    coord_scores = []
+    for idx, sc in zip(candidate_idx, candidate_scores):
+        r, c = np.unravel_index(int(idx), board.shape)
+        coord_scores.append((r, c, float(sc), int(idx)))
+    coord_scores.sort(key=lambda x: (-x[2], x[0], x[1]))
+
+    total = float(sum(item[2] for item in coord_scores))
+    if total > 0:
+        norm_scores = [item[2] / total for item in coord_scores]
+    else:
+        norm_scores = [1 / len(coord_scores)] * len(coord_scores)
+
+    k = min(3, len(coord_scores))
+    top_items = coord_scores[:k]
+    logger.info("TopK: candidates = %s, k=%s", len(coord_scores), k)
+    logger.info("[CHK] top_indices=%s", [it[3] for it in top_items])
+
+    picked_vals = [int(flat[item[3]]) for item in top_items]
     # 中文 log：以 row-col 形式列出 top3 名次，並確認格子皆為空白
-    pos_str = " ".join(
-        f"{r}-{c}"
-        for idx in top_indices
-        for r, c in [np.unravel_index(int(idx), board.shape)]
-    )
-    logger.info("top3=%s %s格皆為空格（符合預期）", pos_str, len(top_indices))
+    pos_str = " ".join(f"{r}-{c}" for r, c, _, _ in top_items)
+    logger.info("top3=%s %s格皆為空格（符合預期）", pos_str, len(top_items))
     logger.info(
         "[CHK] picked vals=%s (should all be BLANK_VALUE=%s)",
         picked_vals,
         BLANK_VALUE,
     )
     violations = [
-        (*np.unravel_index(int(idx), board.shape), int(flat[idx]))
-        for idx in top_indices
-        if flat[idx] != BLANK_VALUE
+        (r, c, int(flat[idx])) for r, c, _, idx in top_items if flat[idx] != BLANK_VALUE
     ]
     if violations:
         logger.error("[FATAL] non-blank selected! violations=%s", violations)
@@ -366,15 +379,14 @@ def predict(req: PredictRequest):
             detail={"error": "non-blank-selected", "violations": violations},
         )
 
-    raw = []
-    for idx, sc in zip(top_indices, top_scores):
-        r, c = np.unravel_index(int(idx), board.shape)
+    raw: List[Prediction] = []
+    for i, (r, c, _, idx) in enumerate(top_items):
         raw.append(
             Prediction(
                 row=r,
                 col=c,
-                score=round(float(sc * 100), 2),
-                idx=int(idx),
+                score=round(float(norm_scores[i] * 100), 2),
+                idx=idx,
                 cell_value=int(flat[idx]),
             )
         )

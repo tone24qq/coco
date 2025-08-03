@@ -66,3 +66,25 @@ def test_met_agent_scoring_and_order() -> None:
     assert len(results) == blank_count
     scores = [item["score"] for item in results]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_met_agent_stable_order_with_ties() -> None:
+    class DummyModel:
+        def __init__(self) -> None:
+            self.num_fields = 4
+            self.num_values = 4
+            self.rows = 2
+            self.cols = 2
+
+        def __call__(self, x: np.ndarray) -> np.ndarray:  # pragma: no cover - stub
+            batch, n = x.shape
+            return np.zeros((batch, n, self.num_values))
+
+        def eval(self) -> None:  # pragma: no cover - compatibility stub
+            pass
+
+    board = np.full((2, 2), BLANK_VALUE)
+    model = DummyModel()
+    res = predict(board.copy(), target=1, model=model, topk=3)
+    coords = [(item["row"], item["col"]) for item in res]
+    assert coords == [(1, 1), (1, 2), (2, 1)]
