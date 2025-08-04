@@ -15,11 +15,13 @@ def test_predict_prefers_memory_cache(monkeypatch):
 
     called = {"stream": False}
 
-    def fake_stream(*args, **kwargs):  # pragma: no cover - patched in test
-        called["stream"] = True
-        return []
+    if hasattr(app_module, "memory_predict_stream"):
 
-    monkeypatch.setattr(app_module, "memory_predict_stream", fake_stream)
+        def fake_stream(*args, **kwargs):  # pragma: no cover - patched in test
+            called["stream"] = True
+            return []
+
+        monkeypatch.setattr(app_module, "memory_predict_stream", fake_stream)
 
     data = json.load(open("data_archives/4x5.json", "r", encoding="utf-8"))
     board = np.array(data[0]["board"], dtype=int)
