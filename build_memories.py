@@ -18,6 +18,14 @@ import orjson
 from agents.memory_agent import build_memory as build_memory_agent
 from app import _create_model
 
+try:  # 進度條：若未安裝 tqdm，仍可正常運作
+    from tqdm import tqdm
+except Exception:  # pragma: no cover - fallback when tqdm missing
+
+    def tqdm(iterable, **kwargs):  # type: ignore
+        return iterable
+
+
 BASE = Path("data_archives")
 MEM_LIMIT = int(os.getenv("MEMORY_SAMPLE_LIMIT", "0")) or None
 
@@ -49,14 +57,23 @@ def main() -> None:
         data = _load_data(path)
         print(f"讀取 {shape}：共 {len(data)} 筆樣本")
 
-        samples = [(np.array(e["board"], dtype=int), int(e["target"])) for e in data]
+        samples = []
+        targets = []
+        for e in tqdm(
+            data,
+            desc=f"建構樣本 {shape}",
+            unit="筆",
+        ):  # 中文註解：顯示樣本生成進度條
+            samples.append((np.array(e["board"], dtype=int), int(e["target"])))
+            targets.append(int(e["target"]))
+
         model = _create_model(rows, cols)
         if hasattr(model, "eval"):
             model.eval()
         keys, values = build_memory_agent(samples, model)
 
         out = BASE / f"{shape}_memory.npz"
-        np.savez_compressed(out, keys=keys, values=values)
+        np.savez_compressed(out, keys=keys, values=values, targets=np.array(targets))
         print(f"已快取 {shape}：{len(samples)} 筆 → {out}")
 
 

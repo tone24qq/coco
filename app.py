@@ -35,15 +35,23 @@ else:  # pragma: no branch - executed when torch is available
 import glob  # noqa: E402
 import logging  # noqa: E402
 import re  # noqa: E402
-from typing import Dict, List, Optional, Tuple  # noqa: E402
+from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field, conlist, model_validator  # noqa: E402
 
-from agents.memory_agent import predict as memory_predict  # noqa: E402
+from agents.memory_agent import (  # noqa: E402
+    build_memory as build_memory_agent,
+    predict as memory_predict,
+)
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
 from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
+
+try:  # optional approximate nearest neighbor library
+    import hnswlib  # noqa: E402
+except Exception:  # pragma: no cover - allow environments without hnswlib
+    hnswlib = None  # type: ignore[assignment]
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -125,6 +133,8 @@ MODEL_PARAMS = {
 
 models: Dict[Tuple[int, int], DynamicMET] = {}
 memories: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
+memory_targets: Dict[Tuple[int, int], np.ndarray] = {}
+hnsw_indices: Dict[Tuple[int, int], Any] = {}
 
 
 def _create_model(rows: int, cols: int) -> DynamicMET:
@@ -192,8 +202,50 @@ def _load_memory_for_shape(rows: int, cols: int) -> None:
         return
     data = np.load(path)
     keys, values = data["keys"], data["values"]
+    targets = data["targets"] if "targets" in data.files else None
     memories[(rows, cols)] = (keys, values)
+    if targets is not None:
+        memory_targets[(rows, cols)] = targets
+    if hnswlib is not None:
+        idx = hnswlib.Index(space="l2", dim=keys.shape[1])
+        idx.init_index(max_elements=len(keys), M=16, ef_construction=200)
+        idx.add_items(keys, np.arange(len(keys)))
+        hnsw_indices[(rows, cols)] = idx
     logger.info("✅ 記憶庫載入：%s keys=%s values=%s", path, keys.shape, values.shape)
+
+
+def find_similar(
+    rows: int,
+    cols: int,
+    board: np.ndarray,
+    target: int,
+    k: int = 3,
+) -> List[Dict[str, Any]]:
+    """Return top-``k`` similar samples using HNSW index."""
+
+    idx = hnsw_indices.get((rows, cols))
+    if idx is None:
+        raise KeyError(f"index for {rows}x{cols} not loaded")
+    model = models[(rows, cols)]
+    q, _ = build_memory_agent([(board, target)], model)
+    labels, dists = idx.knn_query(q, k=k)
+    targets = memory_targets.get((rows, cols))
+    sims: List[Dict[str, Any]] = []
+    for lbl, dist in zip(labels[0], dists[0]):
+        item: Dict[str, float] = {"sample_idx": int(lbl), "distance": float(dist)}
+        if targets is not None:
+            item["target"] = int(targets[lbl])
+        sims.append(item)
+    return sims
+
+
+def filter_by_target(rows: int, cols: int, target: int) -> List[int]:
+    """Return indices of samples whose original target equals ``target``."""
+
+    targets = memory_targets.get((rows, cols))
+    if targets is None:
+        raise KeyError(f"targets for {rows}x{cols} not loaded")
+    return np.where(targets == target)[0].tolist()
 
 
 def _discover_models() -> None:
