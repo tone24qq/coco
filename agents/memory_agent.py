@@ -20,6 +20,14 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 import orjson
 
+try:  # optional torch dependency
+    import torch
+
+    TORCH_AVAILABLE = True
+except Exception:  # pragma: no cover - torch missing
+    torch = None  # type: ignore[assignment]
+    TORCH_AVAILABLE = False
+
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
 from utils import ensure_only_blank
 
@@ -60,7 +68,11 @@ def build_memory(
         flat_in = _as_model_input(flat)
         h = model.get_hidden_state(flat_in)
         # 1) 取出原始 logits（可能是 torch.Tensor，且 requires_grad=True）
-        logits = model.forward(flat_in)
+        if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+            with torch.no_grad():
+                logits = model(flat_in)
+        else:
+            logits = model.forward(flat_in)
         # 2) 如果是 Tensor，需先 detach().cpu() 再轉 numpy，避免 requires_grad 錯誤
         if hasattr(logits, "detach"):
             arr = logits.detach().cpu().numpy()
@@ -114,7 +126,11 @@ def predict(
 
     scores_mem = memory_values[neighbors].mean(axis=0)
     t_idx = int(target) - 1
-    logits_q = model.forward(flat_in)
+    if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+        with torch.no_grad():
+            logits_q = model(flat_in)
+    else:
+        logits_q = model.forward(flat_in)
     if hasattr(logits_q, "detach"):
         arr = logits_q.detach().cpu().numpy()
     else:
@@ -181,7 +197,11 @@ def predict_stream(
     flat = board.flatten()
     flat_in = _as_model_input(flat)
     t_idx = int(target) - 1
-    logits_q = model.forward(flat_in)
+    if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+        with torch.no_grad():
+            logits_q = model(flat_in)
+    else:
+        logits_q = model.forward(flat_in)
     if hasattr(logits_q, "detach"):
         arr_q = logits_q.detach().cpu().numpy()
     else:
@@ -196,8 +216,42 @@ def predict_stream(
     heap: List[Tuple[float, int, np.ndarray]] = []
     max_scan = int(os.getenv("MEMORY_MAX_SCAN", "20000"))
     skip_every = int(os.getenv("MEMORY_SKIP", "9")) + 1
+    batch_size = int(os.getenv("MEMORY_BATCH_SIZE", "512"))
     start = time.time()
     scanned = 0
+    buf_inputs: List[np.ndarray] = []
+    buf_indices: List[int] = []
+
+    def _process_buffer() -> None:
+        nonlocal buf_inputs, buf_indices
+        if not buf_inputs:
+            return
+        if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+            arr = np.stack(buf_inputs, axis=0)
+            emb_batch = model.get_hidden_state(arr)
+            for mem_in, emb, idx_line in zip(arr, emb_batch, buf_indices):
+                sim = float(
+                    np.dot(q_emb, emb)
+                    / (np.linalg.norm(q_emb) * np.linalg.norm(emb) + 1e-8)
+                )
+                if len(heap) < k_neighbors:
+                    heapq.heappush(heap, (sim, idx_line, mem_in))
+                elif sim > heap[0][0]:
+                    heapq.heapreplace(heap, (sim, idx_line, mem_in))
+        else:  # fallback: sequential processing
+            for mem_in, idx_line in zip(buf_inputs, buf_indices):
+                mem_emb = model.get_hidden_state(mem_in)
+                sim = float(
+                    np.dot(q_emb, mem_emb)
+                    / (np.linalg.norm(q_emb) * np.linalg.norm(mem_emb) + 1e-8)
+                )
+                if len(heap) < k_neighbors:
+                    heapq.heappush(heap, (sim, idx_line, mem_in))
+                elif sim > heap[0][0]:
+                    heapq.heapreplace(heap, (sim, idx_line, mem_in))
+        buf_inputs = []
+        buf_indices = []
+
     with jsonl_path.open("rb") as f:
         for idx, line in enumerate(f):
             if idx >= max_scan:
@@ -208,31 +262,40 @@ def predict_stream(
             item = orjson.loads(line)
             mem_flat = np.asarray(item["board"], dtype=int).flatten()
             mem_in = _as_model_input(mem_flat)
-            mem_emb = model.get_hidden_state(mem_in)
-            sim = float(
-                np.dot(q_emb, mem_emb)
-                / (np.linalg.norm(q_emb) * np.linalg.norm(mem_emb) + 1e-8)
-            )
-            if len(heap) < k_neighbors:
-                heapq.heappush(heap, (sim, idx, mem_in))
-            elif sim > heap[0][0]:
-                heapq.heapreplace(heap, (sim, idx, mem_in))
+            buf_inputs.append(mem_in)
+            buf_indices.append(idx)
+            if len(buf_inputs) == batch_size:
+                _process_buffer()
+    _process_buffer()
     logger.info("scanned %d rows in %.2fs", scanned, time.time() - start)
 
     if heap:
-        mem_scores = np.zeros(num_cells, dtype=float)
-        for _, _, mem_in in heap:
-            logits = model.forward(mem_in)
+        if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+            arr_in = np.stack([h[2] for h in heap], axis=0)
+            with torch.no_grad():
+                logits = model(arr_in)
             if hasattr(logits, "detach"):
                 arr = logits.detach().cpu().numpy()
             else:
                 arr = np.asarray(logits)
             if arr.ndim == 3:
-                arr = arr[0]
-            if not 0 <= t_idx < arr.shape[1]:
-                raise IndexError("target index out of range")
-            mem_scores += arr[:, t_idx]
-        mem_scores /= len(heap)
+                mem_scores = arr[:, :, t_idx].mean(axis=0)
+            else:  # pragma: no cover - unexpected shape
+                mem_scores = arr[:, t_idx].mean(axis=0)
+        else:
+            mem_scores = np.zeros(num_cells, dtype=float)
+            for _, _, mem_in in heap:
+                logits = model.forward(mem_in)
+                if hasattr(logits, "detach"):
+                    arr = logits.detach().cpu().numpy()
+                else:
+                    arr = np.asarray(logits)
+                if arr.ndim == 3:
+                    arr = arr[0]
+                if not 0 <= t_idx < arr.shape[1]:
+                    raise IndexError("target index out of range")
+                mem_scores += arr[:, t_idx]
+            mem_scores /= len(heap)
         scores_final = alpha * scores_model + (1 - alpha) * mem_scores
     else:  # no neighbors found
         scores_final = scores_model

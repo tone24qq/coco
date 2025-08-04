@@ -78,10 +78,13 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
             self.embed_dropout = None
 
     def forward(self, x: "torch.Tensor | np.ndarray") -> "torch.Tensor | np.ndarray":  # type: ignore[override]
+        device = self.token_emb.weight.device if TORCH_AVAILABLE else None
         if TORCH_AVAILABLE:
             if isinstance(x, np.ndarray):
-                x = torch.as_tensor(x, dtype=torch.long).unsqueeze(0)
-            elif x.dim() == 1:
+                x = torch.as_tensor(x, dtype=torch.long, device=device)
+            else:
+                x = x.to(device)
+            if x.dim() == 1:
                 x = x.unsqueeze(0)
             _, N = x.shape
             tok = self.token_emb(x)
@@ -103,11 +106,25 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
         bsz, fields = x.shape
         return np.zeros((bsz, fields, self.num_values), dtype=float)
 
-    def get_hidden_state(self, board_flat: np.ndarray) -> np.ndarray:
-        """Return pooled hidden representation for ``board_flat``."""
+    def get_hidden_state(self, board_flat: "np.ndarray | torch.Tensor") -> np.ndarray:
+        """Return pooled hidden representation for ``board_flat``.
+
+        Parameters
+        ----------
+        board_flat:
+            Flat board array of shape ``(N,)`` or batch array of shape
+            ``(B, N)``. Accepts either ``numpy`` arrays or ``torch`` tensors.
+        """
+
         if TORCH_AVAILABLE:
+            device = self.token_emb.weight.device
             with torch.no_grad():
-                x = torch.as_tensor(board_flat, dtype=torch.long).unsqueeze(0)
+                if isinstance(board_flat, np.ndarray):
+                    x = torch.as_tensor(board_flat, dtype=torch.long, device=device)
+                else:
+                    x = board_flat.to(device)
+                if x.dim() == 1:
+                    x = x.unsqueeze(0)
                 tok = self.token_emb(x)
                 pos_ids = torch.arange(self.num_fields, device=x.device)
                 row_ids = torch.div(pos_ids, self.cols, rounding_mode="floor")
@@ -120,7 +137,8 @@ class DynamicMET(nn.Module if TORCH_AVAILABLE else object):
                     h = blk(h, row_ids, col_ids, attn_mask=None)
                 h = self.norm_out(h)
                 pooled = h.mean(dim=1)
-                return pooled.squeeze(0).cpu().numpy()
+                result = pooled.cpu().numpy()
+                return result[0] if result.shape[0] == 1 else result
         return np.zeros(self.d_model, dtype=float)
 
     __call__ = forward
