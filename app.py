@@ -4,6 +4,7 @@
 
 import os
 import random
+import time
 from pathlib import Path
 
 import numpy as np
@@ -203,7 +204,7 @@ def _load_memory_for_shape(rows: int, cols: int) -> None:
     values_list: List[np.ndarray] = []
     targets_list: List[np.ndarray] = []
     for path in paths:
-        data = np.load(path)
+        data = np.load(path, mmap_mode="r")
         keys_list.append(data["keys"])
         values_list.append(data["values"])
         if "targets" in data.files:
@@ -393,8 +394,13 @@ def predict(req: PredictRequest):
     else:
         logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
-    if (rows, cols) not in memories:
+    memory = memories.get((rows, cols))
+    if memory is None:
         _load_memory_for_shape(rows, cols)
+        memory = memories.get((rows, cols))
+
+    mem_n = int(memory[0].shape[0]) if memory is not None else 0
+    logger.info("記憶庫：尺寸=%sx%s 樣本=%d", rows, cols, mem_n)
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
     flat_input = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(
@@ -409,6 +415,7 @@ def predict(req: PredictRequest):
     )
     # 中文log：檢查輸入資料
 
+    start_model = time.perf_counter()
     if torch is not None:
         # use as_tensor to avoid copy and specify dtype explicitly
         inp = torch.as_tensor(flat_input, dtype=torch.long).unsqueeze(0)
@@ -471,26 +478,45 @@ def predict(req: PredictRequest):
                 detail=f"target index out of range: target={target}, mapped={target_idx}, V={V}",
             )
         scores_np = arr[0, :, target_idx]
+    model_time = time.perf_counter() - start_model
+    blank_cnt = int(mask_pos.size)
+    logger.info("模型推理：空白格=%d 耗時=%.3f秒", blank_cnt, model_time)
 
     # step 2-3: memory fusion
+    start_mem = time.perf_counter()
     final_scores = scores_np
     try:
         sim_indices = filter_by_target(rows, cols, target)
     except KeyError:
         sim_indices = []
-    if sim_indices:
-        keys, values = memories[(rows, cols)]
+    retrieved = len(sim_indices)
+    if sim_indices and memory is not None:
+        keys, values = memory
         q, _ = build_memory_agent([(board, target)], model)
         dists = np.linalg.norm(keys[sim_indices] - q[0], axis=1)
         k_mem = min(3, len(sim_indices))
         topk_idx = np.argsort(dists)[:k_mem]
         knn_scores = values[sim_indices][topk_idx]
         memory_score = np.mean(knn_scores, axis=0)
-        alpha = float(os.environ.get("MEMORY_ALPHA", "0.8"))
+        alpha = 0.5
         final_scores = scores_np * alpha + memory_score * (1 - alpha)
-        logger.debug("[MEM] alpha=%s target=%s sim_k=%s", alpha, target, k_mem)
+        mem_time = time.perf_counter() - start_mem
+        logger.info(
+            "記憶檢索：樣本=%d 命中=%d 耗時=%.3f秒",
+            mem_n,
+            retrieved,
+            mem_time,
+        )
+        logger.info(
+            "合併：模型權重=%.1f 記憶權重=%.1f",
+            alpha,
+            1 - alpha,
+        )
     else:
-        logger.debug("[MEM] no memory samples for target %s", target)
+        mem_time = time.perf_counter() - start_mem
+        logger.info("記憶檢索：樣本=%d 命中=0 耗時=%.3f秒", mem_n, mem_time)
+        final_scores = scores_np
+        logger.info("合併：僅模型輸出（無記憶）")
 
     candidate_idx = mask_pos
     candidate_scores = final_scores[candidate_idx]
@@ -513,7 +539,7 @@ def predict(req: PredictRequest):
 
     k = min(3, len(coord_scores))
     top_items = coord_scores[:k]
-    logger.info("TopK: candidates = %s, k=%s", len(coord_scores), k)
+    logger.info("前K名：候選=%s，k=%s", len(coord_scores), k)
     logger.info("[CHK] top_indices=%s", [it[3] for it in top_items])
 
     picked_vals = [int(flat[item[3]]) for item in top_items]
