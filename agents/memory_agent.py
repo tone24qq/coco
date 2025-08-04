@@ -278,7 +278,7 @@ def _collect_embeddings_from_jsonl(
     embeddings_list: list[np.ndarray] = []
     buf_inputs: list[np.ndarray] = []
 
-    max_scan = int(os.getenv("MEMORY_MAX_SCAN", "0"))
+    max_scan = int(os.getenv("MEMORY_MAX_SCAN", "1000"))
 
     with jsonl_path.open("rb") as f, mmap.mmap(
         f.fileno(), 0, access=mmap.ACCESS_READ

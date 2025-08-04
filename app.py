@@ -2,6 +2,7 @@ import json
 import os
 import random
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -110,6 +111,7 @@ class Prediction(BaseModel):
 
 MODEL_GLOB = os.environ.get("MODEL_GLOB", os.path.join("checkpoints", "met_*x*.pth"))
 _PATTERN = re.compile(r"met_(\d+)x(\d+)\.pth$")
+_JSON_PATTERN = re.compile(r"(\d+)x(\d+)\.json$")
 
 # Training-time hyperparameters required for loading checkpoints
 MODEL_PARAMS = {
@@ -193,24 +195,32 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
 
 def _load_memory_for_shape(rows: int, cols: int, model: DynamicMET) -> None:
     """Register memory source for ``(rows, cols)`` if archive exists."""
+    file_path = Path("data_archives") / f"{rows}x{cols}.json"
     jsonl_path = Path("data_archives") / f"{rows}x{cols}.jsonl"
+    if file_path.is_file():
+        data = json.load(open(file_path, "r", encoding="utf-8"))
+        if MEMORY_SAMPLE_LIMIT is not None and len(data) > MEMORY_SAMPLE_LIMIT:
+            logger.info("限制記憶庫樣本 %s -> %s", len(data), MEMORY_SAMPLE_LIMIT)
+            data = data[:MEMORY_SAMPLE_LIMIT]
+        samples = [(np.array(e["board"], dtype=int), int(e["target"])) for e in data]
+        keys, values = build_memory_agent(samples, model)
+        memories[(rows, cols)] = (keys, values)
+        logger.info("✅ 記憶庫就緒：keys=%s values=%s", keys.shape, values.shape)
+        return
     if jsonl_path.is_file():
         memory_files[(rows, cols)] = jsonl_path
         logger.info("記憶庫採流式讀取：%s", jsonl_path)
         return
+    logger.warning("未找到記憶庫檔案：%s 或 %s", file_path, jsonl_path)
 
-    file_path = Path("data_archives") / f"{rows}x{cols}.json"
-    if not file_path.is_file():
-        logger.warning("未找到記憶庫檔案：%s", file_path)
-        return
-    data = json.load(open(file_path, "r", encoding="utf-8"))
-    if MEMORY_SAMPLE_LIMIT is not None and len(data) > MEMORY_SAMPLE_LIMIT:
-        logger.info("限制記憶庫樣本 %s -> %s", len(data), MEMORY_SAMPLE_LIMIT)
-        data = data[:MEMORY_SAMPLE_LIMIT]
-    samples = [(np.array(e["board"], dtype=int), int(e["target"])) for e in data]
-    keys, values = build_memory_agent(samples, model)
-    memories[(rows, cols)] = (keys, values)
-    logger.info("✅ 記憶庫就緒：keys=%s values=%s", keys.shape, values.shape)
+
+def find_all_json_files(base_dir: str = "data_archives"):
+    """Yield ``((rows, cols), Path)`` for all JSON archives under ``base_dir``."""
+    base = Path(base_dir)
+    for path in base.glob("*x*.json"):
+        m = _JSON_PATTERN.match(path.name)
+        if m:
+            yield (int(m.group(1)), int(m.group(2))), path
 
 
 def _discover_models() -> None:
@@ -236,11 +246,24 @@ def _discover_models() -> None:
 
 def _preload_memories() -> None:
     """Load memory banks in background after startup."""
-    for (r, c), model in list(models.items()):
+    loaded: List[str] = []
+    for (r, c), _ in find_all_json_files():
+        model = models.get((r, c))
+        if model is None:
+            model = _create_model(r, c)
+            if hasattr(model, "eval"):
+                model.eval()
+            models[(r, c)] = model
         try:
             _load_memory_for_shape(r, c, model)
+            if (r, c) in memories:
+                loaded.append(f"{r}x{c}")
         except Exception:
             logger.exception("記憶庫載入失敗：%sx%s", r, c)
+    if loaded:
+        logger.info("已快取盤面尺寸：%s", loaded)  # 中文log：啟動時列出已快取尺寸
+    else:
+        logger.info("未找到可快取的盤面")  # 中文log：無任何記憶庫
 
 
 @app.on_event("startup")
@@ -319,17 +342,8 @@ def predict(req: PredictRequest):
         _load_memory_for_shape(rows, cols, model)
         memory = memories.get((rows, cols))
         jsonl = memory_files.get((rows, cols))
-    if jsonl is not None:
-        fused = memory_predict_stream(
-            board.copy(),
-            target=target,
-            model=model,
-            jsonl_path=jsonl,
-            alpha=0.5,
-            k_neighbors=2,
-            topk=3,
-        )
-    elif memory is not None:
+    if memory is not None:
+        t0 = time.perf_counter()
         memory_keys, memory_values = memory
         fused = memory_predict(
             board.copy(),
@@ -341,6 +355,27 @@ def predict(req: PredictRequest):
             k_neighbors=2,
             topk=3,
         )
+        logger.info(
+            "走快取版：耗時 %.4f 秒，結果 %s 筆",
+            time.perf_counter() - t0,
+            len(fused),
+        )  # 中文log：使用快取版
+    elif jsonl is not None:
+        t0 = time.perf_counter()
+        fused = memory_predict_stream(
+            board.copy(),
+            target=target,
+            model=model,
+            jsonl_path=jsonl,
+            alpha=0.5,
+            k_neighbors=2,
+            topk=3,
+        )
+        logger.info(
+            "走串流版：耗時 %.4f 秒，結果 %s 筆",
+            time.perf_counter() - t0,
+            len(fused),
+        )  # 中文log：使用串流版
     else:
         fused = []
 
