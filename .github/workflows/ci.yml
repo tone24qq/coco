@@ -16,6 +16,7 @@ jobs:
       - run: flake8
       - run: mypy . --ignore-missing-imports
       - run: python -m py_compile $(git ls-files '*.py')
+      - run: MEMORY_SAMPLE_LIMIT=5 python build_memories.py
       - run: pytest -q
 
   train-and-package:

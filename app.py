@@ -1,3 +1,4 @@
+# isort:skip_file
 import json
 import os
 import random
@@ -32,6 +33,7 @@ import logging  # noqa: E402
 import re  # noqa: E402
 from typing import Dict, List, Optional, Tuple  # noqa: E402
 
+import orjson  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field, conlist, model_validator  # noqa: E402
 
@@ -111,7 +113,7 @@ class Prediction(BaseModel):
 
 MODEL_GLOB = os.environ.get("MODEL_GLOB", os.path.join("checkpoints", "met_*x*.pth"))
 _PATTERN = re.compile(r"met_(\d+)x(\d+)\.pth$")
-_JSON_PATTERN = re.compile(r"(\d+)x(\d+)\.json$")
+_JSON_PATTERN = re.compile(r"(\d+)x(\d+)\.jsonl?$")
 
 # Training-time hyperparameters required for loading checkpoints
 MODEL_PARAMS = {
@@ -195,32 +197,59 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
 
 def _load_memory_for_shape(rows: int, cols: int, model: DynamicMET) -> None:
     """Register memory source for ``(rows, cols)`` if archive exists."""
-    file_path = Path("data_archives") / f"{rows}x{cols}.json"
-    jsonl_path = Path("data_archives") / f"{rows}x{cols}.jsonl"
-    if file_path.is_file():
-        data = json.load(open(file_path, "r", encoding="utf-8"))
-        if MEMORY_SAMPLE_LIMIT is not None and len(data) > MEMORY_SAMPLE_LIMIT:
-            logger.info("限制記憶庫樣本 %s -> %s", len(data), MEMORY_SAMPLE_LIMIT)
-            data = data[:MEMORY_SAMPLE_LIMIT]
-        samples = [(np.array(e["board"], dtype=int), int(e["target"])) for e in data]
+
+    base = Path("data_archives")
+    npz_path = base / f"{rows}x{cols}_memory.npz"
+    json_path = base / f"{rows}x{cols}.json"
+    jsonl_path = base / f"{rows}x{cols}.jsonl"
+
+    if npz_path.is_file():
+        data = np.load(npz_path)
+        memories[(rows, cols)] = (data["keys"], data["values"])
+        logger.info(
+            "✅ 快取記憶庫載入：%s keys=%s values=%s",
+            npz_path,
+            data["keys"].shape,
+            data["values"].shape,
+        )
+        return
+
+    if json_path.is_file() or jsonl_path.is_file():
+        if json_path.is_file():
+            data_list = json.load(open(json_path, "r", encoding="utf-8"))
+        else:
+            data_list = []
+            with jsonl_path.open("rb") as fh:
+                for idx, line in enumerate(fh):
+                    if MEMORY_SAMPLE_LIMIT is not None and idx >= MEMORY_SAMPLE_LIMIT:
+                        break
+                    data_list.append(orjson.loads(line))
+        if MEMORY_SAMPLE_LIMIT is not None and len(data_list) > MEMORY_SAMPLE_LIMIT:
+            logger.info("限制記憶庫樣本 %s -> %s", len(data_list), MEMORY_SAMPLE_LIMIT)
+            data_list = data_list[:MEMORY_SAMPLE_LIMIT]
+        samples = [
+            (np.array(e["board"], dtype=int), int(e["target"])) for e in data_list
+        ]
         keys, values = build_memory_agent(samples, model)
         memories[(rows, cols)] = (keys, values)
         logger.info("✅ 記憶庫就緒：keys=%s values=%s", keys.shape, values.shape)
         return
-    if jsonl_path.is_file():
-        memory_files[(rows, cols)] = jsonl_path
-        logger.info("記憶庫採流式讀取：%s", jsonl_path)
-        return
-    logger.warning("未找到記憶庫檔案：%s 或 %s", file_path, jsonl_path)
+
+    logger.warning("未找到記憶庫檔案：%s 或 %s 或 %s", json_path, jsonl_path, npz_path)
 
 
 def find_all_json_files(base_dir: str = "data_archives"):
     """Yield ``((rows, cols), Path)`` for all JSON archives under ``base_dir``."""
+
     base = Path(base_dir)
-    for path in base.glob("*x*.json"):
+    seen: set[tuple[int, int]] = set()
+    for path in base.glob("*x*.json*"):
         m = _JSON_PATTERN.match(path.name)
         if m:
-            yield (int(m.group(1)), int(m.group(2))), path
+            shape = (int(m.group(1)), int(m.group(2)))
+            if shape not in seen:
+                seen.add(shape)
+                yield shape, path
 
 
 def _discover_models() -> None:

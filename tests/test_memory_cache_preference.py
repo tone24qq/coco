@@ -9,6 +9,7 @@ from dataset import BLANK_VALUE
 
 
 def test_predict_prefers_memory_cache(monkeypatch):
+    monkeypatch.setenv("MEMORY_SAMPLE_LIMIT", "5")
     importlib.reload(model)
     importlib.reload(app_module)
     app_module._preload_memories()
