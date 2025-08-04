@@ -10,11 +10,9 @@ scores.
 
 from __future__ import annotations
 
-import heapq
 import logging
 import mmap
 import os
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -213,92 +211,44 @@ def predict_stream(
         raise IndexError("target index out of range")
     scores_model = arr_q[:, t_idx]
 
-    q_emb = model.get_hidden_state(flat_in)
-    heap: List[Tuple[float, int, np.ndarray]] = []
-    max_scan = int(os.getenv("MEMORY_MAX_SCAN", "20000"))
-    skip_every = int(os.getenv("MEMORY_SKIP", "9")) + 1
-    batch_size = int(os.getenv("MEMORY_BATCH_SIZE", "512"))
-    start = time.time()
-    scanned = 0
-    buf_inputs: List[np.ndarray] = []
-    buf_indices: List[int] = []
+    batch_size = int(os.getenv("MEMORY_BATCH_SIZE", "64"))
+    neighbors = online_topk_from_jsonl(
+        jsonl_path=jsonl_path,
+        query_board=board,
+        model=model,
+        top_k=k_neighbors,
+        batch_size=batch_size,
+    )
 
-    def _process_buffer() -> None:
-        nonlocal buf_inputs, buf_indices
-        if not buf_inputs:
-            return
-        if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
-            arr = np.stack(buf_inputs, axis=0)
-            emb_batch = model.get_hidden_state(arr)
-            for mem_in, emb, idx_line in zip(arr, emb_batch, buf_indices):
-                sim = float(
-                    np.dot(q_emb, emb)
-                    / (np.linalg.norm(q_emb) * np.linalg.norm(emb) + 1e-8)
-                )
-                if len(heap) < k_neighbors:
-                    heapq.heappush(heap, (sim, idx_line, mem_in))
-                elif sim > heap[0][0]:
-                    heapq.heapreplace(heap, (sim, idx_line, mem_in))
-        else:  # fallback: sequential processing
-            for mem_in, idx_line in zip(buf_inputs, buf_indices):
-                mem_emb = model.get_hidden_state(mem_in)
-                sim = float(
-                    np.dot(q_emb, mem_emb)
-                    / (np.linalg.norm(q_emb) * np.linalg.norm(mem_emb) + 1e-8)
-                )
-                if len(heap) < k_neighbors:
-                    heapq.heappush(heap, (sim, idx_line, mem_in))
-                elif sim > heap[0][0]:
-                    heapq.heapreplace(heap, (sim, idx_line, mem_in))
-        buf_inputs = []
-        buf_indices = []
-
-    with jsonl_path.open("rb") as f:
-        for idx, line in enumerate(f):
-            if idx >= max_scan:
-                break
-            scanned += 1
-            if idx % skip_every:
-                continue
-            item = orjson.loads(line)
-            mem_flat = np.asarray(item["board"], dtype=int).flatten()
+    mem_scores = np.zeros(num_cells, dtype=float)
+    weight_sum = 0.0
+    for rec_id, sim in neighbors:
+        rec = load_record_by_id(jsonl_path, rec_id)
+        if "scores" in rec:
+            scores_vec = np.asarray(rec["scores"], dtype=float)
+        else:
+            mem_flat = np.asarray(rec["board"], dtype=int).flatten()
             mem_in = _as_model_input(mem_flat)
-            buf_inputs.append(mem_in)
-            buf_indices.append(idx)
-            if len(buf_inputs) == batch_size:
-                _process_buffer()
-    _process_buffer()
-    logger.info("scanned %d rows in %.2fs", scanned, time.time() - start)
-
-    if heap:
-        if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
-            arr_in = np.stack([h[2] for h in heap], axis=0)
-            with torch.no_grad():
-                logits = model(arr_in)
+            if TORCH_AVAILABLE and isinstance(model, torch.nn.Module):
+                with torch.no_grad():
+                    logits = model(mem_in)
+            else:
+                logits = model.forward(mem_in)
             if hasattr(logits, "detach"):
                 arr = logits.detach().cpu().numpy()
             else:
                 arr = np.asarray(logits)
             if arr.ndim == 3:
-                mem_scores = arr[:, :, t_idx].mean(axis=0)
-            else:  # pragma: no cover - unexpected shape
-                mem_scores = arr[:, t_idx].mean(axis=0)
-        else:
-            mem_scores = np.zeros(num_cells, dtype=float)
-            for _, _, mem_in in heap:
-                logits = model.forward(mem_in)
-                if hasattr(logits, "detach"):
-                    arr = logits.detach().cpu().numpy()
-                else:
-                    arr = np.asarray(logits)
-                if arr.ndim == 3:
-                    arr = arr[0]
-                if not 0 <= t_idx < arr.shape[1]:
-                    raise IndexError("target index out of range")
-                mem_scores += arr[:, t_idx]
-            mem_scores /= len(heap)
+                arr = arr[0]
+            if not 0 <= t_idx < arr.shape[1]:
+                raise IndexError("target index out of range")
+            scores_vec = arr[:, t_idx]
+        mem_scores += sim * scores_vec
+        weight_sum += sim
+    if weight_sum > 0:
+        mem_scores /= weight_sum
         scores_final = alpha * scores_model + (1 - alpha) * mem_scores
-    else:  # no neighbors found
+    else:
         scores_final = scores_model
 
     mask = flat != BLANK_VALUE
@@ -319,7 +269,10 @@ def predict_stream(
 def _collect_embeddings_from_jsonl(
     jsonl_path: Path, model: Any, batch_size: int
 ) -> tuple[list[int], np.ndarray]:
-    """Return record ids and embeddings for all boards in ``jsonl_path``."""
+    """Return record ids and embeddings for all boards in ``jsonl_path``.
+
+    Records without an ``id`` field will use their line index as the id.
+    """
 
     record_ids: list[int] = []
     embeddings_list: list[np.ndarray] = []
@@ -328,17 +281,22 @@ def _collect_embeddings_from_jsonl(
     with jsonl_path.open("rb") as f, mmap.mmap(
         f.fileno(), 0, access=mmap.ACCESS_READ
     ) as mm:
+        line_idx = 0
         for raw in iter(mm.readline, b""):
+            if not raw:
+                break
             rec = orjson.loads(raw)
-            record_ids.append(int(rec["id"]))
+            rec_id = rec.get("id", line_idx)
+            record_ids.append(int(rec_id))
             board = np.asarray(rec["board"], dtype=int).flatten()
             buf_inputs.append(_as_model_input(board))
+            line_idx += 1
             if len(buf_inputs) >= batch_size:
                 batch = np.stack(buf_inputs, axis=0)
                 emb = model.get_hidden_state(batch)
                 if hasattr(emb, "detach"):
                     emb = emb.detach().cpu().numpy()
-                embeddings_list.append(np.asarray(emb))
+                embeddings_list.append(np.atleast_2d(np.asarray(emb)))
                 buf_inputs.clear()
 
         if buf_inputs:
@@ -346,7 +304,7 @@ def _collect_embeddings_from_jsonl(
             emb = model.get_hidden_state(batch)
             if hasattr(emb, "detach"):
                 emb = emb.detach().cpu().numpy()
-            embeddings_list.append(np.asarray(emb))
+            embeddings_list.append(np.atleast_2d(np.asarray(emb)))
 
     embeddings = (
         np.concatenate(embeddings_list, axis=0) if embeddings_list else np.empty((0, 0))
@@ -424,3 +382,19 @@ def online_topk_from_directory(
     idx_topk = np.argpartition(-sims, k - 1)[:k]
     idx_topk = idx_topk[np.argsort(-sims[idx_topk])]
     return [(record_ids[i], float(sims[i])) for i in idx_topk]
+
+
+def load_record_by_id(jsonl_path: Path, rec_id: int) -> Dict[str, Any]:
+    """Load a record with ``rec_id`` from ``jsonl_path``.
+
+    If the JSON lines do not contain an explicit ``id`` field, ``rec_id`` is
+    treated as the zero-based line index.
+    """
+
+    with jsonl_path.open("rb") as f:
+        for idx, raw in enumerate(f):
+            rec = orjson.loads(raw)
+            cur_id = rec.get("id", idx)
+            if cur_id == rec_id:
+                return rec
+    raise KeyError(f"record id {rec_id} not found in {jsonl_path}")

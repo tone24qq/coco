@@ -24,7 +24,7 @@ class DummyModel:
         return np.ones((1, n, 9), dtype=float)
 
 
-def test_predict_stream_sampling(tmp_path, monkeypatch, caplog) -> None:
+def test_predict_stream_sampling(tmp_path, caplog) -> None:
     board = np.array([[BLANK_VALUE, 2], [3, 4]], dtype=int)
     target = 1
     data = [{"board": board.tolist(), "target": target} for _ in range(6)]
@@ -34,13 +34,10 @@ def test_predict_stream_sampling(tmp_path, monkeypatch, caplog) -> None:
             f.write(orjson.dumps(obj) + b"\n")
 
     model = DummyModel()
-    monkeypatch.setenv("MEMORY_MAX_SCAN", "3")
-    monkeypatch.setenv("MEMORY_SKIP", "1")
     with caplog.at_level(logging.INFO):
         predict_stream(
             board, target=target, model=model, jsonl_path=jsonl, k_neighbors=1
         )
 
-    assert model.hidden_calls == 3  # query + 2 processed lines
+    assert model.hidden_calls == 2  # embeddings + query
     assert model.forward_calls == 2  # query + neighbor
-    assert "scanned 3 rows" in caplog.text
