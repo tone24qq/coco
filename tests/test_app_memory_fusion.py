@@ -1,18 +1,7 @@
 import json
-from pathlib import Path
 
 import numpy as np
-import orjson
 from fastapi.testclient import TestClient
-
-json_path = Path("data_archives/4x5.json")
-jsonl_path = Path("data_archives/4x5.jsonl")
-if not jsonl_path.exists():
-    data = json.load(open(json_path, "r", encoding="utf-8"))
-    with jsonl_path.open("wb") as f:
-        for obj in data[:50]:
-            f.write(orjson.dumps(obj))
-            f.write(b"\n")
 
 from app import app  # noqa: E402
 from dataset import BLANK_VALUE  # noqa: E402
