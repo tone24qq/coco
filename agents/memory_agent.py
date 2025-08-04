@@ -10,6 +10,7 @@ scores.
 
 from __future__ import annotations
 
+import json
 import logging
 import mmap
 import os
@@ -28,6 +29,7 @@ except Exception:  # pragma: no cover - torch missing
     TORCH_AVAILABLE = False
 
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
+from model import DynamicMET
 from utils import ensure_only_blank
 
 logger = logging.getLogger(__name__)
@@ -87,6 +89,59 @@ def build_memory(
         memory_keys.append(h)
         memory_values.append(scores)
     return np.stack(memory_keys, axis=0), np.stack(memory_values, axis=0)
+
+
+def build_memory_agent(
+    shape: tuple[int, int],
+    json_path: Path,
+    *,
+    cache_dir: Path | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build or load memory cache for ``shape`` from ``json_path``.
+
+    If a cached ``.npz`` file exists, load ``keys`` and ``values`` directly.
+    Otherwise the JSON array is parsed and a temporary :class:`DynamicMET`
+    model is used to compute the memory bank, which is then saved for future
+    use.
+    """
+
+    rows, cols = shape
+    cache_dir = cache_dir or json_path.parent
+    cache_file = cache_dir / f"{rows}x{cols}_memory.npz"
+    if cache_file.exists():
+        data = np.load(cache_file)
+        logger.info("載入既有記憶快取：%s", cache_file)
+        return data["keys"], data["values"]
+
+    logger.info("建立記憶快取：%s", cache_file)
+    data = json.load(json_path.open("r", encoding="utf-8"))
+    samples = [
+        (np.array(entry["board"], dtype=int), int(entry["target"])) for entry in data
+    ]
+
+    num_fields = rows * cols
+    model = DynamicMET(
+        num_fields=num_fields,
+        num_values=num_fields,
+        rows=rows,
+        cols=cols,
+        d_model=256,
+        nhead=8,
+        depth=8,
+        dropout=0.1,
+    )
+    if TORCH_AVAILABLE:
+        ckpt_path = Path("checkpoints") / f"met_{rows}x{cols}.pth"
+        if ckpt_path.is_file():
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+            state = ckpt.get("model", ckpt)
+            model.load_state_dict(state, strict=False)
+            if hasattr(model, "eval"):
+                model.eval()
+
+    keys, values = build_memory(samples, model)
+    np.savez(cache_file, keys=keys, values=values)
+    return keys, values
 
 
 def predict(

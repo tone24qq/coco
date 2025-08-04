@@ -1,7 +1,6 @@
-import json
 import os
 import random
-import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +10,8 @@ os.environ["PYTHONHASHSEED"] = "42"
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
 random.seed(42)
 np.random.seed(42)
+
+os.environ.setdefault("MEMORY_MAX_SCAN", "1000")
 
 try:
     import torch
@@ -34,7 +35,7 @@ from typing import Dict, List, Optional, Tuple  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field, conlist, model_validator  # noqa: E402
 
-from agents.memory_agent import build_memory as build_memory_agent  # noqa: E402
+from agents.memory_agent import build_memory_agent  # noqa: E402
 from agents.memory_agent import predict as memory_predict  # noqa: E402
 from agents.memory_agent import predict_stream as memory_predict_stream  # noqa: E402
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
@@ -191,26 +192,22 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
     return model
 
 
-def _load_memory_for_shape(rows: int, cols: int, model: DynamicMET) -> None:
-    """Register memory source for ``(rows, cols)`` if archive exists."""
+def _load_memory_for_shape(rows: int, cols: int) -> None:
+    """Load memory cache or register streaming archive for the given shape."""
+    json_path = Path("data_archives") / f"{rows}x{cols}.json"
+    if json_path.is_file():
+        keys, values = build_memory_agent((rows, cols), json_path)
+        memories[(rows, cols)] = (keys, values)
+        logger.info("✅ 使用快取記憶庫：%s", json_path)
+        return
+
     jsonl_path = Path("data_archives") / f"{rows}x{cols}.jsonl"
     if jsonl_path.is_file():
         memory_files[(rows, cols)] = jsonl_path
         logger.info("記憶庫採流式讀取：%s", jsonl_path)
         return
 
-    file_path = Path("data_archives") / f"{rows}x{cols}.json"
-    if not file_path.is_file():
-        logger.warning("未找到記憶庫檔案：%s", file_path)
-        return
-    data = json.load(open(file_path, "r", encoding="utf-8"))
-    if MEMORY_SAMPLE_LIMIT is not None and len(data) > MEMORY_SAMPLE_LIMIT:
-        logger.info("限制記憶庫樣本 %s -> %s", len(data), MEMORY_SAMPLE_LIMIT)
-        data = data[:MEMORY_SAMPLE_LIMIT]
-    samples = [(np.array(e["board"], dtype=int), int(e["target"])) for e in data]
-    keys, values = build_memory_agent(samples, model)
-    memories[(rows, cols)] = (keys, values)
-    logger.info("✅ 記憶庫就緒：keys=%s values=%s", keys.shape, values.shape)
+    logger.warning("未找到記憶庫檔案：%s 或 %s", json_path, jsonl_path)
 
 
 def _discover_models() -> None:
@@ -235,12 +232,25 @@ def _discover_models() -> None:
 
 
 def _preload_memories() -> None:
-    """Load memory banks in background after startup."""
-    for (r, c), model in list(models.items()):
+    """Load memory caches for all available JSON archives."""
+    cached: list[str] = []
+    base = Path("data_archives")
+    for json_path in base.glob("*x*.json"):
         try:
-            _load_memory_for_shape(r, c, model)
+            name = json_path.stem
+            rows, cols = map(int, name.split("x"))
         except Exception:
-            logger.exception("記憶庫載入失敗：%sx%s", r, c)
+            continue
+        try:
+            keys, values = build_memory_agent((rows, cols), json_path)
+            memories[(rows, cols)] = (keys, values)
+            cached.append(f"{rows}x{cols}")
+        except Exception:
+            logger.exception("記憶庫載入失敗：%sx%s", rows, cols)
+    if cached:
+        logger.info("共快取了尺寸：%s", ", ".join(sorted(cached)))
+    else:
+        logger.info("未快取任何記憶庫")
 
 
 @app.on_event("startup")
@@ -254,7 +264,7 @@ def load_models() -> None:
         root_logger.setLevel(logging.getLogger("uvicorn").level)
     logger.info("應用啟動，準備載入模型")  # 中文log：啟動事件
     _discover_models()
-    threading.Thread(target=_preload_memories, daemon=True).start()
+    _preload_memories()
 
 
 @app.post("/predict", response_model=List[Prediction])
@@ -309,27 +319,19 @@ def predict(req: PredictRequest):
         if hasattr(model, "eval"):
             model.eval()
         models[(rows, cols)] = model
-        _load_memory_for_shape(rows, cols, model)
+        _load_memory_for_shape(rows, cols)
     else:
         logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
     memory = memories.get((rows, cols))
     jsonl = memory_files.get((rows, cols))
     if memory is None and jsonl is None:
-        _load_memory_for_shape(rows, cols, model)
+        _load_memory_for_shape(rows, cols)
         memory = memories.get((rows, cols))
         jsonl = memory_files.get((rows, cols))
-    if jsonl is not None:
-        fused = memory_predict_stream(
-            board.copy(),
-            target=target,
-            model=model,
-            jsonl_path=jsonl,
-            alpha=0.5,
-            k_neighbors=2,
-            topk=3,
-        )
-    elif memory is not None:
+    start_t = time.time()
+    if memory is not None:
+        logger.info("走快取版記憶庫 %sx%s", rows, cols)
         memory_keys, memory_values = memory
         fused = memory_predict(
             board.copy(),
@@ -341,8 +343,22 @@ def predict(req: PredictRequest):
             k_neighbors=2,
             topk=3,
         )
+        logger.info("快取版耗時 %.3f 秒，結果 %s 筆", time.time() - start_t, len(fused))
+    elif jsonl is not None:
+        logger.info("走串流版記憶庫 %sx%s", rows, cols)
+        fused = memory_predict_stream(
+            board.copy(),
+            target=target,
+            model=model,
+            jsonl_path=jsonl,
+            alpha=0.5,
+            k_neighbors=2,
+            topk=3,
+        )
+        logger.info("串流版耗時 %.3f 秒，結果 %s 筆", time.time() - start_t, len(fused))
     else:
         fused = []
+        logger.info("無記憶庫可用")
 
     if fused:
         coords = []
