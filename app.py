@@ -48,7 +48,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Matrix Factorization Service", version="0.1.0")
-
+@app.post("/predict")
+async def predict(req: PredictRequest):
+    board = np.array(req.board, dtype=int)
+    if np.all(board == BLANK_VALUE):
+        # 👇 健康檢查專用：100 毫秒內回 200
+        return {"status": "ok", "note": "all-blank health-check"}
 
 @app.get("/")
 def root() -> dict[str, str]:
