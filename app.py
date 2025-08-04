@@ -4,6 +4,7 @@ import random
 import threading
 from pathlib import Path
 
+
 import numpy as np
 
 # 1. OS / Python level determinism
@@ -40,7 +41,13 @@ from agents.memory_agent import predict_stream as memory_predict_stream  # noqa:
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
 from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
+from pydantic import BaseModel, conlist
 
+class PredictRequest(BaseModel):
+    # board：二維整數陣列，至少 1×1
+    board: conlist(conlist(int, min_items=1), min_items=1)
+    # 如果還有傳 target，打開下面這行
+    # target: int | None = None
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s: %(message)s",
