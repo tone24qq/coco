@@ -4,7 +4,6 @@
 
 import os
 import random
-import time
 from pathlib import Path
 
 import numpy as np
@@ -35,15 +34,20 @@ else:  # pragma: no branch - executed when torch is available
 import glob  # noqa: E402
 import logging  # noqa: E402
 import re  # noqa: E402
-from typing import Dict, List, Optional, Tuple  # noqa: E402
+from typing import Any, Dict, List, Optional, Tuple  # noqa: E402
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field, conlist, model_validator  # noqa: E402
 
-from agents.memory_agent import predict as memory_predict  # noqa: E402
+from agents.memory_agent import build_memory as build_memory_agent  # noqa: E402
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
 from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
+
+try:  # optional approximate nearest neighbor library
+    import hnswlib  # noqa: E402
+except Exception:  # pragma: no cover - allow environments without hnswlib
+    hnswlib = None  # type: ignore[assignment]
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -125,6 +129,8 @@ MODEL_PARAMS = {
 
 models: Dict[Tuple[int, int], DynamicMET] = {}
 memories: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
+memory_targets: Dict[Tuple[int, int], np.ndarray] = {}
+hnsw_indices: Dict[Tuple[int, int], Any] = {}
 
 
 def _create_model(rows: int, cols: int) -> DynamicMET:
@@ -186,14 +192,88 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
 
 def _load_memory_for_shape(rows: int, cols: int) -> None:
     """從 ``data_archives`` 載入 ``(rows, cols)`` 的記憶庫快取。"""
-    path = Path("data_archives") / f"{rows}x{cols}_memory.npz"
-    if not path.is_file():
-        logger.warning("未找到記憶庫檔案：%s", path)
+
+    base = Path("data_archives")
+    paths = sorted(base.glob(f"{rows}x{cols}_memory*.npz"))
+    if not paths:
+        logger.warning("未找到記憶庫檔案：%s", base / f"{rows}x{cols}_memory*.npz")
         return
-    data = np.load(path)
-    keys, values = data["keys"], data["values"]
+
+    keys_list: List[np.ndarray] = []
+    values_list: List[np.ndarray] = []
+    targets_list: List[np.ndarray] = []
+    for path in paths:
+        data = np.load(path)
+        keys_list.append(data["keys"])
+        values_list.append(data["values"])
+        if "targets" in data.files:
+            targets_list.append(data["targets"])
+
+    keys = np.concatenate(keys_list, axis=0)
+    values = np.concatenate(values_list, axis=0)
     memories[(rows, cols)] = (keys, values)
-    logger.info("✅ 記憶庫載入：%s keys=%s values=%s", path, keys.shape, values.shape)
+    if targets_list:
+        memory_targets[(rows, cols)] = np.concatenate(targets_list, axis=0)
+    if hnswlib is not None:
+        idx = hnswlib.Index(space="l2", dim=keys.shape[1])
+        idx.init_index(max_elements=len(keys), M=16, ef_construction=200)
+        idx.add_items(keys, np.arange(len(keys)))
+        hnsw_indices[(rows, cols)] = idx
+    logger.info(
+        "✅ 記憶庫載入：%s parts=%s keys=%s values=%s",
+        f"{rows}x{cols}",
+        len(paths),
+        keys.shape,
+        values.shape,
+    )
+
+
+def find_similar(
+    rows: int,
+    cols: int,
+    board: np.ndarray,
+    target: int,
+    k: int = 3,
+) -> List[Dict[str, Any]]:
+    """Return top-``k`` similar samples.
+
+    若已載入 HNSW 索引則優先使用；否則退回以 NumPy 計算所有距離。
+    可搭配 :func:`filter_by_target` 先篩選目標，再對索引結果做距離排序。
+    """
+
+    model = models[(rows, cols)]
+    q, _ = build_memory_agent([(board, target)], model)
+    keys, _ = memories[(rows, cols)]
+    idx = hnsw_indices.get((rows, cols))
+    if idx is not None:
+        labels, dists = idx.knn_query(q, k=k)
+        labels, dists = labels[0], dists[0]
+    else:
+        vec = q[0]
+        dists = np.linalg.norm(keys - vec, axis=1)
+        labels = np.argsort(dists)[:k]
+        dists = dists[labels]
+    targets = memory_targets.get((rows, cols))
+    sims: List[Dict[str, Any]] = []
+    for lbl, dist in zip(labels, dists):
+        item: Dict[str, float] = {"sample_idx": int(lbl), "distance": float(dist)}
+        if targets is not None:
+            item["target"] = int(targets[lbl])
+        sims.append(item)
+    return sims
+
+
+def filter_by_target(rows: int, cols: int, target: int) -> List[int]:
+    """Return indices of samples whose original target equals ``target``.
+
+    可先呼叫本函式取得所有符合目標的樣本，再依距離排序以找出與
+    目前盤面最相似的範例。
+    """
+
+    targets = memory_targets.get((rows, cols))
+    if targets is None:
+        raise KeyError(f"targets for {rows}x{cols} not loaded")
+    return np.where(targets == target)[0].tolist()
 
 
 def _discover_models() -> None:
@@ -218,11 +298,17 @@ def _discover_models() -> None:
 
 
 def preload_memories() -> None:
-    """在啟動時預先載入所有 ``*_memory.npz``。"""
+    """在啟動時預先載入所有 ``*_memory*.npz``。"""
+
     loaded: List[str] = []
     base = Path("data_archives")
-    for npz in base.glob("*x*_memory.npz"):
-        rows, cols = map(int, npz.stem.split("_")[0].split("x"))
+    seen: set[Tuple[int, int]] = set()
+    for npz in base.glob("*x*_memory*.npz"):
+        shape = npz.stem.split("_memory")[0]
+        rows, cols = map(int, shape.split("x"))
+        if (rows, cols) in seen:
+            continue
+        seen.add((rows, cols))
         if (rows, cols) not in models:
             model = _create_model(rows, cols)
             if hasattr(model, "eval"):
@@ -304,69 +390,11 @@ def predict(req: PredictRequest):
         if hasattr(model, "eval"):
             model.eval()
         models[(rows, cols)] = model
-        _load_memory_for_shape(rows, cols)
     else:
         logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
-    memory = memories.get((rows, cols))
-    if memory is None:
+    if (rows, cols) not in memories:
         _load_memory_for_shape(rows, cols)
-        memory = memories.get((rows, cols))
-    if memory is not None:
-        start = time.perf_counter()
-        memory_keys, memory_values = memory
-        fused = memory_predict(
-            board.copy(),
-            target=target,
-            model=model,
-            memory_keys=memory_keys,
-            memory_values=memory_values,
-            alpha=0.5,
-            k_neighbors=2,
-            topk=3,
-        )
-        logger.info(
-            "走快取版，耗時 %.3fs，結果 %s 筆", time.perf_counter() - start, len(fused)
-        )
-    else:
-        fused = []
-
-    if fused:
-        coords = []
-        for item in fused:
-            r0 = int(item["row"]) - 1
-            c0 = int(item["col"]) - 1
-            idx = r0 * cols + c0
-            coords.append((r0, c0, float(item["score"]), idx))
-        if coords:
-            total = float(sum(sc for _, _, sc, _ in coords))
-            if total > 0:
-                norm_scores = [sc / total for _, _, sc, _ in coords]
-            else:
-                norm_scores = [1 / len(coords)] * len(coords)
-            raw_preds = [
-                Prediction(
-                    row=r0,
-                    col=c0,
-                    score=round(ns * 100, 2),
-                    idx=idx,
-                    cell_value=BLANK_VALUE,
-                )
-                for (r0, c0, _, idx), ns in zip(coords, norm_scores)
-            ]
-            validated = ensure_only_blank(board, raw_preds, BLANK_VALUE)
-            validated = ensure_unique(validated)
-            expected = min(3, mask_pos.size)
-            if len(validated) == expected:
-                for item in validated:
-                    item.row += 1
-                    item.col += 1
-                percent_msg = " ".join(
-                    f"top{i + 1}={item.row}-{item.col}({item.score:.0f}%)"
-                    for i, item in enumerate(validated)
-                )
-                logger.info("預測機率 %s", percent_msg)
-                return validated
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
     flat_input = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(
@@ -444,8 +472,28 @@ def predict(req: PredictRequest):
             )
         scores_np = arr[0, :, target_idx]
 
+    # step 2-3: memory fusion
+    final_scores = scores_np
+    try:
+        sim_indices = filter_by_target(rows, cols, target)
+    except KeyError:
+        sim_indices = []
+    if sim_indices:
+        keys, values = memories[(rows, cols)]
+        q, _ = build_memory_agent([(board, target)], model)
+        dists = np.linalg.norm(keys[sim_indices] - q[0], axis=1)
+        k_mem = min(3, len(sim_indices))
+        topk_idx = np.argsort(dists)[:k_mem]
+        knn_scores = values[sim_indices][topk_idx]
+        memory_score = np.mean(knn_scores, axis=0)
+        alpha = float(os.environ.get("MEMORY_ALPHA", "0.8"))
+        final_scores = scores_np * alpha + memory_score * (1 - alpha)
+        logger.debug("[MEM] alpha=%s target=%s sim_k=%s", alpha, target, k_mem)
+    else:
+        logger.debug("[MEM] no memory samples for target %s", target)
+
     candidate_idx = mask_pos
-    candidate_scores = scores_np[candidate_idx]
+    candidate_scores = final_scores[candidate_idx]
     assert (
         candidate_scores.shape[0] == candidate_idx.shape[0]
     ), f"空白格 {candidate_idx.shape[0]} 个，却只打分了 {candidate_scores.shape[0]} 个！"
