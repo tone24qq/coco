@@ -8,18 +8,17 @@ import model
 from dataset import BLANK_VALUE
 
 
-def test_predict_prefers_memory_cache(monkeypatch):
+def test_predict_uses_memory_cache(monkeypatch):
     importlib.reload(model)
     importlib.reload(app_module)
-    app_module._preload_memories()
 
-    called = {"stream": False}
+    called = {"cache": False}
 
-    def fake_stream(*args, **kwargs):  # pragma: no cover - patched in test
-        called["stream"] = True
+    def fake_memory_predict(*args, **kwargs):  # pragma: no cover - patched in test
+        called["cache"] = True
         return []
 
-    monkeypatch.setattr(app_module, "memory_predict_stream", fake_stream)
+    monkeypatch.setattr(app_module, "memory_predict", fake_memory_predict)
 
     data = json.load(open("data_archives/4x5.json", "r", encoding="utf-8"))
     board = np.array(data[0]["board"], dtype=int)
@@ -27,6 +26,5 @@ def test_predict_prefers_memory_cache(monkeypatch):
     target = data[0]["target"]
 
     payload = app_module.PredictRequest(board=board.tolist(), target=target)
-    result = app_module.predict(payload)
-    assert isinstance(result, list)
-    assert called["stream"] is False
+    app_module.predict(payload)
+    assert called["cache"] is True

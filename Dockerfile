@@ -25,6 +25,7 @@ RUN pip install --upgrade pip setuptools wheel \
 
 # 再把專案原始碼放進來
 COPY . .
+RUN python build_memories.py
 ENV LOG_LEVEL=DEBUG
 # 預設執行指令（依你的專案入口）
 # 若採方案4，app 模組是 app:app；若改用 coco_service.main，請調整為 coco_service.main:app
