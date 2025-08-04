@@ -24,27 +24,29 @@ RUN pip install --upgrade pip setuptools wheel \
  && pip install -r requirements.txt
 
 # 再把專案原始碼放進來
+# … 前面省略 …
 COPY . .
 ENV LOG_LEVEL=DEBUG
-# 轉換所有 jsonl -> json 並預先建立記憶快取
+
+# 方案B：转换 jsonl->json 并且用 here-doc 预先 build memory
 RUN for f in data_archives/*x*.jsonl; do \
     shape=$(basename "$f" .jsonl); \
-    python - <<'PY'
+    python3 - "$f" <<'PY'
 import orjson, json, pathlib, sys
 src = pathlib.Path(sys.argv[1])
 dst = src.with_suffix('.json')
 if not dst.exists():
     data = [orjson.loads(line) for line in src.open('rb')]
     json.dump(data, dst.open('w', encoding='utf-8'), ensure_ascii=False)
-PY "$f"; \
-    python - <<'PY'
+PY
+    python3 - "$shape" <<'PY'
 from agents.memory_agent import build_memory_agent
 import pathlib, sys
 shape = tuple(map(int, sys.argv[1].split('x')))
-json_path = pathlib.Path(f'data_archives/{sys.argv[1]}.json')
+json_path = pathlib.Path(f"data_archives/{sys.argv[1]}.json")
 build_memory_agent(shape, json_path)
-PY "$shape"; \
+PY
 done
-# 預設執行指令（依你的專案入口）
-# 若採方案4，app 模組是 app:app；若改用 coco_service.main，請調整為 coco_service.main:app
+
+# 默认启动命令
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
