@@ -278,12 +278,16 @@ def _collect_embeddings_from_jsonl(
     embeddings_list: list[np.ndarray] = []
     buf_inputs: list[np.ndarray] = []
 
+    max_scan = int(os.getenv("MEMORY_MAX_SCAN", "0"))
+
     with jsonl_path.open("rb") as f, mmap.mmap(
         f.fileno(), 0, access=mmap.ACCESS_READ
     ) as mm:
         line_idx = 0
         for raw in iter(mm.readline, b""):
             if not raw:
+                break
+            if max_scan and line_idx >= max_scan:
                 break
             rec = orjson.loads(raw)
             rec_id = rec.get("id", line_idx)
