@@ -10,6 +10,16 @@ def test_ragged_board_422() -> None:
     assert r.status_code == 422
 
 
+def test_empty_board_422() -> None:
+    r = client.post("/predict", json={"board": [], "target": 1})
+    assert r.status_code == 422
+
+
+def test_empty_row_422() -> None:
+    r = client.post("/predict", json={"board": [[]], "target": 1})
+    assert r.status_code == 422
+
+
 def test_target_out_of_range_422() -> None:
     r = client.post("/predict", json={"board": [[-1, -1], [-1, -1]], "target": 99})
     assert r.status_code == 422

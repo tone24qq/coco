@@ -4,7 +4,6 @@ import random
 import threading
 from pathlib import Path
 
-
 import numpy as np
 
 # 1. OS / Python level determinism
@@ -33,7 +32,7 @@ import re  # noqa: E402
 from typing import Dict, List, Optional, Tuple  # noqa: E402
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
-from pydantic import BaseModel, Field, model_validator  # noqa: E402
+from pydantic import BaseModel, Field, conlist, model_validator  # noqa: E402
 
 from agents.memory_agent import build_memory as build_memory_agent  # noqa: E402
 from agents.memory_agent import predict as memory_predict  # noqa: E402
@@ -49,6 +48,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Matrix Factorization Service", version="0.1.0")
+
 
 @app.get("/")
 def root() -> dict[str, str]:
@@ -68,7 +68,9 @@ def health():
 
 
 class PredictRequest(BaseModel):
-    board: List[List[int]] = Field(
+    """Schema for prediction requests."""
+
+    board: conlist(conlist(int, min_length=1), min_length=1) = Field(
         ..., description=f"2D grid, blanks use {BLANK_VALUE}."
     )
     # 兩個欄位都接受，擇一或兩者皆送都行
