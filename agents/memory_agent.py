@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import heapq
 import logging
+import mmap
 import os
 import time
 from pathlib import Path
@@ -313,3 +314,113 @@ def predict_stream(
         item["row"] += 1
         item["col"] += 1
     return filtered
+
+
+def _collect_embeddings_from_jsonl(
+    jsonl_path: Path, model: Any, batch_size: int
+) -> tuple[list[int], np.ndarray]:
+    """Return record ids and embeddings for all boards in ``jsonl_path``."""
+
+    record_ids: list[int] = []
+    embeddings_list: list[np.ndarray] = []
+    buf_inputs: list[np.ndarray] = []
+
+    with jsonl_path.open("rb") as f, mmap.mmap(
+        f.fileno(), 0, access=mmap.ACCESS_READ
+    ) as mm:
+        for raw in iter(mm.readline, b""):
+            rec = orjson.loads(raw)
+            record_ids.append(int(rec["id"]))
+            board = np.asarray(rec["board"], dtype=int).flatten()
+            buf_inputs.append(_as_model_input(board))
+            if len(buf_inputs) >= batch_size:
+                batch = np.stack(buf_inputs, axis=0)
+                emb = model.get_hidden_state(batch)
+                if hasattr(emb, "detach"):
+                    emb = emb.detach().cpu().numpy()
+                embeddings_list.append(np.asarray(emb))
+                buf_inputs.clear()
+
+        if buf_inputs:
+            batch = np.stack(buf_inputs, axis=0)
+            emb = model.get_hidden_state(batch)
+            if hasattr(emb, "detach"):
+                emb = emb.detach().cpu().numpy()
+            embeddings_list.append(np.asarray(emb))
+
+    embeddings = (
+        np.concatenate(embeddings_list, axis=0) if embeddings_list else np.empty((0, 0))
+    )
+    return record_ids, embeddings
+
+
+def online_topk_from_jsonl(
+    jsonl_path: str | Path,
+    query_board: np.ndarray,
+    model: Any,
+    top_k: int = 3,
+    batch_size: int = 64,
+) -> list[tuple[int, float]]:
+    """Return ``top_k`` most similar records from ``jsonl_path``.
+
+    The function reads all samples using ``mmap`` and performs batched
+    ``get_hidden_state`` calls. Cosine similarities against the query board are
+    computed in a single matrix multiplication.
+    """
+
+    path = Path(jsonl_path)
+    record_ids, embeddings = _collect_embeddings_from_jsonl(path, model, batch_size)
+    if not record_ids:
+        return []
+
+    q_flat = _as_model_input(np.asarray(query_board, dtype=int).flatten())
+    q_emb = model.get_hidden_state(q_flat)
+    if hasattr(q_emb, "detach"):
+        q_emb = q_emb.detach().cpu().numpy()
+    q_norm = np.linalg.norm(q_emb)
+
+    norms = np.linalg.norm(embeddings, axis=1)
+    sims = embeddings @ q_emb
+    sims /= norms * q_norm + 1e-8
+
+    k = min(top_k, len(sims))
+    idx_topk = np.argpartition(-sims, k - 1)[:k]
+    idx_topk = idx_topk[np.argsort(-sims[idx_topk])]
+    return [(record_ids[i], float(sims[i])) for i in idx_topk]
+
+
+def online_topk_from_directory(
+    dir_path: str | Path,
+    query_board: np.ndarray,
+    model: Any,
+    top_k: int = 3,
+    batch_size: int = 64,
+) -> list[tuple[int, float]]:
+    """Return ``top_k`` most similar records from all JSONL files under ``dir_path``."""
+
+    record_ids: list[int] = []
+    embeddings_list: list[np.ndarray] = []
+    for jsonl_path in Path(dir_path).rglob("*.jsonl"):
+        ids, emb = _collect_embeddings_from_jsonl(jsonl_path, model, batch_size)
+        if ids:
+            record_ids.extend(ids)
+            embeddings_list.append(emb)
+
+    if not record_ids:
+        return []
+
+    embeddings = np.concatenate(embeddings_list, axis=0)
+    q_flat = _as_model_input(np.asarray(query_board, dtype=int).flatten())
+    q_emb = model.get_hidden_state(q_flat)
+    if hasattr(q_emb, "detach"):
+        q_emb = q_emb.detach().cpu().numpy()
+    q_norm = np.linalg.norm(q_emb)
+
+    norms = np.linalg.norm(embeddings, axis=1)
+    sims = embeddings @ q_emb
+    sims /= norms * q_norm + 1e-8
+
+    k = min(top_k, len(sims))
+    idx_topk = np.argpartition(-sims, k - 1)[:k]
+    idx_topk = idx_topk[np.argsort(-sims[idx_topk])]
+    return [(record_ids[i], float(sims[i])) for i in idx_topk]
