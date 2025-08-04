@@ -21,9 +21,8 @@ RUN pip install --upgrade pip setuptools wheel \
       torch==2.1.2 torchvision==0.16.2 torchaudio==2.1.2 \
  && pip install -r requirements.txt
 
-# 4. 複製生成腳本和原始資料
-COPY build_memories.py convert_to_jsonl.py ./
-COPY data_archives ./data_archives
+# 4. 複製所有原始碼與工具腳本
+COPY . .
 
 # 5. （可選）把 .jsonl 轉成 .json
 RUN python convert_to_jsonl.py
@@ -32,10 +31,6 @@ RUN python convert_to_jsonl.py
 ENV MEMORY_SAMPLE_LIMIT=1000
 RUN python build_memories.py
 
-# 7. 複製其餘原始碼
-COPY . .
-
+# 7. 容器啟動
 ENV LOG_LEVEL=DEBUG
-
-# 8. 容器啟動
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
