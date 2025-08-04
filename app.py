@@ -41,13 +41,7 @@ from agents.memory_agent import predict_stream as memory_predict_stream  # noqa:
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
 from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
-from pydantic import BaseModel, conlist
 
-class PredictRequest(BaseModel):
-    # board：二維整數陣列，至少 1×1
-    board: conlist(conlist(int, min_items=1), min_items=1)
-    # 如果還有傳 target，打開下面這行
-    # target: int | None = None
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -55,12 +49,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Matrix Factorization Service", version="0.1.0")
-@app.post("/predict")
-async def predict(req: PredictRequest):
-    board = np.array(req.board, dtype=int)
-    if np.all(board == BLANK_VALUE):
-        # 👇 健康檢查專用：100 毫秒內回 200
-        return {"status": "ok", "note": "all-blank health-check"}
 
 @app.get("/")
 def root() -> dict[str, str]:
