@@ -11,6 +11,9 @@ scores.
 from __future__ import annotations
 
 import heapq
+import logging
+import os
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, Tuple
 
@@ -19,6 +22,8 @@ import orjson
 
 from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board
 from utils import ensure_only_blank
+
+logger = logging.getLogger(__name__)
 
 
 def _as_model_input(flat: np.ndarray) -> np.ndarray:
@@ -189,8 +194,17 @@ def predict_stream(
 
     q_emb = model.get_hidden_state(flat_in)
     heap: List[Tuple[float, int, np.ndarray]] = []
+    max_scan = int(os.getenv("MEMORY_MAX_SCAN", "20000"))
+    skip_every = int(os.getenv("MEMORY_SKIP", "9")) + 1
+    start = time.time()
+    scanned = 0
     with jsonl_path.open("rb") as f:
         for idx, line in enumerate(f):
+            if idx >= max_scan:
+                break
+            scanned += 1
+            if idx % skip_every:
+                continue
             item = orjson.loads(line)
             mem_flat = np.asarray(item["board"], dtype=int).flatten()
             mem_in = _as_model_input(mem_flat)
@@ -203,6 +217,7 @@ def predict_stream(
                 heapq.heappush(heap, (sim, idx, mem_in))
             elif sim > heap[0][0]:
                 heapq.heapreplace(heap, (sim, idx, mem_in))
+    logger.info("scanned %d rows in %.2fs", scanned, time.time() - start)
 
     if heap:
         mem_scores = np.zeros(num_cells, dtype=float)
