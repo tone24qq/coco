@@ -132,6 +132,8 @@ models: Dict[Tuple[int, int], DynamicMET] = {}
 memories: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
 memory_targets: Dict[Tuple[int, int], np.ndarray] = {}
 hnsw_indices: Dict[Tuple[int, int], Any] = {}
+memory_boards: Dict[Tuple[int, int], np.ndarray] = {}
+hnsw_board_indices: Dict[Tuple[int, int], Any] = {}
 
 
 def _create_model(rows: int, cols: int) -> DynamicMET:
@@ -179,11 +181,11 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
             model.classifier.out_features == model.num_values
         ), "classifier dim mismatch"
         logger.info(
-            "載入模型檔案 %s，尺寸 %sx%s", path, rows, cols
+            "已載入模型檔 %s（%sx%s）", path, rows, cols
         )  # 中文log：載入已存在的模型
     else:
         logger.info(
-            "建立新模型，尺寸 %sx%s", rows, cols
+            "未找到現成權重，建立新模型（%sx%s）", rows, cols
         )  # 中文log：未找到檔案時新建模型
         assert (
             model.classifier.out_features == model.num_values
@@ -192,7 +194,11 @@ def _load_one(path: str, rows: int, cols: int) -> DynamicMET:
 
 
 def _load_memory_for_shape(rows: int, cols: int) -> None:
-    """從 ``data_archives`` 載入 ``(rows, cols)`` 的記憶庫快取。"""
+    """從 ``data_archives`` 懶載 ``(rows, cols)`` 記憶庫。
+
+    - ``keys``/``values``：建立向量空間索引（HNSW）
+    - ``boards``：棋盤一維向量，用於漢明距離檢索
+    """
 
     base = Path("data_archives")
     paths = sorted(base.glob(f"{rows}x{cols}_memory*.npz"))
@@ -203,30 +209,46 @@ def _load_memory_for_shape(rows: int, cols: int) -> None:
     keys_list: List[np.ndarray] = []
     values_list: List[np.ndarray] = []
     targets_list: List[np.ndarray] = []
+    boards_list: List[np.ndarray] = []
     for path in paths:
         data = np.load(path, mmap_mode="r")
+        logger.info("🚀 已記憶體映射載入：%s", path)
         keys_list.append(data["keys"])
         values_list.append(data["values"])
         if "targets" in data.files:
             targets_list.append(data["targets"])
+        if "boards" in data.files:
+            boards_list.append(data["boards"])
 
     keys = np.concatenate(keys_list, axis=0)
     values = np.concatenate(values_list, axis=0)
     memories[(rows, cols)] = (keys, values)
     if targets_list:
         memory_targets[(rows, cols)] = np.concatenate(targets_list, axis=0)
+    board_shape = None
+    if boards_list:
+        boards = np.concatenate(boards_list, axis=0)
+        memory_boards[(rows, cols)] = boards
+        board_shape = boards.shape
+        if hnswlib is not None:
+            idx_b = hnswlib.Index(space="l2", dim=rows * cols)
+            idx_b.init_index(max_elements=len(boards), M=16, ef_construction=200)
+            idx_b.add_items(boards, np.arange(len(boards)))
+            hnsw_board_indices[(rows, cols)] = idx_b
     if hnswlib is not None:
         idx = hnswlib.Index(space="l2", dim=keys.shape[1])
         idx.init_index(max_elements=len(keys), M=16, ef_construction=200)
         idx.add_items(keys, np.arange(len(keys)))
         hnsw_indices[(rows, cols)] = idx
     logger.info(
-        "✅ 記憶庫載入：%s parts=%s keys=%s values=%s",
+        "✅ 記憶庫載入：%s parts=%s keys=%s values=%s boards=%s",
         f"{rows}x{cols}",
         len(paths),
         keys.shape,
         values.shape,
+        board_shape,
     )
+    logger.info("📦 共 %d 筆樣本", keys.shape[0])
 
 
 def find_similar(
@@ -257,6 +279,54 @@ def find_similar(
     targets = memory_targets.get((rows, cols))
     sims: List[Dict[str, Any]] = []
     for lbl, dist in zip(labels, dists):
+        item: Dict[str, float] = {"sample_idx": int(lbl), "distance": float(dist)}
+        if targets is not None:
+            item["target"] = int(targets[lbl])
+        sims.append(item)
+    return sims
+
+
+def board_distance(b1: np.ndarray, b2: np.ndarray, blank: int = BLANK_VALUE) -> int:
+    """計算兩盤在非空格位置的漢明距離，越小越相似。"""
+
+    mask = (b1 != blank) & (b2 != blank)
+    return int(np.sum(b1[mask] != b2[mask]))
+
+
+def find_similar_board(
+    rows: int, cols: int, board: np.ndarray, k: int = 3
+) -> List[Dict[str, Any]]:
+    """對外介面：回傳最相似的 ``k`` 塊歷史棋盤。
+
+    - 先以 HNSW 近似檢索候選樣本
+    - 再以 :func:`board_distance` 精確排序（漢明距離）
+    """
+
+    validate_board(board, allow_blank=True)
+    boards = memory_boards.get((rows, cols))
+    if boards is None:
+        raise KeyError(f"boards for {rows}x{cols} not loaded")
+    idx = hnsw_board_indices.get((rows, cols))
+    if idx is not None:
+        q = board.flatten().astype(np.int32)
+        k_search = min(len(boards), max(k * 5, k))
+        labels, _ = idx.knn_query(q, k=k_search)
+        labels = labels[0]
+        cand = boards[labels]
+        dists = [board_distance(b.reshape(rows, cols), board) for b in cand]
+        order = np.argsort(dists)
+        labels = labels[order]
+        dists = np.asarray(dists)[order]
+    else:
+        arr = boards.reshape(-1, rows, cols)
+        mask = (arr != BLANK_VALUE) & (board != BLANK_VALUE)
+        dists = np.sum((arr != board) & mask, axis=(1, 2))
+        order = np.argsort(dists)[:k]
+        labels = order
+        dists = dists[order]
+    targets = memory_targets.get((rows, cols))
+    sims: List[Dict[str, Any]] = []
+    for lbl, dist in zip(labels[:k], dists[:k]):
         item: Dict[str, float] = {"sample_idx": int(lbl), "distance": float(dist)}
         if targets is not None:
             item["target"] = int(targets[lbl])
@@ -400,7 +470,7 @@ def predict(req: PredictRequest):
         memory = memories.get((rows, cols))
 
     mem_n = int(memory[0].shape[0]) if memory is not None else 0
-    logger.info("記憶庫：尺寸=%sx%s 樣本=%d", rows, cols, mem_n)
+    logger.info("記憶庫：尺寸=%sx%s；📦 共 %d 筆樣本", rows, cols, mem_n)
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
     flat_input = np.where(flat == BLANK_VALUE, MASK_TOKEN_ID, flat).astype(
@@ -498,8 +568,8 @@ def predict(req: PredictRequest):
         topk_idx = np.argsort(dists)[:k_mem]
         knn_scores = values[sim_indices][topk_idx]
         memory_score = np.mean(knn_scores, axis=0)
-        alpha = 0.5
-        final_scores = scores_np * alpha + memory_score * (1 - alpha)
+        alpha = 0.5  # 模型分數與記憶分數各佔一半
+        final_scores = scores_np * alpha + memory_score * (1 - alpha)  # 模型 vs. 記憶
         mem_time = time.perf_counter() - start_mem
         logger.info(
             "記憶檢索：樣本=%d 命中=%d 耗時=%.3f秒",
@@ -507,11 +577,7 @@ def predict(req: PredictRequest):
             retrieved,
             mem_time,
         )
-        logger.info(
-            "合併：模型權重=%.1f 記憶權重=%.1f",
-            alpha,
-            1 - alpha,
-        )
+        logger.info("合併：模型 %.1f / 記憶 %.1f", alpha, 1 - alpha)
     else:
         mem_time = time.perf_counter() - start_mem
         logger.info("記憶檢索：樣本=%d 命中=0 耗時=%.3f秒", mem_n, mem_time)
