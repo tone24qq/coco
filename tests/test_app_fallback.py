@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import sys
 
@@ -17,7 +18,7 @@ def test_app_predict_numpy(monkeypatch):
     appmod.models[(2, 2)] = model.DynamicMET(4, num_values=4, rows=2, cols=2)
     board = np.array([[1, 2], [3, -1]]).tolist()
     payload = appmod.PredictRequest(board=board, target_value=1)
-    result = appmod.predict(payload)
+    result = asyncio.run(appmod.predict(payload))
     assert isinstance(result, list) and len(result) == 1
     for item in result:
         assert {"row", "col", "score"} <= set(item.model_dump().keys())

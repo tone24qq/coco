@@ -45,6 +45,8 @@ from dataset import BLANK_VALUE, MASK_TOKEN_ID, validate_board  # noqa: E402
 from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
 
+from memory_loader import MEMORY_CACHE, ensure_loaded, preload_hot_shapes  # noqa: E402
+
 try:  # optional approximate nearest neighbor library
     import hnswlib  # noqa: E402
 except Exception:  # pragma: no cover - allow environments without hnswlib
@@ -396,8 +398,9 @@ def preload_memories() -> None:
 
 
 @app.on_event("startup")
-def load_models() -> None:
-    """Search and load checkpoints following pattern met_{R}x{C}.pth."""
+async def startup() -> None:
+    """Search and load checkpoints and preload hot memory shapes."""
+
     root_logger = logging.getLogger()
     env_level = os.environ.get("LOG_LEVEL")
     if env_level:
@@ -406,11 +409,11 @@ def load_models() -> None:
         root_logger.setLevel(logging.getLogger("uvicorn").level)
     logger.info("應用啟動，準備載入模型")  # 中文log：啟動事件
     _discover_models()
-    preload_memories()
+    await preload_hot_shapes([(5, 10), (4, 10), (4, 5)])  # 熱門尺寸
 
 
 @app.post("/predict", response_model=List[Prediction])
-def predict(req: PredictRequest):
+async def predict(req: PredictRequest):
     if not req.board or not all(isinstance(r, list) and r for r in req.board):
         raise HTTPException(
             status_code=422, detail="`board` must be a non-empty 2D list."
@@ -464,12 +467,9 @@ def predict(req: PredictRequest):
     else:
         logger.info("使用已載入的模型 %sx%s", rows, cols)  # 中文log：重複尺寸共用模型
 
-    memory = memories.get((rows, cols))
-    if memory is None:
-        _load_memory_for_shape(rows, cols)
-        memory = memories.get((rows, cols))
-
-    mem_n = int(memory[0].shape[0]) if memory is not None else 0
+    await ensure_loaded(rows, cols)
+    keys, values = MEMORY_CACHE.get((rows, cols), (None, None))
+    mem_n = 0 if keys is None else int(keys.shape[0])
     logger.info("記憶庫：尺寸=%sx%s；📦 共 %d 筆樣本", rows, cols, mem_n)
 
     # ensure contiguous int64 array to avoid torch dtype inference errors
@@ -560,8 +560,7 @@ def predict(req: PredictRequest):
     except KeyError:
         sim_indices = []
     retrieved = len(sim_indices)
-    if sim_indices and memory is not None:
-        keys, values = memory
+    if sim_indices and keys is not None:
         q, _ = build_memory_agent([(board, target)], model)
         dists = np.linalg.norm(keys[sim_indices] - q[0], axis=1)
         k_mem = min(3, len(sim_indices))
