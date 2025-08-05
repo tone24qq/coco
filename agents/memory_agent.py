@@ -103,10 +103,8 @@ def predict(
 ) -> List[Dict[str, Any]]:
     """Return ranked blank cell predictions by fusing model and memory scores.
 
-    The function computes cosine similarity between the query board's hidden
-    state and each key in ``memory_keys``. The ``k_neighbors`` most similar
-    entries are averaged to obtain ``memory`` scores. These scores are blended
-    with the model's own predictions using weight ``alpha`` and then ranked.
+    查詢盤面向量與記憶庫 key 做餘弦相似度，取 ``k_neighbors`` 個最相似
+    樣本平均成記憶分數，再依 ``alpha`` 融合模型分數與記憶分數後排序。
     """
     validate_board(board, allow_blank=True)
     rows, cols = board.shape
@@ -139,7 +137,7 @@ def predict(
     if not 0 <= t_idx < arr.shape[1]:
         raise IndexError("target index out of range")
     scores_model = arr[:, t_idx]
-    scores_final = alpha * scores_model + (1 - alpha) * scores_mem
+    scores_final = alpha * scores_model + (1 - alpha) * scores_mem  # 模型 vs. 記憶
 
     mask = flat != BLANK_VALUE
     scores_final[mask] = -np.inf
@@ -169,6 +167,9 @@ def predict_stream(
 ) -> List[Dict[str, Any]]:
     """Stream kNN retrieval from ``jsonl_path`` and fuse scores.
 
+    逐筆讀取記錄並計算相似度，取鄰居平均得記憶分數，再依 ``alpha`` 融合
+    模型分數與記憶分數。
+
     Parameters
     ----------
     board:
@@ -182,7 +183,7 @@ def predict_stream(
         ``{"board": ..., "target": ...}`` object. Additional fields are
         ignored.
     alpha:
-        Blend factor between model scores and memory scores.
+        模型分數與記憶分數的融合係數。
     k_neighbors:
         Number of nearest neighbors to average from the archive.
     topk:
@@ -247,7 +248,7 @@ def predict_stream(
         weight_sum += sim
     if weight_sum > 0:
         mem_scores /= weight_sum
-        scores_final = alpha * scores_model + (1 - alpha) * mem_scores
+        scores_final = alpha * scores_model + (1 - alpha) * mem_scores  # 模型 vs. 記憶
     else:
         scores_final = scores_model
 
