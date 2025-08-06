@@ -7,8 +7,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # 2. 系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential g++ wget \
-    && rm -rf /var/lib/apt/lists/*
+    build-essential g++ gfortran wget \
+  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
