@@ -10,57 +10,68 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
-# Directory containing ``{rows}x{cols}_keys.npy`` and ``..._vals.npy`` files.
+# Directory containing sharded memory files such as
+# ``{rows}x{cols}_keys_p0.npy`` / ``{rows}x{cols}_vals_p0.npy``.
 DATA_DIR = Path(os.environ.get("MEMORY_DATA_DIR", "data_archives"))
 
-# Global in-memory cache mapping ``(rows, cols)`` to ``(keys, values)``.
-MEMORY_CACHE: Dict[Tuple[int, int], Tuple[np.ndarray, np.ndarray]] = {}
+# Cache mapping ``(rows, cols)`` to ``(keys, values, targets, boards)``.
+MEMORY_CACHE: Dict[
+    Tuple[int, int], Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+] = {}
 
 # Locks to avoid duplicate loads for the same shape.
 LOCKS: Dict[Tuple[int, int], asyncio.Lock] = {}
 
 logger = logging.getLogger(__name__)
 
+_PART_RE = re.compile(r"_p(\d+)\.npy$")
 
-def _file_path(rows: int, cols: int, kind: str) -> Path:
-    """Return path for memory `kind` ("keys" or "vals")."""
 
-    return DATA_DIR / f"{rows}x{cols}_{kind}.npy"
+def _glob_paths(rows: int, cols: int, kind: str) -> List[Path]:
+    """Return all shard paths for ``kind`` sorted by part number."""
+
+    pat = DATA_DIR / f"{rows}x{cols}_{kind}_p*.npy"
+    paths = pat.parent.glob(pat.name)
+    return sorted(paths, key=lambda p: int(_PART_RE.search(p.name).group(1)))
 
 
 def _load_shape(rows: int, cols: int) -> None:
+    """Load memory arrays for ``(rows, cols)`` and cache them.
+
+    Sharded files with pattern ``{rows}x{cols}_{kind}_p*.npy`` are
+    concatenated in order of part number. Missing ``targets`` or ``boards``
+    shards yield empty arrays.
     """
-    將 (rows, cols) 的 keys / vals / targets 透過 mem-map 掛進快取。
-    """
-    k_path = _file_path(rows, cols, "keys")
-    v_path = _file_path(rows, cols, "vals")
-    t_path = _file_path(rows, cols, "targets")      # ← 新增 targets 路徑
 
-    # 1️⃣  mmap keys / vals（fp16）
-    keys = np.load(k_path, mmap_mode="r")
-    vals = np.load(v_path, mmap_mode="r")
+    k_paths = _glob_paths(rows, cols, "keys")
+    v_paths = _glob_paths(rows, cols, "vals")
+    if not k_paths or not v_paths:
+        raise FileNotFoundError(f"missing keys/vals shards for {rows}x{cols}")
 
-    # 2️⃣  mmap targets（如果檔案存在）
-    targets = None
-    if t_path.exists():
-        targets = np.load(t_path, mmap_mode="r")
-        import app                                   # 避免循環 import
-        app.memory_targets[(rows, cols)] = targets   # ← 放進全域快取
+    keys = np.concatenate([np.load(p, mmap_mode="r") for p in k_paths], axis=0)
+    vals = np.concatenate([np.load(p, mmap_mode="r") for p in v_paths], axis=0)
 
-    # 3️⃣  放進 MEMORY_CACHE 供 predict 使用
-    MEMORY_CACHE[(rows, cols)] = (keys, vals)
+    t_paths = _glob_paths(rows, cols, "targets")
+    if t_paths:
+        targets = np.concatenate([np.load(p, mmap_mode="r") for p in t_paths], axis=0)
+    else:
+        targets = np.empty((0,), dtype=np.int16)
 
-    logger.info(
-        "✅ memory %dx%d loaded (targets=%s)",
-        rows,
-        cols,
-        "yes" if targets is not None else "no",
-    )
+    b_paths = _glob_paths(rows, cols, "boards")
+    if b_paths:
+        boards = np.concatenate([np.load(p, mmap_mode="r") for p in b_paths], axis=0)
+    else:
+        boards = np.empty((0, rows * cols), dtype=np.int8)
+
+    MEMORY_CACHE[(rows, cols)] = (keys, vals, targets, boards)
+    logger.info("✅ memory %dx%d loaded parts=%d", rows, cols, len(k_paths))
+
 
 async def ensure_loaded(rows: int, cols: int) -> None:
     """Ensure memory for `(rows, cols)` is available in the cache."""
