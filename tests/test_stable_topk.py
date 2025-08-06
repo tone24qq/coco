@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 
 import numpy as np
@@ -26,6 +27,6 @@ def test_app_predict_stable_order() -> None:
     appmod.models[(2, 2)] = DummyModel()
     board = np.full((2, 2), appmod.BLANK_VALUE).tolist()
     req = appmod.PredictRequest(board=board, target=1)
-    res = appmod.predict(req)
+    res = asyncio.run(appmod.predict(req))
     coords = [(p.row, p.col) for p in res]
     assert coords == [(1, 1), (1, 2), (2, 1)]
