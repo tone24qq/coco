@@ -336,11 +336,18 @@ def find_similar_board(
     return sims
 
 
-def filter_by_target(rows: int, cols: int, target: int) -> List[int]:
-    """Return indices of samples whose original target equals ``target``.
+def filter_by_target(
+    rows: int,
+    cols: int,
+    target: int,
+    board: Optional[np.ndarray] = None,
+    min_mask_overlap: float = 0.0,
+) -> List[int]:
+    """Return sample indices whose target equals ``target`` and mask overlaps.
 
-    可先呼叫本函式取得所有符合目標的樣本，再依距離排序以找出與
-    目前盤面最相似的範例。
+    ``board`` 可選，用來比對遮蔽 pattern。若 ``min_mask_overlap`` 大於 0，
+    僅保留遮蔽格位置與目前盤面相符比例至少達門檻的樣本，避免記憶檢索
+    撈到與遮蔽結構差異過大的範例。
     """
 
     data = MEMORY_CACHE.get((rows, cols))
@@ -349,7 +356,18 @@ def filter_by_target(rows: int, cols: int, target: int) -> List[int]:
     targets = data[2]
     if targets.size == 0:
         raise KeyError(f"targets for {rows}x{cols} not loaded")
-    return np.where(targets == target)[0].tolist()
+    indices = np.where(targets == target)[0]
+
+    boards = data[3]
+    if board is None or boards.size == 0 or min_mask_overlap <= 0 or indices.size == 0:
+        return indices.tolist()
+
+    mask_q = (board != BLANK_VALUE).ravel()
+    cand = boards[indices]
+    mask_cand = cand != BLANK_VALUE
+    overlap = np.mean(mask_cand == mask_q, axis=1)
+    filtered = indices[overlap >= min_mask_overlap]
+    return filtered.tolist()
 
 
 def _discover_models() -> None:
@@ -559,7 +577,9 @@ async def predict(req: PredictRequest):
     start_mem = time.perf_counter()
     final_scores = scores_np
     try:
-        sim_indices = filter_by_target(rows, cols, target)
+        sim_indices = filter_by_target(
+            rows, cols, target, board=board, min_mask_overlap=0.8
+        )
     except KeyError:
         sim_indices = []
     retrieved = len(sim_indices)
