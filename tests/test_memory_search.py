@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -5,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 import app
+import memory_loader
 from dataset import BLANK_VALUE
 
 
@@ -14,6 +16,14 @@ def test_find_similar_and_filter_by_target():
         model.eval()
     app.models[(4, 5)] = model
     app._load_memory_for_shape(4, 5)
+    keys, values = app.memories[(4, 5)]
+    targets = app.memory_targets[(4, 5)]
+    memory_loader.MEMORY_CACHE[(4, 5)] = (
+        keys,
+        values,
+        targets,
+        np.empty((0, 20), dtype=np.int8),
+    )
 
     data = json.load(Path("data_archives/4x5.json").open("r", encoding="utf-8"))[0]
     board = np.array(data["board"], dtype=int)
@@ -45,7 +55,6 @@ def test_predict_memory_fusion_prefers_memory():
     if hasattr(model, "eval"):
         model.eval()
     app.models[(4, 5)] = model
-    app._load_memory_for_shape(4, 5)
 
     data = json.load(Path("data_archives/4x5.json").open("r", encoding="utf-8"))[0]
     board = np.array(data["board"], dtype=int)
@@ -58,11 +67,19 @@ def test_predict_memory_fusion_prefers_memory():
     mask_pos = np.where(board.flatten() == BLANK_VALUE)[0]
     assert mask_pos.size > 0
     bidx = int(mask_pos[0])
-    keys, values = app.memories[(4, 5)]
-    values[:] = 0
-    values[:, bidx] = 1.0
-    app.memories[(4, 5)] = (keys, values)
+
+    memory_loader.MEMORY_CACHE.clear()
+    keys = np.zeros((1, 256), dtype=np.float32)
+    values = np.zeros((1, board.size), dtype=np.float32)
+    values[0, bidx] = 1.0
+    targets = np.array([target], dtype=np.int16)
+    memory_loader.MEMORY_CACHE[(4, 5)] = (
+        keys,
+        values,
+        targets,
+        np.empty((0, board.size), dtype=np.int8),
+    )
 
     req = app.PredictRequest(board=board.tolist(), target=target)
-    preds = app.predict(req)
+    preds = asyncio.run(app.predict(req))
     assert preds[0].idx == bidx
