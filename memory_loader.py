@@ -34,18 +34,33 @@ def _file_path(rows: int, cols: int, kind: str) -> Path:
 
 
 def _load_shape(rows: int, cols: int) -> None:
-    """Load memory arrays for `(rows, cols)` into :data:`MEMORY_CACHE`.
-
-    The arrays are memory-mapped to avoid reading the whole file into RAM.
     """
-
+    將 (rows, cols) 的 keys / vals / targets 透過 mem-map 掛進快取。
+    """
     k_path = _file_path(rows, cols, "keys")
     v_path = _file_path(rows, cols, "vals")
+    t_path = _file_path(rows, cols, "targets")      # ← 新增 targets 路徑
+
+    # 1️⃣  mmap keys / vals（fp16）
     keys = np.load(k_path, mmap_mode="r")
     vals = np.load(v_path, mmap_mode="r")
-    MEMORY_CACHE[(rows, cols)] = (keys, vals)
-    logger.info("✅ memory %dx%d loaded", rows, cols)
 
+    # 2️⃣  mmap targets（如果檔案存在）
+    targets = None
+    if t_path.exists():
+        targets = np.load(t_path, mmap_mode="r")
+        import app                                   # 避免循環 import
+        app.memory_targets[(rows, cols)] = targets   # ← 放進全域快取
+
+    # 3️⃣  放進 MEMORY_CACHE 供 predict 使用
+    MEMORY_CACHE[(rows, cols)] = (keys, vals)
+
+    logger.info(
+        "✅ memory %dx%d loaded (targets=%s)",
+        rows,
+        cols,
+        "yes" if targets is not None else "no",
+    )
 
 async def ensure_loaded(rows: int, cols: int) -> None:
     """Ensure memory for `(rows, cols)` is available in the cache."""
