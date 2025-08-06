@@ -46,6 +46,7 @@ from model import DynamicMET  # noqa: E402
 from utils import ensure_only_blank, ensure_unique  # noqa: E402
 
 from memory_loader import MEMORY_CACHE, ensure_loaded, preload_hot_shapes  # noqa: E402
+from neighbour_loader import NEIGHBOR_PROBS, load_nbr, neighbour_score  # noqa: E402
 
 try:  # optional approximate nearest neighbor library
     import hnswlib  # noqa: E402
@@ -431,6 +432,8 @@ async def startup() -> None:
     logger.info("應用啟動，準備載入模型")  # 中文log：啟動事件
     _discover_models()
     await preload_hot_shapes([(5, 10), (4, 10), (4, 5)])  # 熱門尺寸
+    for r, c in models.keys():
+        load_nbr(r, c)
 
 
 @app.post("/predict", response_model=List[Prediction])
@@ -605,6 +608,15 @@ async def predict(req: PredictRequest):
         logger.info("記憶檢索：樣本=%d 命中=0 耗時=%.3f秒", mem_n, mem_time)
         final_scores = scores_np
         logger.info("合併：僅模型輸出（無記憶）")
+
+    gamma = float(os.getenv("NBR_ALPHA", "0.25"))
+    nbr_mat = NEIGHBOR_PROBS.get((rows, cols))
+    if gamma and nbr_mat is not None:
+        nbr_scores = np.zeros_like(final_scores)
+        for bidx in mask_pos:
+            nbr_scores[bidx] = neighbour_score(flat, nbr_mat, bidx)[target_idx]
+        final_scores = final_scores * (1 - gamma) + nbr_scores * gamma
+        logger.info("合併：模型/記憶 %.1f, 鄰居 %.1f", 1 - gamma, gamma)
 
     candidate_idx = mask_pos
     candidate_scores = final_scores[candidate_idx]
