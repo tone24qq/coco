@@ -46,16 +46,30 @@ class MaskConfig:
 
 
 class JsonBoardsDataset(Dataset):
-    """Training dataset loading full grids and masking them."""
+    """Training dataset loading full grids and masking them.
+
+    If ``mask_target`` is ``True`` the dataset will mask exactly one value per
+    sample. When a board entry provides a ``target`` number and that number
+    exists on the grid, the corresponding position will be masked. Otherwise a
+    random single position is masked.
+    """
 
     def __init__(
-        self, json_path: str | Path, mask_cfg: MaskConfig | None = None, seed: int = 42
+        self,
+        json_path: str | Path,
+        mask_cfg: MaskConfig | None = None,
+        seed: int = 42,
+        *,
+        mask_target: bool = False,
     ) -> None:
         self.path = Path(json_path)
         data = json.loads(self.path.read_text())
-        self.boards = [b["grid"] for b in data["boards"]]
+        items = data if isinstance(data, list) else data["boards"]
+        self.boards = [b["grid"] if "grid" in b else b["board"] for b in items]
+        self.targets = [b["target"] for b in items]
         self.meta = [_validate_full_grid(g) for g in self.boards]
         self.mask_cfg = mask_cfg or MaskConfig()
+        self.mask_target = mask_target
         random.seed(seed)
 
     def __len__(self) -> int:  # pragma: no cover - trivial
@@ -90,10 +104,29 @@ class JsonBoardsDataset(Dataset):
                     break
         return masked
 
+    def _mask_single(
+        self, grid: List[List[int]], target: int | None
+    ) -> List[List[int]]:
+        rows, cols = len(grid), len(grid[0])
+        masked = [row[:] for row in grid]
+        flat = [v for row in grid for v in row]
+        if target is not None and target in flat:
+            idx = flat.index(target)
+            r, c = divmod(idx, cols)
+            masked[r][c] = MASK_TOKEN
+            return masked
+        r = random.randrange(rows)
+        c = random.randrange(cols)
+        masked[r][c] = MASK_TOKEN
+        return masked
+
     def __getitem__(self, i: int) -> Dict[str, Any]:
         grid = self.boards[i]
         rows, cols, N = self.meta[i]
-        masked = self._mask_grid(grid)
+        if self.mask_target:
+            masked = self._mask_single(grid, self.targets[i])
+        else:
+            masked = self._mask_grid(grid)
 
         target = torch.tensor([v for row in grid for v in row], dtype=torch.long)
         tokens = torch.tensor([v for row in masked for v in row], dtype=torch.long)
