@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, StrictInt, field_validator
 
 from .decode import iterative_decode
-from .model_loader import load_model
+from .model_loader import MODEL_CACHE, load_model_for_size
 
 
 class PredictRequest(BaseModel):
@@ -47,13 +47,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-model = None
-
-
-@app.on_event("startup")
-def _load() -> None:  # pragma: no cover - server startup
-    global model
-    model = load_model("weights/best.ckpt")
 
 
 @app.get("/health")
@@ -74,6 +67,7 @@ def version() -> dict[str, object]:  # pragma: no cover - HTTP interface
         )
     except Exception:  # pragma: no cover - best effort
         pass
+    model = next(iter(MODEL_CACHE.values()), None)
     vocab = model.embed.num_embeddings - 1 if model is not None else 0
     device = str(next(model.parameters()).device) if model is not None else "cpu"
     return {"git_sha": sha, "vocab_size": vocab, "device": device}
@@ -85,6 +79,7 @@ def predict(
 ) -> PredictResponse:  # pragma: no cover - HTTP interface
     grid = req.grid
     rows, cols = len(grid), len(grid[0])
+    model = load_model_for_size(rows, cols)
     vocab = model.embed.num_embeddings - 1
     N = rows * cols
     if N > vocab:
