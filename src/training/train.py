@@ -11,8 +11,8 @@ from torch.utils.data import DataLoader
 
 from src.config import load_config
 from src.models.maskgit import MaskGit
-from src.models.vocab import masked_logits_clip
-from src.training.datasets import JsonBoardsDataset, MaskConfig, collate_batch
+from src.training.datasets import JsonBoardsDataset, MaskConfig, pad_collate
+from src.training.loss_vec import compute_loss_vectorized
 
 
 def set_seed(seed: int = 42) -> None:
@@ -23,21 +23,6 @@ def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
-
-
-def compute_loss(
-    logits: torch.Tensor, target: torch.Tensor, N: torch.Tensor
-) -> torch.Tensor:
-    B, L, V = logits.shape
-    loss = torch.tensor(0.0, device=logits.device)
-    for b in range(B):
-        n = int(N[b].item())
-        logit_b = masked_logits_clip(logits[b : b + 1], n)
-        ce = nn.functional.cross_entropy(
-            logit_b.view(-1, V), target[b].view(-1), ignore_index=0
-        )
-        loss = loss + ce
-    return loss / B
 
 
 def evaluate(model: nn.Module, loader: DataLoader, device: str) -> dict:
@@ -51,7 +36,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str) -> dict:
             attn = batch["attn_mask"].to(device)
             N = batch["N"].to(device)
             logits = model(tokens, attn)
-            loss = compute_loss(logits, target, N)
+            loss = compute_loss_vectorized(logits, target, N)
             cnt = (target != 0).sum().item()
             total_loss += loss.item() * cnt
             total_tok += cnt
@@ -91,7 +76,7 @@ def main() -> None:  # pragma: no cover - CLI
         batch_size=args.bsz,
         shuffle=True,
         num_workers=2,
-        collate_fn=collate_batch,
+        collate_fn=pad_collate,
         pin_memory=True,
     )
     val_loader = DataLoader(
@@ -99,7 +84,7 @@ def main() -> None:  # pragma: no cover - CLI
         batch_size=args.bsz,
         shuffle=False,
         num_workers=2,
-        collate_fn=collate_batch,
+        collate_fn=pad_collate,
         pin_memory=True,
     )
 
@@ -119,7 +104,7 @@ def main() -> None:  # pragma: no cover - CLI
             N = batch["N"].to(args.device)
 
             logits = model(tokens, attn)
-            loss = compute_loss(logits, target, N)
+            loss = compute_loss_vectorized(logits, target, N)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
