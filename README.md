@@ -1,6 +1,6 @@
 # GridFill
 
-MaskGIT-style grid filler for arbitrary boards. This is a minimal project skeleton demonstrating
+MaskGit-style grid filler for arbitrary boards. This is a minimal project skeleton demonstrating
 masked token modeling with uniqueness constraints.
 
 Features:

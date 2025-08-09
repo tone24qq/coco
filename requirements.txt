@@ -23,3 +23,5 @@ torch>=2.1
 numpy>=1.22,<2
 fastapi>=0.110
 uvicorn>=0.29
+onnx>=1.15
+onnxruntime>=1.17

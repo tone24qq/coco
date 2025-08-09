@@ -1,25 +1,19 @@
-"""Export a trained model to ONNX."""
-
-import argparse
-
+import onnx
 import torch
 
 from src.inference.model_loader import load_model
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("ckpt", type=str)
-    parser.add_argument("out", type=str)
-    args = parser.parse_args()
-    model = load_model(args.ckpt)
+def test_export_onnx(tmp_path):
+    model = load_model("weights/best.ckpt")
     model.eval()
-    tokens = torch.zeros(1, 4 * 4, dtype=torch.long)
+    tokens = torch.zeros(1, 16, dtype=torch.long)
     attn = torch.ones_like(tokens, dtype=torch.bool)
+    out = tmp_path / "model.onnx"
     torch.onnx.export(
         model,
         (tokens, attn),
-        args.out,
+        out,
         opset_version=13,
         input_names=["tokens", "attn_mask"],
         output_names=["logits"],
@@ -29,7 +23,5 @@ def main() -> None:
             "logits": {0: "batch", 1: "tokens"},
         },
     )
-
-
-if __name__ == "__main__":
-    main()
+    assert out.exists()
+    onnx.load(str(out))
