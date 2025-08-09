@@ -1,55 +1,144 @@
-"""Minimal training loop placeholder."""
-
 from __future__ import annotations
 
 import argparse
+import os
+import time
 from pathlib import Path
 
 import torch
+from torch import nn
+from torch.utils.data import DataLoader
 
-from ..config import load_config
-from ..data.augment import mask_board
-from ..data.collate import collate_boards
-from ..data.datasets import GridDataset
-from ..models.maskgit import MaskGit
-from .loss import masked_cross_entropy
+from src.config import load_config
+from src.models.maskgit import MaskGit
+from src.models.vocab import masked_logits_clip
+from src.training.datasets import JsonBoardsDataset, MaskConfig, collate_batch
 
 
-def train(cfg_path: str) -> None:
-    cfg = load_config(cfg_path)
-    ds = (
-        GridDataset(Path("data/train.jsonl"))
-        if Path("data/train.jsonl").exists()
-        else None
+def set_seed(seed: int = 42) -> None:
+    import random
+
+    import numpy as np
+
+    random.seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+
+def compute_loss(
+    logits: torch.Tensor, target: torch.Tensor, N: torch.Tensor
+) -> torch.Tensor:
+    B, L, V = logits.shape
+    loss = torch.tensor(0.0, device=logits.device)
+    for b in range(B):
+        n = int(N[b].item())
+        logit_b = masked_logits_clip(logits[b : b + 1], n)
+        ce = nn.functional.cross_entropy(
+            logit_b.view(-1, V), target[b].view(-1), ignore_index=0
+        )
+        loss = loss + ce
+    return loss / B
+
+
+def evaluate(model: nn.Module, loader: DataLoader, device: str) -> dict:
+    model.eval()
+    total_loss = 0.0
+    total_tok = 0
+    with torch.no_grad():
+        for batch in loader:
+            tokens = batch["tokens"].to(device)
+            target = batch["target"].to(device)
+            attn = batch["attn_mask"].to(device)
+            N = batch["N"].to(device)
+            logits = model(tokens, attn)
+            loss = compute_loss(logits, target, N)
+            cnt = (target != 0).sum().item()
+            total_loss += loss.item() * cnt
+            total_tok += cnt
+    return {"loss": total_loss / max(1, total_tok)}
+
+
+def main() -> None:  # pragma: no cover - CLI
+    p = argparse.ArgumentParser()
+    p.add_argument("--train_json", required=True)
+    p.add_argument("--val_json", required=True)
+    p.add_argument("--outdir", default="runs/gridfill")
+    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--bsz", type=int, default=32)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument(
+        "--config",
+        default=os.environ.get("GRIDFILL_CFG", "configs/train_small_mix.yaml"),
     )
+    args = p.parse_args()
+
+    set_seed(args.seed)
+    cfg = load_config(args.config)
     model = MaskGit(
         cfg["vocab_size"],
         cfg["model"]["d_model"],
         cfg["model"]["n_head"],
         cfg["model"]["num_layers"],
-    )
-    if ds is None:
-        return
-    opt = torch.optim.Adam(model.parameters(), lr=cfg["train"]["lr"])
-    loader = torch.utils.data.DataLoader(
-        ds, batch_size=cfg["train"]["batch_size"], shuffle=True
-    )
-    for board in loader:
-        tokens, mask = mask_board(board)
-        flat, attn = collate_boards([tokens])
-        logits = model(flat)
-        loss = masked_cross_entropy(logits, flat, mask.flatten())
-        loss.backward()
-        opt.step()
-        opt.zero_grad()
-        break
+    ).to(args.device)
 
+    train_ds = JsonBoardsDataset(args.train_json, mask_cfg=MaskConfig())
+    val_ds = JsonBoardsDataset(args.val_json, mask_cfg=MaskConfig())
 
-def main() -> None:  # pragma: no cover - CLI
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, required=True)
-    args = parser.parse_args()
-    train(args.config)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.bsz,
+        shuffle=True,
+        num_workers=2,
+        collate_fn=collate_batch,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=args.bsz,
+        shuffle=False,
+        num_workers=2,
+        collate_fn=collate_batch,
+        pin_memory=True,
+    )
+
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    best_val = float("inf")
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    best_ckpt = outdir / "best.ckpt"
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        t0 = time.time()
+        for step, batch in enumerate(train_loader, 1):
+            tokens = batch["tokens"].to(args.device)
+            target = batch["target"].to(args.device)
+            attn = batch["attn_mask"].to(args.device)
+            N = batch["N"].to(args.device)
+
+            logits = model(tokens, attn)
+            loss = compute_loss(logits, target, N)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+
+            if step % 50 == 0:
+                print(f"[epoch {epoch}] step {step} loss {loss.item():.4f}")
+
+        val = evaluate(model, val_loader, args.device)
+        print(
+            f"[epoch {epoch}] val_loss/token: {val['loss']:.6f} (elapsed {time.time()-t0:.1f}s)"
+        )
+
+        if val["loss"] < best_val:
+            best_val = val["loss"]
+            torch.save(model.state_dict(), best_ckpt)
+            print(f"  -> saved {best_ckpt}")
+
+    torch.save(model.state_dict(), outdir / "final.ckpt")
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI
