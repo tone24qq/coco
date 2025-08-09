@@ -111,17 +111,17 @@ def main() -> None:  # pragma: no cover - CLI
             opt.step()
 
             if step % 50 == 0:
-                print(f"[epoch {epoch}] step {step} loss {loss.item():.4f}")
+                print(f"[訓練] 第 {epoch} 代，第 {step} 步，損失={loss.item():.4f}")
 
         val = evaluate(model, val_loader, args.device)
         print(
-            f"[epoch {epoch}] val_loss/token: {val['loss']:.6f} (elapsed {time.time()-t0:.1f}s)"
+            f"[驗證] 第 {epoch} 代，驗證每 token 損失={val['loss']:.6f}（耗時 {time.time()-t0:.1f} 秒）"
         )
 
         if val["loss"] < best_val:
             best_val = val["loss"]
             torch.save(model.state_dict(), best_ckpt)
-            print(f"  -> saved {best_ckpt}")
+            print(f"[保存] 目前最佳，已儲存權重：{best_ckpt}")
 
     torch.save(model.state_dict(), outdir / "final.ckpt")
 
