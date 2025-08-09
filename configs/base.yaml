@@ -1,0 +1,9 @@
+# Base configuration for GridFill models
+vocab_size: 400
+model:
+  d_model: 64
+  n_head: 4
+  num_layers: 2
+train:
+  lr: 1e-3
+  batch_size: 32
