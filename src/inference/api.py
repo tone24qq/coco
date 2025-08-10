@@ -100,8 +100,8 @@ def predict(
     if N > vocab:
         raise HTTPException(status_code=400, detail="grid too large for model")
 
-    # Replace -1 with 0 for model input
-    processed_grid = [[0 if v == -1 else v for v in r] for r in grid]
+    # Replace non-positive values with 0 for model input
+    processed_grid = [[0 if v <= 0 else v for v in r] for r in grid]
     max_val = max(max(r) for r in processed_grid)
     if max_val > vocab:
         raise HTTPException(

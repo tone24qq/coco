@@ -60,3 +60,13 @@ def test_predict_with_target_topk():
         for item in preds:
             assert {"row", "col", "prob"} <= item.keys()
         assert "[步驟1]" in data["log"]
+
+
+def test_predict_with_target_excludes_filled():
+    with TestClient(app) as client:
+        grid = [[1, -1], [-1, 2]]
+        resp = client.post("/predict", json={"grid": grid, "target": 1})
+        assert resp.status_code == 200
+        preds = resp.json()["predictions"]
+        for item in preds:
+            assert grid[item["row"]][item["col"]] <= 0

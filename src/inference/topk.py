@@ -27,12 +27,14 @@ def compute_topk_positions(
     num_holes = int(holes.sum().item())
     if num_holes == 0:
         return []
-    p_num = probs[:, query_num]
-    p_masked = torch.where(holes, p_num, torch.full_like(p_num, float("-inf")))
+    hole_idxs = torch.nonzero(holes, as_tuple=False).squeeze(1)
+    p_num = probs[hole_idxs, query_num]
+    p_rel = torch.softmax(p_num, dim=0)
     k = min(k, num_holes)
-    vals, idxs = torch.topk(p_masked, k)
+    vals, order = torch.topk(p_rel, k)
     topk = []
-    for v, idx in zip(vals.tolist(), idxs.tolist()):
+    for v, ord_idx in zip(vals.tolist(), order.tolist()):
+        idx = hole_idxs[ord_idx].item()
         r, c = divmod(idx, cols)
-        topk.append({"row": r, "col": c, "prob": float(probs[idx, query_num].item())})
+        topk.append({"row": r, "col": c, "prob": float(v)})
     return topk
