@@ -27,12 +27,20 @@ def compute_topk_positions(
     num_holes = int(holes.sum().item())
     if num_holes == 0:
         return []
+
     p_num = probs[:, query_num]
-    p_masked = torch.where(holes, p_num, torch.full_like(p_num, float("-inf")))
+    # zero out filled cells for normalization
+    masked = torch.where(holes, p_num, torch.zeros_like(p_num))
+    total = masked.sum()
+    if total <= 0:
+        return []
+    norm = masked / total
+    # use -inf on filled cells to avoid selecting them
+    norm_masked = torch.where(holes, norm, torch.full_like(norm, float("-inf")))
     k = min(k, num_holes)
-    vals, idxs = torch.topk(p_masked, k)
-    topk = []
+    vals, idxs = torch.topk(norm_masked, k)
+    topk: List[Dict[str, float]] = []
     for v, idx in zip(vals.tolist(), idxs.tolist()):
         r, c = divmod(idx, cols)
-        topk.append({"row": r, "col": c, "prob": float(probs[idx, query_num].item())})
+        topk.append({"row": r, "col": c, "prob": float(v)})
     return topk
