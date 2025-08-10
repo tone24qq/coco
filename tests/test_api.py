@@ -40,3 +40,7 @@ def test_predict_validation_and_output():
         assert resp.status_code == 200
         data = resp.json()
         assert data["rows"] == 2 and data["cols"] == 2 and len(data["grid"]) == 2
+
+        # alias "board" should behave the same as "grid"
+        resp = client.post("/predict", json={"board": [[0, 0], [0, 0]]})
+        assert resp.status_code == 200

@@ -7,14 +7,14 @@ import subprocess
 import torch
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, StrictInt, field_validator
+from pydantic import AliasChoices, BaseModel, Field, StrictInt, field_validator
 
 from .decode import iterative_decode
 from .model_loader import MODEL_CACHE, load_model_for_size
 
 
 class PredictRequest(BaseModel):
-    grid: list[list[StrictInt]]
+    grid: list[list[StrictInt]] = Field(validation_alias=AliasChoices("grid", "board"))
 
     @field_validator("grid")
     @classmethod
