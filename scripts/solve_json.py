@@ -50,13 +50,16 @@ def main() -> None:  # pragma: no cover - CLI
         print(f"尺寸：{rows}x{cols}（N={N}）；-1 視為空格")
 
         flat = []
+        holes = []
         for r in range(rows):
             for c in range(cols):
                 v = grid[r][c]
+                holes.append(v == -1)
                 if v == -1:
                     v = 0
                 flat.append(v)
         tokens = torch.tensor(flat, dtype=torch.long, device=args.device).unsqueeze(0)
+        hole_mask = torch.tensor(holes, dtype=torch.bool, device=args.device)
         attn = torch.ones_like(tokens, dtype=torch.bool)
 
         query_topk = None
@@ -68,7 +71,7 @@ def main() -> None:  # pragma: no cover - CLI
                     logits = masked_logits_clip(logits, N)
                     probs = torch.softmax(logits, dim=-1)[0]
                     query_topk = compute_topk_positions(
-                        probs, tokens[0], args.query_num, args.topk_pos, cols
+                        probs, hole_mask, args.query_num, args.topk_pos, cols
                     )
                 if query_topk:
                     print("【TopK 位置（row, col, prob）】")

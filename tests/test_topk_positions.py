@@ -12,9 +12,9 @@ def test_compute_topk_positions_basic():
     probs[1, 2] = 0.1
     probs[2, 2] = 0.4
     probs[3, 2] = 0.05
-    tokens = torch.tensor([0, 0, 3, 0])  # holes at 0,1,3
+    holes = torch.tensor([True, True, False, True])
 
-    topk = compute_topk_positions(probs, tokens, query_num=2, k=3, cols=2)
+    topk = compute_topk_positions(probs, holes, query_num=2, k=3, cols=2)
     expected = [
         {"row": 0, "col": 0, "prob": 0.507884},
         {"row": 0, "col": 1, "prob": 0.252235},

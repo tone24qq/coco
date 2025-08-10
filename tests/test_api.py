@@ -64,9 +64,9 @@ def test_predict_with_target_topk():
 
 def test_predict_with_target_excludes_filled():
     with TestClient(app) as client:
-        grid = [[1, -1], [-1, 2]]
+        grid = [[0, -1], [-1, 2]]
         resp = client.post("/predict", json={"grid": grid, "target": 1})
         assert resp.status_code == 200
         preds = resp.json()["predictions"]
         for item in preds:
-            assert grid[item["row"]][item["col"]] <= 0
+            assert grid[item["row"]][item["col"]] == -1
