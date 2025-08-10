@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from src.config import load_config
 from src.models.maskgit import MaskGit
 from src.training.datasets import JsonBoardsDataset, MaskConfig, pad_collate
+from src.training.dep_bias import apply_dep_bias
 from src.training.loss_vec import compute_loss_vectorized
 
 
@@ -25,7 +26,13 @@ def set_seed(seed: int = 42) -> None:
     np.random.seed(seed)
 
 
-def evaluate(model: nn.Module, loader: DataLoader, device: str) -> dict:
+def evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    device: str,
+    use_dep_bias: bool = False,
+    dep_alpha: float = 0.5,
+) -> dict:
     model.eval()
     total_loss = 0.0
     total_tok = 0
@@ -35,7 +42,11 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str) -> dict:
             target = batch["target"].to(device)
             attn = batch["attn_mask"].to(device)
             N = batch["N"].to(device)
+            rows = batch["rows"].to(device)
+            cols = batch["cols"].to(device)
             logits = model(tokens, attn)
+            if use_dep_bias:
+                apply_dep_bias(logits, tokens, target, rows, cols, N, dep_alpha)
             loss = compute_loss_vectorized(logits, target, N)
             cnt = (target != 0).sum().item()
             total_loss += loss.item() * cnt
@@ -56,6 +67,17 @@ def main() -> None:  # pragma: no cover - CLI
     p.add_argument(
         "--config",
         default=os.environ.get("GRIDFILL_CFG", "configs/train_small_mix.yaml"),
+    )
+    p.add_argument(
+        "--use_dep_bias",
+        action="store_true",
+        help="計算同行+同列直方圖先驗並加到被遮蔽位置的 logits",
+    )
+    p.add_argument(
+        "--dep_alpha",
+        type=float,
+        default=0.5,
+        help="依賴偏置權重（加入 logits 前的縮放係數）",
     )
     args = p.parse_args()
 
@@ -102,8 +124,12 @@ def main() -> None:  # pragma: no cover - CLI
             target = batch["target"].to(args.device)
             attn = batch["attn_mask"].to(args.device)
             N = batch["N"].to(args.device)
+            rows = batch["rows"].to(args.device)
+            cols = batch["cols"].to(args.device)
 
             logits = model(tokens, attn)
+            if args.use_dep_bias:
+                apply_dep_bias(logits, tokens, target, rows, cols, N, args.dep_alpha)
             loss = compute_loss_vectorized(logits, target, N)
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -113,7 +139,13 @@ def main() -> None:  # pragma: no cover - CLI
             if step % 50 == 0:
                 print(f"[訓練] 第 {epoch} 代，第 {step} 步，損失={loss.item():.4f}")
 
-        val = evaluate(model, val_loader, args.device)
+        val = evaluate(
+            model,
+            val_loader,
+            args.device,
+            use_dep_bias=args.use_dep_bias,
+            dep_alpha=args.dep_alpha,
+        )
         print(
             f"[驗證] 第 {epoch} 代，驗證每 token 損失={val['loss']:.6f}（耗時 {time.time()-t0:.1f} 秒）"
         )
