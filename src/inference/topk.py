@@ -31,9 +31,9 @@ def compute_topk_positions(
     p_num = probs[hole_idxs, query_num]
     p_rel = torch.softmax(p_num, dim=0)
     k = min(k, num_holes)
-    vals, order = torch.topk(p_rel, k)
+    vals, order = torch.sort(p_rel, descending=True, stable=True)
     topk = []
-    for v, ord_idx in zip(vals.tolist(), order.tolist()):
+    for v, ord_idx in zip(vals[:k].tolist(), order[:k].tolist()):
         idx = hole_idxs[ord_idx].item()
         r, c = divmod(idx, cols)
         topk.append({"row": r, "col": c, "prob": float(v)})
