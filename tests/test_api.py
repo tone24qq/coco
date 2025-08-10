@@ -44,3 +44,19 @@ def test_predict_validation_and_output():
         # alias "board" should behave the same as "grid"
         resp = client.post("/predict", json={"board": [[0, 0], [0, 0]]})
         assert resp.status_code == 200
+
+
+def test_predict_with_target_topk():
+    with TestClient(app) as client:
+        resp = client.post(
+            "/predict",
+            json={"board": [[-1, -1], [-1, -1]], "target": 1},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["target"] == 1
+        preds = data["predictions"]
+        assert len(preds) == 3
+        for item in preds:
+            assert {"row", "col", "prob"} <= item.keys()
+        assert "[步驟1]" in data["log"]

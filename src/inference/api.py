@@ -9,12 +9,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import AliasChoices, BaseModel, Field, StrictInt, field_validator
 
+from ..models.vocab import masked_logits_clip
 from .decode import iterative_decode
 from .model_loader import MODEL_CACHE, load_model_for_size
+from .topk import compute_topk_positions
 
 
 class PredictRequest(BaseModel):
     grid: list[list[StrictInt]] = Field(validation_alias=AliasChoices("grid", "board"))
+    target: StrictInt | None = None
 
     @field_validator("grid")
     @classmethod
@@ -29,8 +32,8 @@ class PredictRequest(BaseModel):
             raise ValueError("grid too large")
         for r in v:
             for val in r:
-                if not 0 <= val <= N:
-                    raise ValueError("grid values must be between 0 and N")
+                if val < -1 or val > N:
+                    raise ValueError("grid values must be between -1 and N")
         return v
 
 
@@ -38,6 +41,18 @@ class PredictResponse(BaseModel):
     rows: int
     cols: int
     grid: list[list[int]]
+
+
+class TopkPrediction(BaseModel):
+    row: int
+    col: int
+    prob: float
+
+
+class TargetResponse(BaseModel):
+    target: int
+    predictions: list[TopkPrediction]
+    log: str
 
 
 app = FastAPI()
@@ -73,10 +88,10 @@ def version() -> dict[str, object]:  # pragma: no cover - HTTP interface
     return {"git_sha": sha, "vocab_size": vocab, "device": device}
 
 
-@app.post("/predict", response_model=PredictResponse)
+@app.post("/predict", response_model=PredictResponse | TargetResponse)
 def predict(
     req: PredictRequest,
-) -> PredictResponse:  # pragma: no cover - HTTP interface
+) -> PredictResponse | TargetResponse:  # pragma: no cover - HTTP interface
     grid = req.grid
     rows, cols = len(grid), len(grid[0])
     model = load_model_for_size(rows, cols)
@@ -84,12 +99,36 @@ def predict(
     N = rows * cols
     if N > vocab:
         raise HTTPException(status_code=400, detail="grid too large for model")
-    max_val = max(max(r) for r in grid)
+
+    # Replace -1 with 0 for model input
+    processed_grid = [[0 if v == -1 else v for v in r] for r in grid]
+    max_val = max(max(r) for r in processed_grid)
     if max_val > vocab:
         raise HTTPException(
             status_code=400, detail="grid values exceed model vocabulary"
         )
-    tokens = torch.tensor(grid, dtype=torch.long).view(1, -1)
+
+    tokens = torch.tensor(processed_grid, dtype=torch.long).view(1, -1)
     attn = torch.ones_like(tokens, dtype=torch.bool)
+
+    if req.target is not None:
+        target = int(req.target)
+        if not 1 <= target <= N:
+            raise HTTPException(status_code=400, detail="target out of range")
+        num_holes = int((tokens == 0).sum().item())
+        log_lines = [f"[步驟1] 找到 {num_holes} 個空格。"]
+        log_lines.append(f"[步驟2] 開始計算每個空格填入 {target} 的機率。")
+        with torch.no_grad():
+            logits = model(tokens, attn)
+            logits = masked_logits_clip(logits, N)
+            probs = torch.softmax(logits, dim=-1)[0]
+            topk = compute_topk_positions(probs, tokens[0], target, 3, cols)
+        log_lines.append("[步驟3] 計算完成，取 Top3：")
+        for item in topk:
+            log_lines.append(
+                f"  (row={item['row']},col={item['col']}) 機率={item['prob']:.3f}"
+            )
+        return TargetResponse(target=target, predictions=topk, log="\n".join(log_lines))
+
     out = iterative_decode(model, tokens, attn, N)
     return PredictResponse(rows=rows, cols=cols, grid=out.view(rows, cols).tolist())
