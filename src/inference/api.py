@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 import torch
@@ -11,9 +12,12 @@ from pydantic import AliasChoices, BaseModel, Field, StrictInt, field_validator
 
 from ..models.vocab import masked_logits_clip
 from ..training.dep_bias import apply_dep_bias
+from ..utils.seed import seed_all
 from .decode import iterative_decode
 from .model_loader import MODEL_CACHE, load_model_for_size
 from .topk import compute_topk_positions
+
+seed_all(int(os.getenv("COCO_SEED", "0")))
 
 
 class PredictRequest(BaseModel):

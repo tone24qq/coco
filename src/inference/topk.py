@@ -28,12 +28,15 @@ def compute_topk_positions(
     if num_holes == 0:
         return []
     hole_idxs = torch.nonzero(holes, as_tuple=False).squeeze(1)
+    # ``probs`` already contains normalized probabilities. Avoid applying an
+    # additional softmax which would flatten the distribution and yield nearly
+    # uniform confidences. Instead, sort by the raw probability for the target
+    # number and return the top-k entries.
     p_num = probs[hole_idxs, query_num]
-    p_rel = torch.softmax(p_num, dim=0)
     k = min(k, num_holes)
-    vals, order = torch.topk(p_rel, k)
+    vals, order = torch.sort(p_num, descending=True, stable=True)
     topk = []
-    for v, ord_idx in zip(vals.tolist(), order.tolist()):
+    for v, ord_idx in zip(vals[:k].tolist(), order[:k].tolist()):
         idx = hole_idxs[ord_idx].item()
         r, c = divmod(idx, cols)
         topk.append({"row": r, "col": c, "prob": float(v)})

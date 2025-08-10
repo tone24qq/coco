@@ -16,9 +16,9 @@ def test_compute_topk_positions_basic():
 
     topk = compute_topk_positions(probs, holes, query_num=2, k=3, cols=2)
     expected = [
-        {"row": 0, "col": 0, "prob": 0.507884},
-        {"row": 0, "col": 1, "prob": 0.252235},
-        {"row": 1, "col": 1, "prob": 0.239881},
+        {"row": 0, "col": 0, "prob": 0.8},
+        {"row": 0, "col": 1, "prob": 0.1},
+        {"row": 1, "col": 1, "prob": 0.05},
     ]
     for item, exp in zip(topk, expected):
         assert item["row"] == exp["row"]
