@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, random_split
 from src.config import load_config
 from src.models.maskgit import MaskGit
 from src.training.datasets import JsonBoardsDataset, pad_collate
+from src.training.dep_bias import apply_dep_bias
 from src.training.loss_vec import compute_loss_vectorized
 from src.training.train import evaluate, set_seed
 
@@ -40,6 +41,8 @@ def train_one(
     seed: int = 42,
     device: str | None = None,
     target_loss: float | None = None,  # 門檻：達標後「等到 epoch 結束」才早停
+    use_dep_bias: bool = False,
+    dep_alpha: float = 0.5,
 ) -> None:
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[資料] 使用 {path} 訓練 {rows}x{cols} 模型")
@@ -93,8 +96,12 @@ def train_one(
             target = batch["target"].to(device)
             attn = batch["attn_mask"].to(device)
             N = batch["N"].to(device)
+            rows_t = batch["rows"].to(device)
+            cols_t = batch["cols"].to(device)
 
             logits = model(tokens, attn)
+            if use_dep_bias:
+                apply_dep_bias(logits, tokens, target, rows_t, cols_t, N, dep_alpha)
             loss = compute_loss_vectorized(logits, target, N)
             opt.zero_grad(set_to_none=True)
             loss.backward()
@@ -111,7 +118,13 @@ def train_one(
                 hit_threshold_this_epoch = True
 
         # ---- 一個 epoch 結束後才評估與可能早停 ----
-        val = evaluate(model, val_loader, device)
+        val = evaluate(
+            model,
+            val_loader,
+            device,
+            use_dep_bias=use_dep_bias,
+            dep_alpha=dep_alpha,
+        )
         print(f"[驗證] {rows}x{cols} 第 {epoch} 代 損失={val['loss']:.6f}")
         if val["loss"] < best_val:
             best_val = val["loss"]
@@ -142,6 +155,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="達到此訓練 loss 門檻時，不中斷步數；等該 epoch 結束後早停",
     )
+    p.add_argument(
+        "--use_dep_bias",
+        action="store_true",
+        help="計算同行+同列直方圖先驗並加到被遮蔽位置的 logits",
+    )
+    p.add_argument(
+        "--dep_alpha",
+        type=float,
+        default=0.5,
+        help="依賴偏置權重（加入 logits 前的縮放係數）",
+    )
     return p.parse_args()
 
 
@@ -163,6 +187,8 @@ def main() -> None:  # pragma: no cover - CLI
             seed=args.seed,
             device=args.device,
             target_loss=args.target_loss,
+            use_dep_bias=args.use_dep_bias,
+            dep_alpha=args.dep_alpha,
         )
 
 

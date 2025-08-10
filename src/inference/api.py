@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import AliasChoices, BaseModel, Field, StrictInt, field_validator
 
 from ..models.vocab import masked_logits_clip
+from ..training.dep_bias import apply_dep_bias
 from .decode import iterative_decode
 from .model_loader import MODEL_CACHE, load_model_for_size
 from .topk import compute_topk_positions
@@ -124,6 +125,17 @@ def predict(
         with torch.no_grad():
             logits = model(tokens, attn)
             logits = masked_logits_clip(logits, N)
+            tgt_mask = torch.zeros_like(tokens)
+            tgt_mask[0, hole_mask] = 1
+            apply_dep_bias(
+                logits,
+                tokens,
+                tgt_mask,
+                torch.tensor([rows]),
+                torch.tensor([cols]),
+                torch.tensor([N]),
+                dep_alpha=0.5,
+            )
             probs = torch.softmax(logits, dim=-1)[0]
             topk = compute_topk_positions(probs, hole_mask, target, 3, cols)
         log_lines.append("[步驟4] 取機率最高的 Top3：")
