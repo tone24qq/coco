@@ -100,8 +100,19 @@ def predict(
     if N > vocab:
         raise HTTPException(status_code=400, detail="grid too large for model")
 
-    # Replace -1 with 0 for model input
-    processed_grid = [[0 if v == -1 else v for v in r] for r in grid]
+    # Replace -1 with 0 for model input and build hole mask
+    processed_grid = []
+    hole_mask = []
+    for row in grid:
+        proc_row = []
+        for v in row:
+            if v == -1:
+                proc_row.append(0)
+                hole_mask.append(True)
+            else:
+                proc_row.append(v)
+                hole_mask.append(False)
+        processed_grid.append(proc_row)
     max_val = max(max(r) for r in processed_grid)
     if max_val > vocab:
         raise HTTPException(
@@ -109,20 +120,21 @@ def predict(
         )
 
     tokens = torch.tensor(processed_grid, dtype=torch.long).view(1, -1)
+    holes = torch.tensor(hole_mask, dtype=torch.bool)
     attn = torch.ones_like(tokens, dtype=torch.bool)
 
     if req.target is not None:
         target = int(req.target)
         if not 1 <= target <= N:
             raise HTTPException(status_code=400, detail="target out of range")
-        num_holes = int((tokens == 0).sum().item())
+        num_holes = int(holes.sum().item())
         log_lines = [f"[步驟1] 找到 {num_holes} 個空格。"]
         log_lines.append(f"[步驟2] 開始計算每個空格填入 {target} 的機率。")
         with torch.no_grad():
             logits = model(tokens, attn)
             logits = masked_logits_clip(logits, N)
             probs = torch.softmax(logits, dim=-1)[0]
-            topk = compute_topk_positions(probs, tokens[0], target, 3, cols)
+            topk = compute_topk_positions(probs, holes, target, 3, cols)
         log_lines.append("[步驟3] 計算完成，取 Top3：")
         for item in topk:
             log_lines.append(
