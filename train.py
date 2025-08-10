@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import re
 from pathlib import Path
 from typing import List, Tuple
@@ -38,6 +39,7 @@ def train_one(
     lr: float = 3e-4,
     seed: int = 42,
     device: str | None = None,
+    target_loss: float | None = None,  # 門檻：達標後「等到 epoch 結束」才早停
 ) -> None:
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[資料] 使用 {path} 訓練 {rows}x{cols} 模型")
@@ -50,6 +52,8 @@ def train_one(
         cfg["model"]["num_layers"],
     ).to(device)
 
+    # 若你的資料包含 target 欄位，用 mask_target=True 會只遮住目標；
+    # 你也可以改 JsonBoardsDataset 的參數以符合當前資料版型。
     dataset = JsonBoardsDataset(path, mask_target=True, seed=seed)
     if len(dataset) < 2:
         raise ValueError("dataset 太小，至少需 2 筆資料")
@@ -82,6 +86,8 @@ def train_one(
 
     for epoch in range(1, epochs + 1):
         model.train()
+        hit_threshold_this_epoch = False  # 做法B：本 epoch 內是否曾達標
+
         for step, batch in enumerate(train_loader, 1):
             tokens = batch["tokens"].to(device)
             target = batch["target"].to(device)
@@ -100,6 +106,11 @@ def train_one(
                     f"[訓練] {rows}x{cols} 第 {epoch} 代 第 {step} 步 損失={loss.item():.4f}"
                 )
 
+            # 標記達標，但不 break —— 等 epoch 結束後再處理
+            if target_loss is not None and loss.item() <= target_loss:
+                hit_threshold_this_epoch = True
+
+        # ---- 一個 epoch 結束後才評估與可能早停 ----
         val = evaluate(model, val_loader, device)
         print(f"[驗證] {rows}x{cols} 第 {epoch} 代 損失={val['loss']:.6f}")
         if val["loss"] < best_val:
@@ -107,15 +118,52 @@ def train_one(
             torch.save(model.state_dict(), ckpt_path)
             print(f"[保存] {rows}x{cols} 新最佳模型 -> {ckpt_path}")
 
+        if hit_threshold_this_epoch:
+            print(
+                f"[早停] 第 {epoch} 代內曾達到門檻 {target_loss:.6g}，於 epoch 結束觸發停止。"
+            )
+            # 再存一次，確保有最後權重（若上面已是最佳也OK）
+            torch.save(model.state_dict(), ckpt_path)
+            print(f"[保存] {rows}x{cols} 收斂模型 -> {ckpt_path}")
+            break
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--data_dir", type=str, default="src/data")
+    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--bsz", type=int, default=32)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--device", type=str, default=None, help="cuda / cpu；預設自動偵測")
+    p.add_argument(
+        "--target_loss",
+        type=float,
+        default=None,
+        help="達到此訓練 loss 門檻時，不中斷步數；等該 epoch 結束後早停",
+    )
+    return p.parse_args()
+
 
 def main() -> None:  # pragma: no cover - CLI
-    datasets = find_datasets()
+    args = parse_args()
+    datasets = find_datasets(Path(args.data_dir))
     if not datasets:
         print("[警告] 未找到任何資料集，請將 NxY.json 放於 src/data 目錄下")
         return
     for rows, cols, path in datasets:
         print(f"[開始] 訓練 {rows}x{cols} 模型")
-        train_one(path, rows, cols)
+        train_one(
+            path,
+            rows,
+            cols,
+            epochs=args.epochs,
+            bsz=args.bsz,
+            lr=args.lr,
+            seed=args.seed,
+            device=args.device,
+            target_loss=args.target_loss,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI
