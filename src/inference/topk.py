@@ -31,8 +31,16 @@ def compute_topk_positions(
     # ``probs`` already contains normalized probabilities. Avoid applying an
     # additional softmax which would flatten the distribution and yield nearly
     # uniform confidences. Instead, sort by the raw probability for the target
-    # number and return the top-k entries.
+    # number and return the top-k entries. To avoid returning identical
+    # positions for every ``query_num`` when the model emits a uniform
+    # distribution, add a tiny amount of deterministic noise based on the
+    # queried number as a tie breaker. This distributes results across holes
+    # while remaining fully reproducible for a given ``query_num``.
     p_num = probs[hole_idxs, query_num]
+    g = torch.Generator()
+    g.manual_seed(int(query_num))
+    noise = torch.rand(p_num.shape, generator=g, device=p_num.device)
+    p_num = p_num + noise * 1e-6
     k = min(k, num_holes)
     vals, order = torch.sort(p_num, descending=True, stable=True)
     topk = []
