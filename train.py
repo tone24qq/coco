@@ -82,7 +82,7 @@ def load_boards_from_path(path: Path) -> List[np.ndarray]:
         else:
             seq = []
         for item in seq:
-            g = item.get("grid") if isinstance(item, dict) else item
+            g = (item.get("grid") or item.get("board")) if isinstance(item, dict) else item
             if g is None:
                 continue
             arr = np.array(g, dtype=np.int64)

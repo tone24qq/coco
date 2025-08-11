@@ -1,0 +1,2 @@
+4x10	EMR_best=0.0000
+8x10	EMR_best=0.0000
