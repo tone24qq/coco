@@ -1,399 +1,448 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+train.py
+- 讀取 data 目錄下的 JSON/JSONL（完整盤，無 -1）
+- 依尺寸分桶訓練：每尺寸一個模型（避免可變長度複雜度）
+- 動態遮蔽，只在遮蔽格計算 CE
+- 迭代解碼 + 唯一性硬約束
+- 失敗樣本回灌（fail_buffer）
+- 以 EMR(Exact Match Rate) 作課程與早停、另存最佳
+依賴：Python 3.10+、PyTorch、numpy、tqdm、orjson(可選)
+"""
+
 from __future__ import annotations
 
 import argparse
-import re
+import json
+import os
+import random
+import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
+
+import numpy as np
+
+try:
+    import orjson as _json
+
+    def jloads(x: bytes):
+        return _json.loads(x)
+
+except Exception:
+
+    def jloads(x: bytes):
+        return json.loads(x.decode("utf-8"))
+
 
 import torch
-from torch import nn
-from torch.utils.data import DataLoader, random_split
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
-from src.config import load_config
-from src.models.maskgit import MaskGit
-from src.training.datasets import JsonBoardsDataset, pad_collate
-from src.training.dep_bias import apply_dep_bias
-from src.training.loss_vec import compute_loss_vectorized
-from src.training.train import set_seed
+# ------------------------- 公用 -------------------------
 
 
-# ----------------------------
-# 位置大小分布先驗（EMA 緩存）
-class SizePriorCache:
-    def __init__(self, vocab_max: int, alpha: float) -> None:
-        self.alpha = alpha
-        self.vocab_max = vocab_max
-        self.maps: dict[tuple[int, int], torch.Tensor] = {}
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
 
-    def get(self, R: int, C: int, device: torch.device) -> torch.Tensor:
-        key = (int(R), int(C))
-        if key not in self.maps:
-            # [V+1, R, C]；用極小值避免 log(0)
-            self.maps[key] = torch.full((self.vocab_max + 1, R, C), 1e-6, device=device)
-        return self.maps[key]
 
-    def update_batch(
-        self,
-        rows: torch.Tensor,
-        cols: torch.Tensor,
-        targets: torch.Tensor,
-        N: torch.Tensor,
-    ) -> None:
-        # 簡潔實作：全圖衰減，再對命中位置加 α
-        B, _ = targets.shape
-        device = targets.device
+def load_boards_from_path(path: Path) -> List[np.ndarray]:
+    boards: List[np.ndarray] = []
+    if path.suffix.lower() in (".jsonl", ".jsonl.gz"):
+        import gzip
+
+        opener = gzip.open if path.suffix.lower().endswith(".gz") else open
+        with opener(path, "rb") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                obj = jloads(line)
+                g = obj.get("grid") or obj.get("board")
+                if g is None:
+                    continue
+                arr = np.array(g, dtype=np.int64)
+                boards.append(arr)
+    elif path.suffix.lower() in (".json", ".json.gz"):
+        import gzip
+
+        opener = gzip.open if path.suffix.lower().endswith(".gz") else open
+        with opener(path, "rb") as f:
+            obj = jloads(f.read())
+        if isinstance(obj, dict) and "boards" in obj:
+            seq = obj["boards"]
+        elif isinstance(obj, list):
+            seq = obj
+        else:
+            seq = []
+        for item in seq:
+            g = item.get("grid") if isinstance(item, dict) else item
+            if g is None:
+                continue
+            arr = np.array(g, dtype=np.int64)
+            boards.append(arr)
+    return boards
+
+
+def load_dataset_dir(data_dir: str) -> Dict[Tuple[int, int], List[np.ndarray]]:
+    buckets: Dict[Tuple[int, int], List[np.ndarray]] = {}
+    for p in Path(data_dir).rglob("*"):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() not in (".json", ".jsonl", ".gz"):
+            continue
+        try:
+            bs = load_boards_from_path(p)
+        except Exception:
+            continue
+        for b in bs:
+            r, c = b.shape
+            buckets.setdefault((r, c), []).append(b)
+    return buckets
+
+
+# ------------------------- 資料集 -------------------------
+
+
+class DynamicMaskDataset(Dataset):
+    def __init__(
+        self, boards: List[np.ndarray], mask_lo=0.2, mask_hi=0.8, mask_token=-1
+    ):
+        self.boards = [torch.from_numpy(b.copy()).long().view(-1) for b in boards]
+        self.mask_lo, self.mask_hi = mask_lo, mask_hi
+        self.mask_token = mask_token
+
+    def __len__(self):
+        return len(self.boards)
+
+    def __getitem__(self, i):
+        gt = self.boards[i]  # [L], 值域 1..V
+        L = gt.numel()
+        ratio = random.uniform(self.mask_lo, self.mask_hi)
+        k = max(1, int(L * ratio))
+        idx = torch.randperm(L)[:k]
+        inp = gt.clone()
+        inp[idx] = self.mask_token
+        mask = torch.zeros(L, dtype=torch.bool)
+        mask[idx] = True
+        return inp, gt, mask
+
+
+# ------------------------- 模型 -------------------------
+
+
+class PermAwareTransformer(nn.Module):
+    """
+    簡潔版：數字嵌入 + 位置嵌入 + TransformerEncoder
+    輸入 token 範圍：-1 表示洞，其餘 1..V
+    """
+
+    def __init__(
+        self, L: int, V: int, d_model=256, nhead=8, depth=6, dim_ff=512, dropout=0.1
+    ):
+        super().__init__()
+        self.V = V
+        self.token_emb = nn.Embedding(V + 1, d_model)  # 0 給 -1 映射
+        self.pos_emb = nn.Embedding(L, d_model)
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model, nhead, dim_ff, dropout, batch_first=True
+        )
+        self.enc = nn.TransformerEncoder(enc_layer, depth)
+        self.out = nn.Linear(d_model, V)
+
+    def forward(self, tokens):  # [B,L]
+        x = tokens.clone()
+        x = torch.where(x == -1, torch.zeros_like(x), x)  # -1 -> 0
+        B, L = x.size()
+        h = self.token_emb(x) + self.pos_emb(
+            torch.arange(L, device=x.device)
+        ).unsqueeze(0)
+        h = self.enc(h)
+        logits = self.out(h)  # [B,L,V]
+        return logits
+
+
+# ------------------------- 迭代解碼與約束 -------------------------
+
+
+@torch.no_grad()
+def iterative_fill(
+    model, tokens, V, steps=8, tau_start=0.85, tau_end=0.55, per_step_k=5
+):
+    """
+    唯一性硬約束 + 只填高置信前k，逐輪逼近；卡住則自然終止
+    """
+    B, L = tokens.size()
+    mask = tokens.eq(-1)
+    for t in range(steps):
+        logits = model(tokens)  # [B,L,V]
+        probs = F.softmax(logits, dim=-1)
         for b in range(B):
-            R = int(rows[b].item())
-            C = int(cols[b].item())
-            Nb = int(N[b].item())
-            H = self.get(R, C, device)
-            H.mul_(1.0 - self.alpha)  # EMA 衰減
-            t = targets[b, : R * C].view(R, C)
-            # 逐格加權（可後續向量化優化）
-            for r in range(R):
-                for c in range(C):
-                    v = int(t[r, c].item())
-                    if 1 <= v <= Nb:
-                        H[v, r, c] += self.alpha
-
-
-def apply_size_bias(
-    logits: torch.Tensor,
-    tokens: torch.Tensor,
-    target: torch.Tensor,
-    rows: torch.Tensor,
-    cols: torch.Tensor,
-    N: torch.Tensor,
-    cache: SizePriorCache,
-    beta: float,
-) -> None:
-    """對被遮蔽位置加入『大小×座標』先驗 bias（log(heatmap)×beta）。"""
-    device = logits.device
-    V = logits.size(-1)
-    mask_pos = ((tokens == 0) & (target != 0)).nonzero(as_tuple=False)
-    eps = 1e-6
-    for b, lidx in mask_pos.tolist():
-        R = int(rows[b].item())
-        C = int(cols[b].item())
-        r = lidx // C
-        c = lidx % C
-        Nb = int(N[b].item())
-        H = cache.get(R, C, device)
-        prior = H[: Nb + 1, r, c]  # [Nb+1]
-        log_prior = torch.log(prior + eps) * beta
-        bias = torch.full((V,), -1e9, device=device)
-        bias[: log_prior.numel()] = log_prior
-        logits[b, lidx, :] += bias
-
-
-def apply_nbr3x3_bias(
-    logits: torch.Tensor,
-    tokens: torch.Tensor,
-    target: torch.Tensor,
-    rows: torch.Tensor,
-    cols: torch.Tensor,
-    N: torch.Tensor,
-    beta: float,
-) -> None:
-    """對被遮蔽位置加入 3×3 鄰域直方圖先驗（log(鄰域分布)×beta）。"""
-    device = logits.device
-    V = logits.size(-1)
-    eps = 1e-6
-    mask_pos = ((tokens == 0) & (target != 0)).nonzero(as_tuple=False)
-    for b, lidx in mask_pos.tolist():
-        R = int(rows[b].item())
-        C = int(cols[b].item())
-        r = int(lidx // C)
-        c = int(lidx % C)
-        Nb = int(N[b].item())
-        Vmax = min(V - 1, Nb)
-        grid = tokens[b, : R * C].view(R, C)
-        r0 = max(0, r - 1)
-        r1 = min(R - 1, r + 1)
-        c0 = max(0, c - 1)
-        c1 = min(C - 1, c + 1)
-        patch = grid[r0 : r1 + 1, c0 : c1 + 1].reshape(-1)
-        hist = torch.bincount(patch, minlength=Vmax + 1).to(device)
-        hist[0] = 0  # 忽略 MASK=0
-        prior = hist.float()
-        if prior.sum() > 0:
-            prior = prior / prior.sum()
-        log_prior = torch.log(prior + eps) * beta
-        bias = torch.full((V,), -1e9, device=device)
-        bias[: log_prior.numel()] = log_prior
-        logits[b, lidx, :] += bias
-
-
-# ----------------------------
-
-
-def evaluate(
-    model: nn.Module,
-    loader: DataLoader,
-    device: str,
-    *,
-    use_dep_bias: bool = False,
-    dep_alpha: float = 0.5,
-    use_size_bias: bool = False,
-    size_cache: SizePriorCache | None = None,
-    size_beta: float = 0.5,
-    use_nbr3x3: bool = False,
-    nbr_beta: float = 0.3,
-) -> dict:
-    model.eval()
-    total_loss = 0.0
-    total_tok = 0
-    with torch.no_grad():
-        for batch in loader:
-            tokens = batch["tokens"].to(device)
-            target = batch["target"].to(device)
-            attn = batch["attn_mask"].to(device)
-            N = batch["N"].to(device)
-            rows = batch["rows"].to(device)
-            cols = batch["cols"].to(device)
-
-            logits = model(tokens, attn)
-            if use_dep_bias:
-                apply_dep_bias(logits, tokens, target, rows, cols, N, dep_alpha)
-            if use_nbr3x3:
-                apply_nbr3x3_bias(logits, tokens, target, rows, cols, N, nbr_beta)
-            if use_size_bias and size_cache is not None:
-                size_cache.update_batch(rows, cols, target, N)
-                apply_size_bias(
-                    logits, tokens, target, rows, cols, N, size_cache, size_beta
+            # 禁止已用數字
+            used = [int(x) for x in tokens[b].tolist() if x != -1]
+            if used:
+                uidx = torch.tensor(
+                    [u - 1 for u in used], device=probs.device, dtype=torch.long
                 )
+                probs[b, :, uidx] = 0.0
+            # 非洞位置不填
+            probs[b, ~mask[b]] = 0.0
 
-            loss = compute_loss_vectorized(logits, target, N)
-            cnt = (target != 0).sum().item()
-            total_loss += loss.item() * cnt
-            total_tok += cnt
-    return {"loss": total_loss / max(1, total_tok)}
+        conf, pred = probs.max(-1)  # [B,L]
+        tau = float(tau_start + (tau_end - tau_start) * (t / max(1, steps - 1)))
+        updated = 0
+        for b in range(B):
+            cand = torch.nonzero(mask[b] & (conf[b] >= tau), as_tuple=False).squeeze(1)
+            if cand.numel() == 0:
+                continue
+            k = min(per_step_k, cand.numel())
+            topk_idx = torch.topk(conf[b, cand], k).indices
+            fill_pos = cand[topk_idx]
+            tokens[b, fill_pos] = (pred[b, fill_pos] + 1).to(tokens.dtype)
+            mask[b, fill_pos] = False
+            updated += fill_pos.numel()
+        if updated == 0:
+            break
+    return tokens
 
 
-def find_datasets(
-    data_dir: Path = Path(__file__).parent / "src" / "data",
-) -> List[Tuple[int, int, Path]]:
-    """Find dataset JSON files like ``4x5.json`` under ``data_dir``."""
+def uniqueness_soft_penalty(logits, tokens, lam=0.5):
+    """
+    把「已用過的數字」的平均機率壓低，作為軟約束。
+    logits: [B,L,V]
+    tokens: [B,L]，-1 表示洞，其他 1..V
+    """
+    B, L, V = logits.shape
+    probs = F.softmax(logits, dim=-1)
+    loss = 0.0
+    cnt = 0
+    for b in range(B):
+        used = [int(x) for x in tokens[b].tolist() if x != -1]
+        if not used:
+            continue
+        uidx = torch.tensor(
+            [u - 1 for u in used], device=logits.device, dtype=torch.long
+        )
+        loss = loss + probs[b, :, uidx].mean()
+        cnt += 1
+    if cnt == 0:
+        return torch.tensor(0.0, device=logits.device)
+    return lam * (loss / cnt)
 
-    pattern = re.compile(r"^(\d+)x(\d+)\.json$")
-    out: List[Tuple[int, int, Path]] = []
-    for p in data_dir.glob("*.json"):
-        m = pattern.match(p.name)
-        if m:
-            out.append((int(m.group(1)), int(m.group(2)), p))
-    return out
+
+# ------------------------- 訓練與評估 -------------------------
 
 
-def train_one(
-    path: Path,
-    rows: int,
-    cols: int,
-    *,
-    epochs: int = 10,
-    bsz: int = 32,
-    lr: float = 3e-4,
-    seed: int = 42,
-    device: str | None = None,
-    target_loss: float | None = None,  # 門檻：達標後「等到 epoch 結束」才早停
-    use_dep_bias: bool = False,
-    dep_alpha: float = 0.5,
-    use_size_bias: bool = False,
-    size_alpha: float = 0.02,
-    size_beta: float = 0.5,
-    use_nbr3x3: bool = False,
-    nbr_beta: float = 0.3,
-) -> None:
-    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[資料] 使用 {path} 訓練 {rows}x{cols} 模型")
-    set_seed(seed)
-    cfg = load_config("configs/train_small_mix.yaml")
-    model = MaskGit(
-        cfg["vocab_size"],
-        cfg["model"]["d_model"],
-        cfg["model"]["n_head"],
-        cfg["model"]["num_layers"],
+@torch.no_grad()
+def exact_match_rate(model, boards: List[np.ndarray], mask_rate=0.5):
+    if not boards:
+        return 0.0
+    device = next(model.parameters()).device
+    ok = 0
+    for g in boards:
+        gt = torch.from_numpy(g.reshape(1, -1)).long().to(device)
+        inp = gt.clone()
+        L = gt.numel()
+        k = max(1, int(L * mask_rate))
+        idx = torch.randperm(L, device=device)[:k]
+        inp[0, idx] = -1
+        pred = iterative_fill(model, inp, V=gt.max().item(), steps=8).view(-1)
+        ok += int(torch.equal(pred.cpu(), gt.view(-1).cpu()))
+    return ok / len(boards)
+
+
+def train_one_bucket(size_rc: Tuple[int, int], boards: List[np.ndarray], args):
+    rows, cols = size_rc
+    L = rows * cols
+    V = L  # 數字 1..V 一次各用一次的情境
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    )
+
+    # 切分 train/val
+    rng = np.random.default_rng(42)
+    idx = np.arange(len(boards))
+    rng.shuffle(idx)
+    n_val = max(1, int(len(idx) * args.val_ratio))
+    val_idx = idx[:n_val].tolist()
+    tr_idx = idx[n_val:].tolist()
+    val_boards = [boards[i] for i in val_idx]
+    tr_boards = [boards[i] for i in tr_idx]
+
+    ds = DynamicMaskDataset(tr_boards, args.mask_lo, args.mask_hi, -1)
+    dl = DataLoader(
+        ds, batch_size=args.bsz, shuffle=True, num_workers=0, drop_last=False
+    )
+
+    model = PermAwareTransformer(
+        L=L,
+        V=V,
+        d_model=args.d_model,
+        nhead=args.nhead,
+        depth=args.depth,
+        dim_ff=args.dim_ff,
+        dropout=args.dropout,
     ).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
 
-    # 若你的資料包含 target 欄位，用 mask_target=True 會只遮住目標；
-    # 你也可以改 JsonBoardsDataset 的參數以符合當前資料版型。
-    dataset = JsonBoardsDataset(path, mask_target=True, seed=seed)
-    if len(dataset) < 2:
-        raise ValueError("dataset 太小，至少需 2 筆資料")
-    val_size = max(1, int(0.1 * len(dataset)))
-    train_size = len(dataset) - val_size
-    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+    best_emr = -1.0
+    fail_buffer: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = []
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=bsz,
-        shuffle=True,
-        num_workers=2,
-        collate_fn=pad_collate,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=bsz,
-        shuffle=False,
-        num_workers=2,
-        collate_fn=pad_collate,
-        pin_memory=True,
-    )
+    ckpt_dir = Path(args.out_dir) / f"checkpoints/{rows}x{cols}"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=lr)
-    best_val = float("inf")
-    outdir = Path("weights")
-    outdir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = outdir / f"{rows}x{cols}.ckpt"
-
-    size_cache = (
-        SizePriorCache(cfg["vocab_size"] - 1, size_alpha) if use_size_bias else None
-    )
-    for epoch in range(1, epochs + 1):
+    for ep in range(1, args.epochs + 1):
         model.train()
-        hit_threshold_this_epoch = False  # 做法B：本 epoch 內是否曾達標
+        pbar = tqdm(dl, desc=f"[{rows}x{cols}] epoch {ep}")
+        for inp, gt, mask in pbar:
+            inp, gt, mask = inp.to(device), gt.to(device), mask.to(device)
 
-        for step, batch in enumerate(train_loader, 1):
-            tokens = batch["tokens"].to(device)
-            target = batch["target"].to(device)
-            attn = batch["attn_mask"].to(device)
-            N = batch["N"].to(device)
-            rows_t = batch["rows"].to(device)
-            cols_t = batch["cols"].to(device)
+            # 混入 fail_buffer
+            if fail_buffer and random.random() < 0.5:
+                k = min(len(fail_buffer), max(1, args.bsz // 4))
+                sel = random.sample(fail_buffer, k)
+                finp = torch.stack([t[0] for t in sel]).to(device)
+                fgt = torch.stack([t[1] for t in sel]).to(device)
+                fmsk = torch.stack([t[2] for t in sel]).to(device)
+                inp = torch.cat([inp, finp], dim=0)
+                gt = torch.cat([gt, fgt], dim=0)
+                mask = torch.cat([mask, fmsk], dim=0)
 
-            logits = model(tokens, attn)
-            # 先驗（可並用）
-            if use_dep_bias:
-                apply_dep_bias(logits, tokens, target, rows_t, cols_t, N, dep_alpha)
-            if use_nbr3x3:
-                apply_nbr3x3_bias(logits, tokens, target, rows_t, cols_t, N, nbr_beta)
-            if use_size_bias and size_cache is not None:
-                size_cache.update_batch(rows_t, cols_t, target, N)
-                apply_size_bias(
-                    logits, tokens, target, rows_t, cols_t, N, size_cache, size_beta
-                )
+            logits = model(inp)  # [B,L,V]
+            # 只對遮蔽格算 CE；類別 1..V -> 索引 0..V-1
+            ce = F.cross_entropy(logits[mask], (gt[mask] - 1).clamp(min=0, max=V - 1))
+            up = uniqueness_soft_penalty(
+                logits, inp, lam=args.uniq_lambda if args.uniq_soft_penalty else 0.0
+            )
+            loss = ce + up
 
-            loss = compute_loss_vectorized(logits, target, N)
             opt.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             opt.step()
 
-            if step % 50 == 0:
-                print(
-                    f"[訓練] {rows}x{cols} 第 {epoch} 代 第 {step} 步 損失={loss.item():.4f}"
-                )
-
-            # 標記達標，但不 break —— 等 epoch 結束後再處理
-            if target_loss is not None and loss.item() <= target_loss:
-                hit_threshold_this_epoch = True
-
-        # ---- 一個 epoch 結束後才評估與可能早停 ----
-        val = evaluate(
-            model,
-            val_loader,
-            device,
-            use_dep_bias=use_dep_bias,
-            dep_alpha=dep_alpha,
-            use_size_bias=use_size_bias,
-            size_cache=size_cache,
-            size_beta=size_beta,
-            use_nbr3x3=use_nbr3x3,
-            nbr_beta=nbr_beta,
-        )
-        print(f"[驗證] {rows}x{cols} 第 {epoch} 代 損失={val['loss']:.6f}")
-        if val["loss"] < best_val:
-            best_val = val["loss"]
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"[保存] {rows}x{cols} 新最佳模型 -> {ckpt_path}")
-
-        if hit_threshold_this_epoch:
-            print(
-                f"[早停] 第 {epoch} 代內曾達到門檻 {target_loss:.6g}，於 epoch 結束觸發停止。"
+            pbar.set_postfix(
+                loss=float(loss.item()),
+                ce=float(ce.item()),
+                up=float(up.item() if torch.is_tensor(up) else 0.0),
             )
-            # 再存一次，確保有最後權重（若上面已是最佳也OK）
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"[保存] {rows}x{cols} 收斂模型 -> {ckpt_path}")
+
+        # 課程：EMR 過門檻則提高遮蔽上限
+        model.eval()
+        emr = exact_match_rate(
+            model, val_boards[: min(64, len(val_boards))], mask_rate=0.5
+        )
+        if emr > 0.7 and ds.mask_hi < 0.95:
+            ds.mask_hi = min(0.95, ds.mask_hi + 0.05)
+
+        # 生成一次遮蔽並測試 fail，塞進 fail_buffer
+        with torch.no_grad():
+            for _ in range(min(64, len(tr_boards))):
+                g = random.choice(tr_boards)
+                gt = torch.from_numpy(g.reshape(1, -1)).long().to(device)
+                inp = gt.clone()
+                Lc = gt.numel()
+                k = max(1, int(Lc * args.eval_mask_rate))
+                idx = torch.randperm(Lc, device=device)[:k]
+                inp[0, idx] = -1
+                pred = iterative_fill(
+                    model, inp.clone(), V=V, steps=args.decode_steps
+                ).view(-1)
+                if not torch.equal(pred, gt.view(-1)):
+                    fail_buffer.append(
+                        (
+                            inp.squeeze(0).cpu(),
+                            gt.squeeze(0).cpu(),
+                            (inp.eq(-1)).squeeze(0).cpu(),
+                        )
+                    )
+            # 限制 fail_buffer 大小
+            if len(fail_buffer) > args.fail_buffer_max:
+                fail_buffer = fail_buffer[-args.fail_buffer_max :]
+
+        # 保存最佳，若未提升則提前終止
+        if emr > best_emr:
+            best_emr = emr
+            out = ckpt_dir / "best.pth"
+            torch.save(
+                {
+                    "state_dict": model.state_dict(),
+                    "rows": rows,
+                    "cols": cols,
+                    "L": L,
+                    "V": V,
+                    "hparams": vars(args),
+                    "emr": best_emr,
+                },
+                out,
+            )
+            print(
+                f"[{rows}x{cols}] epoch {ep} | EMR={emr:.3f} | best={best_emr:.3f} | mask_hi={ds.mask_hi:.2f} | fail_buf={len(fail_buffer)}"
+            )
+        else:
+            print(
+                f"[{rows}x{cols}] epoch {ep} | EMR={emr:.3f} | best={best_emr:.3f} | mask_hi={ds.mask_hi:.2f} | fail_buf={len(fail_buffer)} | early stop"
+            )
             break
 
-
-def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser()
-    p.add_argument("--data_dir", type=str, default="src/data")
-    p.add_argument("--epochs", type=int, default=10)
-    p.add_argument("--bsz", type=int, default=32)
-    p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--device", type=str, default=None, help="cuda / cpu；預設自動偵測")
-    p.add_argument(
-        "--target_loss",
-        type=float,
-        default=None,
-        help="達到此訓練 loss 門檻時，不中斷步數；等該 epoch 結束後早停",
-    )
-    p.add_argument(
-        "--use_dep_bias",
-        action="store_true",
-        help="計算同行+同列直方圖先驗並加到被遮蔽位置的 logits",
-    )
-    p.add_argument(
-        "--dep_alpha",
-        type=float,
-        default=0.5,
-        help="依賴偏置權重（加入 logits 前的縮放係數）",
-    )
-    # 新增：大小×座標先驗
-    p.add_argument("--use_size_bias", action="store_true")
-    p.add_argument(
-        "--size_alpha",
-        type=float,
-        default=0.02,
-        help="大小分布 EMA 係數",
-    )
-    p.add_argument(
-        "--size_beta",
-        type=float,
-        default=0.5,
-        help="加入 logits 的權重",
-    )
-    # 新增：3×3 鄰域先驗
-    p.add_argument("--use_nbr3x3", action="store_true")
-    p.add_argument(
-        "--nbr_beta",
-        type=float,
-        default=0.3,
-        help="加入 logits 的權重",
-    )
-    return p.parse_args()
+    return best_emr
 
 
-def main() -> None:  # pragma: no cover - CLI
-    args = parse_args()
-    datasets = find_datasets(Path(args.data_dir))
-    if not datasets:
-        print("[警告] 未找到任何資料集，請將 NxY.json 放於 src/data 目錄下")
-        return
-    for rows, cols, path in datasets:
-        print(f"[開始] 訓練 {rows}x{cols} 模型")
-        train_one(
-            path,
-            rows,
-            cols,
-            epochs=args.epochs,
-            bsz=args.bsz,
-            lr=args.lr,
-            seed=args.seed,
-            device=args.device,
-            target_loss=args.target_loss,
-            use_dep_bias=args.use_dep_bias,
-            dep_alpha=args.dep_alpha,
-            use_size_bias=args.use_size_bias,
-            size_alpha=args.size_alpha,
-            size_beta=args.size_beta,
-            use_nbr3x3=args.use_nbr3x3,
-            nbr_beta=args.nbr_beta,
-        )
+# ------------------------- 主程式 -------------------------
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--data",
+        type=str,
+        required=True,
+        help="資料資料夾，含 *.json / *.jsonl(完整盤)",
+    )
+    ap.add_argument("--out_dir", type=str, default="outputs")
+    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--bsz", type=int, default=128)
+    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--wd", type=float, default=0.01)
+    ap.add_argument("--d_model", type=int, default=256)
+    ap.add_argument("--nhead", type=int, default=8)
+    ap.add_argument("--depth", type=int, default=6)
+    ap.add_argument("--dim_ff", type=int, default=512)
+    ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--mask_lo", type=float, default=0.2)
+    ap.add_argument("--mask_hi", type=float, default=0.8)
+    ap.add_argument("--val_ratio", type=float, default=0.1)
+    ap.add_argument("--eval_mask_rate", type=float, default=0.5)
+    ap.add_argument("--decode_steps", type=int, default=8)
+    ap.add_argument("--uniq_soft_penalty", action="store_true")
+    ap.add_argument("--uniq_lambda", type=float, default=0.5)
+    ap.add_argument("--grad_clip", type=float, default=1.0)
+    ap.add_argument("--cpu", action="store_true")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--fail_buffer_max", type=int, default=5000)
+    args = ap.parse_args()
+
+    set_seed(args.seed)
+    buckets = load_dataset_dir(args.data)
+    if not buckets:
+        print("找不到任何 JSON/JSONL 完整盤資料", file=sys.stderr)
+        sys.exit(1)
+
+    Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+    logf = Path(args.out_dir) / "metrics.txt"
+    with open(logf, "w", encoding="utf-8") as f:
+        for (r, c), boards in sorted(buckets.items()):
+            print(f"==> 訓練尺寸 {r}x{c}，樣本 {len(boards)}")
+            best = train_one_bucket((r, c), boards, args)
+            f.write(f"{r}x{c}\tEMR_best={best:.4f}\n")
+            f.flush()
+
+
+if __name__ == "__main__":
     main()
