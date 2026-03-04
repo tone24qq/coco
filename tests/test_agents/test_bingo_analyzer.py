@@ -1,150 +1,114 @@
-from pathlib import Path
-
-import pandas as pd
 from fastapi.testclient import TestClient
 
-from agent import PREDICT_REQUIRED_MESSAGE, BingoAnalyzer, app
+from agent import MODEL_VERSION, PREDICT_REQUIRED_MESSAGE, BingoAnalyzer, app
 
 
-def _make_recent(start_issue: int = 1, periods: int = 10) -> list[dict]:
+def _make_recent(start_issue: int = 1, periods: int = 20) -> list[dict]:
     recent = []
-    base_numbers = list(range(1, 21))
-    for i in range(periods):
-        shift = i % 60
-        numbers = [((n + shift - 1) % 80) + 1 for n in base_numbers]
-        recent.append({"issue": start_issue + i, "numbers": numbers})
+    base = list(range(1, 21))
+    for idx in range(periods):
+        shift = (idx * 3) % 80
+        numbers = [((n + shift - 1) % 80) + 1 for n in base]
+        recent.append({"issue": start_issue + idx, "numbers": numbers})
     return recent
 
 
-def _make_recent_from_csv(
-    analyzer: BingoAnalyzer, start_issue: int, periods: int
-) -> list[dict]:
-    rows = analyzer.df[
-        analyzer.df["期別"].between(start_issue, start_issue + periods - 1)
-    ]
-    assert len(rows) == periods
-    draws = []
+def _make_recent_from_history(analyzer: BingoAnalyzer, periods: int = 20) -> list[dict]:
+    rows = analyzer.df.tail(periods)
+    payload = []
     for _, row in rows.iterrows():
-        draws.append(
+        issue = int(row["期別"])
+        payload.append(
             {
-                "issue": int(row["期別"]),
-                "numbers": sorted(
-                    analyzer.draw_numbers[analyzer.issue_to_index[int(row["期別"])]]
-                ),
+                "issue": issue,
+                "numbers": analyzer.draw_numbers[analyzer.issue_to_index[issue]],
             }
         )
-    return draws
+    return payload
 
 
-def test_data_loaded_and_sorted() -> None:
+def test_predict_response_contract() -> None:
     analyzer = BingoAnalyzer()
-    assert not analyzer.df.empty
-    issues = analyzer.df["期別"].tolist()
-    assert issues == sorted(issues)
-    assert analyzer.matrix.shape[1] == 80
+    recent_payload = _make_recent_from_history(analyzer, periods=20)
+    recent_draws = [x["numbers"] for x in recent_payload]
+    latest_issue = recent_payload[-1]["issue"]
+
+    result = analyzer.predict_next(recent_draws=recent_draws, latest_issue=latest_issue)
+    assert result["prediction_period"] == latest_issue + 1
+    assert len(result["ranked_numbers"]) == 80
+    assert len(result["scores"]) == 80
+    assert len(result["top20"]) == 20
+    assert result["model_version"] == MODEL_VERSION
+    assert len(result["data_hash"]) == 16
+    assert set(result["ranked_numbers"]) == set(range(1, 81))
 
 
-def test_basic_statistics_structure() -> None:
+def test_feature_analysis_contains_required_blocks() -> None:
     analyzer = BingoAnalyzer()
-    stats = analyzer.basic_statistics(top_n_triplets=5)
-    assert stats["total_draws"] > 0
-    assert len(stats["number_total_counts"]) == 80
-    assert len(stats["number_probabilities"]) == 80
-    assert len(stats["top_triplets"]) == 5
+    report = analyzer.feature_analysis()
+    for key in [
+        "consecutive",
+        "tail_distribution",
+        "small_big",
+        "hot_cold",
+        "inter_draw_diff",
+        "zone_density",
+        "cooccurrence_matrix",
+    ]:
+        assert key in report
+    assert len(report["cooccurrence_matrix"]) == 80
 
 
-def test_predict_next_output_constraints_with_recent() -> None:
+def test_backtest_report_contains_v2_sections() -> None:
     analyzer = BingoAnalyzer()
-    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000001, periods=14)
-    recent_draws = [item["numbers"] for item in recent_payload]
-    pred = analyzer.predict_next(recent_draws=recent_draws, latest_issue=115000014)
-    assert pred["short_window"] == 14
-    assert pred["latest_issue"] == 115000014
-    assert pred["target_issue"] == 115000015
-    assert pred["board_type"] in {
-        "爆發盤",
-        "雙區震盪盤",
-        "均衡盤",
-        "修正盤",
-        "中段主導盤",
-    }
-    assert sum(pred["predicted_zone_counts"].values()) == 20
-    assert len(pred["predicted_numbers_top20"]) == 20
-    assert len(set(pred["predicted_numbers_top20"])) == 20
-    assert len(pred["top3_triplet"]["numbers"]) == 3
-    assert len(set(pred["top3_triplet"]["numbers"])) == 3
-    assert all(1 <= n <= 80 for n in pred["top3_triplet"]["numbers"])
-    explain = pred["top3_triplet"]["explain"]
-    assert explain["weights"] == {
-        "recent_weight": 0.2,
-        "history_similar_weight": 0.5,
-        "other_weight": 0.3,
-    }
-    assert len(explain["similar_cases_top10"]) == 10
-    assert explain["similar_cases_used"] >= 10
-    assert len(explain["number_contributions"]) == 3
-
-
-def test_predict_changes_when_history_csv_is_empty(tmp_path: Path) -> None:
-    analyzer = BingoAnalyzer()
-    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000001, periods=14)
-    recent_draws = [item["numbers"] for item in recent_payload]
-
-    with_history = analyzer.predict_next(
-        recent_draws=recent_draws, latest_issue=115000014
+    report = analyzer.full_report(
+        recent_window=20, prediction_k=20, evaluation_window=60, gap=1, embargo=1
     )
-
-    empty_csv = tmp_path / "empty.csv"
-    pd.DataFrame(columns=["期別"] + [f"獎號{i}" for i in range(1, 21)]).to_csv(
-        empty_csv, index=False
-    )
-    empty_analyzer = BingoAnalyzer(csv_path=empty_csv)
-    without_history = empty_analyzer.predict_next(
-        recent_draws=recent_draws, latest_issue=115000014
-    )
-
-    assert (
-        with_history["top3_triplet"]["numbers"]
-        != without_history["top3_triplet"]["numbers"]
-    )
-    assert with_history["top3_triplet"]["explain"]["similar_cases_used"] > 0
-    assert without_history["top3_triplet"]["explain"]["similar_cases_used"] == 0
+    for key in [
+        "main_backtest",
+        "baselines",
+        "feature_ablation",
+        "gap_purge_embargo",
+        "calibration",
+        "proper_scoring",
+        "shuffle_sanity_check",
+        "dependency_ablation",
+        "feature_stability",
+    ]:
+        assert key in report
+    assert "brier_score" in report["proper_scoring"]
 
 
-def test_fastapi_predict_requires_recent() -> None:
-    client = TestClient(app)
-    response = client.post("/predict")
-    assert response.status_code == 400
-    assert response.json()["detail"] == PREDICT_REQUIRED_MESSAGE
-
-
-def test_fastapi_predict_validates_recent_and_predicts() -> None:
+def test_fastapi_endpoints() -> None:
     client = TestClient(app)
 
-    invalid = {"recent": _make_recent(periods=9)}
-    invalid_resp = client.post("/predict", json=invalid)
-    assert invalid_resp.status_code == 422
-
-    valid_payload = {
-        "recent": _make_recent(start_issue=115012545, periods=20),
-        "top_k": 20,
-    }
-    resp = client.post("/predict", json=valid_payload)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["short_window"] == 20
-    assert data["latest_issue"] == 115012564
-    assert data["target_issue"] == 115012565
-    assert len(data["predicted_numbers_top20"]) == 20
-    assert len(data["top3_triplet"]["numbers"]) == 3
-
-
-def test_fastapi_analysis_and_health() -> None:
-    client = TestClient(app)
     health = client.get("/health")
     assert health.status_code == 200
+    assert health.json()["model_version"] == MODEL_VERSION
 
-    analysis = client.get("/analysis")
-    assert analysis.status_code == 200
-    data = analysis.json()
-    assert "basic" in data and "dynamic" in data
+    missing = client.post("/predict")
+    assert missing.status_code == 400
+    assert missing.json()["detail"] == PREDICT_REQUIRED_MESSAGE
+
+    valid_payload = {
+        "recent": _make_recent(start_issue=200000001, periods=20),
+        "prediction_k": 20,
+    }
+    pred = client.post("/predict", json=valid_payload)
+    assert pred.status_code == 200
+    data = pred.json()
+    assert len(data["ranked_numbers"]) == 80
+    assert "confidence" in data
+
+    bt = client.post(
+        "/backtest",
+        json={
+            "recent_window": 20,
+            "prediction_k": 20,
+            "evaluation_window": 60,
+            "gap": 1,
+            "embargo": 1,
+        },
+    )
+    assert bt.status_code == 200
+    assert "main_backtest" in bt.json()
