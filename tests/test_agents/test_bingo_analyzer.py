@@ -33,8 +33,10 @@ def test_basic_statistics_structure() -> None:
 def test_predict_next_output_constraints_with_recent() -> None:
     analyzer = BingoAnalyzer()
     recent_draws = [sorted(item["numbers"]) for item in _make_recent(periods=25)]
-    pred = analyzer.predict_next(recent_draws=recent_draws)
+    pred = analyzer.predict_next(recent_draws=recent_draws, latest_issue=115012564)
     assert pred["short_window"] == 25
+    assert pred["latest_issue"] == 115012564
+    assert pred["target_issue"] == 115012565
     assert pred["board_type"] in {
         "爆發盤",
         "雙區震盪盤",
@@ -43,9 +45,12 @@ def test_predict_next_output_constraints_with_recent() -> None:
         "中段主導盤",
     }
     assert sum(pred["predicted_zone_counts"].values()) == 20
-    assert len(pred["predicted_numbers"]) == 20
-    assert len(set(pred["predicted_numbers"])) == 20
-    assert len(pred["top_triplet_prediction"]) == 3
+    assert len(pred["predicted_numbers_top20"]) == 20
+    assert len(set(pred["predicted_numbers_top20"])) == 20
+    assert len(pred["top3_triplet"]["numbers"]) == 3
+    assert len(set(pred["top3_triplet"]["numbers"])) == 3
+    assert all(1 <= n <= 80 for n in pred["top3_triplet"]["numbers"])
+    assert "blend_weights" in pred["top3_triplet"]["explain"]
 
 
 def test_fastapi_predict_requires_recent() -> None:
@@ -62,12 +67,18 @@ def test_fastapi_predict_validates_recent_and_predicts() -> None:
     invalid_resp = client.post("/predict", json=invalid)
     assert invalid_resp.status_code == 422
 
-    valid_payload = {"recent": _make_recent(periods=20), "top_k": 20}
+    valid_payload = {
+        "recent": _make_recent(start_issue=115012545, periods=20),
+        "top_k": 20,
+    }
     resp = client.post("/predict", json=valid_payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data["short_window"] == 20
-    assert len(data["predicted_numbers"]) == 20
+    assert data["latest_issue"] == 115012564
+    assert data["target_issue"] == 115012565
+    assert len(data["predicted_numbers_top20"]) == 20
+    assert len(data["top3_triplet"]["numbers"]) == 3
 
 
 def test_fastapi_analysis_and_health() -> None:

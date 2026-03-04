@@ -200,7 +200,9 @@ class BingoAnalyzer:
         return runs
 
     def dynamic_analysis(
-        self, recent_draws: Optional[Sequence[Sequence[int]]] = None
+        self,
+        recent_draws: Optional[Sequence[Sequence[int]]] = None,
+        latest_issue: Optional[int] = None,
     ) -> Dict[str, object]:
         draws = list(recent_draws) if recent_draws is not None else self.draw_numbers
         latest_draw = draws[-1]
@@ -210,8 +212,12 @@ class BingoAnalyzer:
         trend = self._zone_trend(draws)
         board_type = self._classify_board(latest_zones, trend)
 
+        resolved_latest_issue = (
+            latest_issue if latest_issue is not None else int(self.df.iloc[-1]["期別"])
+        )
+
         return {
-            "latest_issue": int(self.df.iloc[-1]["期別"]),
+            "latest_issue": resolved_latest_issue,
             "latest_draw": list(latest_draw),
             "momentum_last_5": window5,
             "momentum_last_10": window10,
@@ -271,16 +277,20 @@ class BingoAnalyzer:
     def predict_next(
         self,
         recent_draws: Sequence[Sequence[int]],
+        latest_issue: int,
         weights: ScoreWeights = ScoreWeights(),
         top_k: int = 20,
     ) -> Dict[str, object]:
         # 核心規則註解：predict_next 禁止直接使用全年資料當短期輸入，必須由外部傳入 recent 10–50 期。
         self._validate_recent_draws(recent_draws)
         short_window = len(recent_draws)
+        target_issue = latest_issue + 1
         recent_matrix = self._build_matrix_from_recent(recent_draws)
         recent_freq = recent_matrix.mean(axis=0)
 
-        dynamic = self.dynamic_analysis(recent_draws=recent_draws)
+        dynamic = self.dynamic_analysis(
+            recent_draws=recent_draws, latest_issue=latest_issue
+        )
         board_type = dynamic["board_type"]
         zone_target = self._predict_zone_target(board_type, recent_draws)
 
@@ -299,15 +309,24 @@ class BingoAnalyzer:
         ranking = np.argsort(score)[::-1] + 1
         selected = ranking[:top_k].tolist()
 
-        top_triplet = self._best_triplet_from_recent(selected, triplet_counter)
+        # 中文註解：Top3 只代表下一期同一期內三號共現機率最高組合，避免誤解為跨多期分散預測。
+        top_triplet = self._best_next_issue_triplet(
+            selected, score, triplet_counter, recent_draws, weights
+        )
         confidence = self._confidence_labels(score, selected, board_type)
 
         return {
+            "latest_issue": latest_issue,
+            "target_issue": target_issue,
             "board_type": board_type,
+            "dynamic": {
+                "zone_trend": dynamic["zone_trend"],
+                "latest_draw": dynamic["latest_draw"],
+            },
             "predicted_zone_counts": zone_target,
-            "top_triplet_prediction": top_triplet,
+            "top3_triplet": top_triplet,
             "number_scores": {str(i + 1): float(v) for i, v in enumerate(score)},
-            "predicted_numbers": selected,
+            "predicted_numbers_top20": selected,
             "confidence": confidence,
             "weights": weights.__dict__,
             "short_window": short_window,
@@ -409,16 +428,80 @@ class BingoAnalyzer:
             scores = scores / scores.max()
         return scores, triplet_counter
 
+    def _best_next_issue_triplet(
+        self,
+        numbers: Sequence[int],
+        score: np.ndarray,
+        triplet_counter: Counter,
+        recent_draws: Sequence[Sequence[int]],
+        weights: ScoreWeights,
+    ) -> Dict[str, object]:
+        pair_counter = Counter()
+        for draw in recent_draws:
+            for pair in combinations(draw, 2):
+                pair_counter[tuple(sorted(pair))] += 1
+
+        max_triplet = max(triplet_counter.values(), default=1)
+        max_pair = max(pair_counter.values(), default=1)
+        candidate_pool = list(numbers[: min(12, len(numbers))])
+
+        best_combo: Tuple[int, int, int] = tuple(candidate_pool[:3])
+        best_score = float("-inf")
+        best_explain: Dict[str, object] = {}
+
+        # 中文註解：以 short-term triplet、pair resonance、個別分數、區段適配混合評分。
+        for combo in combinations(candidate_pool, 3):
+            combo = tuple(sorted(combo))
+            recent_triplet_count = int(triplet_counter.get(combo, 0))
+            triplet_strength = recent_triplet_count / max_triplet
+            pair_strength = np.mean(
+                [
+                    pair_counter.get(tuple(sorted((combo[0], combo[1]))), 0) / max_pair,
+                    pair_counter.get(tuple(sorted((combo[0], combo[2]))), 0) / max_pair,
+                    pair_counter.get(tuple(sorted((combo[1], combo[2]))), 0) / max_pair,
+                ]
+            )
+            individual_strength = float(np.mean([score[n - 1] for n in combo]))
+            zone_strength, zone_fit = self._triplet_zone_fit(combo)
+
+            combined = (
+                weights.alpha * triplet_strength
+                + weights.beta * pair_strength
+                + weights.gamma * individual_strength
+                + weights.delta * zone_strength
+            )
+            if combined > best_score:
+                best_score = combined
+                best_combo = combo
+                best_explain = {
+                    "recent_triplet_count": recent_triplet_count,
+                    "recent_pair_resonance": round(float(pair_strength), 4),
+                    "zone_fit": zone_fit,
+                    "blend_weights": weights.__dict__,
+                }
+
+        return {
+            "numbers": list(best_combo),
+            "score": round(float(best_score), 4),
+            "explain": best_explain,
+        }
+
     @staticmethod
-    def _best_triplet_from_recent(
-        numbers: Sequence[int], triplet_counter: Counter
-    ) -> List[int]:
-        allowed = set(numbers)
-        ranked = sorted(triplet_counter.items(), key=lambda x: x[1], reverse=True)
-        for triplet, _count in ranked:
-            if all(n in allowed for n in triplet):
-                return list(triplet)
-        return list(numbers[:3])
+    def _triplet_zone_fit(combo: Sequence[int]) -> Tuple[float, str]:
+        zone_map = {"A": 0, "B": 0, "C": 0, "D": 0}
+        for num in combo:
+            if 1 <= num <= 20:
+                zone_map["A"] += 1
+            elif 21 <= num <= 40:
+                zone_map["B"] += 1
+            elif 41 <= num <= 60:
+                zone_map["C"] += 1
+            else:
+                zone_map["D"] += 1
+
+        dominant = sorted(zone_map.items(), key=lambda kv: kv[1], reverse=True)
+        zone_fit = "/".join([zone for zone, cnt in dominant if cnt > 0]) + " 偏強"
+        return dominant[0][1] / 3, zone_fit
 
     @staticmethod
     def _confidence_labels(
@@ -440,7 +523,7 @@ def get_analyzer() -> BingoAnalyzer:
     return BingoAnalyzer()
 
 
-def _validate_request_recent(request: PredictRequest) -> List[List[int]]:
+def _validate_request_recent(request: PredictRequest) -> Tuple[List[List[int]], int]:
     recent = request.recent
     issues = [item.issue for item in recent]
     if len(set(issues)) != len(issues):
@@ -460,7 +543,7 @@ def _validate_request_recent(request: PredictRequest) -> List[List[int]]:
                 detail="recent 每期 numbers 必須介於 1 到 80。",
             )
         draws.append(numbers)
-    return draws
+    return draws, max(issues)
 
 
 app = FastAPI(title="Bingo Bingo 分析與預測 API")
@@ -488,8 +571,10 @@ def predict(
     if payload is None:
         raise HTTPException(status_code=400, detail=PREDICT_REQUIRED_MESSAGE)
     analyzer = get_analyzer()
-    recent_draws = _validate_request_recent(payload)
+    recent_draws, latest_issue = _validate_request_recent(payload)
     try:
-        return analyzer.predict_next(recent_draws=recent_draws, top_k=payload.top_k)
+        return analyzer.predict_next(
+            recent_draws=recent_draws, latest_issue=latest_issue, top_k=payload.top_k
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
