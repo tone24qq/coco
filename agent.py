@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
@@ -19,14 +19,14 @@ PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆�
 
 @dataclass(frozen=True)
 class ScoreWeights:
-    alpha: float = 0.5
-    beta: float = 0.25
-    gamma: float = 0.15
-    delta: float = 0.1
+    recent_weight: float = 0.2
+    history_similar_weight: float = 0.5
+    other_weight: float = 0.3
 
     def __post_init__(self) -> None:
-        if self.alpha <= self.gamma:
-            raise ValueError("alpha must be greater than gamma")
+        total = self.recent_weight + self.history_similar_weight + self.other_weight
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError("weights must sum to 1.0")
 
 
 class RecentDraw(BaseModel):
@@ -48,9 +48,10 @@ class BingoAnalyzer:
         self.rng = np.random.default_rng(random_seed)
         self.df = self._load_and_prepare_data()
         self.draw_numbers: List[List[int]] = self._extract_draw_numbers(self.df)
-        # 核心規則註解：年度資料只做 long_term_probs 與長期統計，不直接當下一期短期預測輸入。
         self.matrix = self._build_matrix(self.draw_numbers)
-        self.long_term_probs = self.matrix.mean(axis=0)
+        self.issue_to_index = {
+            int(issue): idx for idx, issue in enumerate(self.df["期別"].tolist())
+        }
 
     def _load_and_prepare_data(self) -> pd.DataFrame:
         df = pd.read_csv(self.csv_path)
@@ -298,12 +299,20 @@ class BingoAnalyzer:
             [self._zone_weight(i + 1, zone_target) for i in range(80)]
         )
         combo_scores, triplet_counter = self._combo_resonance_scores(recent_draws)
+        recent_component = self._normalize_vector(
+            recent_freq * 0.7 + combo_scores * 0.3
+        )
+
+        latest_draw_set = set(recent_draws[-1])
+        history_component, similar_cases = self._history_similar_component(
+            latest_draw_set, latest_issue
+        )
+        other_component = self._normalize_vector(zone_weights)
 
         score = (
-            recent_freq * weights.alpha
-            + zone_weights * weights.beta
-            + self.long_term_probs * weights.gamma
-            + combo_scores * weights.delta
+            recent_component * weights.recent_weight
+            + history_component * weights.history_similar_weight
+            + other_component * weights.other_weight
         )
 
         ranking = np.argsort(score)[::-1] + 1
@@ -311,7 +320,15 @@ class BingoAnalyzer:
 
         # 中文註解：Top3 只代表下一期同一期內三號共現機率最高組合，避免誤解為跨多期分散預測。
         top_triplet = self._best_next_issue_triplet(
-            selected, score, triplet_counter, recent_draws, weights
+            selected,
+            score,
+            triplet_counter,
+            recent_draws,
+            weights,
+            similar_cases,
+            history_component,
+            recent_component,
+            other_component,
         )
         confidence = self._confidence_labels(score, selected, board_type)
 
@@ -328,9 +345,64 @@ class BingoAnalyzer:
             "number_scores": {str(i + 1): float(v) for i, v in enumerate(score)},
             "predicted_numbers_top20": selected,
             "confidence": confidence,
-            "weights": weights.__dict__,
+            "weights": asdict(weights),
             "short_window": short_window,
         }
+
+    @staticmethod
+    def _normalize_vector(values: np.ndarray) -> np.ndarray:
+        values = np.asarray(values, dtype=float)
+        if values.size == 0:
+            return np.zeros_like(values, dtype=float)
+        max_v = float(values.max())
+        min_v = float(values.min())
+        if max_v - min_v <= 1e-12:
+            return np.zeros_like(values, dtype=float)
+        return (values - min_v) / (max_v - min_v)
+
+    def _history_similar_component(
+        self,
+        latest_draw_set: set[int],
+        latest_issue: int,
+        top_n: int = 100,
+    ) -> Tuple[np.ndarray, List[Dict[str, object]]]:
+        candidates: List[Tuple[float, int, int]] = []
+        for issue, idx in self.issue_to_index.items():
+            if issue >= latest_issue:
+                continue
+            next_issue = issue + 1
+            next_idx = self.issue_to_index.get(next_issue)
+            if next_idx is None:
+                continue
+            hist_set = set(self.draw_numbers[idx])
+            inter = len(latest_draw_set & hist_set)
+            union = len(latest_draw_set | hist_set)
+            sim = inter / union if union else 0.0
+            candidates.append((sim, issue, next_issue))
+
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        selected = [item for item in candidates if item[0] > 0][:top_n]
+
+        history_scores = np.zeros(80, dtype=float)
+        similar_cases: List[Dict[str, object]] = []
+        total_weight = sum(sim for sim, _, _ in selected)
+        if total_weight <= 0:
+            return history_scores, similar_cases
+
+        for sim, issue, next_issue in selected:
+            next_draw = self.draw_numbers[self.issue_to_index[next_issue]]
+            similar_cases.append(
+                {
+                    "issue": issue,
+                    "next_issue": next_issue,
+                    "similarity": round(float(sim), 6),
+                }
+            )
+            for n in next_draw:
+                history_scores[n - 1] += sim
+
+        history_scores = history_scores / total_weight
+        return history_scores, similar_cases
 
     @staticmethod
     def _validate_recent_draws(recent_draws: Sequence[Sequence[int]]) -> None:
@@ -435,6 +507,10 @@ class BingoAnalyzer:
         triplet_counter: Counter,
         recent_draws: Sequence[Sequence[int]],
         weights: ScoreWeights,
+        similar_cases: Sequence[Dict[str, object]],
+        history_component: np.ndarray,
+        recent_component: np.ndarray,
+        other_component: np.ndarray,
     ) -> Dict[str, object]:
         pair_counter = Counter()
         for draw in recent_draws:
@@ -449,7 +525,13 @@ class BingoAnalyzer:
         best_score = float("-inf")
         best_explain: Dict[str, object] = {}
 
-        # 中文註解：以 short-term triplet、pair resonance、個別分數、區段適配混合評分。
+        similar_case_count = max(len(similar_cases), 1)
+        sim_next_counter = Counter()
+        for case in similar_cases:
+            next_issue = int(case["next_issue"])
+            for n in self.draw_numbers[self.issue_to_index[next_issue]]:
+                sim_next_counter[n] += 1
+
         for combo in combinations(candidate_pool, 3):
             combo = tuple(sorted(combo))
             recent_triplet_count = int(triplet_counter.get(combo, 0))
@@ -461,23 +543,47 @@ class BingoAnalyzer:
                     pair_counter.get(tuple(sorted((combo[1], combo[2]))), 0) / max_pair,
                 ]
             )
-            individual_strength = float(np.mean([score[n - 1] for n in combo]))
+            recent_strength = float(np.mean([recent_component[n - 1] for n in combo]))
+            history_strength = float(np.mean([history_component[n - 1] for n in combo]))
+            other_strength = float(np.mean([other_component[n - 1] for n in combo]))
             zone_strength, zone_fit = self._triplet_zone_fit(combo)
+            combined_signal = 0.5 * triplet_strength + 0.5 * pair_strength
 
             combined = (
-                weights.alpha * triplet_strength
-                + weights.beta * pair_strength
-                + weights.gamma * individual_strength
-                + weights.delta * zone_strength
+                weights.recent_weight * (0.6 * recent_strength + 0.4 * combined_signal)
+                + weights.history_similar_weight * history_strength
+                + weights.other_weight * (0.7 * other_strength + 0.3 * zone_strength)
             )
             if combined > best_score:
                 best_score = combined
                 best_combo = combo
+                number_stats = []
+                for n in combo:
+                    appear = int(sim_next_counter[n])
+                    ratio = appear / similar_case_count
+                    number_stats.append(
+                        {
+                            "number": n,
+                            "similar_next_count": appear,
+                            "similar_next_ratio": round(float(ratio), 4),
+                            "recent_component": round(
+                                float(recent_component[n - 1]), 4
+                            ),
+                            "history_component": round(
+                                float(history_component[n - 1]), 4
+                            ),
+                            "other_component": round(float(other_component[n - 1]), 4),
+                            "final_number_score": round(float(score[n - 1]), 4),
+                        }
+                    )
                 best_explain = {
                     "recent_triplet_count": recent_triplet_count,
                     "recent_pair_resonance": round(float(pair_strength), 4),
+                    "similar_cases_used": len(similar_cases),
+                    "similar_cases_top10": list(similar_cases[:10]),
+                    "number_contributions": number_stats,
                     "zone_fit": zone_fit,
-                    "blend_weights": weights.__dict__,
+                    "weights": asdict(weights),
                 }
 
         return {
