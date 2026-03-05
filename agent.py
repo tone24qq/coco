@@ -51,6 +51,14 @@ class BacktestRequest(BaseModel):
     output_dir: str = Field(default="artifacts")
 
 
+class HitCountBacktestRequest(BaseModel):
+    min_train_size: int = Field(default=50, ge=20)
+    knn_k: int = Field(default=15, ge=3, le=100)
+    momentum_short: int = Field(default=5, ge=2, le=30)
+    momentum_long: int = Field(default=20, ge=5, le=100)
+    output_dir: str = Field(default="artifacts")
+
+
 class BingoAnalyzer:
     def __init__(
         self, csv_path: Path | str = CSV_PATH, random_seed: int = DEFAULT_SEED
@@ -63,6 +71,200 @@ class BingoAnalyzer:
         self.matrix = self._build_matrix(self.draw_numbers)
         self.issue_to_index = {
             int(issue): idx for idx, issue in enumerate(self.df["期別"].tolist())
+        }
+
+    def run_hitcount_backtest(
+        self, request: Optional[HitCountBacktestRequest] = None
+    ) -> Dict[str, object]:
+        cfg = request or HitCountBacktestRequest()
+        draws = self.draw_numbers
+        if len(draws) <= cfg.min_train_size + 1:
+            raise ValueError("資料量不足，無法進行 walk-forward 回測。")
+
+        rows: List[Dict[str, object]] = []
+        for t in range(cfg.min_train_size - 1, len(draws) - 1):
+            train_draws = draws[: t + 1]
+            latest_draw = train_draws[-1]
+            target_draw = draws[t + 1]
+            issue_t = int(self.df.iloc[t]["期別"])
+            issue_t1 = int(self.df.iloc[t + 1]["期別"])
+
+            model_preds = {
+                "markov_transition": self._predict_top20_from_prob(
+                    self._markov_transition_probability(train_draws, latest_draw)
+                ),
+                "similar_knn": self._predict_top20_from_prob(
+                    self._knn_next_probability(train_draws, k=cfg.knn_k)
+                ),
+                "short_momentum": self._predict_top20_from_prob(
+                    self._short_momentum_probability(
+                        train_draws,
+                        short_window=cfg.momentum_short,
+                        long_window=cfg.momentum_long,
+                    )
+                ),
+            }
+
+            for method, pred in model_preds.items():
+                hit = len(set(pred) & set(target_draw))
+                rows.append(
+                    {
+                        "issue_t": issue_t,
+                        "issue_t1": issue_t1,
+                        "method": method,
+                        "predicted_top20": "-".join(map(str, pred)),
+                        "target_top20": "-".join(map(str, sorted(target_draw))),
+                        "hit_count": hit,
+                    }
+                )
+
+        detail_df = pd.DataFrame(rows)
+        summary_df = (
+            detail_df.groupby("method", as_index=False)["hit_count"]
+            .agg(["mean", "std", "max"])  # type: ignore[arg-type]
+            .reset_index()
+            .rename(
+                columns={
+                    "mean": "avg_hit_count",
+                    "std": "hit_count_std",
+                    "max": "best_hit_count",
+                }
+            )
+            .sort_values(["avg_hit_count", "best_hit_count"], ascending=[False, False])
+        )
+        best_method = str(summary_df.iloc[0]["method"])
+
+        output_dir = Path(cfg.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        detail_path = output_dir / "hitcount_walkforward_detail.csv"
+        summary_path = output_dir / "hitcount_walkforward_summary.csv"
+        config_path = output_dir / "hitcount_best.json"
+        detail_df.to_csv(detail_path, index=False)
+        summary_df.to_csv(summary_path, index=False)
+
+        best_config = {
+            "best_method": best_method,
+            "min_train_size": cfg.min_train_size,
+            "knn_k": cfg.knn_k,
+            "momentum_short": cfg.momentum_short,
+            "momentum_long": cfg.momentum_long,
+            "summary": summary_df.to_dict(orient="records"),
+            "guardrail": "walk-forward only, strictly no look-ahead",
+        }
+        config_path.write_text(
+            json.dumps(best_config, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return {
+            "best_method": best_method,
+            "summary": best_config["summary"],
+            "output_files": {
+                "detail": str(detail_path),
+                "summary": str(summary_path),
+                "best_config": str(config_path),
+            },
+        }
+
+    @staticmethod
+    def _predict_top20_from_prob(prob: np.ndarray) -> List[int]:
+        ranking = np.argsort(prob)[::-1] + 1
+        return ranking[:20].tolist()
+
+    def _markov_transition_probability(
+        self,
+        train_draws: Sequence[Sequence[int]],
+        latest_draw: Sequence[int],
+    ) -> np.ndarray:
+        trans = np.zeros((80, 80), dtype=float)
+        for i in range(len(train_draws) - 1):
+            curr = train_draws[i]
+            nxt = train_draws[i + 1]
+            for a in curr:
+                for b in nxt:
+                    trans[a - 1, b - 1] += 1.0
+
+        row_sums = trans.sum(axis=1, keepdims=True)
+        trans = np.divide(trans, np.maximum(row_sums, 1.0), where=row_sums > 0)
+        if not latest_draw:
+            return np.ones(80, dtype=float) / 80
+        pred = trans[np.array(latest_draw) - 1].mean(axis=0)
+        return pred
+
+    def _knn_next_probability(
+        self, train_draws: Sequence[Sequence[int]], k: int
+    ) -> np.ndarray:
+        if len(train_draws) < 2:
+            return np.ones(80, dtype=float) / 80
+
+        latest = set(train_draws[-1])
+        candidates: List[Tuple[float, int]] = []
+        for i in range(len(train_draws) - 1):
+            hist = set(train_draws[i])
+            inter = len(latest & hist)
+            union = len(latest | hist)
+            sim = inter / union if union else 0.0
+            candidates.append((sim, i))
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+
+        probs = np.zeros(80, dtype=float)
+        chosen = candidates[: min(k, len(candidates))]
+        total_w = sum(sim for sim, _ in chosen)
+        if total_w <= 0:
+            return np.ones(80, dtype=float) / 80
+        for sim, idx in chosen:
+            for n in train_draws[idx + 1]:
+                probs[n - 1] += sim
+        return probs / total_w
+
+    def _short_momentum_probability(
+        self,
+        train_draws: Sequence[Sequence[int]],
+        short_window: int,
+        long_window: int,
+    ) -> np.ndarray:
+        matrix = self._build_matrix(train_draws)
+        short_freq = matrix[-short_window:].mean(axis=0)
+        long_freq = matrix[-long_window:].mean(axis=0)
+        momentum = np.maximum(short_freq - long_freq, 0)
+        score = 0.7 * short_freq + 0.3 * momentum
+        total = score.sum()
+        if total <= 1e-12:
+            return np.ones(80, dtype=float) / 80
+        return score / total
+
+    def predict_online_top20(
+        self, recent_draws: Sequence[Sequence[int]]
+    ) -> Dict[str, object]:
+        self._validate_recent_draws(recent_draws)
+        cfg_path = Path("artifacts") / "hitcount_best.json"
+        if cfg_path.exists():
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            method = str(cfg["best_method"])
+        else:
+            method = "short_momentum"
+            cfg = {
+                "knn_k": 10,
+                "momentum_short": min(5, len(recent_draws)),
+                "momentum_long": min(20, len(recent_draws)),
+                "summary": [],
+            }
+
+        if method == "markov_transition":
+            prob = self._markov_transition_probability(recent_draws, recent_draws[-1])
+        elif method == "similar_knn":
+            prob = self._knn_next_probability(recent_draws, k=int(cfg["knn_k"]))
+        else:
+            prob = self._short_momentum_probability(
+                recent_draws,
+                short_window=int(cfg["momentum_short"]),
+                long_window=int(cfg["momentum_long"]),
+            )
+        top20 = self._predict_top20_from_prob(prob)
+        top3 = top20[:3]
+        return {
+            "online_method": method,
+            "predicted_numbers_top20": top20,
+            "top3": top3,
+            "backtest_summary": cfg.get("summary", []),
         }
 
     def run_top3_backtest(
@@ -771,6 +973,7 @@ class BingoAnalyzer:
             other_component,
         )
         confidence = self._confidence_labels(score, selected, board_type)
+        online_prediction = self.predict_online_top20(recent_draws)
 
         return {
             "latest_issue": latest_issue,
@@ -784,6 +987,12 @@ class BingoAnalyzer:
             "top3_triplet": top_triplet,
             "number_scores": {str(i + 1): float(v) for i, v in enumerate(score)},
             "predicted_numbers_top20": selected,
+            "practical_prediction_top3": online_prediction["top3"],
+            "online_strategy": {
+                "method": online_prediction["online_method"],
+                "predicted_numbers_top20": online_prediction["predicted_numbers_top20"],
+                "backtest_summary": online_prediction["backtest_summary"],
+            },
             "confidence": confidence,
             "weights": asdict(weights),
             "short_window": short_window,
@@ -1133,6 +1342,17 @@ def backtest_top3(
     analyzer = get_analyzer()
     try:
         return analyzer.run_top3_backtest(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/backtest/hitcount")
+def backtest_hitcount(
+    payload: Optional[HitCountBacktestRequest] = Body(default=None),
+) -> Dict[str, object]:
+    analyzer = get_analyzer()
+    try:
+        return analyzer.run_hitcount_backtest(payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

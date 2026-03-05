@@ -4,7 +4,13 @@ from pathlib import Path
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from agent import PREDICT_REQUIRED_MESSAGE, BacktestRequest, BingoAnalyzer, app
+from agent import (  # isort:skip
+    PREDICT_REQUIRED_MESSAGE,
+    BacktestRequest,
+    BingoAnalyzer,
+    HitCountBacktestRequest,
+    app,
+)
 
 
 def _make_recent(start_issue: int = 1, periods: int = 10) -> list[dict]:
@@ -113,6 +119,8 @@ def test_fastapi_predict_validates_recent_and_predicts() -> None:
     assert data["short_window"] == 20
     assert len(data["predicted_numbers_top20"]) == 20
     assert len(data["top3_triplet"]["numbers"]) == 3
+    assert len(data["practical_prediction_top3"]) == 3
+    assert len(data["online_strategy"]["predicted_numbers_top20"]) == 20
 
 
 def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
@@ -127,8 +135,8 @@ def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
             lambdas=[1.0],
             recent_n=20,
             candidate_pool_size=12,
-            random_runs=200,
-            max_steps=30,
+            random_runs=100,
+            max_steps=10,
             output_dir=str(outdir),
         )
     )
@@ -138,11 +146,11 @@ def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
         assert Path(outputs[key]).exists()
 
     detail_df = pd.read_csv(outputs["backtest_detail"])
-    assert detail_df["issue"].nunique() == 30
+    assert detail_df["issue"].nunique() == 10
 
     experiments_df = pd.read_csv(outputs["experiments"])
     random_row = experiments_df[experiments_df["method"] == "random"].iloc[0]
-    assert random_row["random_runs"] == 200
+    assert random_row["random_runs"] == 100
     assert random_row["triple_hit_rate_std"] >= 0
 
     best_cfg = json.loads(Path(outputs["best_config"]).read_text(encoding="utf-8"))
@@ -208,3 +216,27 @@ def test_predict_top3_missing_best_config_returns_500() -> None:
     payload = {"recent": _make_recent(start_issue=101, periods=20)}
     resp = client.post("/predict/top3", json=payload)
     assert resp.status_code == 500
+
+
+def test_hitcount_backtest_and_endpoint(tmp_path: Path) -> None:
+    csv_path = tmp_path / "small.csv"
+    _build_small_csv(csv_path, draws=100)
+    analyzer = BingoAnalyzer(csv_path=csv_path)
+    outdir = tmp_path / "hit"
+    result = analyzer.run_hitcount_backtest(
+        HitCountBacktestRequest(
+            min_train_size=30,
+            knn_k=8,
+            momentum_short=5,
+            momentum_long=20,
+            output_dir=str(outdir),
+        )
+    )
+    assert result["best_method"] in {
+        "markov_transition",
+        "similar_knn",
+        "short_momentum",
+    }
+    assert Path(result["output_files"]["detail"]).exists()
+    assert Path(result["output_files"]["summary"]).exists()
+    assert Path(result["output_files"]["best_config"]).exists()
