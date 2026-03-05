@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from agent import PREDICT_REQUIRED_MESSAGE, BingoAnalyzer, app
+from agent import PREDICT_REQUIRED_MESSAGE, BacktestRequest, BingoAnalyzer, app
 
 
 def _make_recent(start_issue: int = 1, periods: int = 10) -> list[dict]:
@@ -34,6 +34,18 @@ def _make_recent_from_csv(
             }
         )
     return draws
+
+
+def _build_small_csv(path: Path, draws: int = 36) -> None:
+    rows = []
+    for i in range(draws):
+        start = i % 80
+        nums = sorted([((start + k) % 80) + 1 for k in range(20)])
+        row = {"期別": 300000000 + i}
+        for j, n in enumerate(nums, start=1):
+            row[f"獎號{j}"] = n
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(path, index=False)
 
 
 def test_data_loaded_and_sorted() -> None:
@@ -148,3 +160,35 @@ def test_fastapi_analysis_and_health() -> None:
     assert analysis.status_code == 200
     data = analysis.json()
     assert "basic" in data and "dynamic" in data
+
+
+def test_run_top3_backtest_exports_files(tmp_path: Path) -> None:
+    csv_path = tmp_path / "small.csv"
+    _build_small_csv(csv_path)
+    analyzer = BingoAnalyzer(csv_path=csv_path)
+    result = analyzer.run_top3_backtest(
+        request=BacktestRequest(
+            windows=[20],
+            alphas=[0.95],
+            lambdas=[1.0],
+            recent_n=20,
+            candidate_pool_size=12,
+            output_dir=str(tmp_path / "out"),
+        )
+    )
+
+    outputs = result["output_files"]
+    for key in ["backtest_detail", "experiments", "best_config", "report"]:
+        assert Path(outputs[key]).exists()
+
+    detail_df = pd.read_csv(outputs["backtest_detail"])
+    assert {
+        "issue",
+        "method",
+        "P_t",
+        "Y_t",
+        "hit_count_t",
+        "triple_hit_t",
+        "precision_at_3",
+        "recall_at_3",
+    }.issubset(detail_df.columns)

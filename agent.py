@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -39,6 +40,15 @@ class PredictRequest(BaseModel):
     top_k: int = Field(default=20, ge=1, le=20)
 
 
+class BacktestRequest(BaseModel):
+    windows: List[int] = Field(default_factory=lambda: [50, 100, 200])
+    alphas: List[float] = Field(default_factory=lambda: [0.9, 0.95, 0.98])
+    lambdas: List[float] = Field(default_factory=lambda: [0.5, 1.0, 2.0])
+    recent_n: int = Field(default=200, ge=20)
+    candidate_pool_size: int = Field(default=18, ge=8, le=30)
+    output_dir: str = Field(default="artifacts")
+
+
 class BingoAnalyzer:
     def __init__(
         self, csv_path: Path | str = CSV_PATH, random_seed: int = DEFAULT_SEED
@@ -52,6 +62,300 @@ class BingoAnalyzer:
         self.issue_to_index = {
             int(issue): idx for idx, issue in enumerate(self.df["期別"].tolist())
         }
+
+    def run_top3_backtest(
+        self, request: Optional[BacktestRequest] = None
+    ) -> Dict[str, object]:
+        cfg = request or BacktestRequest()
+        if not self.draw_numbers:
+            raise ValueError("無可用開獎資料。")
+
+        methods = ["random", "hot_only", "pair_only", "pair_aware"]
+        experiment_rows: List[Dict[str, object]] = []
+        best_pair_cfg: Optional[Dict[str, float]] = None
+        best_pair_score = float("-inf")
+
+        for window in sorted(set(cfg.windows)):
+            for alpha in sorted(set(cfg.alphas)):
+                for lam in sorted(set(cfg.lambdas)):
+                    detail = self._walk_forward_backtest(
+                        window=window,
+                        alpha=alpha,
+                        lam=lam,
+                        candidate_pool_size=cfg.candidate_pool_size,
+                    )
+                    for method in methods:
+                        stats = self._summarize_detail(
+                            detail, method=method, recent_n=cfg.recent_n
+                        )
+                        experiment_rows.append(
+                            {
+                                "method": method,
+                                "window": window,
+                                "alpha": alpha,
+                                "lambda": lam,
+                                **stats,
+                            }
+                        )
+
+                    pair_aware_stats = self._summarize_detail(
+                        detail, method="pair_aware", recent_n=cfg.recent_n
+                    )
+                    if pair_aware_stats["triple_hit_rate"] > best_pair_score:
+                        best_pair_score = pair_aware_stats["triple_hit_rate"]
+                        best_pair_cfg = {
+                            "window": window,
+                            "alpha": alpha,
+                            "lambda": lam,
+                        }
+
+        if best_pair_cfg is None:
+            raise ValueError("無法找到有效參數組合。")
+
+        best_detail = self._walk_forward_backtest(
+            window=int(best_pair_cfg["window"]),
+            alpha=float(best_pair_cfg["alpha"]),
+            lam=float(best_pair_cfg["lambda"]),
+            candidate_pool_size=cfg.candidate_pool_size,
+        )
+
+        output_root = Path(cfg.output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        detail_path = output_root / "backtest_detail.csv"
+        experiments_path = output_root / "experiments.csv"
+        best_config_path = output_root / "best_config.json"
+        report_path = output_root / "report.md"
+
+        pd.DataFrame(best_detail).to_csv(detail_path, index=False)
+        pd.DataFrame(experiment_rows).sort_values(
+            ["method", "triple_hit_rate", "precision_at_3"],
+            ascending=[True, False, False],
+        ).to_csv(experiments_path, index=False)
+
+        best_config = {
+            "method": "pair_aware",
+            "window": int(best_pair_cfg["window"]),
+            "alpha": float(best_pair_cfg["alpha"]),
+            "lambda": float(best_pair_cfg["lambda"]),
+            "candidate_pool_size": cfg.candidate_pool_size,
+            "recent_n": cfg.recent_n,
+        }
+        best_config_path.write_text(
+            json.dumps(best_config, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+        self._write_report(
+            report_path=report_path,
+            experiments=pd.DataFrame(experiment_rows),
+            best_detail_df=pd.DataFrame(best_detail),
+            best_config=best_config,
+            recent_n=cfg.recent_n,
+        )
+
+        return {
+            "best_config": best_config,
+            "output_files": {
+                "backtest_detail": str(detail_path),
+                "experiments": str(experiments_path),
+                "best_config": str(best_config_path),
+                "report": str(report_path),
+            },
+        }
+
+    def _walk_forward_backtest(
+        self,
+        window: int,
+        alpha: float,
+        lam: float,
+        candidate_pool_size: int,
+    ) -> List[Dict[str, object]]:
+        details: List[Dict[str, object]] = []
+        if window <= 0 or window >= len(self.draw_numbers):
+            return details
+
+        for idx in range(window, len(self.draw_numbers)):
+            train = self.draw_numbers[idx - window : idx]
+            y_t = sorted(self.draw_numbers[idx])
+            issue = int(self.df.iloc[idx]["期別"])
+
+            p_scores, pair_scores = self._build_scores(train, alpha=alpha)
+            pred_random = self._predict_random(train, issue)
+            pred_hot = self._predict_hot_only(p_scores)
+            pred_pair = self._predict_pair_only(pair_scores, p_scores)
+            pred_pair_aware = self._predict_pair_aware(
+                p_scores, pair_scores, lam, candidate_pool_size
+            )
+
+            for method, pred in [
+                ("random", pred_random),
+                ("hot_only", pred_hot),
+                ("pair_only", pred_pair),
+                ("pair_aware", pred_pair_aware),
+            ]:
+                hit_count = len(set(pred) & set(y_t))
+                details.append(
+                    {
+                        "issue": issue,
+                        "method": method,
+                        "window": window,
+                        "alpha": alpha,
+                        "lambda": lam,
+                        "P_t": "-".join(map(str, sorted(pred))),
+                        "Y_t": "-".join(map(str, y_t)),
+                        "hit_count_t": hit_count,
+                        "triple_hit_t": int(hit_count == 3),
+                        "precision_at_3": hit_count / 3,
+                        "recall_at_3": hit_count / 20,
+                    }
+                )
+        return details
+
+    def _build_scores(
+        self, train_draws: Sequence[Sequence[int]], alpha: float
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        p_scores = np.zeros(80, dtype=float)
+        pair_scores = np.zeros((80, 80), dtype=float)
+        total_weight = 0.0
+
+        for recency, draw in enumerate(reversed(train_draws)):
+            w = alpha**recency
+            total_weight += w
+            for n in draw:
+                p_scores[n - 1] += w
+            for i, j in combinations(sorted(draw), 2):
+                pair_scores[i - 1, j - 1] += w
+                pair_scores[j - 1, i - 1] += w
+
+        if total_weight > 0:
+            p_scores /= total_weight
+            pair_scores /= total_weight
+        return p_scores, pair_scores
+
+    def _predict_random(
+        self, train_draws: Sequence[Sequence[int]], issue: int
+    ) -> Tuple[int, int, int]:
+        seed = self.random_seed + issue + len(train_draws)
+        rng = np.random.default_rng(seed)
+        numbers = sorted(rng.choice(np.arange(1, 81), size=3, replace=False).tolist())
+        return tuple(numbers)
+
+    @staticmethod
+    def _predict_hot_only(p_scores: np.ndarray) -> Tuple[int, int, int]:
+        top = np.argsort(p_scores)[::-1][:3] + 1
+        return tuple(sorted(top.tolist()))
+
+    @staticmethod
+    def _predict_pair_only(
+        pair_scores: np.ndarray, p_scores: np.ndarray
+    ) -> Tuple[int, int, int]:
+        upper = np.triu(pair_scores, k=1)
+        best_idx = np.argmax(upper)
+        i, j = np.unravel_index(best_idx, upper.shape)
+        pair = {i + 1, j + 1}
+        candidates = np.argsort(p_scores)[::-1] + 1
+        third = next(
+            (int(n) for n in candidates if int(n) not in pair), int(candidates[0])
+        )
+        return tuple(sorted([i + 1, j + 1, third]))
+
+    @staticmethod
+    def _predict_pair_aware(
+        p_scores: np.ndarray,
+        pair_scores: np.ndarray,
+        lam: float,
+        candidate_pool_size: int,
+    ) -> Tuple[int, int, int]:
+        eps = 1e-9
+        candidates = (np.argsort(p_scores)[::-1][:candidate_pool_size] + 1).tolist()
+        best_combo = tuple(sorted(candidates[:3]))
+        best_score = float("-inf")
+
+        for combo in combinations(candidates, 3):
+            a, b, c = combo
+            score = (
+                np.log(p_scores[a - 1] + eps)
+                + np.log(p_scores[b - 1] + eps)
+                + np.log(p_scores[c - 1] + eps)
+                + lam
+                * (
+                    pair_scores[a - 1, b - 1]
+                    + pair_scores[a - 1, c - 1]
+                    + pair_scores[b - 1, c - 1]
+                )
+            )
+            if score > best_score:
+                best_score = float(score)
+                best_combo = tuple(sorted((a, b, c)))
+        return best_combo
+
+    @staticmethod
+    def _summarize_detail(
+        rows: Sequence[Dict[str, object]], method: str, recent_n: int
+    ) -> Dict[str, float]:
+        df = pd.DataFrame([r for r in rows if r["method"] == method])
+        if df.empty:
+            return {
+                "periods": 0,
+                "triple_hit_rate": 0.0,
+                "precision_at_3": 0.0,
+                "recall_at_3": 0.0,
+                "recent_periods": 0,
+                "recent_triple_hit_rate": 0.0,
+                "recent_precision_at_3": 0.0,
+                "recent_recall_at_3": 0.0,
+            }
+        recent_df = df.tail(recent_n)
+        return {
+            "periods": int(len(df)),
+            "triple_hit_rate": float(df["triple_hit_t"].mean()),
+            "precision_at_3": float(df["precision_at_3"].mean()),
+            "recall_at_3": float(df["recall_at_3"].mean()),
+            "recent_periods": int(len(recent_df)),
+            "recent_triple_hit_rate": float(recent_df["triple_hit_t"].mean()),
+            "recent_precision_at_3": float(recent_df["precision_at_3"].mean()),
+            "recent_recall_at_3": float(recent_df["recall_at_3"].mean()),
+        }
+
+    def _write_report(
+        self,
+        report_path: Path,
+        experiments: pd.DataFrame,
+        best_detail_df: pd.DataFrame,
+        best_config: Dict[str, object],
+        recent_n: int,
+    ) -> None:
+        best_rows = experiments[experiments["method"] == "pair_aware"].sort_values(
+            ["triple_hit_rate", "precision_at_3"], ascending=False
+        )
+        top_row = best_rows.iloc[0].to_dict() if not best_rows.empty else {}
+        baselines = experiments[
+            experiments["method"].isin(["random", "hot_only", "pair_only"])
+        ]
+        baseline_best = baselines.sort_values(
+            ["triple_hit_rate", "precision_at_3"], ascending=False
+        ).head(1)
+        baseline_summary = (
+            baseline_best.iloc[0].to_dict() if not baseline_best.empty else {}
+        )
+        recent_pair_aware = best_detail_df[
+            best_detail_df["method"] == "pair_aware"
+        ].tail(recent_n)
+        recent_rate = (
+            float(recent_pair_aware["triple_hit_t"].mean())
+            if not recent_pair_aware.empty
+            else 0.0
+        )
+
+        content = (
+            "# Top-3 同期三顆同出回測報告\n\n"
+            f"- 最佳方法：pair_aware\n"
+            f"- 最佳參數：W={best_config['window']}, alpha={best_config['alpha']}, lambda={best_config['lambda']}\n"
+            f"- 全期間 triple_hit_rate：{top_row.get('triple_hit_rate', 0):.6f}\n"
+            f"- 全期間 precision@3：{top_row.get('precision_at_3', 0):.6f}\n"
+            f"- 最近 {recent_n} 期 triple_hit_rate：{recent_rate:.6f}\n"
+            f"- 最佳 baseline：{baseline_summary.get('method', 'n/a')}（triple_hit_rate={baseline_summary.get('triple_hit_rate', 0):.6f}）\n"
+        )
+        report_path.write_text(content, encoding="utf-8")
 
     def _load_and_prepare_data(self) -> pd.DataFrame:
         df = pd.read_csv(self.csv_path)
@@ -682,5 +986,16 @@ def predict(
         return analyzer.predict_next(
             recent_draws=recent_draws, latest_issue=latest_issue, top_k=payload.top_k
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/backtest/top3")
+def backtest_top3(
+    payload: Optional[BacktestRequest] = Body(default=None),
+) -> Dict[str, object]:
+    analyzer = get_analyzer()
+    try:
+        return analyzer.run_top3_backtest(payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
