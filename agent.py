@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 CSV_PATH = Path(__file__).resolve().parent / "賓果賓果_2026.csv"
@@ -46,6 +46,8 @@ class BacktestRequest(BaseModel):
     lambdas: List[float] = Field(default_factory=lambda: [0.5, 1.0, 2.0])
     recent_n: int = Field(default=200, ge=20)
     candidate_pool_size: int = Field(default=18, ge=8, le=30)
+    random_runs: int = Field(default=500, ge=100, le=5000)
+    max_steps: Optional[int] = Field(default=None, ge=1)
     output_dir: str = Field(default="artifacts")
 
 
@@ -70,10 +72,8 @@ class BingoAnalyzer:
         if not self.draw_numbers:
             raise ValueError("無可用開獎資料。")
 
-        methods = ["random", "hot_only", "pair_only", "pair_aware"]
+        methods = ["random", "freq_only", "pair_only", "hybrid"]
         experiment_rows: List[Dict[str, object]] = []
-        best_pair_cfg: Optional[Dict[str, float]] = None
-        best_pair_score = float("-inf")
 
         for window in sorted(set(cfg.windows)):
             for alpha in sorted(set(cfg.alphas)):
@@ -83,6 +83,8 @@ class BingoAnalyzer:
                         alpha=alpha,
                         lam=lam,
                         candidate_pool_size=cfg.candidate_pool_size,
+                        max_steps=cfg.max_steps,
+                        random_runs=cfg.random_runs,
                     )
                     for method in methods:
                         stats = self._summarize_detail(
@@ -94,29 +96,41 @@ class BingoAnalyzer:
                                 "window": window,
                                 "alpha": alpha,
                                 "lambda": lam,
+                                "random_runs": cfg.random_runs,
                                 **stats,
                             }
                         )
-
-                    pair_aware_stats = self._summarize_detail(
-                        detail, method="pair_aware", recent_n=cfg.recent_n
-                    )
-                    if pair_aware_stats["triple_hit_rate"] > best_pair_score:
-                        best_pair_score = pair_aware_stats["triple_hit_rate"]
-                        best_pair_cfg = {
-                            "window": window,
-                            "alpha": alpha,
-                            "lambda": lam,
-                        }
-
-        if best_pair_cfg is None:
+        experiments_df = pd.DataFrame(experiment_rows)
+        model_df = experiments_df[
+            experiments_df["method"].isin(["freq_only", "pair_only", "hybrid"])
+        ]
+        if model_df.empty:
             raise ValueError("無法找到有效參數組合。")
 
+        best_overall_row = model_df.sort_values(
+            [
+                "overall_triple_hit_rate",
+                "overall_precision_at_3",
+                "recent_triple_hit_rate",
+            ],
+            ascending=[False, False, False],
+        ).iloc[0]
+        best_recent_row = model_df.sort_values(
+            [
+                "recent_triple_hit_rate",
+                "recent_precision_at_3",
+                "overall_triple_hit_rate",
+            ],
+            ascending=[False, False, False],
+        ).iloc[0]
+
         best_detail = self._walk_forward_backtest(
-            window=int(best_pair_cfg["window"]),
-            alpha=float(best_pair_cfg["alpha"]),
-            lam=float(best_pair_cfg["lambda"]),
+            window=int(best_recent_row["window"]),
+            alpha=float(best_recent_row["alpha"]),
+            lam=float(best_recent_row["lambda"]),
             candidate_pool_size=cfg.candidate_pool_size,
+            max_steps=cfg.max_steps,
+            random_runs=cfg.random_runs,
         )
 
         output_root = Path(cfg.output_dir)
@@ -127,18 +141,40 @@ class BingoAnalyzer:
         report_path = output_root / "report.md"
 
         pd.DataFrame(best_detail).to_csv(detail_path, index=False)
-        pd.DataFrame(experiment_rows).sort_values(
-            ["method", "triple_hit_rate", "precision_at_3"],
+        experiments_df.sort_values(
+            ["method", "overall_triple_hit_rate", "overall_precision_at_3"],
             ascending=[True, False, False],
         ).to_csv(experiments_path, index=False)
 
         best_config = {
-            "method": "pair_aware",
-            "window": int(best_pair_cfg["window"]),
-            "alpha": float(best_pair_cfg["alpha"]),
-            "lambda": float(best_pair_cfg["lambda"]),
+            "best_overall": {
+                "method": str(best_overall_row["method"]),
+                "window": int(best_overall_row["window"]),
+                "alpha": float(best_overall_row["alpha"]),
+                "lambda": float(best_overall_row["lambda"]),
+                "overall_triple_hit_rate": float(
+                    best_overall_row["overall_triple_hit_rate"]
+                ),
+                "recent_triple_hit_rate": float(
+                    best_overall_row["recent_triple_hit_rate"]
+                ),
+            },
+            "best_recent": {
+                "method": str(best_recent_row["method"]),
+                "window": int(best_recent_row["window"]),
+                "alpha": float(best_recent_row["alpha"]),
+                "lambda": float(best_recent_row["lambda"]),
+                "overall_triple_hit_rate": float(
+                    best_recent_row["overall_triple_hit_rate"]
+                ),
+                "recent_triple_hit_rate": float(
+                    best_recent_row["recent_triple_hit_rate"]
+                ),
+            },
             "candidate_pool_size": cfg.candidate_pool_size,
             "recent_n": cfg.recent_n,
+            "random_runs": cfg.random_runs,
+            "max_steps": cfg.max_steps,
         }
         best_config_path.write_text(
             json.dumps(best_config, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -146,7 +182,7 @@ class BingoAnalyzer:
 
         self._write_report(
             report_path=report_path,
-            experiments=pd.DataFrame(experiment_rows),
+            experiments=experiments_df,
             best_detail_df=pd.DataFrame(best_detail),
             best_config=best_config,
             recent_n=cfg.recent_n,
@@ -168,31 +204,61 @@ class BingoAnalyzer:
         alpha: float,
         lam: float,
         candidate_pool_size: int,
+        max_steps: Optional[int],
+        random_runs: int,
     ) -> List[Dict[str, object]]:
         details: List[Dict[str, object]] = []
         if window <= 0 or window >= len(self.draw_numbers):
             return details
 
-        for idx in range(window, len(self.draw_numbers)):
+        all_indices = list(range(window, len(self.draw_numbers)))
+        if max_steps is not None:
+            all_indices = all_indices[-max_steps:]
+
+        for idx in all_indices:
             train = self.draw_numbers[idx - window : idx]
             y_t = sorted(self.draw_numbers[idx])
             issue = int(self.df.iloc[idx]["期別"])
 
             p_scores, pair_scores = self._build_scores(train, alpha=alpha)
-            pred_random = self._predict_random(train, issue)
+            random_preds = [
+                self._predict_random(train, issue, run_id=i) for i in range(random_runs)
+            ]
+            random_hits = np.array(
+                [len(set(pred) & set(y_t)) for pred in random_preds], dtype=float
+            )
             pred_hot = self._predict_hot_only(p_scores)
             pred_pair = self._predict_pair_only(pair_scores, p_scores)
             pred_pair_aware = self._predict_pair_aware(
                 p_scores, pair_scores, lam, candidate_pool_size
             )
 
+            random_pred_mean = tuple(
+                sorted(np.mean(np.asarray(random_preds), axis=0).astype(int).tolist())
+            )
+            random_hit_mean = float(np.mean(random_hits))
+            random_hit_std = float(np.std((random_hits == 3).astype(float)))
+            random_precision = random_hits / 3
+            random_precision_std = float(np.std(random_precision))
+
             for method, pred in [
-                ("random", pred_random),
-                ("hot_only", pred_hot),
+                ("random", random_pred_mean),
+                ("freq_only", pred_hot),
                 ("pair_only", pred_pair),
-                ("pair_aware", pred_pair_aware),
+                ("hybrid", pred_pair_aware),
             ]:
                 hit_count = len(set(pred) & set(y_t))
+                if method == "random":
+                    hit_count = random_hit_mean
+                    triple_hit_t = float(np.mean((random_hits == 3).astype(float)))
+                    precision_at_3 = float(np.mean(random_precision))
+                    triple_hit_t_std = random_hit_std
+                    precision_at_3_std = random_precision_std
+                else:
+                    triple_hit_t = float(hit_count == 3)
+                    precision_at_3 = float(hit_count / 3)
+                    triple_hit_t_std = 0.0
+                    precision_at_3_std = 0.0
                 details.append(
                     {
                         "issue": issue,
@@ -202,10 +268,12 @@ class BingoAnalyzer:
                         "lambda": lam,
                         "P_t": "-".join(map(str, sorted(pred))),
                         "Y_t": "-".join(map(str, y_t)),
-                        "hit_count_t": hit_count,
-                        "triple_hit_t": int(hit_count == 3),
-                        "precision_at_3": hit_count / 3,
-                        "recall_at_3": hit_count / 20,
+                        "hit_count_t": float(hit_count),
+                        "triple_hit_t": triple_hit_t,
+                        "precision_at_3": precision_at_3,
+                        "precision_at_3_std": precision_at_3_std,
+                        "triple_hit_t_std": triple_hit_t_std,
+                        "recall_at_3": float(hit_count / 20),
                     }
                 )
         return details
@@ -232,9 +300,9 @@ class BingoAnalyzer:
         return p_scores, pair_scores
 
     def _predict_random(
-        self, train_draws: Sequence[Sequence[int]], issue: int
+        self, train_draws: Sequence[Sequence[int]], issue: int, run_id: int = 0
     ) -> Tuple[int, int, int]:
-        seed = self.random_seed + issue + len(train_draws)
+        seed = self.random_seed + issue + len(train_draws) + run_id
         rng = np.random.default_rng(seed)
         numbers = sorted(rng.choice(np.arange(1, 81), size=3, replace=False).tolist())
         return tuple(numbers)
@@ -296,24 +364,42 @@ class BingoAnalyzer:
         if df.empty:
             return {
                 "periods": 0,
-                "triple_hit_rate": 0.0,
-                "precision_at_3": 0.0,
-                "recall_at_3": 0.0,
+                "overall_triple_hit_rate": 0.0,
+                "overall_precision_at_3": 0.0,
+                "overall_recall_at_3": 0.0,
                 "recent_periods": 0,
                 "recent_triple_hit_rate": 0.0,
                 "recent_precision_at_3": 0.0,
                 "recent_recall_at_3": 0.0,
+                "triple_hit_rate_std": 0.0,
+                "random_triple_hit_rate_mean": 0.0,
+                "random_triple_hit_rate_std": 0.0,
+                "random_precision_at_3_mean": 0.0,
+                "random_precision_at_3_std": 0.0,
             }
         recent_df = df.tail(recent_n)
+        triple_hit_rate = float(df["triple_hit_t"].mean())
+        precision_at_3 = float(df["precision_at_3"].mean())
+        triple_std = float(df["triple_hit_t_std"].mean()) if method == "random" else 0.0
+        precision_std = (
+            float(df["precision_at_3_std"].mean()) if method == "random" else 0.0
+        )
         return {
             "periods": int(len(df)),
-            "triple_hit_rate": float(df["triple_hit_t"].mean()),
-            "precision_at_3": float(df["precision_at_3"].mean()),
-            "recall_at_3": float(df["recall_at_3"].mean()),
+            "overall_triple_hit_rate": triple_hit_rate,
+            "overall_precision_at_3": precision_at_3,
+            "overall_recall_at_3": float(df["recall_at_3"].mean()),
             "recent_periods": int(len(recent_df)),
             "recent_triple_hit_rate": float(recent_df["triple_hit_t"].mean()),
             "recent_precision_at_3": float(recent_df["precision_at_3"].mean()),
             "recent_recall_at_3": float(recent_df["recall_at_3"].mean()),
+            "triple_hit_rate_std": triple_std,
+            "random_triple_hit_rate_mean": (
+                triple_hit_rate if method == "random" else 0.0
+            ),
+            "random_triple_hit_rate_std": triple_std,
+            "random_precision_at_3_mean": precision_at_3 if method == "random" else 0.0,
+            "random_precision_at_3_std": precision_std,
         }
 
     def _write_report(
@@ -324,38 +410,88 @@ class BingoAnalyzer:
         best_config: Dict[str, object],
         recent_n: int,
     ) -> None:
-        best_rows = experiments[experiments["method"] == "pair_aware"].sort_values(
-            ["triple_hit_rate", "precision_at_3"], ascending=False
-        )
-        top_row = best_rows.iloc[0].to_dict() if not best_rows.empty else {}
-        baselines = experiments[
-            experiments["method"].isin(["random", "hot_only", "pair_only"])
-        ]
-        baseline_best = baselines.sort_values(
-            ["triple_hit_rate", "precision_at_3"], ascending=False
+        random_rows = experiments[experiments["method"] == "random"]
+        random_summary = random_rows.sort_values(
+            "overall_triple_hit_rate", ascending=False
         ).head(1)
-        baseline_summary = (
-            baseline_best.iloc[0].to_dict() if not baseline_best.empty else {}
+        random_top = (
+            random_summary.iloc[0].to_dict() if not random_summary.empty else {}
         )
-        recent_pair_aware = best_detail_df[
-            best_detail_df["method"] == "pair_aware"
-        ].tail(recent_n)
+        recent_hybrid = best_detail_df[best_detail_df["method"] == "hybrid"].tail(
+            recent_n
+        )
         recent_rate = (
-            float(recent_pair_aware["triple_hit_t"].mean())
-            if not recent_pair_aware.empty
+            float(recent_hybrid["triple_hit_t"].mean())
+            if not recent_hybrid.empty
             else 0.0
         )
 
+        best_overall = best_config["best_overall"]
+        best_recent = best_config["best_recent"]
+
         content = (
             "# Top-3 同期三顆同出回測報告\n\n"
-            f"- 最佳方法：pair_aware\n"
-            f"- 最佳參數：W={best_config['window']}, alpha={best_config['alpha']}, lambda={best_config['lambda']}\n"
-            f"- 全期間 triple_hit_rate：{top_row.get('triple_hit_rate', 0):.6f}\n"
-            f"- 全期間 precision@3：{top_row.get('precision_at_3', 0):.6f}\n"
+            f"- best_overall：{best_overall['method']} (W={best_overall['window']}, alpha={best_overall['alpha']}, lambda={best_overall['lambda']})\n"
+            f"- best_overall triple_hit_rate：{best_overall['overall_triple_hit_rate']:.6f}\n"
+            f"- best_recent：{best_recent['method']} (W={best_recent['window']}, alpha={best_recent['alpha']}, lambda={best_recent['lambda']})\n"
+            f"- best_recent triple_hit_rate：{best_recent['recent_triple_hit_rate']:.6f}\n"
             f"- 最近 {recent_n} 期 triple_hit_rate：{recent_rate:.6f}\n"
-            f"- 最佳 baseline：{baseline_summary.get('method', 'n/a')}（triple_hit_rate={baseline_summary.get('triple_hit_rate', 0):.6f}）\n"
+            f"- random baseline triple_hit_rate：{random_top.get('random_triple_hit_rate_mean', 0):.6f}±{random_top.get('random_triple_hit_rate_std', 0):.6f}\n"
+            f"- random baseline precision@3：{random_top.get('random_precision_at_3_mean', 0):.6f}±{random_top.get('random_precision_at_3_std', 0):.6f}\n"
         )
         report_path.write_text(content, encoding="utf-8")
+
+    def predict_top3_with_best(
+        self, recent_draws: Sequence[Sequence[int]], use: str = "recent"
+    ) -> Dict[str, object]:
+        config_path = Path("artifacts") / "best_config.json"
+        if not config_path.exists():
+            raise FileNotFoundError("best_config.json 不存在，請先執行 /backtest/top3")
+
+        best_config = json.loads(config_path.read_text(encoding="utf-8"))
+        config_key = "best_overall" if use == "overall" else "best_recent"
+        selected_config = best_config.get(config_key)
+        if not selected_config:
+            raise ValueError("best_config.json 缺少必要欄位。")
+
+        window = int(selected_config["window"])
+        if len(recent_draws) < window:
+            raise ValueError(f"提供 recent draws 不足 window={window}。")
+        train = recent_draws[-window:]
+
+        p_scores, pair_scores = self._build_scores(
+            train, alpha=float(selected_config["alpha"])
+        )
+        method = str(selected_config["method"])
+        lam = float(selected_config["lambda"])
+        if method == "freq_only":
+            top3 = self._predict_hot_only(p_scores)
+        elif method == "pair_only":
+            top3 = self._predict_pair_only(pair_scores, p_scores)
+        else:
+            top3 = self._predict_pair_aware(
+                p_scores, pair_scores, lam, candidate_pool_size=18
+            )
+
+        pair_sum = (
+            float(pair_scores[top3[0] - 1, top3[1] - 1])
+            + float(pair_scores[top3[0] - 1, top3[2] - 1])
+            + float(pair_scores[top3[1] - 1, top3[2] - 1])
+        )
+        return {
+            "top3": list(top3),
+            "config_used": {
+                "use": use,
+                "method": method,
+                "window": window,
+                "alpha": float(selected_config["alpha"]),
+                "lambda": lam,
+            },
+            "diagnostics": {
+                "single_scores": {str(n): float(p_scores[n - 1]) for n in top3},
+                "pair_score_sum": pair_sum,
+            },
+        }
 
     def _load_and_prepare_data(self) -> pd.DataFrame:
         df = pd.read_csv(self.csv_path)
@@ -997,5 +1133,22 @@ def backtest_top3(
     analyzer = get_analyzer()
     try:
         return analyzer.run_top3_backtest(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/predict/top3")
+def predict_top3(
+    payload: Optional[PredictRequest] = Body(default=None),
+    use: str = Query(default="recent", pattern="^(recent|overall)$"),
+) -> Dict[str, object]:
+    if payload is None:
+        raise HTTPException(status_code=400, detail=PREDICT_REQUIRED_MESSAGE)
+    analyzer = get_analyzer()
+    recent_draws, _ = _validate_request_recent(payload)
+    try:
+        return analyzer.predict_top3_with_best(recent_draws=recent_draws, use=use)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

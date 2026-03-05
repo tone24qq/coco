@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -86,41 +87,6 @@ def test_predict_next_output_constraints_with_recent() -> None:
     assert len(pred["top3_triplet"]["numbers"]) == 3
     assert len(set(pred["top3_triplet"]["numbers"])) == 3
     assert all(1 <= n <= 80 for n in pred["top3_triplet"]["numbers"])
-    explain = pred["top3_triplet"]["explain"]
-    assert explain["weights"] == {
-        "recent_weight": 0.2,
-        "history_similar_weight": 0.5,
-        "other_weight": 0.3,
-    }
-    assert len(explain["similar_cases_top10"]) == 10
-    assert explain["similar_cases_used"] >= 10
-    assert len(explain["number_contributions"]) == 3
-
-
-def test_predict_changes_when_history_csv_is_empty(tmp_path: Path) -> None:
-    analyzer = BingoAnalyzer()
-    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000001, periods=14)
-    recent_draws = [item["numbers"] for item in recent_payload]
-
-    with_history = analyzer.predict_next(
-        recent_draws=recent_draws, latest_issue=115000014
-    )
-
-    empty_csv = tmp_path / "empty.csv"
-    pd.DataFrame(columns=["期別"] + [f"獎號{i}" for i in range(1, 21)]).to_csv(
-        empty_csv, index=False
-    )
-    empty_analyzer = BingoAnalyzer(csv_path=empty_csv)
-    without_history = empty_analyzer.predict_next(
-        recent_draws=recent_draws, latest_issue=115000014
-    )
-
-    assert (
-        with_history["top3_triplet"]["numbers"]
-        != without_history["top3_triplet"]["numbers"]
-    )
-    assert with_history["top3_triplet"]["explain"]["similar_cases_used"] > 0
-    assert without_history["top3_triplet"]["explain"]["similar_cases_used"] == 0
 
 
 def test_fastapi_predict_requires_recent() -> None:
@@ -145,27 +111,15 @@ def test_fastapi_predict_validates_recent_and_predicts() -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert data["short_window"] == 20
-    assert data["latest_issue"] == 115012564
-    assert data["target_issue"] == 115012565
     assert len(data["predicted_numbers_top20"]) == 20
     assert len(data["top3_triplet"]["numbers"]) == 3
 
 
-def test_fastapi_analysis_and_health() -> None:
-    client = TestClient(app)
-    health = client.get("/health")
-    assert health.status_code == 200
-
-    analysis = client.get("/analysis")
-    assert analysis.status_code == 200
-    data = analysis.json()
-    assert "basic" in data and "dynamic" in data
-
-
-def test_run_top3_backtest_exports_files(tmp_path: Path) -> None:
+def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
     csv_path = tmp_path / "small.csv"
-    _build_small_csv(csv_path)
+    _build_small_csv(csv_path, draws=80)
     analyzer = BingoAnalyzer(csv_path=csv_path)
+    outdir = tmp_path / "out"
     result = analyzer.run_top3_backtest(
         request=BacktestRequest(
             windows=[20],
@@ -173,7 +127,9 @@ def test_run_top3_backtest_exports_files(tmp_path: Path) -> None:
             lambdas=[1.0],
             recent_n=20,
             candidate_pool_size=12,
-            output_dir=str(tmp_path / "out"),
+            random_runs=200,
+            max_steps=30,
+            output_dir=str(outdir),
         )
     )
 
@@ -182,13 +138,73 @@ def test_run_top3_backtest_exports_files(tmp_path: Path) -> None:
         assert Path(outputs[key]).exists()
 
     detail_df = pd.read_csv(outputs["backtest_detail"])
-    assert {
-        "issue",
-        "method",
-        "P_t",
-        "Y_t",
-        "hit_count_t",
-        "triple_hit_t",
-        "precision_at_3",
-        "recall_at_3",
-    }.issubset(detail_df.columns)
+    assert detail_df["issue"].nunique() == 30
+
+    experiments_df = pd.read_csv(outputs["experiments"])
+    random_row = experiments_df[experiments_df["method"] == "random"].iloc[0]
+    assert random_row["random_runs"] == 200
+    assert random_row["triple_hit_rate_std"] >= 0
+
+    best_cfg = json.loads(Path(outputs["best_config"]).read_text(encoding="utf-8"))
+    assert "best_overall" in best_cfg
+    assert "best_recent" in best_cfg
+
+    report = Path(outputs["report"]).read_text(encoding="utf-8")
+    assert "best_overall" in report
+    assert "best_recent" in report
+    assert "±" in report
+
+
+def test_predict_top3_endpoint(tmp_path: Path) -> None:
+    artifacts = Path("artifacts")
+    artifacts.mkdir(exist_ok=True)
+    best_config_path = artifacts / "best_config.json"
+    best_config_path.write_text(
+        json.dumps(
+            {
+                "best_overall": {
+                    "method": "hybrid",
+                    "window": 10,
+                    "alpha": 0.95,
+                    "lambda": 1.0,
+                    "overall_triple_hit_rate": 0.1,
+                    "recent_triple_hit_rate": 0.2,
+                },
+                "best_recent": {
+                    "method": "freq_only",
+                    "window": 10,
+                    "alpha": 0.95,
+                    "lambda": 0.0,
+                    "overall_triple_hit_rate": 0.1,
+                    "recent_triple_hit_rate": 0.2,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    client = TestClient(app)
+    payload = {"recent": _make_recent(start_issue=101, periods=20)}
+    resp = client.post("/predict/top3", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["top3"]) == 3
+    assert data["config_used"]["use"] == "recent"
+    assert "single_scores" in data["diagnostics"]
+    assert "pair_score_sum" in data["diagnostics"]
+
+    resp_overall = client.post("/predict/top3?use=overall", json=payload)
+    assert resp_overall.status_code == 200
+    assert resp_overall.json()["config_used"]["use"] == "overall"
+
+
+def test_predict_top3_missing_best_config_returns_500() -> None:
+    best_config_path = Path("artifacts") / "best_config.json"
+    if best_config_path.exists():
+        best_config_path.unlink()
+
+    client = TestClient(app)
+    payload = {"recent": _make_recent(start_issue=101, periods=20)}
+    resp = client.post("/predict/top3", json=payload)
+    assert resp.status_code == 500

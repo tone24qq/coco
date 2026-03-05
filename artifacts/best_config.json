@@ -1,8 +1,0 @@
-{
-  "method": "pair_aware",
-  "window": 100,
-  "alpha": 0.98,
-  "lambda": 1.5,
-  "candidate_pool_size": 12,
-  "recent_n": 300
-}
