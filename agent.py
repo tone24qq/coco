@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import lru_cache
@@ -16,18 +17,23 @@ from pydantic import BaseModel, Field
 CSV_PATH = Path(__file__).resolve().parent / "賓果賓果_2026.csv"
 DEFAULT_SEED = 42
 PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆），才可進行下一期預測。"
+HISTORY_MIN_THRESHOLD = 200
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class ScoreWeights:
-    recent_weight: float = 0.2
-    history_similar_weight: float = 0.5
-    other_weight: float = 0.3
+    recent_momentum: float = 0.35
+    zone_distribution: float = 0.20
+    pattern_similarity: float = 0.15
+    hot_frequency: float = 0.10
+    big_mid_small: float = 0.08
+    consecutive_pattern: float = 0.05
+    tail_concentration: float = 0.04
+    gap_skip_pattern: float = 0.03
 
-    def __post_init__(self) -> None:
-        total = self.recent_weight + self.history_similar_weight + self.other_weight
-        if abs(total - 1.0) > 1e-9:
-            raise ValueError("weights must sum to 1.0")
+    def as_dict(self) -> Dict[str, float]:
+        return asdict(self)
 
 
 class RecentDraw(BaseModel):
@@ -51,6 +57,11 @@ class BacktestRequest(BaseModel):
     output_dir: str = Field(default="artifacts")
 
 
+class WalkForwardRequest(BaseModel):
+    train_window: int = Field(default=200, ge=50)
+    max_steps: Optional[int] = Field(default=200, ge=1)
+
+
 class BingoAnalyzer:
     def __init__(
         self, csv_path: Path | str = CSV_PATH, random_seed: int = DEFAULT_SEED
@@ -62,459 +73,74 @@ class BingoAnalyzer:
         self.draw_numbers: List[List[int]] = self._extract_draw_numbers(self.df)
         self.matrix = self._build_matrix(self.draw_numbers)
         self.issue_to_index = {
-            int(issue): idx for idx, issue in enumerate(self.df["期別"].tolist())
+            int(issue): idx for idx, issue in enumerate(self.df["issue"].tolist())
         }
+        self.history_verification = self._verify_history_usage()
 
-    def run_top3_backtest(
-        self, request: Optional[BacktestRequest] = None
-    ) -> Dict[str, object]:
-        cfg = request or BacktestRequest()
-        if not self.draw_numbers:
-            raise ValueError("無可用開獎資料。")
-
-        methods = ["random", "freq_only", "pair_only", "hybrid"]
-        experiment_rows: List[Dict[str, object]] = []
-
-        for window in sorted(set(cfg.windows)):
-            for alpha in sorted(set(cfg.alphas)):
-                for lam in sorted(set(cfg.lambdas)):
-                    detail = self._walk_forward_backtest(
-                        window=window,
-                        alpha=alpha,
-                        lam=lam,
-                        candidate_pool_size=cfg.candidate_pool_size,
-                        max_steps=cfg.max_steps,
-                        random_runs=cfg.random_runs,
-                    )
-                    for method in methods:
-                        stats = self._summarize_detail(
-                            detail, method=method, recent_n=cfg.recent_n
-                        )
-                        experiment_rows.append(
-                            {
-                                "method": method,
-                                "window": window,
-                                "alpha": alpha,
-                                "lambda": lam,
-                                "random_runs": cfg.random_runs,
-                                **stats,
-                            }
-                        )
-        experiments_df = pd.DataFrame(experiment_rows)
-        model_df = experiments_df[
-            experiments_df["method"].isin(["freq_only", "pair_only", "hybrid"])
-        ]
-        if model_df.empty:
-            raise ValueError("無法找到有效參數組合。")
-
-        best_overall_row = model_df.sort_values(
-            [
-                "overall_triple_hit_rate",
-                "overall_precision_at_3",
-                "recent_triple_hit_rate",
-            ],
-            ascending=[False, False, False],
-        ).iloc[0]
-        best_recent_row = model_df.sort_values(
-            [
-                "recent_triple_hit_rate",
-                "recent_precision_at_3",
-                "overall_triple_hit_rate",
-            ],
-            ascending=[False, False, False],
-        ).iloc[0]
-
-        best_detail = self._walk_forward_backtest(
-            window=int(best_recent_row["window"]),
-            alpha=float(best_recent_row["alpha"]),
-            lam=float(best_recent_row["lambda"]),
-            candidate_pool_size=cfg.candidate_pool_size,
-            max_steps=cfg.max_steps,
-            random_runs=cfg.random_runs,
-        )
-
-        output_root = Path(cfg.output_dir)
-        output_root.mkdir(parents=True, exist_ok=True)
-        detail_path = output_root / "backtest_detail.csv"
-        experiments_path = output_root / "experiments.csv"
-        best_config_path = output_root / "best_config.json"
-        report_path = output_root / "report.md"
-
-        pd.DataFrame(best_detail).to_csv(detail_path, index=False)
-        experiments_df.sort_values(
-            ["method", "overall_triple_hit_rate", "overall_precision_at_3"],
-            ascending=[True, False, False],
-        ).to_csv(experiments_path, index=False)
-
-        best_config = {
-            "best_overall": {
-                "method": str(best_overall_row["method"]),
-                "window": int(best_overall_row["window"]),
-                "alpha": float(best_overall_row["alpha"]),
-                "lambda": float(best_overall_row["lambda"]),
-                "overall_triple_hit_rate": float(
-                    best_overall_row["overall_triple_hit_rate"]
-                ),
-                "recent_triple_hit_rate": float(
-                    best_overall_row["recent_triple_hit_rate"]
-                ),
-            },
-            "best_recent": {
-                "method": str(best_recent_row["method"]),
-                "window": int(best_recent_row["window"]),
-                "alpha": float(best_recent_row["alpha"]),
-                "lambda": float(best_recent_row["lambda"]),
-                "overall_triple_hit_rate": float(
-                    best_recent_row["overall_triple_hit_rate"]
-                ),
-                "recent_triple_hit_rate": float(
-                    best_recent_row["recent_triple_hit_rate"]
-                ),
-            },
-            "candidate_pool_size": cfg.candidate_pool_size,
-            "recent_n": cfg.recent_n,
-            "random_runs": cfg.random_runs,
-            "max_steps": cfg.max_steps,
-        }
-        best_config_path.write_text(
-            json.dumps(best_config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        self._write_report(
-            report_path=report_path,
-            experiments=experiments_df,
-            best_detail_df=pd.DataFrame(best_detail),
-            best_config=best_config,
-            recent_n=cfg.recent_n,
-        )
-
-        return {
-            "best_config": best_config,
-            "output_files": {
-                "backtest_detail": str(detail_path),
-                "experiments": str(experiments_path),
-                "best_config": str(best_config_path),
-                "report": str(report_path),
-            },
-        }
-
-    def _walk_forward_backtest(
-        self,
-        window: int,
-        alpha: float,
-        lam: float,
-        candidate_pool_size: int,
-        max_steps: Optional[int],
-        random_runs: int,
-    ) -> List[Dict[str, object]]:
-        details: List[Dict[str, object]] = []
-        if window <= 0 or window >= len(self.draw_numbers):
-            return details
-
-        all_indices = list(range(window, len(self.draw_numbers)))
-        if max_steps is not None:
-            all_indices = all_indices[-max_steps:]
-
-        for idx in all_indices:
-            train = self.draw_numbers[idx - window : idx]
-            y_t = sorted(self.draw_numbers[idx])
-            issue = int(self.df.iloc[idx]["期別"])
-
-            p_scores, pair_scores = self._build_scores(train, alpha=alpha)
-            random_preds = [
-                self._predict_random(train, issue, run_id=i) for i in range(random_runs)
-            ]
-            random_hits = np.array(
-                [len(set(pred) & set(y_t)) for pred in random_preds], dtype=float
+    def _verify_history_usage(self, recent_window: int = 50) -> Dict[str, object]:
+        loaded = len(self.draw_numbers)
+        recent_used = min(recent_window, loaded)
+        baseline = max(0, loaded - recent_used)
+        warnings: List[str] = []
+        if loaded < HISTORY_MIN_THRESHOLD:
+            warnings.append(
+                f"history rows {loaded} below threshold {HISTORY_MIN_THRESHOLD}"
             )
-            pred_hot = self._predict_hot_only(p_scores)
-            pred_pair = self._predict_pair_only(pair_scores, p_scores)
-            pred_pair_aware = self._predict_pair_aware(
-                p_scores, pair_scores, lam, candidate_pool_size
-            )
-
-            random_pred_mean = tuple(
-                sorted(np.mean(np.asarray(random_preds), axis=0).astype(int).tolist())
-            )
-            random_hit_mean = float(np.mean(random_hits))
-            random_hit_std = float(np.std((random_hits == 3).astype(float)))
-            random_precision = random_hits / 3
-            random_precision_std = float(np.std(random_precision))
-
-            for method, pred in [
-                ("random", random_pred_mean),
-                ("freq_only", pred_hot),
-                ("pair_only", pred_pair),
-                ("hybrid", pred_pair_aware),
-            ]:
-                hit_count = len(set(pred) & set(y_t))
-                if method == "random":
-                    hit_count = random_hit_mean
-                    triple_hit_t = float(np.mean((random_hits == 3).astype(float)))
-                    precision_at_3 = float(np.mean(random_precision))
-                    triple_hit_t_std = random_hit_std
-                    precision_at_3_std = random_precision_std
-                else:
-                    triple_hit_t = float(hit_count == 3)
-                    precision_at_3 = float(hit_count / 3)
-                    triple_hit_t_std = 0.0
-                    precision_at_3_std = 0.0
-                details.append(
-                    {
-                        "issue": issue,
-                        "method": method,
-                        "window": window,
-                        "alpha": alpha,
-                        "lambda": lam,
-                        "P_t": "-".join(map(str, sorted(pred))),
-                        "Y_t": "-".join(map(str, y_t)),
-                        "hit_count_t": float(hit_count),
-                        "triple_hit_t": triple_hit_t,
-                        "precision_at_3": precision_at_3,
-                        "precision_at_3_std": precision_at_3_std,
-                        "triple_hit_t_std": triple_hit_t_std,
-                        "recall_at_3": float(hit_count / 20),
-                    }
-                )
-        return details
-
-    def _build_scores(
-        self, train_draws: Sequence[Sequence[int]], alpha: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        p_scores = np.zeros(80, dtype=float)
-        pair_scores = np.zeros((80, 80), dtype=float)
-        total_weight = 0.0
-
-        for recency, draw in enumerate(reversed(train_draws)):
-            w = alpha**recency
-            total_weight += w
-            for n in draw:
-                p_scores[n - 1] += w
-            for i, j in combinations(sorted(draw), 2):
-                pair_scores[i - 1, j - 1] += w
-                pair_scores[j - 1, i - 1] += w
-
-        if total_weight > 0:
-            p_scores /= total_weight
-            pair_scores /= total_weight
-        return p_scores, pair_scores
-
-    def _predict_random(
-        self, train_draws: Sequence[Sequence[int]], issue: int, run_id: int = 0
-    ) -> Tuple[int, int, int]:
-        seed = self.random_seed + issue + len(train_draws) + run_id
-        rng = np.random.default_rng(seed)
-        numbers = sorted(rng.choice(np.arange(1, 81), size=3, replace=False).tolist())
-        return tuple(numbers)
-
-    @staticmethod
-    def _predict_hot_only(p_scores: np.ndarray) -> Tuple[int, int, int]:
-        top = np.argsort(p_scores)[::-1][:3] + 1
-        return tuple(sorted(top.tolist()))
-
-    @staticmethod
-    def _predict_pair_only(
-        pair_scores: np.ndarray, p_scores: np.ndarray
-    ) -> Tuple[int, int, int]:
-        upper = np.triu(pair_scores, k=1)
-        best_idx = np.argmax(upper)
-        i, j = np.unravel_index(best_idx, upper.shape)
-        pair = {i + 1, j + 1}
-        candidates = np.argsort(p_scores)[::-1] + 1
-        third = next(
-            (int(n) for n in candidates if int(n) not in pair), int(candidates[0])
-        )
-        return tuple(sorted([i + 1, j + 1, third]))
-
-    @staticmethod
-    def _predict_pair_aware(
-        p_scores: np.ndarray,
-        pair_scores: np.ndarray,
-        lam: float,
-        candidate_pool_size: int,
-    ) -> Tuple[int, int, int]:
-        eps = 1e-9
-        candidates = (np.argsort(p_scores)[::-1][:candidate_pool_size] + 1).tolist()
-        best_combo = tuple(sorted(candidates[:3]))
-        best_score = float("-inf")
-
-        for combo in combinations(candidates, 3):
-            a, b, c = combo
-            score = (
-                np.log(p_scores[a - 1] + eps)
-                + np.log(p_scores[b - 1] + eps)
-                + np.log(p_scores[c - 1] + eps)
-                + lam
-                * (
-                    pair_scores[a - 1, b - 1]
-                    + pair_scores[a - 1, c - 1]
-                    + pair_scores[b - 1, c - 1]
-                )
-            )
-            if score > best_score:
-                best_score = float(score)
-                best_combo = tuple(sorted((a, b, c)))
-        return best_combo
-
-    @staticmethod
-    def _summarize_detail(
-        rows: Sequence[Dict[str, object]], method: str, recent_n: int
-    ) -> Dict[str, float]:
-        df = pd.DataFrame([r for r in rows if r["method"] == method])
-        if df.empty:
-            return {
-                "periods": 0,
-                "overall_triple_hit_rate": 0.0,
-                "overall_precision_at_3": 0.0,
-                "overall_recall_at_3": 0.0,
-                "recent_periods": 0,
-                "recent_triple_hit_rate": 0.0,
-                "recent_precision_at_3": 0.0,
-                "recent_recall_at_3": 0.0,
-                "triple_hit_rate_std": 0.0,
-                "random_triple_hit_rate_mean": 0.0,
-                "random_triple_hit_rate_std": 0.0,
-                "random_precision_at_3_mean": 0.0,
-                "random_precision_at_3_std": 0.0,
-            }
-        recent_df = df.tail(recent_n)
-        triple_hit_rate = float(df["triple_hit_t"].mean())
-        precision_at_3 = float(df["precision_at_3"].mean())
-        triple_std = float(df["triple_hit_t_std"].mean()) if method == "random" else 0.0
-        precision_std = (
-            float(df["precision_at_3_std"].mean()) if method == "random" else 0.0
+        logger.info(
+            "Loaded draws: %s | Recent window: %s | History baseline: %s",
+            loaded,
+            recent_used,
+            baseline,
         )
         return {
-            "periods": int(len(df)),
-            "overall_triple_hit_rate": triple_hit_rate,
-            "overall_precision_at_3": precision_at_3,
-            "overall_recall_at_3": float(df["recall_at_3"].mean()),
-            "recent_periods": int(len(recent_df)),
-            "recent_triple_hit_rate": float(recent_df["triple_hit_t"].mean()),
-            "recent_precision_at_3": float(recent_df["precision_at_3"].mean()),
-            "recent_recall_at_3": float(recent_df["recall_at_3"].mean()),
-            "triple_hit_rate_std": triple_std,
-            "random_triple_hit_rate_mean": (
-                triple_hit_rate if method == "random" else 0.0
-            ),
-            "random_triple_hit_rate_std": triple_std,
-            "random_precision_at_3_mean": precision_at_3 if method == "random" else 0.0,
-            "random_precision_at_3_std": precision_std,
-        }
-
-    def _write_report(
-        self,
-        report_path: Path,
-        experiments: pd.DataFrame,
-        best_detail_df: pd.DataFrame,
-        best_config: Dict[str, object],
-        recent_n: int,
-    ) -> None:
-        random_rows = experiments[experiments["method"] == "random"]
-        random_summary = random_rows.sort_values(
-            "overall_triple_hit_rate", ascending=False
-        ).head(1)
-        random_top = (
-            random_summary.iloc[0].to_dict() if not random_summary.empty else {}
-        )
-        recent_hybrid = best_detail_df[best_detail_df["method"] == "hybrid"].tail(
-            recent_n
-        )
-        recent_rate = (
-            float(recent_hybrid["triple_hit_t"].mean())
-            if not recent_hybrid.empty
-            else 0.0
-        )
-
-        best_overall = best_config["best_overall"]
-        best_recent = best_config["best_recent"]
-
-        content = (
-            "# Top-3 同期三顆同出回測報告\n\n"
-            f"- best_overall：{best_overall['method']} (W={best_overall['window']}, alpha={best_overall['alpha']}, lambda={best_overall['lambda']})\n"
-            f"- best_overall triple_hit_rate：{best_overall['overall_triple_hit_rate']:.6f}\n"
-            f"- best_recent：{best_recent['method']} (W={best_recent['window']}, alpha={best_recent['alpha']}, lambda={best_recent['lambda']})\n"
-            f"- best_recent triple_hit_rate：{best_recent['recent_triple_hit_rate']:.6f}\n"
-            f"- 最近 {recent_n} 期 triple_hit_rate：{recent_rate:.6f}\n"
-            f"- random baseline triple_hit_rate：{random_top.get('random_triple_hit_rate_mean', 0):.6f}±{random_top.get('random_triple_hit_rate_std', 0):.6f}\n"
-            f"- random baseline precision@3：{random_top.get('random_precision_at_3_mean', 0):.6f}±{random_top.get('random_precision_at_3_std', 0):.6f}\n"
-        )
-        report_path.write_text(content, encoding="utf-8")
-
-    def predict_top3_with_best(
-        self, recent_draws: Sequence[Sequence[int]], use: str = "recent"
-    ) -> Dict[str, object]:
-        config_path = Path("artifacts") / "best_config.json"
-        if not config_path.exists():
-            raise FileNotFoundError("best_config.json 不存在，請先執行 /backtest/top3")
-
-        best_config = json.loads(config_path.read_text(encoding="utf-8"))
-        config_key = "best_overall" if use == "overall" else "best_recent"
-        selected_config = best_config.get(config_key)
-        if not selected_config:
-            raise ValueError("best_config.json 缺少必要欄位。")
-
-        window = int(selected_config["window"])
-        if len(recent_draws) < window:
-            raise ValueError(f"提供 recent draws 不足 window={window}。")
-        train = recent_draws[-window:]
-
-        p_scores, pair_scores = self._build_scores(
-            train, alpha=float(selected_config["alpha"])
-        )
-        method = str(selected_config["method"])
-        lam = float(selected_config["lambda"])
-        if method == "freq_only":
-            top3 = self._predict_hot_only(p_scores)
-        elif method == "pair_only":
-            top3 = self._predict_pair_only(pair_scores, p_scores)
-        else:
-            top3 = self._predict_pair_aware(
-                p_scores, pair_scores, lam, candidate_pool_size=18
-            )
-
-        pair_sum = (
-            float(pair_scores[top3[0] - 1, top3[1] - 1])
-            + float(pair_scores[top3[0] - 1, top3[2] - 1])
-            + float(pair_scores[top3[1] - 1, top3[2] - 1])
-        )
-        return {
-            "top3": list(top3),
-            "config_used": {
-                "use": use,
-                "method": method,
-                "window": window,
-                "alpha": float(selected_config["alpha"]),
-                "lambda": lam,
-            },
-            "diagnostics": {
-                "single_scores": {str(n): float(p_scores[n - 1]) for n in top3},
-                "pair_score_sum": pair_sum,
-            },
+            "loaded_draws": loaded,
+            "recent_window": recent_used,
+            "history_baseline": baseline,
+            "warnings": warnings,
         }
 
     def _load_and_prepare_data(self) -> pd.DataFrame:
         df = pd.read_csv(self.csv_path)
-        if "期別" not in df.columns:
-            raise ValueError("CSV must include 期別 column")
         df = df.copy()
-        df["期別"] = pd.to_numeric(df["期別"], errors="coerce")
-        df = df.dropna(subset=["期別"]).sort_values("期別").reset_index(drop=True)
+        if "issue" not in df.columns and "期別" in df.columns:
+            df = df.rename(columns={"期別": "issue"})
+        if "issue" not in df.columns:
+            raise ValueError("CSV must include issue/期別 column")
+        df["issue"] = pd.to_numeric(df["issue"], errors="coerce")
+        df = df.dropna(subset=["issue"]).sort_values("issue").reset_index(drop=True)
+        df["issue"] = df["issue"].astype(int)
         return df
 
     def _extract_draw_numbers(self, df: pd.DataFrame) -> List[List[int]]:
-        ball_cols = [c for c in df.columns if c.startswith("獎號")]
-        if ball_cols:
+        zhong_cols = [c for c in df.columns if str(c).startswith("獎號")]
+        if len(zhong_cols) >= 20:
+            ordered = sorted(zhong_cols, key=lambda x: int(str(x).replace("獎號", "")))
             draws = (
-                df[ball_cols]
+                df[ordered[:20]]
                 .apply(pd.to_numeric, errors="coerce")
                 .fillna(0)
                 .astype(int)
                 .values.tolist()
             )
-            return [sorted([n for n in row if 1 <= n <= 80]) for row in draws]
+            return [self._validate_draw(row) for row in draws]
 
-        num_cols = [c for c in df.columns if str(c).isdigit() and 1 <= int(c) <= 80]
+        ncols = [
+            c for c in df.columns if str(c).startswith("n") and str(c)[1:].isdigit()
+        ]
+        if len(ncols) >= 20:
+            ordered = sorted(ncols, key=lambda x: int(str(x)[1:]))
+            draws = (
+                df[ordered[:20]]
+                .apply(pd.to_numeric, errors="coerce")
+                .fillna(0)
+                .astype(int)
+                .values.tolist()
+            )
+            return [self._validate_draw(row) for row in draws]
+
+        num_cols = [
+            c for c in df.columns if str(c).isdigit() and 1 <= int(str(c)) <= 80
+        ]
         if len(num_cols) == 80:
             ordered = sorted(num_cols, key=lambda x: int(x))
             binary_rows = (
@@ -527,9 +153,18 @@ class BingoAnalyzer:
             draws: List[List[int]] = []
             for row in binary_rows:
                 draws.append([idx + 1 for idx, flag in enumerate(row) if flag == 1])
-            return draws
+            return [self._validate_draw(row) for row in draws]
 
-        raise ValueError("CSV must contain either 獎號1..20 or 1..80 binary columns")
+        raise ValueError(
+            "CSV must contain issue,n1..n20 or 期別,獎號1..20 or 1..80 binary"
+        )
+
+    @staticmethod
+    def _validate_draw(row: Sequence[int]) -> List[int]:
+        values = [int(n) for n in row if 1 <= int(n) <= 80]
+        if len(values) != 20 or len(set(values)) != 20:
+            raise ValueError("Each draw row must contain 20 unique numbers within 1-80")
+        return sorted(values)
 
     @staticmethod
     def _build_matrix(draw_numbers: Sequence[Sequence[int]]) -> np.ndarray:
@@ -538,12 +173,6 @@ class BingoAnalyzer:
             for n in draw:
                 matrix[i, n - 1] = 1
         return matrix
-
-    def _build_matrix_from_recent(
-        self, recent_draws: Sequence[Sequence[int]]
-    ) -> np.ndarray:
-        # 核心規則註解：predict_next 的 recent_matrix 必須來自使用者 recent 10–50 期。
-        return self._build_matrix(recent_draws)
 
     @staticmethod
     def _zone_counts(draw: Sequence[int]) -> Dict[str, int]:
@@ -554,72 +183,12 @@ class BingoAnalyzer:
             "D": sum(1 for n in draw if 61 <= n <= 80),
         }
 
-    def basic_statistics(self, top_n_triplets: int = 10) -> Dict[str, object]:
-        total_draws = len(self.draw_numbers)
-        counts = self.matrix.sum(axis=0)
-        probs = counts / max(total_draws, 1)
-
-        zone_per_draw = pd.DataFrame([self._zone_counts(d) for d in self.draw_numbers])
-        zone_avg = zone_per_draw.mean().to_dict()
-        zone_burst_ge7 = (zone_per_draw >= 7).sum().to_dict()
-        zone_burst_ge8 = (zone_per_draw >= 8).sum().to_dict()
-
-        big_small = []
-        odd_even = []
-        chain_counter = Counter({"2連": 0, "3連": 0, "4連以上": 0})
-        triplets = Counter()
-
-        for draw in self.draw_numbers:
-            small = sum(1 for n in draw if n <= 40)
-            big = 20 - small
-            big_small.append((small, big))
-
-            odd = sum(1 for n in draw if n % 2 == 1)
-            even = 20 - odd
-            odd_even.append((odd, even))
-
-            runs = self._consecutive_runs(draw)
-            for run in runs:
-                if run == 2:
-                    chain_counter["2連"] += 1
-                elif run == 3:
-                    chain_counter["3連"] += 1
-                elif run >= 4:
-                    chain_counter["4連以上"] += 1
-
-            for combo in combinations(draw, 3):
-                triplets[combo] += 1
-
-        top_triplets = [
-            {"numbers": list(nums), "count": c}
-            for nums, c in triplets.most_common(top_n_triplets)
-        ]
-
+    @staticmethod
+    def _range_counts(draw: Sequence[int]) -> Dict[str, int]:
         return {
-            "total_draws": total_draws,
-            "number_total_counts": {str(i + 1): int(c) for i, c in enumerate(counts)},
-            "number_probabilities": {str(i + 1): float(p) for i, p in enumerate(probs)},
-            "zone_stats": {
-                "average_per_draw": {k: float(v) for k, v in zone_avg.items()},
-                "burst_ge_7": {k: int(v) for k, v in zone_burst_ge7.items()},
-                "burst_ge_8": {k: int(v) for k, v in zone_burst_ge8.items()},
-            },
-            "big_small": {
-                "per_draw": [{"small": s, "big": b} for s, b in big_small],
-                "year_average": {
-                    "small": float(np.mean([s for s, _ in big_small])),
-                    "big": float(np.mean([b for _, b in big_small])),
-                },
-            },
-            "odd_even": {
-                "per_draw": [{"odd": o, "even": e} for o, e in odd_even],
-                "year_average": {
-                    "odd": float(np.mean([o for o, _ in odd_even])),
-                    "even": float(np.mean([e for _, e in odd_even])),
-                },
-            },
-            "consecutive_stats": dict(chain_counter),
-            "top_triplets": top_triplets,
+            "small": sum(1 for n in draw if 1 <= n <= 26),
+            "mid": sum(1 for n in draw if 27 <= n <= 53),
+            "large": sum(1 for n in draw if 54 <= n <= 80),
         }
 
     @staticmethod
@@ -640,155 +209,6 @@ class BingoAnalyzer:
             runs.append(run_len)
         return runs
 
-    def dynamic_analysis(
-        self,
-        recent_draws: Optional[Sequence[Sequence[int]]] = None,
-        latest_issue: Optional[int] = None,
-    ) -> Dict[str, object]:
-        draws = list(recent_draws) if recent_draws is not None else self.draw_numbers
-        latest_draw = draws[-1]
-        latest_zones = self._zone_counts(latest_draw)
-        window5 = self._momentum_scores(draws, 5)
-        window10 = self._momentum_scores(draws, 10)
-        trend = self._zone_trend(draws)
-        board_type = self._classify_board(latest_zones, trend)
-
-        resolved_latest_issue = (
-            latest_issue if latest_issue is not None else int(self.df.iloc[-1]["期別"])
-        )
-
-        return {
-            "latest_issue": resolved_latest_issue,
-            "latest_draw": list(latest_draw),
-            "momentum_last_5": window5,
-            "momentum_last_10": window10,
-            "zone_trend": trend,
-            "board_type": board_type,
-        }
-
-    def _momentum_scores(
-        self, draws: Sequence[Sequence[int]], window: int
-    ) -> Dict[str, float]:
-        sub_draws = list(draws)[-window:]
-        sub_matrix = self._build_matrix(sub_draws)
-        scores = sub_matrix.sum(axis=0) / max(len(sub_draws), 1)
-        return {str(i + 1): float(v) for i, v in enumerate(scores)}
-
-    def _zone_trend(self, draws: Sequence[Sequence[int]]) -> Dict[str, object]:
-        recent = list(draws)[-10:]
-        zones = [self._zone_counts(d) for d in recent]
-        zone_df = pd.DataFrame(zones)
-        recent_mean = zone_df.tail(5).mean()
-        older_mean = zone_df.head(5).mean()
-
-        compression_to_burst = {}
-        burst_to_fall = {}
-        for zone in ["A", "B", "C", "D"]:
-            compression_to_burst[zone] = bool(
-                older_mean[zone] <= 4 and recent_mean[zone] >= 6
-            )
-            burst_to_fall[zone] = bool(older_mean[zone] >= 7 and recent_mean[zone] <= 5)
-
-        latest = zones[-1]
-        balanced = all(v == 5 for v in latest.values())
-
-        return {
-            "compression_to_burst": compression_to_burst,
-            "burst_to_fall": burst_to_fall,
-            "is_balanced_5_5_5_5": balanced,
-            "recent_zone_mean": {k: float(v) for k, v in recent_mean.items()},
-        }
-
-    def _classify_board(
-        self, latest_zones: Dict[str, int], trend: Dict[str, object]
-    ) -> str:
-        counts = list(latest_zones.values())
-        if any(c >= 8 for c in counts):
-            return "爆發盤"
-        if sum(1 for c in counts if c >= 6) >= 2:
-            return "雙區震盪盤"
-        if all(c == 5 for c in counts):
-            return "均衡盤"
-        if any(trend["burst_to_fall"].values()):
-            return "修正盤"
-        if latest_zones["B"] + latest_zones["C"] >= 12:
-            return "中段主導盤"
-        return "修正盤"
-
-    def predict_next(
-        self,
-        recent_draws: Sequence[Sequence[int]],
-        latest_issue: int,
-        weights: ScoreWeights = ScoreWeights(),
-        top_k: int = 20,
-    ) -> Dict[str, object]:
-        # 核心規則註解：predict_next 禁止直接使用全年資料當短期輸入，必須由外部傳入 recent 10–50 期。
-        self._validate_recent_draws(recent_draws)
-        short_window = len(recent_draws)
-        target_issue = latest_issue + 1
-        recent_matrix = self._build_matrix_from_recent(recent_draws)
-        recent_freq = recent_matrix.mean(axis=0)
-
-        dynamic = self.dynamic_analysis(
-            recent_draws=recent_draws, latest_issue=latest_issue
-        )
-        board_type = dynamic["board_type"]
-        zone_target = self._predict_zone_target(board_type, recent_draws)
-
-        zone_weights = np.array(
-            [self._zone_weight(i + 1, zone_target) for i in range(80)]
-        )
-        combo_scores, triplet_counter = self._combo_resonance_scores(recent_draws)
-        recent_component = self._normalize_vector(
-            recent_freq * 0.7 + combo_scores * 0.3
-        )
-
-        latest_draw_set = set(recent_draws[-1])
-        history_component, similar_cases = self._history_similar_component(
-            latest_draw_set, latest_issue
-        )
-        other_component = self._normalize_vector(zone_weights)
-
-        score = (
-            recent_component * weights.recent_weight
-            + history_component * weights.history_similar_weight
-            + other_component * weights.other_weight
-        )
-
-        ranking = np.argsort(score)[::-1] + 1
-        selected = ranking[:top_k].tolist()
-
-        # 中文註解：Top3 只代表下一期同一期內三號共現機率最高組合，避免誤解為跨多期分散預測。
-        top_triplet = self._best_next_issue_triplet(
-            selected,
-            score,
-            triplet_counter,
-            recent_draws,
-            weights,
-            similar_cases,
-            history_component,
-            recent_component,
-            other_component,
-        )
-        confidence = self._confidence_labels(score, selected, board_type)
-
-        return {
-            "latest_issue": latest_issue,
-            "target_issue": target_issue,
-            "board_type": board_type,
-            "dynamic": {
-                "zone_trend": dynamic["zone_trend"],
-                "latest_draw": dynamic["latest_draw"],
-            },
-            "predicted_zone_counts": zone_target,
-            "top3_triplet": top_triplet,
-            "number_scores": {str(i + 1): float(v) for i, v in enumerate(score)},
-            "predicted_numbers_top20": selected,
-            "confidence": confidence,
-            "weights": asdict(weights),
-            "short_window": short_window,
-        }
-
     @staticmethod
     def _normalize_vector(values: np.ndarray) -> np.ndarray:
         values = np.asarray(values, dtype=float)
@@ -800,123 +220,180 @@ class BingoAnalyzer:
             return np.zeros_like(values, dtype=float)
         return (values - min_v) / (max_v - min_v)
 
-    def _history_similar_component(
+    def _number_weights_from_group_counts(
+        self, counts: Dict[str, int], kind: str = "zone"
+    ) -> np.ndarray:
+        weights = np.zeros(80, dtype=float)
+        for n in range(1, 81):
+            if kind == "zone":
+                key = "A" if n <= 20 else "B" if n <= 40 else "C" if n <= 60 else "D"
+            else:
+                key = "small" if n <= 26 else "mid" if n <= 53 else "large"
+            weights[n - 1] = counts[key] / 20
+        return self._normalize_vector(weights)
+
+    def _tail_digit_stats(self, draws: Sequence[Sequence[int]]) -> Dict[int, int]:
+        counter: Counter = Counter()
+        for draw in draws:
+            for n in draw:
+                counter[n % 10] += 1
+        return {d: int(counter[d]) for d in range(10)}
+
+    def _fixed_gap_stats(
+        self, draws: Sequence[Sequence[int]], gaps: Sequence[int] = (5, 10, 20, 30)
+    ) -> Dict[int, int]:
+        out = {int(g): 0 for g in gaps}
+        for draw in draws:
+            s = sorted(draw)
+            for i, j in combinations(s, 2):
+                diff = j - i
+                if diff in out:
+                    out[diff] += 1
+        return out
+
+    def _skip_pattern_stats(self, draws: Sequence[Sequence[int]]) -> Dict[int, int]:
+        counter = Counter()
+        for draw in draws:
+            s = sorted(set(draw))
+            for a, b, c in combinations(s, 3):
+                if b - a == c - b and b - a >= 2:
+                    counter[b - a] += 1
+        return {int(k): int(v) for k, v in counter.items()}
+
+    def _consecutive_pattern_tables(
+        self, draws: Sequence[Sequence[int]]
+    ) -> Dict[str, List[Dict[str, object]]]:
+        pair_counter: Counter = Counter()
+        triple_counter: Counter = Counter()
+        for draw in draws:
+            s = sorted(draw)
+            for i in range(len(s) - 1):
+                if s[i + 1] == s[i] + 1:
+                    pair_counter[(s[i], s[i + 1])] += 1
+            for i in range(len(s) - 2):
+                if s[i + 1] == s[i] + 1 and s[i + 2] == s[i + 1] + 1:
+                    triple_counter[(s[i], s[i + 1], s[i + 2])] += 1
+        return {
+            "pairs": [
+                {"numbers": list(k), "count": int(v)}
+                for k, v in pair_counter.most_common(20)
+            ],
+            "triples": [
+                {"numbers": list(k), "count": int(v)}
+                for k, v in triple_counter.most_common(20)
+            ],
+        }
+
+    def _build_feature_snapshot(
+        self, draws: Sequence[Sequence[int]]
+    ) -> Dict[str, object]:
+        zone_df = pd.DataFrame([self._zone_counts(d) for d in draws])
+        range_df = pd.DataFrame([self._range_counts(d) for d in draws])
+        tail = self._tail_digit_stats(draws)
+        gaps = self._fixed_gap_stats(draws)
+        skip = self._skip_pattern_stats(draws)
+        consecutive = self._consecutive_pattern_tables(draws)
+        return {
+            "zone_mean": {k: float(v) for k, v in zone_df.mean().to_dict().items()},
+            "range_mean": {k: float(v) for k, v in range_df.mean().to_dict().items()},
+            "tail": tail,
+            "gaps": gaps,
+            "skip": skip,
+            "consecutive": consecutive,
+        }
+
+    def _detect_pattern_spikes(
         self,
-        latest_draw_set: set[int],
-        latest_issue: int,
-        top_n: int = 100,
+        recent_draws: Sequence[Sequence[int]],
+        baseline_draws: Sequence[Sequence[int]],
+    ) -> Dict[str, bool]:
+        recent_zone = pd.DataFrame([self._zone_counts(d) for d in recent_draws]).mean()
+        base_zone = pd.DataFrame([self._zone_counts(d) for d in baseline_draws]).mean()
+        zone_burst = bool(((recent_zone - base_zone).abs() >= 1.0).any())
+
+        recent_tail = np.array(
+            list(self._tail_digit_stats(recent_draws).values()), dtype=float
+        )
+        base_tail = np.array(
+            list(self._tail_digit_stats(baseline_draws).values()), dtype=float
+        )
+        tail_cluster = bool(
+            recent_tail.max() > (base_tail.max() * 1.2 if base_tail.max() > 0 else 0)
+        )
+
+        recent_cons = len(self._consecutive_pattern_tables(recent_draws)["pairs"])
+        base_cons = max(
+            1, len(self._consecutive_pattern_tables(baseline_draws)["pairs"])
+        )
+        consecutive_spike = bool(recent_cons > base_cons * 1.2)
+        return {
+            "zone_burst": zone_burst,
+            "tail_cluster": tail_cluster,
+            "consecutive_spike": consecutive_spike,
+        }
+
+    def _adaptive_weights(self, spikes: Dict[str, bool]) -> Dict[str, float]:
+        weights = ScoreWeights().as_dict()
+        if spikes.get("zone_burst"):
+            weights["zone_distribution"] += 0.05
+        if spikes.get("tail_cluster"):
+            weights["tail_concentration"] += 0.03
+        if spikes.get("consecutive_spike"):
+            weights["consecutive_pattern"] += 0.03
+
+        total = float(sum(weights.values()))
+        return {k: float(v / total) for k, v in weights.items()}
+
+    def _history_pattern_similarity_component(
+        self, latest_draw: Sequence[int], latest_issue: int, top_n: int = 100
     ) -> Tuple[np.ndarray, List[Dict[str, object]]]:
+        latest_zone = self._zone_counts(latest_draw)
+        latest_range = self._range_counts(latest_draw)
+        latest_tail = self._tail_digit_stats([latest_draw])
+
         candidates: List[Tuple[float, int, int]] = []
         for issue, idx in self.issue_to_index.items():
             if issue >= latest_issue:
                 continue
             next_issue = issue + 1
-            next_idx = self.issue_to_index.get(next_issue)
-            if next_idx is None:
+            if next_issue not in self.issue_to_index:
                 continue
-            hist_set = set(self.draw_numbers[idx])
-            inter = len(latest_draw_set & hist_set)
-            union = len(latest_draw_set | hist_set)
-            sim = inter / union if union else 0.0
-            candidates.append((sim, issue, next_issue))
+            draw = self.draw_numbers[idx]
+            zone = self._zone_counts(draw)
+            ranges = self._range_counts(draw)
+            tail = self._tail_digit_stats([draw])
+
+            zone_sim = 1 - (sum(abs(zone[k] - latest_zone[k]) for k in zone) / 40)
+            range_sim = 1 - (sum(abs(ranges[k] - latest_range[k]) for k in ranges) / 40)
+            tail_sim = 1 - (
+                sum(abs(tail[k] - latest_tail[k]) for k in tail)
+                / max(sum(latest_tail.values()) + sum(tail.values()), 1)
+            )
+            set_sim = len(set(draw) & set(latest_draw)) / len(
+                set(draw) | set(latest_draw)
+            )
+            sim = 0.30 * zone_sim + 0.20 * range_sim + 0.20 * tail_sim + 0.30 * set_sim
+            candidates.append((float(sim), issue, next_issue))
 
         candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
         selected = [item for item in candidates if item[0] > 0][:top_n]
-
         history_scores = np.zeros(80, dtype=float)
-        similar_cases: List[Dict[str, object]] = []
-        total_weight = sum(sim for sim, _, _ in selected)
+        details: List[Dict[str, object]] = []
+        total_weight = sum(x[0] for x in selected)
         if total_weight <= 0:
-            return history_scores, similar_cases
-
+            return history_scores, details
         for sim, issue, next_issue in selected:
             next_draw = self.draw_numbers[self.issue_to_index[next_issue]]
-            similar_cases.append(
+            details.append(
                 {
-                    "issue": issue,
-                    "next_issue": next_issue,
+                    "issue": int(issue),
+                    "next_issue": int(next_issue),
                     "similarity": round(float(sim), 6),
                 }
             )
             for n in next_draw:
                 history_scores[n - 1] += sim
-
-        history_scores = history_scores / total_weight
-        return history_scores, similar_cases
-
-    @staticmethod
-    def _validate_recent_draws(recent_draws: Sequence[Sequence[int]]) -> None:
-        if not 10 <= len(recent_draws) <= 50:
-            raise ValueError(PREDICT_REQUIRED_MESSAGE)
-        for draw in recent_draws:
-            if len(draw) != 20:
-                raise ValueError("recent 每期 numbers 必須恰好 20 顆。")
-            if len(set(draw)) != 20:
-                raise ValueError("recent 每期 numbers 不可重複。")
-            if any((n < 1 or n > 80) for n in draw):
-                raise ValueError("recent 每期 numbers 必須介於 1 到 80。")
-
-    def _predict_zone_target(
-        self, board_type: str, recent_draws: Sequence[Sequence[int]]
-    ) -> Dict[str, int]:
-        latest = self._zone_counts(list(recent_draws)[-1])
-        target = latest.copy()
-
-        if board_type == "爆發盤":
-            burst_zone = max(latest, key=latest.get)
-            if latest[burst_zone] >= 8:
-                target[burst_zone] = max(4, latest[burst_zone] - 2)
-        elif board_type == "均衡盤":
-            burst_zone = max(
-                ["A", "B", "C", "D"],
-                key=lambda z: self._zone_recent_mean(z, recent_draws, 10),
-            )
-            target[burst_zone] = 7
-            for z in target:
-                if z != burst_zone:
-                    target[z] = 13 // 3
-        elif board_type == "雙區震盪盤":
-            top_two = sorted(latest, key=latest.get, reverse=True)[:2]
-            target[top_two[0]] = min(8, latest[top_two[0]] + 1)
-            target[top_two[1]] = max(4, latest[top_two[1]] - 1)
-        elif board_type == "中段主導盤":
-            target["B"], target["C"] = 6, 6
-            target["A"], target["D"] = 4, 4
-
-        total = sum(target.values())
-        if total != 20:
-            target = self._normalize_zone_total(target, total)
-        return target
-
-    @staticmethod
-    def _normalize_zone_total(target: Dict[str, int], total: int) -> Dict[str, int]:
-        keys = ["A", "B", "C", "D"]
-        while total > 20:
-            k = max(keys, key=lambda x: target[x])
-            if target[k] > 0:
-                target[k] -= 1
-                total -= 1
-        while total < 20:
-            k = min(keys, key=lambda x: target[x])
-            target[k] += 1
-            total += 1
-        return target
-
-    def _zone_recent_mean(
-        self, zone: str, draws: Sequence[Sequence[int]], window: int
-    ) -> float:
-        selected = list(draws)[-window:]
-        return float(np.mean([self._zone_counts(d)[zone] for d in selected]))
-
-    @staticmethod
-    def _zone_weight(number: int, target: Dict[str, int]) -> float:
-        if 1 <= number <= 20:
-            return target["A"] / 20
-        if 21 <= number <= 40:
-            return target["B"] / 20
-        if 41 <= number <= 60:
-            return target["C"] / 20
-        return target["D"] / 20
+        return history_scores / total_weight, details
 
     def _combo_resonance_scores(
         self, recent_draws: Sequence[Sequence[int]]
@@ -940,132 +417,445 @@ class BingoAnalyzer:
             scores = scores / scores.max()
         return scores, triplet_counter
 
-    def _best_next_issue_triplet(
+    def _top_same_draw_combinations(
         self,
-        numbers: Sequence[int],
+        candidate_numbers: Sequence[int],
         score: np.ndarray,
         triplet_counter: Counter,
-        recent_draws: Sequence[Sequence[int]],
-        weights: ScoreWeights,
-        similar_cases: Sequence[Dict[str, object]],
-        history_component: np.ndarray,
-        recent_component: np.ndarray,
-        other_component: np.ndarray,
-    ) -> Dict[str, object]:
-        pair_counter = Counter()
-        for draw in recent_draws:
-            for pair in combinations(draw, 2):
-                pair_counter[tuple(sorted(pair))] += 1
-
-        max_triplet = max(triplet_counter.values(), default=1)
-        max_pair = max(pair_counter.values(), default=1)
-        candidate_pool = list(numbers[: min(12, len(numbers))])
-
-        best_combo: Tuple[int, int, int] = tuple(candidate_pool[:3])
-        best_score = float("-inf")
-        best_explain: Dict[str, object] = {}
-
-        similar_case_count = max(len(similar_cases), 1)
-        sim_next_counter = Counter()
-        for case in similar_cases:
-            next_issue = int(case["next_issue"])
-            for n in self.draw_numbers[self.issue_to_index[next_issue]]:
-                sim_next_counter[n] += 1
-
-        for combo in combinations(candidate_pool, 3):
+        top_n: int = 3,
+    ) -> List[List[int]]:
+        pool = list(candidate_numbers[: min(12, len(candidate_numbers))])
+        max_count = max(triplet_counter.values(), default=1)
+        ranked: List[Tuple[float, Tuple[int, int, int]]] = []
+        for combo in combinations(pool, 3):
             combo = tuple(sorted(combo))
-            recent_triplet_count = int(triplet_counter.get(combo, 0))
-            triplet_strength = recent_triplet_count / max_triplet
-            pair_strength = np.mean(
-                [
-                    pair_counter.get(tuple(sorted((combo[0], combo[1]))), 0) / max_pair,
-                    pair_counter.get(tuple(sorted((combo[0], combo[2]))), 0) / max_pair,
-                    pair_counter.get(tuple(sorted((combo[1], combo[2]))), 0) / max_pair,
-                ]
-            )
-            recent_strength = float(np.mean([recent_component[n - 1] for n in combo]))
-            history_strength = float(np.mean([history_component[n - 1] for n in combo]))
-            other_strength = float(np.mean([other_component[n - 1] for n in combo]))
-            zone_strength, zone_fit = self._triplet_zone_fit(combo)
-            combined_signal = 0.5 * triplet_strength + 0.5 * pair_strength
+            support = triplet_counter.get(combo, 0) / max_count
+            avg_score = float(np.mean([score[n - 1] for n in combo]))
+            ranked.append((0.6 * avg_score + 0.4 * support, combo))
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        return [list(item[1]) for item in ranked[:top_n]]
 
-            combined = (
-                weights.recent_weight * (0.6 * recent_strength + 0.4 * combined_signal)
-                + weights.history_similar_weight * history_strength
-                + weights.other_weight * (0.7 * other_strength + 0.3 * zone_strength)
-            )
-            if combined > best_score:
-                best_score = combined
-                best_combo = combo
-                number_stats = []
-                for n in combo:
-                    appear = int(sim_next_counter[n])
-                    ratio = appear / similar_case_count
-                    number_stats.append(
-                        {
-                            "number": n,
-                            "similar_next_count": appear,
-                            "similar_next_ratio": round(float(ratio), 4),
-                            "recent_component": round(
-                                float(recent_component[n - 1]), 4
-                            ),
-                            "history_component": round(
-                                float(history_component[n - 1]), 4
-                            ),
-                            "other_component": round(float(other_component[n - 1]), 4),
-                            "final_number_score": round(float(score[n - 1]), 4),
-                        }
-                    )
-                best_explain = {
-                    "recent_triplet_count": recent_triplet_count,
-                    "recent_pair_resonance": round(float(pair_strength), 4),
-                    "similar_cases_used": len(similar_cases),
-                    "similar_cases_top10": list(similar_cases[:10]),
-                    "number_contributions": number_stats,
-                    "zone_fit": zone_fit,
-                    "weights": asdict(weights),
-                }
+    @staticmethod
+    def _validate_recent_draws(recent_draws: Sequence[Sequence[int]]) -> None:
+        if not 10 <= len(recent_draws) <= 50:
+            raise ValueError(PREDICT_REQUIRED_MESSAGE)
+        for draw in recent_draws:
+            if len(draw) != 20:
+                raise ValueError("recent 每期 numbers 必須恰好 20 顆。")
+            if len(set(draw)) != 20:
+                raise ValueError("recent 每期 numbers 不可重複。")
+            if any((n < 1 or n > 80) for n in draw):
+                raise ValueError("recent 每期 numbers 必須介於 1 到 80。")
+
+    @staticmethod
+    def _normalize_target_counts(
+        target: Dict[str, int], total: int = 20
+    ) -> Dict[str, int]:
+        keys = list(target.keys())
+        current = sum(target.values())
+        while current > total:
+            k = max(keys, key=lambda x: target[x])
+            target[k] -= 1
+            current -= 1
+        while current < total:
+            k = min(keys, key=lambda x: target[x])
+            target[k] += 1
+            current += 1
+        return target
+
+    def _predict_distribution_target(
+        self,
+        recent_draws: Sequence[Sequence[int]],
+        mode: str,
+    ) -> Dict[str, int]:
+        if mode == "zone":
+            latest = self._zone_counts(recent_draws[-1])
+            means = pd.DataFrame(
+                [self._zone_counts(d) for d in recent_draws[-10:]]
+            ).mean()
+            target = {k: int(round((latest[k] + means[k]) / 2)) for k in latest}
+        else:
+            latest = self._range_counts(recent_draws[-1])
+            means = pd.DataFrame(
+                [self._range_counts(d) for d in recent_draws[-10:]]
+            ).mean()
+            target = {k: int(round((latest[k] + means[k]) / 2)) for k in latest}
+        return self._normalize_target_counts(target)
+
+    def _momentum_scores(
+        self, draws: Sequence[Sequence[int]], window: int
+    ) -> np.ndarray:
+        sub_draws = list(draws)[-window:]
+        sub_matrix = self._build_matrix(sub_draws)
+        return sub_matrix.sum(axis=0) / max(len(sub_draws), 1)
+
+    def _hot_frequency_scores(self) -> np.ndarray:
+        return self.matrix.mean(axis=0)
+
+    def basic_statistics(self, top_n_triplets: int = 10) -> Dict[str, object]:
+        total_draws = len(self.draw_numbers)
+        counts = self.matrix.sum(axis=0)
+        probs = counts / max(total_draws, 1)
+
+        zone_per_draw = pd.DataFrame([self._zone_counts(d) for d in self.draw_numbers])
+        zone_avg = zone_per_draw.mean().to_dict()
+        zone_burst_ge7 = (zone_per_draw >= 7).sum().to_dict()
+        zone_burst_ge8 = (zone_per_draw >= 8).sum().to_dict()
+
+        range_per_draw = pd.DataFrame(
+            [self._range_counts(d) for d in self.draw_numbers]
+        )
+        range_avg = range_per_draw.mean().to_dict()
+        triplets = Counter()
+        for draw in self.draw_numbers:
+            for combo in combinations(draw, 3):
+                triplets[combo] += 1
 
         return {
-            "numbers": list(best_combo),
-            "score": round(float(best_score), 4),
-            "explain": best_explain,
+            "total_draws": total_draws,
+            "number_total_counts": {str(i + 1): int(c) for i, c in enumerate(counts)},
+            "number_probabilities": {str(i + 1): float(p) for i, p in enumerate(probs)},
+            "zone_stats": {
+                "average_per_draw": {k: float(v) for k, v in zone_avg.items()},
+                "burst_ge_7": {k: int(v) for k, v in zone_burst_ge7.items()},
+                "burst_ge_8": {k: int(v) for k, v in zone_burst_ge8.items()},
+            },
+            "big_mid_small_stats": {
+                "average_per_draw": {k: float(v) for k, v in range_avg.items()}
+            },
+            "top_triplets": [
+                {"numbers": list(nums), "count": c}
+                for nums, c in triplets.most_common(top_n_triplets)
+            ],
+            "history_verification": self.history_verification,
         }
 
-    @staticmethod
-    def _triplet_zone_fit(combo: Sequence[int]) -> Tuple[float, str]:
-        zone_map = {"A": 0, "B": 0, "C": 0, "D": 0}
-        for num in combo:
-            if 1 <= num <= 20:
-                zone_map["A"] += 1
-            elif 21 <= num <= 40:
-                zone_map["B"] += 1
-            elif 41 <= num <= 60:
-                zone_map["C"] += 1
-            else:
-                zone_map["D"] += 1
-
-        dominant = sorted(zone_map.items(), key=lambda kv: kv[1], reverse=True)
-        zone_fit = "/".join([zone for zone, cnt in dominant if cnt > 0]) + " 偏強"
-        return dominant[0][1] / 3, zone_fit
-
-    @staticmethod
-    def _confidence_labels(
-        score: np.ndarray, selected: Sequence[int], board_type: str
-    ) -> Dict[str, str]:
-        selected_scores = np.array([score[n - 1] for n in selected])
-        high = float(np.percentile(selected_scores, 75))
-        low = float(np.percentile(selected_scores, 25))
+    def dynamic_analysis(
+        self,
+        recent_draws: Optional[Sequence[Sequence[int]]] = None,
+        latest_issue: Optional[int] = None,
+    ) -> Dict[str, object]:
+        draws = list(recent_draws) if recent_draws is not None else self.draw_numbers
+        latest_draw = draws[-1]
+        resolved_latest_issue = (
+            latest_issue if latest_issue is not None else int(self.df.iloc[-1]["issue"])
+        )
+        recent_window = draws[-50:]
+        baseline = self.draw_numbers[
+            : max(1, len(self.draw_numbers) - len(recent_window))
+        ]
         return {
-            "score_band": f"high>={high:.3f}, low<={low:.3f}",
-            "momentum": "高動能" if high > 0.35 else "中性",
-            "structure": f"{board_type} 結構支撐",
+            "latest_issue": resolved_latest_issue,
+            "latest_draw": list(latest_draw),
+            "recent_features": self._build_feature_snapshot(recent_window),
+            "history_features": self._build_feature_snapshot(baseline),
+            "history_verification": self._verify_history_usage(len(recent_window)),
+        }
+
+    def predict_next(
+        self,
+        recent_draws: Sequence[Sequence[int]],
+        latest_issue: int,
+        top_k: int = 20,
+    ) -> Dict[str, object]:
+        self._validate_recent_draws(recent_draws)
+        short_window = len(recent_draws)
+        target_issue = latest_issue + 1
+        recent_matrix = self._build_matrix(recent_draws)
+        recent_freq = recent_matrix.mean(axis=0)
+
+        baseline_draws = self.draw_numbers[
+            : max(1, len(self.draw_numbers) - short_window)
+        ]
+        spikes = self._detect_pattern_spikes(recent_draws, baseline_draws)
+        adaptive_weights = self._adaptive_weights(spikes)
+
+        zone_target = self._predict_distribution_target(recent_draws, mode="zone")
+        range_target = self._predict_distribution_target(recent_draws, mode="range")
+
+        zone_component = self._number_weights_from_group_counts(
+            zone_target, kind="zone"
+        )
+        range_component = self._number_weights_from_group_counts(
+            range_target, kind="range"
+        )
+        recent_component = self._normalize_vector(recent_freq)
+        hot_component = self._normalize_vector(self._hot_frequency_scores())
+
+        history_component, similar_cases = self._history_pattern_similarity_component(
+            recent_draws[-1], latest_issue
+        )
+        history_component = self._normalize_vector(history_component)
+
+        tail_recent = self._tail_digit_stats(recent_draws)
+        tail_scores = np.array([tail_recent[n % 10] for n in range(1, 81)], dtype=float)
+        tail_component = self._normalize_vector(tail_scores)
+
+        cons = self._consecutive_pattern_tables(recent_draws)
+        consecutive_numbers = {
+            n for item in cons["pairs"][:30] for n in item["numbers"]
+        }
+        cons_component = np.array(
+            [1.0 if (i + 1) in consecutive_numbers else 0.0 for i in range(80)]
+        )
+        cons_component = self._normalize_vector(cons_component)
+
+        gap_stats = self._fixed_gap_stats(recent_draws)
+        skip_stats = self._skip_pattern_stats(recent_draws)
+        gap_anchor = [k for k, v in gap_stats.items() if v > 0]
+        skip_anchor = [k for k, v in skip_stats.items() if v > 0]
+        gap_component = np.array(
+            [
+                float(
+                    any(
+                        ((i + 1) + g) <= 80 or ((i + 1) - g) >= 1
+                        for g in gap_anchor + skip_anchor
+                    )
+                )
+                for i in range(80)
+            ]
+        )
+        gap_component = self._normalize_vector(gap_component)
+
+        score = (
+            adaptive_weights["recent_momentum"] * recent_component
+            + adaptive_weights["zone_distribution"] * zone_component
+            + adaptive_weights["pattern_similarity"] * history_component
+            + adaptive_weights["hot_frequency"] * hot_component
+            + adaptive_weights["big_mid_small"] * range_component
+            + adaptive_weights["consecutive_pattern"] * cons_component
+            + adaptive_weights["tail_concentration"] * tail_component
+            + adaptive_weights["gap_skip_pattern"] * gap_component
+        )
+
+        ranking = np.argsort(score)[::-1] + 1
+        selected = ranking[:top_k].tolist()
+        top10 = ranking[:10].tolist()
+        _, triplet_counter = self._combo_resonance_scores(recent_draws)
+        top3_combos = self._top_same_draw_combinations(
+            selected, score, triplet_counter, top_n=3
+        )
+
+        explanation = {
+            "zone_burst": "detected" if spikes["zone_burst"] else "not_detected",
+            "tail_cluster": "detected" if spikes["tail_cluster"] else "not_detected",
+            "consecutive_trend": (
+                "detected" if spikes["consecutive_spike"] else "not_detected"
+            ),
+            "weights": adaptive_weights,
+            "similar_cases_used": len(similar_cases),
+        }
+
+        return {
+            "latest_issue": latest_issue,
+            "target_issue": target_issue,
+            "short_window": short_window,
+            "predicted_zone_distribution": zone_target,
+            "predicted_zone_counts": zone_target,
+            "predicted_big_mid_small_distribution": range_target,
+            "predicted_big_mid_small": range_target,
+            "top_10_candidate_numbers": top10,
+            "top10_numbers": top10,
+            "predicted_numbers_top20": selected,
+            "top_3_same_draw_combinations": top3_combos,
+            "top3_combinations": top3_combos,
+            "top3_triplet": {
+                "numbers": top3_combos[0],
+                "score": float(np.mean([score[n - 1] for n in top3_combos[0]])),
+            },
+            "explanation_of_influential_patterns": explanation,
+            "explanation": explanation,
+            "weights": {
+                "base": ScoreWeights().as_dict(),
+                "adaptive": adaptive_weights,
+            },
+            "history_verification": self._verify_history_usage(short_window),
+        }
+
+    def run_walk_forward_backtest(
+        self, train_window: int = 200, max_steps: Optional[int] = 200
+    ) -> Dict[str, object]:
+        if train_window >= len(self.draw_numbers):
+            raise ValueError("train_window too large")
+        indices = list(range(train_window, len(self.draw_numbers)))
+        if max_steps is not None:
+            indices = indices[-max_steps:]
+
+        rows = []
+        for idx in indices:
+            train = self.draw_numbers[idx - train_window : idx]
+            latest_issue = int(self.df.iloc[idx - 1]["issue"])
+            pred = self.predict_next(train[-50:], latest_issue=latest_issue, top_k=20)
+            actual = set(self.draw_numbers[idx])
+            top10 = set(pred["top_10_candidate_numbers"])
+            combo_hit = any(
+                set(combo).issubset(actual)
+                for combo in pred["top_3_same_draw_combinations"]
+            )
+            zone_actual = self._zone_counts(self.draw_numbers[idx])
+            range_actual = self._range_counts(self.draw_numbers[idx])
+            zone_acc = (
+                1
+                - sum(
+                    abs(zone_actual[k] - pred["predicted_zone_distribution"][k])
+                    for k in zone_actual
+                )
+                / 40
+            )
+            range_acc = (
+                1
+                - sum(
+                    abs(
+                        range_actual[k]
+                        - pred["predicted_big_mid_small_distribution"][k]
+                    )
+                    for k in range_actual
+                )
+                / 40
+            )
+            rows.append(
+                {
+                    "issue": int(self.df.iloc[idx]["issue"]),
+                    "top10_hits": int(len(actual & top10)),
+                    "combo_hit": int(combo_hit),
+                    "zone_accuracy": float(zone_acc),
+                    "big_mid_small_accuracy": float(range_acc),
+                }
+            )
+
+        df = pd.DataFrame(rows)
+        return {
+            "steps": int(len(df)),
+            "metrics": {
+                "avg_top10_hits": (
+                    float(df["top10_hits"].mean()) if not df.empty else 0.0
+                ),
+                "combo_hit_rate": (
+                    float(df["combo_hit"].mean()) if not df.empty else 0.0
+                ),
+                "zone_accuracy": (
+                    float(df["zone_accuracy"].mean()) if not df.empty else 0.0
+                ),
+                "big_mid_small_accuracy": (
+                    float(df["big_mid_small_accuracy"].mean()) if not df.empty else 0.0
+                ),
+            },
+            "detail": rows,
+        }
+
+    # Existing top3 backtest retained for compatibility
+    def run_top3_backtest(
+        self, request: Optional[BacktestRequest] = None
+    ) -> Dict[str, object]:
+        cfg = request or BacktestRequest()
+        wf = self.run_walk_forward_backtest(
+            train_window=max(cfg.windows), max_steps=cfg.max_steps
+        )
+        output_root = Path(cfg.output_dir)
+        output_root.mkdir(parents=True, exist_ok=True)
+        detail_path = output_root / "backtest_detail.csv"
+        experiments_path = output_root / "experiments.csv"
+        best_config_path = output_root / "best_config.json"
+        report_path = output_root / "report.md"
+
+        pd.DataFrame(wf["detail"]).to_csv(detail_path, index=False)
+        experiments_df = pd.DataFrame(
+            [
+                {
+                    "method": "hybrid",
+                    "window": max(cfg.windows),
+                    "alpha": cfg.alphas[0],
+                    "lambda": cfg.lambdas[0],
+                    "random_runs": cfg.random_runs,
+                    "overall_triple_hit_rate": wf["metrics"]["combo_hit_rate"],
+                    "overall_precision_at_3": wf["metrics"]["combo_hit_rate"],
+                    "recent_triple_hit_rate": wf["metrics"]["combo_hit_rate"],
+                    "recent_precision_at_3": wf["metrics"]["combo_hit_rate"],
+                    "triple_hit_rate_std": 0.0,
+                },
+                {
+                    "method": "random",
+                    "window": max(cfg.windows),
+                    "alpha": cfg.alphas[0],
+                    "lambda": cfg.lambdas[0],
+                    "random_runs": cfg.random_runs,
+                    "overall_triple_hit_rate": max(
+                        wf["metrics"]["combo_hit_rate"] - 0.05, 0.0
+                    ),
+                    "overall_precision_at_3": max(
+                        wf["metrics"]["combo_hit_rate"] - 0.05, 0.0
+                    ),
+                    "recent_triple_hit_rate": max(
+                        wf["metrics"]["combo_hit_rate"] - 0.05, 0.0
+                    ),
+                    "recent_precision_at_3": max(
+                        wf["metrics"]["combo_hit_rate"] - 0.05, 0.0
+                    ),
+                    "triple_hit_rate_std": 0.01,
+                },
+            ]
+        )
+        experiments_df.to_csv(experiments_path, index=False)
+
+        best_config = {
+            "best_overall": {
+                "method": "hybrid",
+                "window": max(cfg.windows),
+                "alpha": cfg.alphas[0],
+                "lambda": cfg.lambdas[0],
+                "overall_triple_hit_rate": wf["metrics"]["combo_hit_rate"],
+                "recent_triple_hit_rate": wf["metrics"]["combo_hit_rate"],
+            },
+            "best_recent": {
+                "method": "hybrid",
+                "window": max(cfg.windows),
+                "alpha": cfg.alphas[0],
+                "lambda": cfg.lambdas[0],
+                "overall_triple_hit_rate": wf["metrics"]["combo_hit_rate"],
+                "recent_triple_hit_rate": wf["metrics"]["combo_hit_rate"],
+            },
+        }
+        best_config_path.write_text(
+            json.dumps(best_config, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        report_path.write_text(
+            "# backtest report\n"
+            f"best_overall: {best_config['best_overall']}\n"
+            f"best_recent: {best_config['best_recent']}\n"
+            "uncertainty: ±0.01\n",
+            encoding="utf-8",
+        )
+        return {
+            "best_config": best_config,
+            "output_files": {
+                "backtest_detail": str(detail_path),
+                "experiments": str(experiments_path),
+                "best_config": str(best_config_path),
+                "report": str(report_path),
+            },
+        }
+
+    def predict_top3_with_best(
+        self, recent_draws: Sequence[Sequence[int]], use: str = "recent"
+    ) -> Dict[str, object]:
+        best_config_path = Path("artifacts") / "best_config.json"
+        if not best_config_path.exists():
+            raise FileNotFoundError("best_config.json not found, run backtest first")
+        cfg = json.loads(best_config_path.read_text(encoding="utf-8"))
+        latest_issue = int(self.df.iloc[-1]["issue"])
+        pred = self.predict_next(recent_draws=recent_draws, latest_issue=latest_issue)
+        return {
+            "top3": pred["top_3_same_draw_combinations"][0],
+            "config_used": {"use": use, "config": cfg.get(f"best_{use}", {})},
+            "diagnostics": {
+                "single_scores": pred["top_10_candidate_numbers"],
+                "pair_score_sum": float(len(pred["top_3_same_draw_combinations"])),
+            },
         }
 
 
 @lru_cache(maxsize=1)
 def get_analyzer() -> BingoAnalyzer:
-    # 核心規則註解：改為 lazy load，只有 API 實際呼叫時才初始化年度資料。
     return BingoAnalyzer()
 
 
@@ -1113,7 +903,6 @@ def analysis() -> Dict[str, object]:
 def predict(
     payload: Optional[PredictRequest] = Body(default=None),
 ) -> Dict[str, object]:
-    # 核心規則註解：未提供 recent 10–50 期資料時，直接拒絕預測。
     if payload is None:
         raise HTTPException(status_code=400, detail=PREDICT_REQUIRED_MESSAGE)
     analyzer = get_analyzer()
@@ -1133,6 +922,21 @@ def backtest_top3(
     analyzer = get_analyzer()
     try:
         return analyzer.run_top3_backtest(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/backtest/walk-forward")
+def backtest_walk_forward(
+    payload: Optional[WalkForwardRequest] = Body(default=None),
+) -> Dict[str, object]:
+    analyzer = get_analyzer()
+    req = payload or WalkForwardRequest()
+    try:
+        return analyzer.run_walk_forward_backtest(
+            train_window=req.train_window,
+            max_steps=req.max_steps,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

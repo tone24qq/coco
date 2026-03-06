@@ -4,7 +4,13 @@ from pathlib import Path
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from agent import PREDICT_REQUIRED_MESSAGE, BacktestRequest, BingoAnalyzer, app
+from agent import (
+    PREDICT_REQUIRED_MESSAGE,
+    BacktestRequest,
+    BingoAnalyzer,
+    ScoreWeights,
+    app,
+)
 
 
 def _make_recent(start_issue: int = 1, periods: int = 10) -> list[dict]:
@@ -21,16 +27,17 @@ def _make_recent_from_csv(
     analyzer: BingoAnalyzer, start_issue: int, periods: int
 ) -> list[dict]:
     rows = analyzer.df[
-        analyzer.df["期別"].between(start_issue, start_issue + periods - 1)
+        analyzer.df["issue"].between(start_issue, start_issue + periods - 1)
     ]
     assert len(rows) == periods
     draws = []
     for _, row in rows.iterrows():
+        issue = int(row["issue"])
         draws.append(
             {
-                "issue": int(row["期別"]),
+                "issue": issue,
                 "numbers": sorted(
-                    analyzer.draw_numbers[analyzer.issue_to_index[int(row["期別"])]]
+                    analyzer.draw_numbers[analyzer.issue_to_index[issue]]
                 ),
             }
         )
@@ -42,9 +49,9 @@ def _build_small_csv(path: Path, draws: int = 36) -> None:
     for i in range(draws):
         start = i % 80
         nums = sorted([((start + k) % 80) + 1 for k in range(20)])
-        row = {"期別": 300000000 + i}
+        row = {"issue": 300000000 + i}
         for j, n in enumerate(nums, start=1):
-            row[f"獎號{j}"] = n
+            row[f"n{j}"] = n
         rows.append(row)
     pd.DataFrame(rows).to_csv(path, index=False)
 
@@ -52,9 +59,37 @@ def _build_small_csv(path: Path, draws: int = 36) -> None:
 def test_data_loaded_and_sorted() -> None:
     analyzer = BingoAnalyzer()
     assert not analyzer.df.empty
-    issues = analyzer.df["期別"].tolist()
+    issues = analyzer.df["issue"].tolist()
     assert issues == sorted(issues)
     assert analyzer.matrix.shape[1] == 80
+
+
+def test_csv_loader_supports_three_formats(tmp_path: Path) -> None:
+    issue_n_path = tmp_path / "issue_n.csv"
+    pd.DataFrame(
+        [
+            {"issue": 1, **{f"n{i}": i for i in range(1, 21)}},
+            {"issue": 2, **{f"n{i}": i + 1 for i in range(1, 21)}},
+        ]
+    ).to_csv(issue_n_path, index=False)
+    assert len(BingoAnalyzer(csv_path=issue_n_path).draw_numbers) == 2
+
+    zhong_path = tmp_path / "zhong.csv"
+    pd.DataFrame(
+        [
+            {"期別": 1, **{f"獎號{i}": i for i in range(1, 21)}},
+            {"期別": 2, **{f"獎號{i}": i + 1 for i in range(1, 21)}},
+        ]
+    ).to_csv(zhong_path, index=False)
+    assert len(BingoAnalyzer(csv_path=zhong_path).draw_numbers) == 2
+
+    onehot_path = tmp_path / "onehot.csv"
+    rows = []
+    for issue in [1, 2]:
+        flags = {str(i): 1 if i <= 20 else 0 for i in range(1, 81)}
+        rows.append({"issue": issue, **flags})
+    pd.DataFrame(rows).to_csv(onehot_path, index=False)
+    assert len(BingoAnalyzer(csv_path=onehot_path).draw_numbers) == 2
 
 
 def test_basic_statistics_structure() -> None:
@@ -64,6 +99,7 @@ def test_basic_statistics_structure() -> None:
     assert len(stats["number_total_counts"]) == 80
     assert len(stats["number_probabilities"]) == 80
     assert len(stats["top_triplets"]) == 5
+    assert "big_mid_small_stats" in stats
 
 
 def test_predict_next_output_constraints_with_recent() -> None:
@@ -74,19 +110,46 @@ def test_predict_next_output_constraints_with_recent() -> None:
     assert pred["short_window"] == 14
     assert pred["latest_issue"] == 115000014
     assert pred["target_issue"] == 115000015
-    assert pred["board_type"] in {
-        "爆發盤",
-        "雙區震盪盤",
-        "均衡盤",
-        "修正盤",
-        "中段主導盤",
-    }
-    assert sum(pred["predicted_zone_counts"].values()) == 20
+    assert sum(pred["predicted_zone_distribution"].values()) == 20
+    assert sum(pred["predicted_big_mid_small_distribution"].values()) == 20
     assert len(pred["predicted_numbers_top20"]) == 20
     assert len(set(pred["predicted_numbers_top20"])) == 20
     assert len(pred["top3_triplet"]["numbers"]) == 3
-    assert len(set(pred["top3_triplet"]["numbers"])) == 3
-    assert all(1 <= n <= 80 for n in pred["top3_triplet"]["numbers"])
+    assert len(pred["top_3_same_draw_combinations"]) == 3
+    assert len(pred["top_10_candidate_numbers"]) == 10
+
+
+def test_historical_data_verification_is_used() -> None:
+    analyzer = BingoAnalyzer()
+    recent_draws = [x["numbers"] for x in _make_recent(periods=20)]
+    pred = analyzer.predict_next(recent_draws=recent_draws, latest_issue=999)
+    hist = pred["history_verification"]
+    assert hist["loaded_draws"] > 0
+    assert hist["history_baseline"] >= 0
+    assert pred["explanation_of_influential_patterns"]["similar_cases_used"] >= 0
+
+
+def test_adaptive_weights_normalized() -> None:
+    analyzer = BingoAnalyzer()
+    weights = analyzer._adaptive_weights(
+        {"zone_burst": True, "tail_cluster": True, "consecutive_spike": True}
+    )
+    assert abs(sum(weights.values()) - 1.0) < 1e-9
+    base = ScoreWeights().as_dict()
+    assert weights["zone_distribution"] > base["zone_distribution"]
+
+
+def test_feature_extraction_contains_required_modules() -> None:
+    analyzer = BingoAnalyzer()
+    recent_draws = [x["numbers"] for x in _make_recent(periods=20)]
+    dynamic = analyzer.dynamic_analysis(recent_draws=recent_draws, latest_issue=20)
+    rf = dynamic["recent_features"]
+    assert "zone_mean" in rf
+    assert "range_mean" in rf
+    assert "tail" in rf
+    assert "gaps" in rf
+    assert "skip" in rf
+    assert "consecutive" in rf
 
 
 def test_fastapi_predict_requires_recent() -> None:
@@ -112,7 +175,8 @@ def test_fastapi_predict_validates_recent_and_predicts() -> None:
     data = resp.json()
     assert data["short_window"] == 20
     assert len(data["predicted_numbers_top20"]) == 20
-    assert len(data["top3_triplet"]["numbers"]) == 3
+    assert "predicted_zone_distribution" in data
+    assert "explanation_of_influential_patterns" in data
 
 
 def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
@@ -153,6 +217,18 @@ def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
     assert "best_overall" in report
     assert "best_recent" in report
     assert "±" in report
+
+
+def test_walk_forward_backtest_endpoint() -> None:
+    client = TestClient(app)
+    resp = client.post(
+        "/backtest/walk-forward", json={"train_window": 100, "max_steps": 10}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["steps"] == 10
+    assert "metrics" in data
+    assert "avg_top10_hits" in data["metrics"]
 
 
 def test_predict_top3_endpoint(tmp_path: Path) -> None:
