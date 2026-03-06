@@ -26,6 +26,20 @@ PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆�
 HISTORY_MIN_THRESHOLD = 200
 logger = logging.getLogger(__name__)
 
+DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS = {
+    "number_overlap_score": 0.20,
+    "zone_structure_score": 0.25,
+    "consecutive_pattern_score": 0.15,
+    "trend_pattern_score": 0.20,
+    "dynamic_board_type_score": 0.20,
+}
+
+DEFAULT_SEQUENCE_SCORE_WEIGHTS = {
+    "similar_following_frequency": 0.40,
+    "similarity_weighted_frequency": 0.40,
+    "current_pattern_adjustment": 0.20,
+}
+
 
 @dataclass(frozen=True)
 class ScoreWeights:
@@ -72,6 +86,27 @@ class BacktestRequest(BaseModel):
 
 class WalkForwardRequest(BaseModel):
     train_window: int = Field(default=200, ge=50)
+    max_steps: Optional[int] = Field(default=200, ge=1)
+
+
+class SequenceSimilarityPredictRequest(PredictRequest):
+    input_window_size: int = Field(default=10, ge=5, le=50)
+    min_match_count: int = Field(default=10, ge=3, le=100)
+    top_k: int = Field(default=15, ge=3, le=100)
+    output_top_n: int = Field(default=10, ge=3, le=80)
+    min_similarity_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    similarity_weights: Optional[Dict[str, float]] = None
+    score_weights: Optional[Dict[str, float]] = None
+
+
+class SequenceSimilarityBacktestRequest(BaseModel):
+    input_window_size: int = Field(default=10, ge=5, le=50)
+    min_match_count: int = Field(default=10, ge=3, le=100)
+    top_k: int = Field(default=15, ge=3, le=100)
+    output_top_n: int = Field(default=10, ge=3, le=80)
+    min_similarity_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    similarity_weights: Optional[Dict[str, float]] = None
+    score_weights: Optional[Dict[str, float]] = None
     max_steps: Optional[int] = Field(default=200, ge=1)
 
 
@@ -245,6 +280,147 @@ class BingoAnalyzer:
         if run_len >= 2:
             runs.append(run_len)
         return runs
+
+    @staticmethod
+    def _safe_div(num: float, den: float) -> float:
+        if den == 0:
+            return 0.0
+        return float(num / den)
+
+    @staticmethod
+    def _normalize_weights(
+        weights: Dict[str, float], required_keys: Sequence[str]
+    ) -> Dict[str, float]:
+        merged = {k: float(weights.get(k, 0.0)) for k in required_keys}
+        total = float(sum(merged.values()))
+        if total <= 0:
+            return {k: 1.0 / len(required_keys) for k in required_keys}
+        return {k: float(v / total) for k, v in merged.items()}
+
+    @staticmethod
+    def _zone_index(number: int) -> int:
+        if number <= 20:
+            return 0
+        if number <= 40:
+            return 1
+        if number <= 60:
+            return 2
+        return 3
+
+    def _draw_structural_features(self, draw: Sequence[int]) -> Dict[str, object]:
+        zone_counts_map = self._zone_counts(draw)
+        zone_counts = [zone_counts_map[zone] for zone in ["A", "B", "C", "D"]]
+        runs = self._consecutive_runs(draw)
+        run_group_count = len(runs)
+        max_run = max(runs) if runs else 1
+        has_ge4 = int(any(run >= 4 for run in runs))
+        extreme_dense = int(run_group_count >= 4 or max_run >= 5)
+        zone_run_presence = [0, 0, 0, 0]
+        sorted_draw = sorted(draw)
+        run_buffer = [sorted_draw[0]] if sorted_draw else []
+        for i in range(1, len(sorted_draw)):
+            if sorted_draw[i] == sorted_draw[i - 1] + 1:
+                run_buffer.append(sorted_draw[i])
+            else:
+                if len(run_buffer) >= 2:
+                    for n in run_buffer:
+                        zone_run_presence[self._zone_index(n)] = 1
+                run_buffer = [sorted_draw[i]]
+        if len(run_buffer) >= 2:
+            for n in run_buffer:
+                zone_run_presence[self._zone_index(n)] = 1
+
+        strong_zones = [1 if count >= 7 else 0 for count in zone_counts]
+        burst_zones = [1 if count >= 8 else 0 for count in zone_counts]
+        balanced = int(
+            max(zone_counts) - min(zone_counts) <= 2
+            and all(3 <= c <= 7 for c in zone_counts)
+        )
+        oscillation = int(sorted(zone_counts, reverse=True)[1] >= 6)
+
+        return {
+            "zone_counts": zone_counts,
+            "run_group_count": run_group_count,
+            "max_run": max_run,
+            "has_ge4": has_ge4,
+            "extreme_dense": extreme_dense,
+            "zone_run_presence": zone_run_presence,
+            "strong_zones": strong_zones,
+            "burst_zones": burst_zones,
+            "balanced": balanced,
+            "oscillation": oscillation,
+        }
+
+    def _window_structural_features(
+        self, draws: Sequence[Sequence[int]]
+    ) -> List[Dict[str, object]]:
+        return [self._draw_structural_features(draw) for draw in draws]
+
+    def _trend_profile(
+        self, features: Sequence[Dict[str, object]]
+    ) -> Dict[str, object]:
+        burst_counts = [sum(item["burst_zones"]) for item in features]
+        strong_counts = [sum(item["strong_zones"]) for item in features]
+        top_zones = [int(np.argmax(item["zone_counts"])) for item in features]
+
+        compressed_then_burst = 0
+        burst_then_fall = 0
+        burst_continue = 0
+        burst_two_streak = 0
+        handoff_count = 0
+        oscillation_switches = 0
+        for i in range(1, len(features)):
+            prev = features[i - 1]
+            cur = features[i]
+            if max(prev["zone_counts"]) <= 5 and max(cur["zone_counts"]) >= 8:
+                compressed_then_burst += 1
+            if max(prev["zone_counts"]) >= 8 and max(cur["zone_counts"]) <= 6:
+                burst_then_fall += 1
+            if max(prev["zone_counts"]) >= 7 and max(cur["zone_counts"]) >= 7:
+                burst_continue += 1
+            if max(prev["zone_counts"]) >= 8 and max(cur["zone_counts"]) >= 8:
+                burst_two_streak += 1
+            prev_burst = [idx for idx, flag in enumerate(prev["burst_zones"]) if flag]
+            cur_burst = [idx for idx, flag in enumerate(cur["burst_zones"]) if flag]
+            if prev_burst and cur_burst and set(prev_burst).isdisjoint(cur_burst):
+                handoff_count += 1
+            prev_strong = [idx for idx, flag in enumerate(prev["strong_zones"]) if flag]
+            cur_strong = [idx for idx, flag in enumerate(cur["strong_zones"]) if flag]
+            if (
+                len(prev_strong) >= 2
+                and len(cur_strong) >= 2
+                and set(prev_strong) != set(cur_strong)
+            ):
+                oscillation_switches += 1
+
+        zone_pair_counter: Counter = Counter()
+        for item in features:
+            strong = [idx for idx, flag in enumerate(item["strong_zones"]) if flag]
+            if len(strong) >= 2:
+                pair = tuple(strong[:2])
+                zone_pair_counter[pair] += 1
+
+        return {
+            "burst_ratio": self._safe_div(sum(burst_counts), len(features) * 4),
+            "strong_ratio": self._safe_div(sum(strong_counts), len(features) * 4),
+            "balanced_ratio": self._safe_div(
+                sum(item["balanced"] for item in features), len(features)
+            ),
+            "oscillation_ratio": self._safe_div(
+                sum(item["oscillation"] for item in features), len(features)
+            ),
+            "compressed_then_burst": compressed_then_burst,
+            "burst_then_fall": burst_then_fall,
+            "burst_continue": burst_continue,
+            "burst_two_streak": burst_two_streak,
+            "handoff_count": handoff_count,
+            "oscillation_switches": oscillation_switches,
+            "zone_leader_hist": [top_zones.count(i) for i in range(4)],
+            "dominant_oscillation_pairs": [
+                {"zones": list(k), "count": int(v)}
+                for k, v in zone_pair_counter.most_common(3)
+            ],
+        }
 
     @staticmethod
     def _normalize_vector(values: np.ndarray) -> np.ndarray:
@@ -730,6 +906,578 @@ class BingoAnalyzer:
             "history_verification": self._verify_history_usage(short_window),
         }
 
+    def _sequence_similarity_components(
+        self,
+        current_features: Sequence[Dict[str, object]],
+        historical_features: Sequence[Dict[str, object]],
+        current_draws: Sequence[Sequence[int]],
+        historical_draws: Sequence[Sequence[int]],
+    ) -> Dict[str, float]:
+        overlap_scores = []
+        zone_scores = []
+        consecutive_scores = []
+        for current_draw, hist_draw, current_f, hist_f in zip(
+            current_draws,
+            historical_draws,
+            current_features,
+            historical_features,
+        ):
+            overlap_scores.append(len(set(current_draw) & set(hist_draw)) / 20.0)
+            zone_gap = sum(
+                abs(a - b)
+                for a, b in zip(current_f["zone_counts"], hist_f["zone_counts"])
+            )
+            zone_scores.append(1 - zone_gap / 40.0)
+
+            run_gap = min(
+                abs(current_f["run_group_count"] - hist_f["run_group_count"]) / 10.0,
+                1.0,
+            )
+            max_run_gap = min(abs(current_f["max_run"] - hist_f["max_run"]) / 10.0, 1.0)
+            ge4_gap = abs(current_f["has_ge4"] - hist_f["has_ge4"])
+            dense_gap = abs(current_f["extreme_dense"] - hist_f["extreme_dense"])
+            zone_run_gap = (
+                sum(
+                    abs(a - b)
+                    for a, b in zip(
+                        current_f["zone_run_presence"], hist_f["zone_run_presence"]
+                    )
+                )
+                / 4.0
+            )
+            consecutive_scores.append(
+                1
+                - min(
+                    1.0,
+                    0.25 * run_gap
+                    + 0.30 * max_run_gap
+                    + 0.20 * ge4_gap
+                    + 0.15 * dense_gap
+                    + 0.10 * zone_run_gap,
+                )
+            )
+
+        current_profile = self._trend_profile(current_features)
+        historical_profile = self._trend_profile(historical_features)
+
+        trend_key_weights = {
+            "compressed_then_burst": 0.20,
+            "burst_then_fall": 0.20,
+            "burst_continue": 0.15,
+            "burst_two_streak": 0.15,
+            "handoff_count": 0.15,
+            "oscillation_switches": 0.15,
+        }
+        trend_score = 0.0
+        for key, weight in trend_key_weights.items():
+            base = max(len(current_features) - 1, 1)
+            diff_ratio = min(
+                abs(current_profile[key] - historical_profile[key]) / base, 1.0
+            )
+            trend_score += weight * (1 - diff_ratio)
+
+        board_key_weights = {
+            "burst_ratio": 0.25,
+            "strong_ratio": 0.20,
+            "balanced_ratio": 0.25,
+            "oscillation_ratio": 0.20,
+            "zone_leader_hist": 0.10,
+        }
+        dynamic_score = 0.0
+        for key, weight in board_key_weights.items():
+            if key == "zone_leader_hist":
+                cur = np.array(current_profile[key], dtype=float)
+                hist = np.array(historical_profile[key], dtype=float)
+                diff = float(np.abs(cur - hist).sum() / max(len(current_features), 1))
+                diff_ratio = min(diff / 4.0, 1.0)
+            else:
+                diff_ratio = min(
+                    abs(current_profile[key] - historical_profile[key]), 1.0
+                )
+            dynamic_score += weight * (1 - diff_ratio)
+
+        return {
+            "number_overlap_score": (
+                float(np.mean(overlap_scores)) if overlap_scores else 0.0
+            ),
+            "zone_structure_score": float(np.mean(zone_scores)) if zone_scores else 0.0,
+            "consecutive_pattern_score": (
+                float(np.mean(consecutive_scores)) if consecutive_scores else 0.0
+            ),
+            "trend_pattern_score": float(trend_score),
+            "dynamic_board_type_score": float(dynamic_score),
+            "current_profile": current_profile,
+            "historical_profile": historical_profile,
+        }
+
+    def _pattern_adjustment_scores(
+        self,
+        current_features: Sequence[Dict[str, object]],
+    ) -> Tuple[np.ndarray, Dict[str, object]]:
+        adjustments = np.zeros(80, dtype=float)
+        last = current_features[-1]
+        prior = (
+            current_features[-2] if len(current_features) >= 2 else current_features[-1]
+        )
+        profile = self._trend_profile(current_features)
+
+        zone_change = [
+            last["zone_counts"][i] - prior["zone_counts"][i] for i in range(4)
+        ]
+        for idx in range(4):
+            zone_numbers = list(range(idx * 20 + 1, idx * 20 + 21))
+            if zone_change[idx] >= 2:
+                adjustments[np.array(zone_numbers) - 1] += 0.10
+            elif zone_change[idx] <= -2:
+                adjustments[np.array(zone_numbers) - 1] -= 0.08
+
+        if last["extreme_dense"]:
+            hot_zones = [i for i, v in enumerate(last["zone_run_presence"]) if v]
+            for zone_idx in hot_zones:
+                zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
+                adjustments[np.array(zone_numbers) - 1] -= 0.06
+        elif last["run_group_count"] <= 1 and last["max_run"] <= 2:
+            for zone_idx in range(4):
+                if last["zone_counts"][zone_idx] >= 5:
+                    zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
+                    adjustments[np.array(zone_numbers) - 1] += 0.04
+
+        last_bursts = [i for i, flag in enumerate(last["burst_zones"]) if flag]
+        if last_bursts:
+            for zone_idx in last_bursts:
+                zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
+                if profile["burst_then_fall"] >= 1:
+                    adjustments[np.array(zone_numbers) - 1] -= 0.07
+                else:
+                    adjustments[np.array(zone_numbers) - 1] += 0.03
+
+            if profile["handoff_count"] >= 1:
+                other_zones = [i for i in range(4) if i not in last_bursts]
+                for zone_idx in other_zones:
+                    zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
+                    adjustments[np.array(zone_numbers) - 1] += 0.05
+
+        if last["balanced"]:
+            mean_zone = np.mean(last["zone_counts"])
+            for zone_idx in range(4):
+                zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
+                if last["zone_counts"][zone_idx] >= mean_zone:
+                    adjustments[np.array(zone_numbers) - 1] += 0.03
+
+        if last["oscillation"]:
+            top_two = np.argsort(last["zone_counts"])[::-1][:2]
+            if zone_change[top_two[0]] > 0:
+                adjustments[
+                    np.array(list(range(top_two[0] * 20 + 1, top_two[0] * 20 + 21))) - 1
+                ] += 0.04
+                adjustments[
+                    np.array(list(range(top_two[1] * 20 + 1, top_two[1] * 20 + 21))) - 1
+                ] -= 0.04
+
+        return adjustments, {
+            "zone_change": zone_change,
+            "last_zone_counts": last["zone_counts"],
+            "last_burst_zones": last_bursts,
+            "last_balanced": bool(last["balanced"]),
+            "last_oscillation": bool(last["oscillation"]),
+            "trend_profile": profile,
+        }
+
+    def predict_next_sequence_similarity(
+        self,
+        recent_draws: Sequence[Sequence[int]],
+        latest_issue: int,
+        input_window_size: int = 10,
+        min_match_count: int = 10,
+        top_k: int = 15,
+        output_top_n: int = 10,
+        min_similarity_threshold: Optional[float] = None,
+        similarity_weights: Optional[Dict[str, float]] = None,
+        score_weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, object]:
+        self._validate_recent_draws(recent_draws)
+        if len(recent_draws) < input_window_size:
+            raise ValueError(f"recent_draws 至少需要 {input_window_size} 期")
+
+        sim_weights_input = similarity_weights or DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS
+        score_weights_input = score_weights or DEFAULT_SEQUENCE_SCORE_WEIGHTS
+        sim_weights = self._normalize_weights(
+            sim_weights_input,
+            [
+                "number_overlap_score",
+                "zone_structure_score",
+                "consecutive_pattern_score",
+                "trend_pattern_score",
+                "dynamic_board_type_score",
+            ],
+        )
+        pred_weights = self._normalize_weights(
+            score_weights_input,
+            [
+                "similar_following_frequency",
+                "similarity_weighted_frequency",
+                "current_pattern_adjustment",
+            ],
+        )
+
+        window_draws = [
+            sorted(draw) for draw in list(recent_draws)[-input_window_size:]
+        ]
+        input_window_start = latest_issue - input_window_size + 1
+        input_window_end = latest_issue
+
+        if input_window_size + 1 > len(self.draw_numbers):
+            raise ValueError("歷史資料不足，無法進行序列相似比對")
+
+        current_features = self._window_structural_features(window_draws)
+        candidate_rows: List[Dict[str, object]] = []
+
+        latest_index = self.issue_to_index.get(latest_issue)
+        search_end_index = (
+            latest_index if latest_index is not None else len(self.draw_numbers)
+        )
+        max_start_exclusive = max(search_end_index - input_window_size, 0)
+
+        if max_start_exclusive <= 0:
+            raise ValueError("歷史資料不足，無法形成可比較序列")
+
+        eligible_starts = np.arange(max_start_exclusive)
+        search_matrix = self.matrix[:search_end_index]
+        cumsum = np.vstack(
+            [np.zeros((1, 80), dtype=np.int32), np.cumsum(search_matrix, axis=0)]
+        )
+        hist_window_sums = cumsum[input_window_size:] - cumsum[:-input_window_size]
+        hist_window_sums = hist_window_sums[:max_start_exclusive]
+        current_window_sum = np.array(
+            self._build_matrix(window_draws).sum(axis=0), dtype=np.int32
+        )
+
+        overlap_num = np.minimum(hist_window_sums, current_window_sum).sum(axis=1)
+        overlap_den = np.maximum(hist_window_sums, current_window_sum).sum(axis=1)
+        rough_overlap = np.divide(overlap_num, np.maximum(overlap_den, 1), dtype=float)
+
+        prefilter_size = min(
+            max_start_exclusive,
+            max(top_k * 30, min_match_count * 30, 1500),
+        )
+        prefilter_idx = np.argsort(rough_overlap)[-prefilter_size:]
+        prefilter_starts = eligible_starts[prefilter_idx]
+
+        for start_idx in prefilter_starts.tolist():
+            end_idx = start_idx + input_window_size - 1
+            next_idx = end_idx + 1
+            if next_idx >= search_end_index:
+                continue
+
+            hist_draws = self.draw_numbers[start_idx : end_idx + 1]
+            hist_features = self._window_structural_features(hist_draws)
+            components = self._sequence_similarity_components(
+                current_features=current_features,
+                historical_features=hist_features,
+                current_draws=window_draws,
+                historical_draws=hist_draws,
+            )
+            similarity_score = sum(sim_weights[k] * components[k] for k in sim_weights)
+            if (
+                min_similarity_threshold is not None
+                and similarity_score < min_similarity_threshold
+            ):
+                continue
+
+            start_issue = int(self.df.iloc[start_idx]["issue"])
+            end_issue = int(self.df.iloc[end_idx]["issue"])
+            next_issue = int(self.df.iloc[next_idx]["issue"])
+            candidate_rows.append(
+                {
+                    "start_issue": start_issue,
+                    "end_issue": end_issue,
+                    "next_issue": next_issue,
+                    "similarity_score": float(similarity_score),
+                    "component_scores": {
+                        k: float(components[k])
+                        for k in [
+                            "number_overlap_score",
+                            "zone_structure_score",
+                            "consecutive_pattern_score",
+                            "trend_pattern_score",
+                            "dynamic_board_type_score",
+                        ]
+                    },
+                    "next_draw": self.draw_numbers[next_idx],
+                }
+            )
+
+        candidate_rows.sort(key=lambda x: (-x["similarity_score"], x["start_issue"]))
+        selected = candidate_rows[:top_k]
+        if len(selected) < min_match_count and len(candidate_rows) >= min_match_count:
+            selected = candidate_rows[:min_match_count]
+
+        if len(selected) < min_match_count:
+            return {
+                "latest_issue": latest_issue,
+                "target_issue": latest_issue + 1,
+                "mode": "sequence_similarity_next_draw",
+                "input_window_start": input_window_start,
+                "input_window_end": input_window_end,
+                "input_window_size": input_window_size,
+                "matched_sequence_count": len(selected),
+                "minimum_required_matches": min_match_count,
+                "insufficient_matches": True,
+                "message": "相似樣本不足，請降低門檻或增加歷史資料",
+                "predicted_top_3": [],
+                "predicted_top_5": [],
+                "predicted_top_10": [],
+                "top_similar_sequences": [],
+                "top_number_scores": [],
+                "prediction_basis_summary": {
+                    "input_window_size": input_window_size,
+                    "top_k_used": len(selected),
+                    "minimum_required_matches": min_match_count,
+                    "similarity_weights": sim_weights,
+                    "score_weights": pred_weights,
+                },
+                "debug": {
+                    "current_window_zone_counts": [
+                        f["zone_counts"] for f in current_features
+                    ],
+                    "current_window_board_types": [
+                        {
+                            "balanced": bool(f["balanced"]),
+                            "oscillation": bool(f["oscillation"]),
+                            "burst": bool(sum(f["burst_zones"]) > 0),
+                        }
+                        for f in current_features
+                    ],
+                    "current_window_burst_flags": [
+                        f["burst_zones"] for f in current_features
+                    ],
+                    "current_window_balance_flags": [
+                        bool(f["balanced"]) for f in current_features
+                    ],
+                    "current_window_oscillation_flags": [
+                        bool(f["oscillation"]) for f in current_features
+                    ],
+                },
+            }
+
+        raw_frequency = np.zeros(80, dtype=float)
+        weighted_frequency = np.zeros(80, dtype=float)
+        total_similarity = sum(item["similarity_score"] for item in selected)
+        for row in selected:
+            numbers = row["next_draw"]
+            for n in numbers:
+                raw_frequency[n - 1] += 1
+                weighted_frequency[n - 1] += row["similarity_score"]
+
+        raw_frequency = raw_frequency / len(selected)
+        weighted_frequency = (
+            weighted_frequency / total_similarity
+            if total_similarity > 0
+            else weighted_frequency
+        )
+
+        pattern_adjustment, pattern_debug = self._pattern_adjustment_scores(
+            current_features
+        )
+        pattern_adjustment_norm = self._normalize_vector(pattern_adjustment)
+
+        final_scores = (
+            pred_weights["similar_following_frequency"] * raw_frequency
+            + pred_weights["similarity_weighted_frequency"] * weighted_frequency
+            + pred_weights["current_pattern_adjustment"] * pattern_adjustment_norm
+        )
+
+        ranking = sorted(
+            range(1, 81),
+            key=lambda n: (
+                -final_scores[n - 1],
+                -weighted_frequency[n - 1],
+                -raw_frequency[n - 1],
+                n,
+            ),
+        )
+        output_top_n = min(output_top_n, 80)
+        predicted_top_3 = ranking[:3]
+        predicted_top_5 = ranking[:5]
+        predicted_top_10 = ranking[:10]
+
+        top_number_scores = []
+        for rank, number in enumerate(ranking[:output_top_n], start=1):
+            top_number_scores.append(
+                {
+                    "number": number,
+                    "rank": rank,
+                    "score": round(float(final_scores[number - 1]), 6),
+                    "raw_frequency": round(float(raw_frequency[number - 1]), 6),
+                    "weighted_frequency": round(
+                        float(weighted_frequency[number - 1]), 6
+                    ),
+                    "pattern_bonus": round(
+                        float(pattern_adjustment_norm[number - 1]), 6
+                    ),
+                }
+            )
+
+        return {
+            "latest_issue": latest_issue,
+            "target_issue": latest_issue + 1,
+            "mode": "sequence_similarity_next_draw",
+            "input_window_start": input_window_start,
+            "input_window_end": input_window_end,
+            "input_window_size": input_window_size,
+            "matched_sequence_count": len(selected),
+            "minimum_required_matches": min_match_count,
+            "predicted_top_3": predicted_top_3,
+            "predicted_top_5": predicted_top_5,
+            "predicted_top_10": predicted_top_10,
+            "full_ranked_candidates": ranking,
+            "top_similar_sequences": [
+                {
+                    "start_issue": item["start_issue"],
+                    "end_issue": item["end_issue"],
+                    "next_issue": item["next_issue"],
+                    "similarity_score": round(float(item["similarity_score"]), 6),
+                    "component_scores": item["component_scores"],
+                }
+                for item in selected
+            ],
+            "top_number_scores": top_number_scores,
+            "prediction_basis_summary": {
+                "input_window_size": input_window_size,
+                "top_k_used": len(selected),
+                "minimum_required_matches": min_match_count,
+                "similarity_weights": sim_weights,
+                "score_weights": pred_weights,
+            },
+            "debug": {
+                "current_window_zone_counts": [
+                    f["zone_counts"] for f in current_features
+                ],
+                "current_window_board_types": [
+                    {
+                        "balanced": bool(f["balanced"]),
+                        "oscillation": bool(f["oscillation"]),
+                        "burst": bool(sum(f["burst_zones"]) > 0),
+                    }
+                    for f in current_features
+                ],
+                "current_window_burst_flags": [
+                    f["burst_zones"] for f in current_features
+                ],
+                "current_window_balance_flags": [
+                    bool(f["balanced"]) for f in current_features
+                ],
+                "current_window_oscillation_flags": [
+                    bool(f["oscillation"]) for f in current_features
+                ],
+                "pattern_adjustment": pattern_debug,
+            },
+        }
+
+    def run_sequence_similarity_walk_forward_backtest(
+        self,
+        input_window_size: int = 10,
+        min_match_count: int = 10,
+        top_k: int = 15,
+        output_top_n: int = 10,
+        min_similarity_threshold: Optional[float] = None,
+        similarity_weights: Optional[Dict[str, float]] = None,
+        score_weights: Optional[Dict[str, float]] = None,
+        max_steps: Optional[int] = 200,
+    ) -> Dict[str, object]:
+        start_idx = input_window_size
+        target_indices = list(range(start_idx, len(self.draw_numbers)))
+        if max_steps is not None:
+            target_indices = target_indices[-max_steps:]
+
+        details = []
+        top3_hits = 0
+        top5_hits = 0
+        top10_hits = 0
+        total_hit_count = 0
+        insufficient = 0
+        hit_distribution: Counter = Counter()
+
+        for idx in target_indices:
+            recent_draws = self.draw_numbers[idx - input_window_size : idx]
+            latest_issue = int(self.df.iloc[idx - 1]["issue"])
+            pred = self.predict_next_sequence_similarity(
+                recent_draws=recent_draws,
+                latest_issue=latest_issue,
+                input_window_size=input_window_size,
+                min_match_count=min_match_count,
+                top_k=top_k,
+                output_top_n=output_top_n,
+                min_similarity_threshold=min_similarity_threshold,
+                similarity_weights=similarity_weights,
+                score_weights=score_weights,
+            )
+            actual = set(self.draw_numbers[idx])
+            if pred.get("insufficient_matches"):
+                insufficient += 1
+                details.append(
+                    {
+                        "target_issue": int(self.df.iloc[idx]["issue"]),
+                        "insufficient_matches": True,
+                        "matched_sequence_count": pred["matched_sequence_count"],
+                    }
+                )
+                continue
+
+            top3 = set(pred["predicted_top_3"])
+            top5 = set(pred["predicted_top_5"])
+            top10 = set(pred["predicted_top_10"])
+            hit_count = len(actual & top10)
+            top3_hit = int(len(actual & top3) > 0)
+            top5_hit = int(len(actual & top5) > 0)
+            top10_hit = int(hit_count > 0)
+            top3_hits += top3_hit
+            top5_hits += top5_hit
+            top10_hits += top10_hit
+            total_hit_count += hit_count
+            hit_distribution[hit_count] += 1
+            details.append(
+                {
+                    "target_issue": int(self.df.iloc[idx]["issue"]),
+                    "insufficient_matches": False,
+                    "matched_sequence_count": pred["matched_sequence_count"],
+                    "top3_hit": top3_hit,
+                    "top5_hit": top5_hit,
+                    "top10_hit": top10_hit,
+                    "top10_hit_count": hit_count,
+                }
+            )
+
+        valid_steps = max(len(details) - insufficient, 1)
+        return {
+            "mode": "sequence_similarity_next_draw",
+            "steps": len(details),
+            "valid_prediction_steps": len(details) - insufficient,
+            "sample_insufficient_rate": (
+                self._safe_div(insufficient, len(details)) if details else 0.0
+            ),
+            "metrics": {
+                "top3_hit_rate": self._safe_div(top3_hits, valid_steps),
+                "top5_hit_rate": self._safe_div(top5_hits, valid_steps),
+                "top10_hit_rate": self._safe_div(top10_hits, valid_steps),
+                "average_top10_hits": self._safe_div(total_hit_count, valid_steps),
+                "hit_distribution": {
+                    int(k): int(v) for k, v in sorted(hit_distribution.items())
+                },
+                "weight_comparison": [
+                    {
+                        "similarity_weights": similarity_weights
+                        or DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS,
+                        "score_weights": score_weights
+                        or DEFAULT_SEQUENCE_SCORE_WEIGHTS,
+                        "top3_hit_rate": self._safe_div(top3_hits, valid_steps),
+                        "top5_hit_rate": self._safe_div(top5_hits, valid_steps),
+                    }
+                ],
+            },
+            "detail": details,
+        }
+
     def run_walk_forward_backtest(
         self, train_window: int = 200, max_steps: Optional[int] = 200
     ) -> Dict[str, object]:
@@ -1006,6 +1754,51 @@ def predict(
     try:
         return analyzer.predict_next(
             recent_draws=recent_draws, latest_issue=latest_issue, top_k=payload.top_k
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/predict/sequence-similarity")
+def predict_sequence_similarity(
+    payload: Optional[SequenceSimilarityPredictRequest] = Body(default=None),
+) -> Dict[str, object]:
+    if payload is None:
+        raise HTTPException(status_code=400, detail=PREDICT_REQUIRED_MESSAGE)
+    analyzer = get_analyzer()
+    recent_draws, latest_issue = _validate_request_recent(payload)
+    try:
+        return analyzer.predict_next_sequence_similarity(
+            recent_draws=recent_draws,
+            latest_issue=latest_issue,
+            input_window_size=payload.input_window_size,
+            min_match_count=payload.min_match_count,
+            top_k=payload.top_k,
+            output_top_n=payload.output_top_n,
+            min_similarity_threshold=payload.min_similarity_threshold,
+            similarity_weights=payload.similarity_weights,
+            score_weights=payload.score_weights,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/backtest/sequence-similarity")
+def backtest_sequence_similarity(
+    payload: Optional[SequenceSimilarityBacktestRequest] = Body(default=None),
+) -> Dict[str, object]:
+    analyzer = get_analyzer()
+    req = payload or SequenceSimilarityBacktestRequest()
+    try:
+        return analyzer.run_sequence_similarity_walk_forward_backtest(
+            input_window_size=req.input_window_size,
+            min_match_count=req.min_match_count,
+            top_k=req.top_k,
+            output_top_n=req.output_top_n,
+            min_similarity_threshold=req.min_similarity_threshold,
+            similarity_weights=req.similarity_weights,
+            score_weights=req.score_weights,
+            max_steps=req.max_steps,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -327,3 +327,65 @@ def test_predict_top3_rejects_invalid_candidate_pool_size() -> None:
     }
     resp = client.post("/predict/top3", json=payload)
     assert resp.status_code == 422
+
+
+def test_sequence_similarity_prediction_output_schema() -> None:
+    analyzer = BingoAnalyzer()
+    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000021, periods=12)
+    recent_draws = [item["numbers"] for item in recent_payload]
+    pred = analyzer.predict_next_sequence_similarity(
+        recent_draws=recent_draws,
+        latest_issue=115000032,
+        input_window_size=10,
+        min_match_count=10,
+        top_k=15,
+        output_top_n=10,
+    )
+
+    assert pred["mode"] == "sequence_similarity_next_draw"
+    assert pred["input_window_size"] == 10
+    assert pred["minimum_required_matches"] == 10
+    assert len(pred["predicted_top_3"]) in [0, 3]
+    if not pred.get("insufficient_matches"):
+        assert len(pred["predicted_top_5"]) == 5
+        assert len(pred["predicted_top_10"]) == 10
+        assert pred["matched_sequence_count"] >= 10
+        assert len(pred["top_similar_sequences"]) >= 10
+        assert len(pred["top_number_scores"]) == 10
+        assert "current_window_zone_counts" in pred["debug"]
+
+
+def test_sequence_similarity_backtest_endpoint() -> None:
+    client = TestClient(app)
+    resp = client.post(
+        "/backtest/sequence-similarity",
+        json={
+            "input_window_size": 10,
+            "min_match_count": 10,
+            "top_k": 15,
+            "output_top_n": 10,
+            "max_steps": 8,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "sequence_similarity_next_draw"
+    assert data["steps"] == 8
+    assert "top3_hit_rate" in data["metrics"]
+    assert "sample_insufficient_rate" in data
+
+
+def test_sequence_similarity_predict_endpoint() -> None:
+    client = TestClient(app)
+    payload = {
+        "recent": _make_recent(start_issue=5001, periods=10),
+        "input_window_size": 10,
+        "min_match_count": 10,
+        "top_k": 15,
+        "output_top_n": 10,
+    }
+    resp = client.post("/predict/sequence-similarity", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "sequence_similarity_next_draw"
+    assert "prediction_basis_summary" in data
