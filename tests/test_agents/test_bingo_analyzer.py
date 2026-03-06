@@ -5,6 +5,7 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from agent import (
+    CSV_FILES,
     PREDICT_REQUIRED_MESSAGE,
     BacktestRequest,
     BingoAnalyzer,
@@ -62,6 +63,16 @@ def test_data_loaded_and_sorted() -> None:
     issues = analyzer.df["issue"].tolist()
     assert issues == sorted(issues)
     assert analyzer.matrix.shape[1] == 80
+
+
+def test_default_loader_combines_2023_to_2026() -> None:
+    analyzer = BingoAnalyzer()
+    expected_rows = 0
+    for csv_name in CSV_FILES:
+        df = pd.read_csv(Path(csv_name))
+        issue_col = "issue" if "issue" in df.columns else "期別"
+        expected_rows += pd.to_numeric(df[issue_col], errors="coerce").notna().sum()
+    assert len(analyzer.df) == expected_rows
 
 
 def test_csv_loader_supports_three_formats(tmp_path: Path) -> None:

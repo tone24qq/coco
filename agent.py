@@ -14,7 +14,13 @@ import pandas as pd
 from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
-CSV_PATH = Path(__file__).resolve().parent / "賓果賓果_2026.csv"
+BASE_DIR = Path(__file__).resolve().parent
+CSV_FILES = [
+    "賓果賓果_2023.csv",
+    "賓果賓果_2024.csv",
+    "賓果賓果_2025.csv",
+    "賓果賓果_2026.csv",
+]
 DEFAULT_SEED = 42
 PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆），才可進行下一期預測。"
 HISTORY_MIN_THRESHOLD = 200
@@ -71,9 +77,13 @@ class WalkForwardRequest(BaseModel):
 
 class BingoAnalyzer:
     def __init__(
-        self, csv_path: Path | str = CSV_PATH, random_seed: int = DEFAULT_SEED
+        self,
+        csv_path: Path | str | None = None,
+        csv_files: Sequence[Path | str] | None = None,
+        random_seed: int = DEFAULT_SEED,
     ) -> None:
-        self.csv_path = Path(csv_path)
+        self.csv_path = Path(csv_path) if csv_path is not None else None
+        self.csv_files = [Path(path) for path in csv_files] if csv_files else None
         self.random_seed = random_seed
         self.rng = np.random.default_rng(random_seed)
         self.df = self._load_and_prepare_data()
@@ -106,8 +116,28 @@ class BingoAnalyzer:
             "warnings": warnings,
         }
 
+    @staticmethod
+    def _resolve_csv_path(path: Path) -> Path:
+        if path.exists():
+            return path
+        data_candidate = BASE_DIR / "data" / path.name
+        if data_candidate.exists():
+            return data_candidate
+        base_candidate = BASE_DIR / path.name
+        if base_candidate.exists():
+            return base_candidate
+        raise FileNotFoundError(f"CSV file not found: {path}")
+
     def _load_and_prepare_data(self) -> pd.DataFrame:
-        df = pd.read_csv(self.csv_path)
+        if self.csv_path is not None:
+            target_files = [self._resolve_csv_path(self.csv_path)]
+        elif self.csv_files is not None:
+            target_files = [self._resolve_csv_path(path) for path in self.csv_files]
+        else:
+            target_files = [self._resolve_csv_path(Path(name)) for name in CSV_FILES]
+
+        dfs = [pd.read_csv(path) for path in target_files]
+        df = pd.concat(dfs, ignore_index=True)
         df = df.copy()
         if "issue" not in df.columns and "期別" in df.columns:
             df = df.rename(columns={"期別": "issue"})
