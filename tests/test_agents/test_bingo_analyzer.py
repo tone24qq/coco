@@ -343,6 +343,9 @@ def test_sequence_similarity_prediction_output_schema() -> None:
     )
 
     assert pred["mode"] == "sequence_similarity_next_draw"
+    assert pred["feature_version"].startswith("v2")
+    assert pred["similarity_version"].startswith("v2")
+    assert pred["adjustment_version"].startswith("v2")
     assert pred["input_window_size"] == 10
     assert pred["minimum_required_matches"] == 10
     assert len(pred["predicted_top_3"]) in [0, 3]
@@ -353,6 +356,11 @@ def test_sequence_similarity_prediction_output_schema() -> None:
         assert len(pred["top_similar_sequences"]) >= 10
         assert len(pred["top_number_scores"]) == 10
         assert "current_window_zone_counts" in pred["debug"]
+        assert "trend_profile" in pred["debug"]
+        assert "pattern_adjustment_detail" in pred["debug"]
+        assert "top_similarity_component_breakdown" in pred["debug"]
+        assert "prefilter_candidate_count" in pred
+        assert "postfilter_candidate_count" in pred
 
 
 def test_sequence_similarity_backtest_endpoint() -> None:
@@ -372,6 +380,8 @@ def test_sequence_similarity_backtest_endpoint() -> None:
     assert data["mode"] == "sequence_similarity_next_draw"
     assert data["steps"] == 8
     assert "top3_hit_rate" in data["metrics"]
+    assert "ab_comparison" in data["metrics"]
+    assert {"A", "B", "C", "D"}.issubset(data["metrics"]["ab_comparison"].keys())
     assert "sample_insufficient_rate" in data
 
 

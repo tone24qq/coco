@@ -40,6 +40,11 @@ DEFAULT_SEQUENCE_SCORE_WEIGHTS = {
     "current_pattern_adjustment": 0.20,
 }
 
+FEATURE_VERSION = "v2.0-standardized-5board"
+SIMILARITY_VERSION = "v2.0-two-stage-prefilter"
+ADJUSTMENT_VERSION = "v2.0-event-effect-calibrated"
+ZONE_LABELS = ["A", "B", "C", "D"]
+
 
 @dataclass(frozen=True)
 class ScoreWeights:
@@ -307,15 +312,25 @@ class BingoAnalyzer:
             return 2
         return 3
 
+    @staticmethod
+    def _zone_pair_label(zone_indices: Sequence[int]) -> str:
+        if len(zone_indices) < 2:
+            return "NA"
+        return f"{ZONE_LABELS[zone_indices[0]]}-{ZONE_LABELS[zone_indices[1]]}"
+
     def _draw_structural_features(self, draw: Sequence[int]) -> Dict[str, object]:
         zone_counts_map = self._zone_counts(draw)
-        zone_counts = [zone_counts_map[zone] for zone in ["A", "B", "C", "D"]]
+        zone_counts = [zone_counts_map[zone] for zone in ZONE_LABELS]
         runs = self._consecutive_runs(draw)
-        run_group_count = len(runs)
-        max_run = max(runs) if runs else 1
-        has_ge4 = int(any(run >= 4 for run in runs))
-        extreme_dense = int(run_group_count >= 4 or max_run >= 5)
+        consecutive_group_count = len(runs)
+        max_consecutive_len = max(runs) if runs else 1
+        has_consecutive_len_ge4 = int(any(run >= 4 for run in runs))
+        is_extreme_dense_consecutive = int(
+            consecutive_group_count >= 4 or max_consecutive_len >= 5
+        )
+
         zone_run_presence = [0, 0, 0, 0]
+        zone_run_count = [0, 0, 0, 0]
         sorted_draw = sorted(draw)
         run_buffer = [sorted_draw[0]] if sorted_draw else []
         for i in range(1, len(sorted_draw)):
@@ -323,32 +338,60 @@ class BingoAnalyzer:
                 run_buffer.append(sorted_draw[i])
             else:
                 if len(run_buffer) >= 2:
-                    for n in run_buffer:
-                        zone_run_presence[self._zone_index(n)] = 1
+                    involved = {self._zone_index(n) for n in run_buffer}
+                    for zone_idx in involved:
+                        zone_run_presence[zone_idx] = 1
+                        zone_run_count[zone_idx] += 1
                 run_buffer = [sorted_draw[i]]
         if len(run_buffer) >= 2:
-            for n in run_buffer:
-                zone_run_presence[self._zone_index(n)] = 1
+            involved = {self._zone_index(n) for n in run_buffer}
+            for zone_idx in involved:
+                zone_run_presence[zone_idx] = 1
+                zone_run_count[zone_idx] += 1
 
         strong_zones = [1 if count >= 7 else 0 for count in zone_counts]
-        burst_zones = [1 if count >= 8 else 0 for count in zone_counts]
-        balanced = int(
+        explosive_zones = [1 if count >= 8 else 0 for count in zone_counts]
+        zone_std = float(np.std(zone_counts))
+        balanced_score = max(0.0, 1.0 - zone_std / 3.0)
+        is_balanced = int(
             max(zone_counts) - min(zone_counts) <= 2
             and all(3 <= c <= 7 for c in zone_counts)
         )
-        oscillation = int(sorted(zone_counts, reverse=True)[1] >= 6)
+
+        top_two_zones = np.argsort(zone_counts)[::-1][:2].tolist()
+        top_two_gap = int(zone_counts[top_two_zones[0]] - zone_counts[top_two_zones[1]])
+        is_oscillation = int(zone_counts[top_two_zones[1]] >= 6 and top_two_gap <= 2)
+        oscillation_zone_pair = (
+            self._zone_pair_label(top_two_zones) if is_oscillation else "NA"
+        )
 
         return {
             "zone_counts": zone_counts,
-            "run_group_count": run_group_count,
-            "max_run": max_run,
-            "has_ge4": has_ge4,
-            "extreme_dense": extreme_dense,
+            "consecutive_group_count": consecutive_group_count,
+            "max_consecutive_len": max_consecutive_len,
+            "has_consecutive_len_ge4": has_consecutive_len_ge4,
+            "is_extreme_dense_consecutive": is_extreme_dense_consecutive,
             "zone_run_presence": zone_run_presence,
+            "zone_run_count": zone_run_count,
             "strong_zones": strong_zones,
-            "burst_zones": burst_zones,
-            "balanced": balanced,
-            "oscillation": oscillation,
+            "explosive_zones": explosive_zones,
+            "strong_zone_count": int(sum(strong_zones)),
+            "explosive_zone_count": int(sum(explosive_zones)),
+            "is_balanced": is_balanced,
+            "balanced_score": round(balanced_score, 6),
+            "is_oscillation": is_oscillation,
+            "oscillation_zone_pair": oscillation_zone_pair,
+            "top_two_zones": top_two_zones,
+            "top_two_gap": top_two_gap,
+            "dominant_zone": int(np.argmax(zone_counts)),
+            # backward compatible aliases
+            "run_group_count": consecutive_group_count,
+            "max_run": max_consecutive_len,
+            "has_ge4": has_consecutive_len_ge4,
+            "extreme_dense": is_extreme_dense_consecutive,
+            "burst_zones": explosive_zones,
+            "balanced": is_balanced,
+            "oscillation": is_oscillation,
         }
 
     def _window_structural_features(
@@ -356,19 +399,66 @@ class BingoAnalyzer:
     ) -> List[Dict[str, object]]:
         return [self._draw_structural_features(draw) for draw in draws]
 
+    def _window_profile_features(
+        self, features: Sequence[Dict[str, object]]
+    ) -> Dict[str, object]:
+        if not features:
+            return {}
+        zone_mat = np.array([item["zone_counts"] for item in features], dtype=float)
+        strong_ratio = self._safe_div(
+            sum(item["strong_zone_count"] for item in features), len(features) * 4
+        )
+        explosive_ratio = self._safe_div(
+            sum(item["explosive_zone_count"] for item in features), len(features) * 4
+        )
+        balanced_ratio = self._safe_div(
+            sum(item["is_balanced"] for item in features), len(features)
+        )
+        oscillation_ratio = self._safe_div(
+            sum(item["is_oscillation"] for item in features), len(features)
+        )
+        dominant_zone_histogram = [
+            sum(1 for item in features if item["dominant_zone"] == i) for i in range(4)
+        ]
+        pair_counter: Counter = Counter(
+            item["oscillation_zone_pair"]
+            for item in features
+            if item["oscillation_zone_pair"] != "NA"
+        )
+        return {
+            "zone_counts_mean": [float(x) for x in zone_mat.mean(axis=0).tolist()],
+            "zone_counts_std": [float(x) for x in zone_mat.std(axis=0).tolist()],
+            "strong_ratio": float(strong_ratio),
+            "explosive_ratio": float(explosive_ratio),
+            "balanced_ratio": float(balanced_ratio),
+            "oscillation_ratio": float(oscillation_ratio),
+            "max_consecutive_len_mean": float(
+                np.mean([item["max_consecutive_len"] for item in features])
+            ),
+            "dense_consecutive_ratio": float(
+                self._safe_div(
+                    sum(item["is_extreme_dense_consecutive"] for item in features),
+                    len(features),
+                )
+            ),
+            "dominant_zone_histogram": dominant_zone_histogram,
+            "dominant_oscillation_pair_histogram": [
+                {"pair": str(k), "count": int(v)}
+                for k, v in pair_counter.most_common(6)
+            ],
+        }
+
     def _trend_profile(
         self, features: Sequence[Dict[str, object]]
     ) -> Dict[str, object]:
-        burst_counts = [sum(item["burst_zones"]) for item in features]
-        strong_counts = [sum(item["strong_zones"]) for item in features]
-        top_zones = [int(np.argmax(item["zone_counts"])) for item in features]
-
         compressed_then_burst = 0
         burst_then_fall = 0
-        burst_continue = 0
+        strong_continuation = 0
         burst_two_streak = 0
         handoff_count = 0
-        oscillation_switches = 0
+        oscillation_switch = 0
+        balanced_then_single_strong = 0
+        extreme_consecutive_then_cooldown = 0
         for i in range(1, len(features)):
             prev = features[i - 1]
             cur = features[i]
@@ -376,51 +466,55 @@ class BingoAnalyzer:
                 compressed_then_burst += 1
             if max(prev["zone_counts"]) >= 8 and max(cur["zone_counts"]) <= 6:
                 burst_then_fall += 1
-            if max(prev["zone_counts"]) >= 7 and max(cur["zone_counts"]) >= 7:
-                burst_continue += 1
-            if max(prev["zone_counts"]) >= 8 and max(cur["zone_counts"]) >= 8:
+            if prev["strong_zone_count"] >= 1 and cur["strong_zone_count"] >= 1:
+                strong_continuation += 1
+            if prev["explosive_zone_count"] >= 1 and cur["explosive_zone_count"] >= 1:
                 burst_two_streak += 1
-            prev_burst = [idx for idx, flag in enumerate(prev["burst_zones"]) if flag]
-            cur_burst = [idx for idx, flag in enumerate(cur["burst_zones"]) if flag]
-            if prev_burst and cur_burst and set(prev_burst).isdisjoint(cur_burst):
-                handoff_count += 1
-            prev_strong = [idx for idx, flag in enumerate(prev["strong_zones"]) if flag]
-            cur_strong = [idx for idx, flag in enumerate(cur["strong_zones"]) if flag]
+            prev_explosive = {i for i, v in enumerate(prev["explosive_zones"]) if v}
+            cur_explosive = {i for i, v in enumerate(cur["explosive_zones"]) if v}
             if (
-                len(prev_strong) >= 2
-                and len(cur_strong) >= 2
-                and set(prev_strong) != set(cur_strong)
+                prev_explosive
+                and cur_explosive
+                and prev_explosive.isdisjoint(cur_explosive)
             ):
-                oscillation_switches += 1
+                handoff_count += 1
+            if (
+                prev["oscillation_zone_pair"] != "NA"
+                and cur["oscillation_zone_pair"] != "NA"
+                and prev["oscillation_zone_pair"] != cur["oscillation_zone_pair"]
+            ):
+                oscillation_switch += 1
+            if prev["is_balanced"] and cur["strong_zone_count"] == 1:
+                balanced_then_single_strong += 1
+            if prev["has_consecutive_len_ge4"] and cur["max_consecutive_len"] <= 2:
+                extreme_consecutive_then_cooldown += 1
 
-        zone_pair_counter: Counter = Counter()
-        for item in features:
-            strong = [idx for idx, flag in enumerate(item["strong_zones"]) if flag]
-            if len(strong) >= 2:
-                pair = tuple(strong[:2])
-                zone_pair_counter[pair] += 1
-
-        return {
-            "burst_ratio": self._safe_div(sum(burst_counts), len(features) * 4),
-            "strong_ratio": self._safe_div(sum(strong_counts), len(features) * 4),
-            "balanced_ratio": self._safe_div(
-                sum(item["balanced"] for item in features), len(features)
-            ),
-            "oscillation_ratio": self._safe_div(
-                sum(item["oscillation"] for item in features), len(features)
-            ),
-            "compressed_then_burst": compressed_then_burst,
-            "burst_then_fall": burst_then_fall,
-            "burst_continue": burst_continue,
-            "burst_two_streak": burst_two_streak,
-            "handoff_count": handoff_count,
-            "oscillation_switches": oscillation_switches,
-            "zone_leader_hist": [top_zones.count(i) for i in range(4)],
-            "dominant_oscillation_pairs": [
-                {"zones": list(k), "count": int(v)}
-                for k, v in zone_pair_counter.most_common(3)
-            ],
-        }
+        profile = self._window_profile_features(features)
+        profile.update(
+            {
+                "compressed_then_burst": compressed_then_burst,
+                "burst_then_fall": burst_then_fall,
+                "strong_continuation": strong_continuation,
+                "burst_two_streak": burst_two_streak,
+                "handoff_count": handoff_count,
+                "oscillation_switch": oscillation_switch,
+                "balanced_then_single_strong": balanced_then_single_strong,
+                "extreme_consecutive_then_cooldown": extreme_consecutive_then_cooldown,
+                "zone_leader_hist": profile.get(
+                    "dominant_zone_histogram", [0, 0, 0, 0]
+                ),
+                "burst_ratio": profile.get("explosive_ratio", 0.0),
+                "strong_ratio": profile.get("strong_ratio", 0.0),
+                "balanced_ratio": profile.get("balanced_ratio", 0.0),
+                "oscillation_ratio": profile.get("oscillation_ratio", 0.0),
+                "oscillation_switches": oscillation_switch,
+                "burst_continue": strong_continuation,
+                "dominant_oscillation_pairs": profile.get(
+                    "dominant_oscillation_pair_histogram", []
+                ),
+            }
+        )
+        return profile
 
     @staticmethod
     def _normalize_vector(values: np.ndarray) -> np.ndarray:
@@ -432,6 +526,124 @@ class BingoAnalyzer:
         if max_v - min_v <= 1e-12:
             return np.zeros_like(values, dtype=float)
         return (values - min_v) / (max_v - min_v)
+
+    def _build_event_effect_table(
+        self, historical_features: Sequence[Dict[str, object]]
+    ) -> Dict[str, object]:
+        tracked_events = [
+            "burst_then_fall",
+            "handoff_count",
+            "balanced_then_single_strong",
+            "extreme_consecutive_then_cooldown",
+            "oscillation_switch",
+        ]
+        table = {
+            event: {
+                "sample_count": 0,
+                "zone_delta_mean": [0.0, 0.0, 0.0, 0.0],
+                "next_strong_rate": 0.0,
+            }
+            for event in tracked_events
+        }
+        accum = {event: [] for event in tracked_events}
+        next_strong = {event: 0 for event in tracked_events}
+
+        for i in range(1, len(historical_features) - 1):
+            prev = historical_features[i - 1]
+            cur = historical_features[i]
+            nxt = historical_features[i + 1]
+            flags = {
+                "burst_then_fall": int(
+                    max(prev["zone_counts"]) >= 8 and max(cur["zone_counts"]) <= 6
+                ),
+                "handoff_count": int(
+                    bool(set(idx for idx, v in enumerate(prev["explosive_zones"]) if v))
+                    and bool(
+                        set(idx for idx, v in enumerate(cur["explosive_zones"]) if v)
+                    )
+                    and set(
+                        idx for idx, v in enumerate(prev["explosive_zones"]) if v
+                    ).isdisjoint(
+                        set(idx for idx, v in enumerate(cur["explosive_zones"]) if v)
+                    )
+                ),
+                "balanced_then_single_strong": int(
+                    cur["is_balanced"] and nxt["strong_zone_count"] == 1
+                ),
+                "extreme_consecutive_then_cooldown": int(
+                    cur["has_consecutive_len_ge4"] and nxt["max_consecutive_len"] <= 2
+                ),
+                "oscillation_switch": int(
+                    prev["oscillation_zone_pair"] != "NA"
+                    and cur["oscillation_zone_pair"] != "NA"
+                    and prev["oscillation_zone_pair"] != cur["oscillation_zone_pair"]
+                ),
+            }
+            delta = [nxt["zone_counts"][z] - cur["zone_counts"][z] for z in range(4)]
+            for event, enabled in flags.items():
+                if not enabled:
+                    continue
+                accum[event].append(delta)
+                if nxt["strong_zone_count"] >= 1:
+                    next_strong[event] += 1
+
+        for event in tracked_events:
+            samples = accum[event]
+            if not samples:
+                continue
+            arr = np.array(samples, dtype=float)
+            table[event] = {
+                "sample_count": int(len(samples)),
+                "zone_delta_mean": [float(v) for v in arr.mean(axis=0).tolist()],
+                "next_strong_rate": float(
+                    self._safe_div(next_strong[event], len(samples))
+                ),
+            }
+        return table
+
+    def _event_effect_adjustment(
+        self,
+        current_features: Sequence[Dict[str, object]],
+        event_effect_table: Dict[str, object],
+    ) -> Tuple[np.ndarray, Dict[str, object]]:
+        adjustments = np.zeros(80, dtype=float)
+        last = current_features[-1]
+        prior = current_features[-2] if len(current_features) >= 2 else last
+        active_events = {
+            "burst_then_fall": int(
+                max(prior["zone_counts"]) >= 8 and max(last["zone_counts"]) <= 6
+            ),
+            "handoff_count": int(
+                bool(set(idx for idx, v in enumerate(prior["explosive_zones"]) if v))
+                and bool(set(idx for idx, v in enumerate(last["explosive_zones"]) if v))
+                and set(
+                    idx for idx, v in enumerate(prior["explosive_zones"]) if v
+                ).isdisjoint(
+                    set(idx for idx, v in enumerate(last["explosive_zones"]) if v)
+                )
+            ),
+            "balanced_then_single_strong": int(last["is_balanced"]),
+            "extreme_consecutive_then_cooldown": int(last["has_consecutive_len_ge4"]),
+            "oscillation_switch": int(
+                prior["oscillation_zone_pair"] != "NA"
+                and last["oscillation_zone_pair"] != "NA"
+                and prior["oscillation_zone_pair"] != last["oscillation_zone_pair"]
+            ),
+        }
+        for event, enabled in active_events.items():
+            if not enabled:
+                continue
+            effect = event_effect_table.get(event, {})
+            zone_delta = effect.get("zone_delta_mean", [0.0, 0.0, 0.0, 0.0])
+            confidence = min(float(effect.get("sample_count", 0)) / 30.0, 1.0)
+            for z, delta in enumerate(zone_delta):
+                start = z * 20
+                end = start + 20
+                adjustments[start:end] += delta * 0.06 * confidence
+        return adjustments, {
+            "active_events": active_events,
+            "event_effect_table": event_effect_table,
+        }
 
     def _number_weights_from_group_counts(
         self, counts: Dict[str, int], kind: str = "zone"
@@ -930,12 +1142,25 @@ class BingoAnalyzer:
             zone_scores.append(1 - zone_gap / 40.0)
 
             run_gap = min(
-                abs(current_f["run_group_count"] - hist_f["run_group_count"]) / 10.0,
+                abs(
+                    current_f["consecutive_group_count"]
+                    - hist_f["consecutive_group_count"]
+                )
+                / 10.0,
                 1.0,
             )
-            max_run_gap = min(abs(current_f["max_run"] - hist_f["max_run"]) / 10.0, 1.0)
-            ge4_gap = abs(current_f["has_ge4"] - hist_f["has_ge4"])
-            dense_gap = abs(current_f["extreme_dense"] - hist_f["extreme_dense"])
+            max_run_gap = min(
+                abs(current_f["max_consecutive_len"] - hist_f["max_consecutive_len"])
+                / 10.0,
+                1.0,
+            )
+            ge4_gap = abs(
+                current_f["has_consecutive_len_ge4"] - hist_f["has_consecutive_len_ge4"]
+            )
+            dense_gap = abs(
+                current_f["is_extreme_dense_consecutive"]
+                - hist_f["is_extreme_dense_consecutive"]
+            )
             zone_run_gap = (
                 sum(
                     abs(a - b)
@@ -963,10 +1188,10 @@ class BingoAnalyzer:
         trend_key_weights = {
             "compressed_then_burst": 0.20,
             "burst_then_fall": 0.20,
-            "burst_continue": 0.15,
+            "strong_continuation": 0.15,
             "burst_two_streak": 0.15,
             "handoff_count": 0.15,
-            "oscillation_switches": 0.15,
+            "oscillation_switch": 0.15,
         }
         trend_score = 0.0
         for key, weight in trend_key_weights.items():
@@ -977,15 +1202,15 @@ class BingoAnalyzer:
             trend_score += weight * (1 - diff_ratio)
 
         board_key_weights = {
-            "burst_ratio": 0.25,
+            "explosive_ratio": 0.25,
             "strong_ratio": 0.20,
             "balanced_ratio": 0.25,
             "oscillation_ratio": 0.20,
-            "zone_leader_hist": 0.10,
+            "dominant_zone_histogram": 0.10,
         }
         dynamic_score = 0.0
         for key, weight in board_key_weights.items():
-            if key == "zone_leader_hist":
+            if key == "dominant_zone_histogram":
                 cur = np.array(current_profile[key], dtype=float)
                 hist = np.array(historical_profile[key], dtype=float)
                 diff = float(np.abs(cur - hist).sum() / max(len(current_features), 1))
@@ -1013,6 +1238,7 @@ class BingoAnalyzer:
     def _pattern_adjustment_scores(
         self,
         current_features: Sequence[Dict[str, object]],
+        historical_features: Optional[Sequence[Dict[str, object]]] = None,
     ) -> Tuple[np.ndarray, Dict[str, object]]:
         adjustments = np.zeros(80, dtype=float)
         last = current_features[-1]
@@ -1025,62 +1251,61 @@ class BingoAnalyzer:
             last["zone_counts"][i] - prior["zone_counts"][i] for i in range(4)
         ]
         for idx in range(4):
-            zone_numbers = list(range(idx * 20 + 1, idx * 20 + 21))
+            zone_slice = slice(idx * 20, idx * 20 + 20)
             if zone_change[idx] >= 2:
-                adjustments[np.array(zone_numbers) - 1] += 0.10
+                adjustments[zone_slice] += 0.10
             elif zone_change[idx] <= -2:
-                adjustments[np.array(zone_numbers) - 1] -= 0.08
+                adjustments[zone_slice] -= 0.08
 
-        if last["extreme_dense"]:
+        if last["is_extreme_dense_consecutive"]:
             hot_zones = [i for i, v in enumerate(last["zone_run_presence"]) if v]
             for zone_idx in hot_zones:
-                zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
-                adjustments[np.array(zone_numbers) - 1] -= 0.06
-        elif last["run_group_count"] <= 1 and last["max_run"] <= 2:
+                adjustments[zone_idx * 20 : zone_idx * 20 + 20] -= 0.06
+        elif last["consecutive_group_count"] <= 1 and last["max_consecutive_len"] <= 2:
             for zone_idx in range(4):
                 if last["zone_counts"][zone_idx] >= 5:
-                    zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
-                    adjustments[np.array(zone_numbers) - 1] += 0.04
+                    adjustments[zone_idx * 20 : zone_idx * 20 + 20] += 0.04
 
-        last_bursts = [i for i, flag in enumerate(last["burst_zones"]) if flag]
+        last_bursts = [i for i, flag in enumerate(last["explosive_zones"]) if flag]
         if last_bursts:
             for zone_idx in last_bursts:
-                zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
+                zone_slice = slice(zone_idx * 20, zone_idx * 20 + 20)
                 if profile["burst_then_fall"] >= 1:
-                    adjustments[np.array(zone_numbers) - 1] -= 0.07
+                    adjustments[zone_slice] -= 0.07
                 else:
-                    adjustments[np.array(zone_numbers) - 1] += 0.03
-
+                    adjustments[zone_slice] += 0.03
             if profile["handoff_count"] >= 1:
                 other_zones = [i for i in range(4) if i not in last_bursts]
                 for zone_idx in other_zones:
-                    zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
-                    adjustments[np.array(zone_numbers) - 1] += 0.05
+                    adjustments[zone_idx * 20 : zone_idx * 20 + 20] += 0.05
 
-        if last["balanced"]:
+        if last["is_balanced"]:
             mean_zone = np.mean(last["zone_counts"])
             for zone_idx in range(4):
-                zone_numbers = list(range(zone_idx * 20 + 1, zone_idx * 20 + 21))
                 if last["zone_counts"][zone_idx] >= mean_zone:
-                    adjustments[np.array(zone_numbers) - 1] += 0.03
+                    adjustments[zone_idx * 20 : zone_idx * 20 + 20] += 0.03
 
-        if last["oscillation"]:
-            top_two = np.argsort(last["zone_counts"])[::-1][:2]
+        if last["is_oscillation"]:
+            top_two = last["top_two_zones"]
             if zone_change[top_two[0]] > 0:
-                adjustments[
-                    np.array(list(range(top_two[0] * 20 + 1, top_two[0] * 20 + 21))) - 1
-                ] += 0.04
-                adjustments[
-                    np.array(list(range(top_two[1] * 20 + 1, top_two[1] * 20 + 21))) - 1
-                ] -= 0.04
+                adjustments[top_two[0] * 20 : top_two[0] * 20 + 20] += 0.04
+                adjustments[top_two[1] * 20 : top_two[1] * 20 + 20] -= 0.04
+
+        event_effect_table = self._build_event_effect_table(historical_features or [])
+        calibrated_adjustments, event_debug = self._event_effect_adjustment(
+            current_features,
+            event_effect_table,
+        )
+        adjustments += calibrated_adjustments
 
         return adjustments, {
             "zone_change": zone_change,
             "last_zone_counts": last["zone_counts"],
-            "last_burst_zones": last_bursts,
-            "last_balanced": bool(last["balanced"]),
-            "last_oscillation": bool(last["oscillation"]),
+            "last_explosive_zones": last_bursts,
+            "last_balanced": bool(last["is_balanced"]),
+            "last_oscillation": bool(last["is_oscillation"]),
             "trend_profile": profile,
+            "event_calibration": event_debug,
         }
 
     def predict_next_sequence_similarity(
@@ -1094,6 +1319,7 @@ class BingoAnalyzer:
         min_similarity_threshold: Optional[float] = None,
         similarity_weights: Optional[Dict[str, float]] = None,
         score_weights: Optional[Dict[str, float]] = None,
+        precomputed_history_features: Optional[Sequence[Dict[str, object]]] = None,
     ) -> Dict[str, object]:
         self._validate_recent_draws(recent_draws)
         if len(recent_draws) < input_window_size:
@@ -1130,6 +1356,8 @@ class BingoAnalyzer:
             raise ValueError("歷史資料不足，無法進行序列相似比對")
 
         current_features = self._window_structural_features(window_draws)
+        current_profile = self._window_profile_features(current_features)
+        current_trend = self._trend_profile(current_features)
         candidate_rows: List[Dict[str, object]] = []
 
         latest_index = self.issue_to_index.get(latest_issue)
@@ -1156,11 +1384,82 @@ class BingoAnalyzer:
         overlap_den = np.maximum(hist_window_sums, current_window_sum).sum(axis=1)
         rough_overlap = np.divide(overlap_num, np.maximum(overlap_den, 1), dtype=float)
 
+        if (
+            precomputed_history_features is not None
+            and len(precomputed_history_features) >= search_end_index
+        ):
+            search_features = list(precomputed_history_features[:search_end_index])
+        else:
+            search_features = self._window_structural_features(
+                self.draw_numbers[:search_end_index]
+            )
+        zone_draw_matrix = np.array(
+            [item["zone_counts"] for item in search_features], dtype=np.float32
+        )
+        explosive_draw_flags = np.array(
+            [item["explosive_zone_count"] > 0 for item in search_features],
+            dtype=np.int32,
+        )
+        balanced_draw_flags = np.array(
+            [item["is_balanced"] for item in search_features], dtype=np.int32
+        )
+        oscillation_draw_flags = np.array(
+            [item["is_oscillation"] for item in search_features], dtype=np.int32
+        )
+        zone_cumsum = np.vstack(
+            [np.zeros((1, 4), dtype=np.float32), np.cumsum(zone_draw_matrix, axis=0)]
+        )
+        explosive_cumsum = np.concatenate([[0], np.cumsum(explosive_draw_flags)])
+        balanced_cumsum = np.concatenate([[0], np.cumsum(balanced_draw_flags)])
+        oscillation_cumsum = np.concatenate([[0], np.cumsum(oscillation_draw_flags)])
+
+        hist_zone_sum = (
+            zone_cumsum[input_window_size:] - zone_cumsum[:-input_window_size]
+        )
+        hist_zone_mean = hist_zone_sum[:max_start_exclusive] / float(input_window_size)
+        current_zone_mean = np.array(
+            current_profile.get("zone_counts_mean", [0, 0, 0, 0]), dtype=float
+        )
+        zone_gap = np.abs(hist_zone_mean - current_zone_mean).sum(axis=1) / 20.0
+
+        hist_explosive_ratio = (
+            explosive_cumsum[input_window_size:] - explosive_cumsum[:-input_window_size]
+        )[:max_start_exclusive] / float(input_window_size)
+        hist_balanced_ratio = (
+            balanced_cumsum[input_window_size:] - balanced_cumsum[:-input_window_size]
+        )[:max_start_exclusive] / float(input_window_size)
+        hist_oscillation_ratio = (
+            oscillation_cumsum[input_window_size:]
+            - oscillation_cumsum[:-input_window_size]
+        )[:max_start_exclusive] / float(input_window_size)
+
+        explosive_gap = np.abs(
+            hist_explosive_ratio - current_profile.get("explosive_ratio", 0.0)
+        )
+        balanced_gap = np.abs(
+            hist_balanced_ratio - current_profile.get("balanced_ratio", 0.0)
+        )
+        oscillation_gap = np.abs(
+            hist_oscillation_ratio - current_profile.get("oscillation_ratio", 0.0)
+        )
+
+        profile_similarity = np.maximum(
+            0.0,
+            1.0
+            - (
+                0.40 * zone_gap
+                + 0.20 * explosive_gap
+                + 0.20 * balanced_gap
+                + 0.20 * oscillation_gap
+            ),
+        )
+        prefilter_scores = 0.65 * rough_overlap + 0.35 * profile_similarity
+
         prefilter_size = min(
             max_start_exclusive,
-            max(top_k * 30, min_match_count * 30, 1500),
+            max(top_k * 20, min_match_count * 20, 400),
         )
-        prefilter_idx = np.argsort(rough_overlap)[-prefilter_size:]
+        prefilter_idx = np.argsort(prefilter_scores)[-prefilter_size:]
         prefilter_starts = eligible_starts[prefilter_idx]
 
         for start_idx in prefilter_starts.tolist():
@@ -1212,11 +1511,39 @@ class BingoAnalyzer:
         if len(selected) < min_match_count and len(candidate_rows) >= min_match_count:
             selected = candidate_rows[:min_match_count]
 
+        base_debug = {
+            "current_window_zone_counts": [f["zone_counts"] for f in current_features],
+            "current_window_board_types": [
+                {
+                    "is_balanced": bool(f["is_balanced"]),
+                    "is_oscillation": bool(f["is_oscillation"]),
+                    "is_explosive": bool(f["explosive_zone_count"] > 0),
+                    "oscillation_zone_pair": f["oscillation_zone_pair"],
+                }
+                for f in current_features
+            ],
+            "current_window_burst_flags": [
+                f["explosive_zones"] for f in current_features
+            ],
+            "current_window_balance_flags": [
+                bool(f["is_balanced"]) for f in current_features
+            ],
+            "current_window_oscillation_flags": [
+                bool(f["is_oscillation"]) for f in current_features
+            ],
+            "trend_profile": current_trend,
+            "prefilter_candidate_count": int(prefilter_size),
+            "postfilter_candidate_count": int(len(candidate_rows)),
+        }
+
         if len(selected) < min_match_count:
             return {
                 "latest_issue": latest_issue,
                 "target_issue": latest_issue + 1,
                 "mode": "sequence_similarity_next_draw",
+                "feature_version": FEATURE_VERSION,
+                "similarity_version": SIMILARITY_VERSION,
+                "adjustment_version": ADJUSTMENT_VERSION,
                 "input_window_start": input_window_start,
                 "input_window_end": input_window_end,
                 "input_window_size": input_window_size,
@@ -1235,37 +1562,17 @@ class BingoAnalyzer:
                     "minimum_required_matches": min_match_count,
                     "similarity_weights": sim_weights,
                     "score_weights": pred_weights,
+                    "prefilter_candidate_count": int(prefilter_size),
+                    "postfilter_candidate_count": int(len(candidate_rows)),
                 },
-                "debug": {
-                    "current_window_zone_counts": [
-                        f["zone_counts"] for f in current_features
-                    ],
-                    "current_window_board_types": [
-                        {
-                            "balanced": bool(f["balanced"]),
-                            "oscillation": bool(f["oscillation"]),
-                            "burst": bool(sum(f["burst_zones"]) > 0),
-                        }
-                        for f in current_features
-                    ],
-                    "current_window_burst_flags": [
-                        f["burst_zones"] for f in current_features
-                    ],
-                    "current_window_balance_flags": [
-                        bool(f["balanced"]) for f in current_features
-                    ],
-                    "current_window_oscillation_flags": [
-                        bool(f["oscillation"]) for f in current_features
-                    ],
-                },
+                "debug": base_debug,
             }
 
         raw_frequency = np.zeros(80, dtype=float)
         weighted_frequency = np.zeros(80, dtype=float)
         total_similarity = sum(item["similarity_score"] for item in selected)
         for row in selected:
-            numbers = row["next_draw"]
-            for n in numbers:
+            for n in row["next_draw"]:
                 raw_frequency[n - 1] += 1
                 weighted_frequency[n - 1] += row["similarity_score"]
 
@@ -1276,8 +1583,10 @@ class BingoAnalyzer:
             else weighted_frequency
         )
 
+        history_window_features = search_features
         pattern_adjustment, pattern_debug = self._pattern_adjustment_scores(
-            current_features
+            current_features,
+            historical_features=history_window_features,
         )
         pattern_adjustment_norm = self._normalize_vector(pattern_adjustment)
 
@@ -1297,9 +1606,6 @@ class BingoAnalyzer:
             ),
         )
         output_top_n = min(output_top_n, 80)
-        predicted_top_3 = ranking[:3]
-        predicted_top_5 = ranking[:5]
-        predicted_top_10 = ranking[:10]
 
         top_number_scores = []
         for rank, number in enumerate(ranking[:output_top_n], start=1):
@@ -1318,18 +1624,34 @@ class BingoAnalyzer:
                 }
             )
 
+        base_debug["pattern_adjustment_detail"] = pattern_debug
+        base_debug["top_similarity_component_breakdown"] = [
+            {
+                "start_issue": item["start_issue"],
+                "end_issue": item["end_issue"],
+                "similarity_score": round(float(item["similarity_score"]), 6),
+                "components": item["component_scores"],
+            }
+            for item in selected[: min(10, len(selected))]
+        ]
+
         return {
             "latest_issue": latest_issue,
             "target_issue": latest_issue + 1,
             "mode": "sequence_similarity_next_draw",
+            "feature_version": FEATURE_VERSION,
+            "similarity_version": SIMILARITY_VERSION,
+            "adjustment_version": ADJUSTMENT_VERSION,
             "input_window_start": input_window_start,
             "input_window_end": input_window_end,
             "input_window_size": input_window_size,
             "matched_sequence_count": len(selected),
             "minimum_required_matches": min_match_count,
-            "predicted_top_3": predicted_top_3,
-            "predicted_top_5": predicted_top_5,
-            "predicted_top_10": predicted_top_10,
+            "prefilter_candidate_count": int(prefilter_size),
+            "postfilter_candidate_count": int(len(candidate_rows)),
+            "predicted_top_3": ranking[:3],
+            "predicted_top_5": ranking[:5],
+            "predicted_top_10": ranking[:10],
             "full_ranked_candidates": ranking,
             "top_similar_sequences": [
                 {
@@ -1348,30 +1670,10 @@ class BingoAnalyzer:
                 "minimum_required_matches": min_match_count,
                 "similarity_weights": sim_weights,
                 "score_weights": pred_weights,
+                "prefilter_candidate_count": int(prefilter_size),
+                "postfilter_candidate_count": int(len(candidate_rows)),
             },
-            "debug": {
-                "current_window_zone_counts": [
-                    f["zone_counts"] for f in current_features
-                ],
-                "current_window_board_types": [
-                    {
-                        "balanced": bool(f["balanced"]),
-                        "oscillation": bool(f["oscillation"]),
-                        "burst": bool(sum(f["burst_zones"]) > 0),
-                    }
-                    for f in current_features
-                ],
-                "current_window_burst_flags": [
-                    f["burst_zones"] for f in current_features
-                ],
-                "current_window_balance_flags": [
-                    bool(f["balanced"]) for f in current_features
-                ],
-                "current_window_oscillation_flags": [
-                    bool(f["oscillation"]) for f in current_features
-                ],
-                "pattern_adjustment": pattern_debug,
-            },
+            "debug": base_debug,
         }
 
     def run_sequence_similarity_walk_forward_backtest(
@@ -1390,90 +1692,143 @@ class BingoAnalyzer:
         if max_steps is not None:
             target_indices = target_indices[-max_steps:]
 
-        details = []
-        top3_hits = 0
-        top5_hits = 0
-        top10_hits = 0
-        total_hit_count = 0
-        insufficient = 0
-        hit_distribution: Counter = Counter()
+        version_weights = {
+            "A": {
+                "number_overlap_score": 1.0,
+                "zone_structure_score": 0.0,
+                "consecutive_pattern_score": 0.0,
+                "trend_pattern_score": 0.0,
+                "dynamic_board_type_score": 0.0,
+            },
+            "B": {
+                "number_overlap_score": 0.6,
+                "zone_structure_score": 0.4,
+                "consecutive_pattern_score": 0.0,
+                "trend_pattern_score": 0.0,
+                "dynamic_board_type_score": 0.0,
+            },
+            "C": {
+                "number_overlap_score": 0.5,
+                "zone_structure_score": 0.3,
+                "consecutive_pattern_score": 0.2,
+                "trend_pattern_score": 0.0,
+                "dynamic_board_type_score": 0.0,
+            },
+            "D": {
+                "number_overlap_score": 0.35,
+                "zone_structure_score": 0.2,
+                "consecutive_pattern_score": 0.15,
+                "trend_pattern_score": 0.15,
+                "dynamic_board_type_score": 0.15,
+            },
+        }
 
-        for idx in target_indices:
-            recent_draws = self.draw_numbers[idx - input_window_size : idx]
-            latest_issue = int(self.df.iloc[idx - 1]["issue"])
-            pred = self.predict_next_sequence_similarity(
-                recent_draws=recent_draws,
-                latest_issue=latest_issue,
-                input_window_size=input_window_size,
-                min_match_count=min_match_count,
-                top_k=top_k,
-                output_top_n=output_top_n,
-                min_similarity_threshold=min_similarity_threshold,
-                similarity_weights=similarity_weights,
-                score_weights=score_weights,
+        results_by_version = {}
+        details = []
+        full_history_features = self._window_structural_features(self.draw_numbers)
+        for version, sim_w in version_weights.items():
+            indices_for_version = (
+                target_indices
+                if version == "D"
+                else target_indices[-min(2, len(target_indices)) :]
             )
-            actual = set(self.draw_numbers[idx])
-            if pred.get("insufficient_matches"):
-                insufficient += 1
-                details.append(
+            top3_hits = 0
+            top5_hits = 0
+            top10_hits = 0
+            total_hit_count = 0
+            insufficient = 0
+            hit_distribution: Counter = Counter()
+            version_details = []
+
+            for idx in indices_for_version:
+                recent_draws = self.draw_numbers[idx - input_window_size : idx]
+                latest_issue = int(self.df.iloc[idx - 1]["issue"])
+                pred = self.predict_next_sequence_similarity(
+                    recent_draws=recent_draws,
+                    latest_issue=latest_issue,
+                    input_window_size=input_window_size,
+                    min_match_count=min_match_count,
+                    top_k=top_k,
+                    output_top_n=output_top_n,
+                    min_similarity_threshold=min_similarity_threshold,
+                    similarity_weights=(
+                        sim_w if similarity_weights is None else similarity_weights
+                    ),
+                    score_weights=score_weights,
+                    precomputed_history_features=full_history_features,
+                )
+                actual = set(self.draw_numbers[idx])
+                if pred.get("insufficient_matches"):
+                    insufficient += 1
+                    version_details.append(
+                        {
+                            "target_issue": int(self.df.iloc[idx]["issue"]),
+                            "insufficient_matches": True,
+                            "matched_sequence_count": pred["matched_sequence_count"],
+                        }
+                    )
+                    continue
+
+                top3 = set(pred["predicted_top_3"])
+                top5 = set(pred["predicted_top_5"])
+                top10 = set(pred["predicted_top_10"])
+                hit_count = len(actual & top10)
+                top3_hit = int(len(actual & top3) > 0)
+                top5_hit = int(len(actual & top5) > 0)
+                top10_hit = int(hit_count > 0)
+                top3_hits += top3_hit
+                top5_hits += top5_hit
+                top10_hits += top10_hit
+                total_hit_count += hit_count
+                hit_distribution[hit_count] += 1
+                version_details.append(
                     {
                         "target_issue": int(self.df.iloc[idx]["issue"]),
-                        "insufficient_matches": True,
+                        "insufficient_matches": False,
                         "matched_sequence_count": pred["matched_sequence_count"],
+                        "top3_hit": top3_hit,
+                        "top5_hit": top5_hit,
+                        "top10_hit": top10_hit,
+                        "top10_hit_count": hit_count,
                     }
                 )
-                continue
 
-            top3 = set(pred["predicted_top_3"])
-            top5 = set(pred["predicted_top_5"])
-            top10 = set(pred["predicted_top_10"])
-            hit_count = len(actual & top10)
-            top3_hit = int(len(actual & top3) > 0)
-            top5_hit = int(len(actual & top5) > 0)
-            top10_hit = int(hit_count > 0)
-            top3_hits += top3_hit
-            top5_hits += top5_hit
-            top10_hits += top10_hit
-            total_hit_count += hit_count
-            hit_distribution[hit_count] += 1
-            details.append(
-                {
-                    "target_issue": int(self.df.iloc[idx]["issue"]),
-                    "insufficient_matches": False,
-                    "matched_sequence_count": pred["matched_sequence_count"],
-                    "top3_hit": top3_hit,
-                    "top5_hit": top5_hit,
-                    "top10_hit": top10_hit,
-                    "top10_hit_count": hit_count,
-                }
-            )
-
-        valid_steps = max(len(details) - insufficient, 1)
-        return {
-            "mode": "sequence_similarity_next_draw",
-            "steps": len(details),
-            "valid_prediction_steps": len(details) - insufficient,
-            "sample_insufficient_rate": (
-                self._safe_div(insufficient, len(details)) if details else 0.0
-            ),
-            "metrics": {
+            valid_steps = max(len(version_details) - insufficient, 1)
+            results_by_version[version] = {
                 "top3_hit_rate": self._safe_div(top3_hits, valid_steps),
                 "top5_hit_rate": self._safe_div(top5_hits, valid_steps),
                 "top10_hit_rate": self._safe_div(top10_hits, valid_steps),
                 "average_top10_hits": self._safe_div(total_hit_count, valid_steps),
+                "sample_insufficient_rate": (
+                    self._safe_div(insufficient, len(version_details))
+                    if version_details
+                    else 0.0
+                ),
                 "hit_distribution": {
                     int(k): int(v) for k, v in sorted(hit_distribution.items())
                 },
-                "weight_comparison": [
-                    {
-                        "similarity_weights": similarity_weights
-                        or DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS,
-                        "score_weights": score_weights
-                        or DEFAULT_SEQUENCE_SCORE_WEIGHTS,
-                        "top3_hit_rate": self._safe_div(top3_hits, valid_steps),
-                        "top5_hit_rate": self._safe_div(top5_hits, valid_steps),
-                    }
-                ],
+                "similarity_weights": sim_w,
+                "valid_prediction_steps": len(version_details) - insufficient,
+            }
+            if version == "D":
+                details = version_details
+
+        baseline = results_by_version["D"]
+        return {
+            "mode": "sequence_similarity_next_draw",
+            "feature_version": FEATURE_VERSION,
+            "similarity_version": SIMILARITY_VERSION,
+            "adjustment_version": ADJUSTMENT_VERSION,
+            "steps": len(details),
+            "valid_prediction_steps": baseline["valid_prediction_steps"],
+            "sample_insufficient_rate": baseline["sample_insufficient_rate"],
+            "metrics": {
+                "top3_hit_rate": baseline["top3_hit_rate"],
+                "top5_hit_rate": baseline["top5_hit_rate"],
+                "top10_hit_rate": baseline["top10_hit_rate"],
+                "average_top10_hits": baseline["average_top10_hits"],
+                "hit_distribution": baseline["hit_distribution"],
+                "ab_comparison": results_by_version,
             },
             "detail": details,
         }
