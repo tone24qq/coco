@@ -261,12 +261,22 @@ def test_predict_top3_endpoint(tmp_path: Path) -> None:
     )
 
     client = TestClient(app)
-    payload = {"recent": _make_recent(start_issue=101, periods=20)}
+    payload = {
+        "recent": _make_recent(start_issue=101, periods=20),
+        "window": 15,
+        "alpha": 0.9,
+        "lambda": 0.8,
+        "candidate_pool_size": 10,
+    }
     resp = client.post("/predict/top3", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["top3"]) == 3
     assert data["config_used"]["use"] == "recent"
+    assert data["config_used"]["config"]["window"] == 15
+    assert data["config_used"]["config"]["alpha"] == 0.9
+    assert data["config_used"]["config"]["lambda"] == 0.8
+    assert data["config_used"]["config"]["candidate_pool_size"] == 10
     assert "single_scores" in data["diagnostics"]
     assert "pair_score_sum" in data["diagnostics"]
 
@@ -284,3 +294,25 @@ def test_predict_top3_missing_best_config_returns_500() -> None:
     payload = {"recent": _make_recent(start_issue=101, periods=20)}
     resp = client.post("/predict/top3", json=payload)
     assert resp.status_code == 500
+
+
+def test_predict_top3_rejects_invalid_candidate_pool_size() -> None:
+    artifacts = Path("artifacts")
+    artifacts.mkdir(exist_ok=True)
+    (artifacts / "best_config.json").write_text(
+        json.dumps(
+            {
+                "best_recent": {"window": 10, "alpha": 0.95, "lambda": 1.0},
+                "best_overall": {"window": 10, "alpha": 0.95, "lambda": 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client = TestClient(app)
+    payload = {
+        "recent": _make_recent(start_issue=101, periods=20),
+        "candidate_pool_size": 5,
+    }
+    resp = client.post("/predict/top3", json=payload)
+    assert resp.status_code == 422

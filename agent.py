@@ -46,6 +46,13 @@ class PredictRequest(BaseModel):
     top_k: int = Field(default=20, ge=1, le=20)
 
 
+class PredictTop3Request(PredictRequest):
+    window: Optional[int] = Field(default=None, ge=10, le=50)
+    alpha: Optional[float] = Field(default=None, gt=0.0, le=1.0)
+    lambda_: Optional[float] = Field(default=None, alias="lambda", ge=0.0)
+    candidate_pool_size: Optional[int] = Field(default=None, ge=8, le=30)
+
+
 class BacktestRequest(BaseModel):
     windows: List[int] = Field(default_factory=lambda: [50, 100, 200])
     alphas: List[float] = Field(default_factory=lambda: [0.9, 0.95, 0.98])
@@ -423,8 +430,9 @@ class BingoAnalyzer:
         score: np.ndarray,
         triplet_counter: Counter,
         top_n: int = 3,
+        pool_size: int = 12,
     ) -> List[List[int]]:
-        pool = list(candidate_numbers[: min(12, len(candidate_numbers))])
+        pool = list(candidate_numbers[: min(pool_size, len(candidate_numbers))])
         max_count = max(triplet_counter.values(), default=1)
         ranked: List[Tuple[float, Tuple[int, int, int]]] = []
         for combo in combinations(pool, 3):
@@ -557,12 +565,24 @@ class BingoAnalyzer:
         recent_draws: Sequence[Sequence[int]],
         latest_issue: int,
         top_k: int = 20,
+        alpha: float = 1.0,
+        lambda_value: float = 1.0,
+        candidate_pool_size: int = 12,
     ) -> Dict[str, object]:
         self._validate_recent_draws(recent_draws)
+        if not (0.0 < alpha <= 1.0):
+            raise ValueError("alpha must be in (0, 1].")
+        if lambda_value < 0:
+            raise ValueError("lambda must be >= 0.")
         short_window = len(recent_draws)
         target_issue = latest_issue + 1
         recent_matrix = self._build_matrix(recent_draws)
-        recent_freq = recent_matrix.mean(axis=0)
+        recency_weights = np.array(
+            [alpha ** (short_window - 1 - idx) for idx in range(short_window)],
+            dtype=float,
+        )
+        recency_weights = recency_weights / recency_weights.sum()
+        recent_freq = (recent_matrix * recency_weights[:, None]).sum(axis=0)
 
         baseline_draws = self.draw_numbers[
             : max(1, len(self.draw_numbers) - short_window)
@@ -617,10 +637,14 @@ class BingoAnalyzer:
         )
         gap_component = self._normalize_vector(gap_component)
 
+        pattern_component = self._normalize_vector(
+            (history_component + (lambda_value * hot_component)) / (1.0 + lambda_value)
+        )
+
         score = (
             adaptive_weights["recent_momentum"] * recent_component
             + adaptive_weights["zone_distribution"] * zone_component
-            + adaptive_weights["pattern_similarity"] * history_component
+            + adaptive_weights["pattern_similarity"] * pattern_component
             + adaptive_weights["hot_frequency"] * hot_component
             + adaptive_weights["big_mid_small"] * range_component
             + adaptive_weights["consecutive_pattern"] * cons_component
@@ -633,7 +657,11 @@ class BingoAnalyzer:
         top10 = ranking[:10].tolist()
         _, triplet_counter = self._combo_resonance_scores(recent_draws)
         top3_combos = self._top_same_draw_combinations(
-            selected, score, triplet_counter, top_n=3
+            selected,
+            score,
+            triplet_counter,
+            top_n=3,
+            pool_size=candidate_pool_size,
         )
 
         explanation = {
@@ -836,17 +864,55 @@ class BingoAnalyzer:
         }
 
     def predict_top3_with_best(
-        self, recent_draws: Sequence[Sequence[int]], use: str = "recent"
+        self,
+        recent_draws: Sequence[Sequence[int]],
+        use: str = "recent",
+        window: Optional[int] = None,
+        alpha: Optional[float] = None,
+        lambda_value: Optional[float] = None,
+        candidate_pool_size: Optional[int] = None,
     ) -> Dict[str, object]:
         best_config_path = Path("artifacts") / "best_config.json"
         if not best_config_path.exists():
             raise FileNotFoundError("best_config.json not found, run backtest first")
         cfg = json.loads(best_config_path.read_text(encoding="utf-8"))
+        selected_cfg = cfg.get(f"best_{use}", {})
+        effective_window = int(
+            window if window is not None else selected_cfg.get("window", 20)
+        )
+        effective_alpha = float(
+            alpha if alpha is not None else selected_cfg.get("alpha", 1.0)
+        )
+        effective_lambda = float(
+            lambda_value
+            if lambda_value is not None
+            else selected_cfg.get("lambda", 1.0)
+        )
+        effective_candidate_pool = int(
+            candidate_pool_size if candidate_pool_size is not None else 12
+        )
+
+        scoped_recent_draws = list(recent_draws)[-effective_window:]
         latest_issue = int(self.df.iloc[-1]["issue"])
-        pred = self.predict_next(recent_draws=recent_draws, latest_issue=latest_issue)
+        pred = self.predict_next(
+            recent_draws=scoped_recent_draws,
+            latest_issue=latest_issue,
+            alpha=effective_alpha,
+            lambda_value=effective_lambda,
+            candidate_pool_size=effective_candidate_pool,
+        )
         return {
             "top3": pred["top_3_same_draw_combinations"][0],
-            "config_used": {"use": use, "config": cfg.get(f"best_{use}", {})},
+            "config_used": {
+                "use": use,
+                "config": {
+                    **selected_cfg,
+                    "window": effective_window,
+                    "alpha": effective_alpha,
+                    "lambda": effective_lambda,
+                    "candidate_pool_size": effective_candidate_pool,
+                },
+            },
             "diagnostics": {
                 "single_scores": pred["top_10_candidate_numbers"],
                 "pair_score_sum": float(len(pred["top_3_same_draw_combinations"])),
@@ -943,7 +1009,7 @@ def backtest_walk_forward(
 
 @app.post("/predict/top3")
 def predict_top3(
-    payload: Optional[PredictRequest] = Body(default=None),
+    payload: Optional[PredictTop3Request] = Body(default=None),
     use: str = Query(default="recent", pattern="^(recent|overall)$"),
 ) -> Dict[str, object]:
     if payload is None:
@@ -951,7 +1017,14 @@ def predict_top3(
     analyzer = get_analyzer()
     recent_draws, _ = _validate_request_recent(payload)
     try:
-        return analyzer.predict_top3_with_best(recent_draws=recent_draws, use=use)
+        return analyzer.predict_top3_with_best(
+            recent_draws=recent_draws,
+            use=use,
+            window=payload.window,
+            alpha=payload.alpha,
+            lambda_value=payload.lambda_,
+            candidate_pool_size=payload.candidate_pool_size,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except ValueError as exc:
