@@ -27,6 +27,30 @@ HISTORY_MIN_THRESHOLD = 200
 DEFAULT_LAST_DRAW_PENALTY = 0.35
 RELAXED_LAST_DRAW_PENALTY = 0.20
 DEFAULT_LAST_DRAW_MAX_IN_TOPK = 4
+PRIME_SET = {
+    2,
+    3,
+    5,
+    7,
+    11,
+    13,
+    17,
+    19,
+    23,
+    29,
+    31,
+    37,
+    41,
+    43,
+    47,
+    53,
+    59,
+    61,
+    67,
+    71,
+    73,
+    79,
+}
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS = {
@@ -53,14 +77,20 @@ ZONE_LABELS = ["A", "B", "C", "D"]
 @dataclass(frozen=True)
 class ScoreWeights:
     recent_momentum: float = 0
-    zone_distribution: float = 0.28
-    pattern_similarity: float = 0.32
-    hot_frequency: float = 0.16
-    big_mid_small: float = 0.08
-    consecutive_pattern: float = 0.06
-    cluster_pattern: float = 0.15
-    tail_concentration: float = 0.04
-    gap_skip_pattern: float = 0.04
+    zone_distribution: float = 0.22
+    pattern_similarity: float = 0.24
+    hot_frequency: float = 0.12
+    big_mid_small: float = 0.07
+    consecutive_pattern: float = 0.05
+    cluster_pattern: float = 0.12
+    tail_concentration: float = 0.03
+    gap_skip_pattern: float = 0.03
+    sum_range: float = 0.05
+    odd_even_balance: float = 0.04
+    delta_pattern: float = 0.03
+    skip_heat: float = 0.03
+    prime_boost: float = 0.02
+    compression_boost: float = 0.04
 
     def as_dict(self) -> Dict[str, float]:
         weights = asdict(self)
@@ -137,6 +167,9 @@ class BingoAnalyzer:
         self.rng = np.random.default_rng(random_seed)
         self.df = self._load_and_prepare_data()
         self.draw_numbers: List[List[int]] = self._extract_draw_numbers(self.df)
+        self.recent_30_draws = self.draw_numbers[-30:]
+        self.recent_30_tail_stats = self._tail_digit_stats(self.recent_30_draws)
+        self.recent_30_sums = [sum(draw) for draw in self.recent_30_draws]
         self.matrix = self._build_matrix(self.draw_numbers)
         self.issue_to_index = {
             int(issue): idx for idx, issue in enumerate(self.df["issue"].tolist())
@@ -1044,6 +1077,119 @@ class BingoAnalyzer:
             hotspot_component[idx] = boost
         return self._normalize_vector(hotspot_component)
 
+    def _sum_component(self, draws: Sequence[Sequence[int]]) -> np.ndarray:
+        history_draws = list(self.draw_numbers[-800:])
+        if not history_draws:
+            return np.zeros(80, dtype=float)
+        sum_values = np.array([sum(draw) for draw in history_draws], dtype=float)
+        hist, bin_edges = np.histogram(sum_values, bins=20)
+        if not hist.size:
+            return np.zeros(80, dtype=float)
+        mode_idx = int(np.argmax(hist))
+        lower_idx = max(0, mode_idx - 1)
+        upper_idx = min(len(bin_edges) - 1, mode_idx + 2)
+        sum_low = float(bin_edges[lower_idx])
+        sum_high = float(bin_edges[upper_idx])
+
+        recent_ref = list(draws)[-30:] if draws else self.recent_30_draws
+        if not recent_ref:
+            return np.zeros(80, dtype=float)
+        recent_mean_sum = float(np.mean([sum(draw) for draw in recent_ref]))
+        recent_mean_number = float(np.mean([n for draw in recent_ref for n in draw]))
+
+        component = np.zeros(80, dtype=float)
+        for idx, number in enumerate(range(1, 81)):
+            projected_sum = recent_mean_sum + (number - recent_mean_number)
+            if sum_low <= projected_sum <= sum_high:
+                component[idx] = 1.0
+        return self._normalize_vector(component)
+
+    def _balance_component(self, target: Optional[Dict[str, int]] = None) -> np.ndarray:
+        balance_target = target or {"odd": 10, "even": 10, "high": 10, "low": 10}
+        reference_draw = self.recent_30_draws[-1] if self.recent_30_draws else []
+        odd_count = sum(1 for n in reference_draw if n % 2 == 1)
+        even_count = len(reference_draw) - odd_count
+        high_count = sum(1 for n in reference_draw if n > 40)
+        low_count = len(reference_draw) - high_count
+        deficits = {
+            "odd": balance_target.get("odd", 10) - odd_count,
+            "even": balance_target.get("even", 10) - even_count,
+            "high": balance_target.get("high", 10) - high_count,
+            "low": balance_target.get("low", 10) - low_count,
+        }
+
+        component = np.zeros(80, dtype=float)
+        for idx, number in enumerate(range(1, 81)):
+            score = 0.01
+            score += (
+                max(deficits["odd"], 0) if number % 2 == 1 else max(deficits["even"], 0)
+            )
+            score += (
+                max(deficits["high"], 0) if number > 40 else max(deficits["low"], 0)
+            )
+            component[idx] = float(score)
+        return self._normalize_vector(component)
+
+    def _delta_component(self, draws: Sequence[Sequence[int]]) -> np.ndarray:
+        if not draws:
+            return np.zeros(80, dtype=float)
+        recent_matrix = self._build_matrix(draws)
+        hot_indices = np.argsort(recent_matrix.sum(axis=0))[::-1][:10]
+        hot_numbers = sorted(int(idx + 1) for idx in hot_indices)
+        if len(hot_numbers) < 2:
+            return np.zeros(80, dtype=float)
+
+        delta_counter: Counter = Counter()
+        for a, b in combinations(hot_numbers, 2):
+            delta_counter[b - a] += 1
+        top_deltas = [delta for delta, _ in delta_counter.most_common(10)]
+        hot_set = set(hot_numbers)
+        component = np.zeros(80, dtype=float)
+        for idx, number in enumerate(range(1, 81)):
+            delta_score = 0.0
+            for delta in top_deltas:
+                if (number - delta) in hot_set or (number + delta) in hot_set:
+                    delta_score += float(delta_counter[delta])
+            component[idx] = delta_score
+        return self._normalize_vector(component)
+
+    def _skip_component(self) -> np.ndarray:
+        component = np.zeros(80, dtype=float)
+        for number in range(1, 81):
+            skip = 9999
+            for offset, draw in enumerate(reversed(self.draw_numbers)):
+                if number in draw:
+                    skip = offset
+                    break
+            if skip == 0:
+                component[number - 1] = 0.01
+            elif 1 <= skip <= 5:
+                component[number - 1] = 0.03
+        return self._normalize_vector(component)
+
+    def _prime_component(self) -> np.ndarray:
+        component = np.array(
+            [1.0 if number in PRIME_SET else 0.0 for number in range(1, 81)],
+            dtype=float,
+        )
+        return self._normalize_vector(component)
+
+    def _compression_component(self, draws: Sequence[Sequence[int]]) -> np.ndarray:
+        recent_draws = list(draws)[-3:]
+        if len(recent_draws) < 3:
+            return np.zeros(80, dtype=float)
+        zone_counters = [self._zone_counts(draw) for draw in recent_draws]
+        compressed_zones = [
+            zone
+            for zone in ZONE_LABELS
+            if all(zone_count[zone] <= 4 for zone_count in zone_counters)
+        ]
+        component = np.zeros(80, dtype=float)
+        for zone in compressed_zones:
+            start = ZONE_LABELS.index(zone) * 20
+            component[start : start + 20] = 1.0
+        return self._normalize_vector(component)
+
     def _resolve_last_draw_penalty(
         self, recent_draws: Sequence[Sequence[int]]
     ) -> float:
@@ -1350,6 +1496,12 @@ class BingoAnalyzer:
         adaptive_weights = self._adaptive_weights(spikes, cluster_score=cluster_score)
 
         gap_component = self._gap_skip_hotspot_component(recent_draws)
+        sum_component = self._sum_component(recent_draws)
+        balance_component = self._balance_component()
+        delta_component = self._delta_component(recent_draws)
+        skip_component = self._skip_component()
+        prime_component = self._prime_component()
+        compression_component = self._compression_component(recent_draws)
 
         pattern_component = self._normalize_vector(
             (history_component + (lambda_value * hot_component)) / (1.0 + lambda_value)
@@ -1365,6 +1517,12 @@ class BingoAnalyzer:
             + adaptive_weights["cluster_pattern"] * cluster_component
             + adaptive_weights["tail_concentration"] * tail_component
             + adaptive_weights["gap_skip_pattern"] * gap_component
+            + adaptive_weights["sum_range"] * sum_component
+            + adaptive_weights["odd_even_balance"] * balance_component
+            + adaptive_weights["delta_pattern"] * delta_component
+            + adaptive_weights["skip_heat"] * skip_component
+            + adaptive_weights["prime_boost"] * prime_component
+            + adaptive_weights["compression_boost"] * compression_component
         )
 
         penalty_factor = self._resolve_last_draw_penalty(recent_draws)

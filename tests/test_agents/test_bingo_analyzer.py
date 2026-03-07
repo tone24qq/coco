@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,7 @@ from agent import (
     DEFAULT_LAST_DRAW_MAX_IN_TOPK,
     DEFAULT_LAST_DRAW_PENALTY,
     PREDICT_REQUIRED_MESSAGE,
+    PRIME_SET,
     BacktestRequest,
     BingoAnalyzer,
     ScoreWeights,
@@ -513,3 +515,87 @@ def test_sequence_similarity_predict_endpoint() -> None:
     data = resp.json()
     assert data["mode"] == "sequence_similarity_next_draw"
     assert "prediction_basis_summary" in data
+
+
+def test_sum_component_peaks_within_histogram() -> None:
+    analyzer = BingoAnalyzer()
+    component = analyzer._sum_component(analyzer.draw_numbers[-30:])
+
+    assert len(component) == 80
+    assert component.max() == 1.0
+    assert np.count_nonzero(component) > 0
+
+
+def test_delta_component_top10_hot_deltas() -> None:
+    analyzer = BingoAnalyzer()
+    draws = []
+    for i in range(15):
+        rotating = [((11 + i + j - 1) % 70) + 11 for j in range(10)]
+        draw = sorted(set(list(range(1, 11)) + rotating))
+        if len(draw) < 20:
+            draw.extend([n for n in range(11, 81) if n not in draw][: 20 - len(draw)])
+        draws.append(sorted(draw[:20]))
+
+    component = analyzer._delta_component(draws)
+
+    assert len(component) == 80
+    assert component[10] > component[79]
+
+
+def test_skip_component_weights() -> None:
+    analyzer = BingoAnalyzer()
+    analyzer.draw_numbers = [
+        list(range(4, 24)),
+        list(range(5, 25)),
+        list(range(6, 26)),
+        list(range(7, 27)),
+        list(range(8, 28)),
+        list(range(9, 29)),
+        list(range(2, 22)),
+        list(range(1, 21)),
+    ]
+    component = analyzer._skip_component()
+
+    assert component[20] == 1.0
+    assert component[0] < component[20]
+    assert component[2] > 0.0
+    assert component[39] == 0.0
+
+
+def test_balance_component_targets() -> None:
+    analyzer = BingoAnalyzer()
+    analyzer.recent_30_draws = [list(range(2, 42, 2))]
+
+    component = analyzer._balance_component()
+    odd_mean = float(np.mean([component[i - 1] for i in range(1, 81) if i % 2 == 1]))
+    even_mean = float(np.mean([component[i - 1] for i in range(1, 81) if i % 2 == 0]))
+    high_mean = float(np.mean(component[40:]))
+    low_mean = float(np.mean(component[:40]))
+
+    assert odd_mean > even_mean
+    assert high_mean > low_mean
+
+
+def test_compression_component_flag() -> None:
+    analyzer = BingoAnalyzer()
+    draws = [
+        [1, 2, 3, 4, 21, 22, 23, 24, 25, 26, 27, 28, 41, 42, 43, 44, 61, 62, 63, 64],
+        [1, 2, 3, 4, 21, 22, 23, 24, 25, 26, 27, 28, 45, 46, 47, 48, 61, 62, 63, 64],
+        [1, 2, 3, 4, 21, 22, 23, 24, 25, 26, 27, 28, 49, 50, 51, 52, 61, 62, 63, 64],
+    ]
+
+    component = analyzer._compression_component(draws)
+
+    assert len(component) == 80
+    assert component[:20].max() == 1.0
+    assert np.count_nonzero(component[:20]) == 20
+
+
+def test_prime_component_boosts_primes() -> None:
+    analyzer = BingoAnalyzer()
+    component = analyzer._prime_component()
+
+    prime_scores = [component[p - 1] for p in PRIME_SET]
+    non_prime_scores = [component[n - 1] for n in range(1, 81) if n not in PRIME_SET]
+
+    assert min(prime_scores) > max(non_prime_scores)
