@@ -25,6 +25,7 @@ DEFAULT_SEED = 42
 PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆），才可進行下一期預測。"
 HISTORY_MIN_THRESHOLD = 200
 DEFAULT_LAST_DRAW_PENALTY = 0.35
+RELAXED_LAST_DRAW_PENALTY = 0.20
 DEFAULT_LAST_DRAW_MAX_IN_TOPK = 4
 logger = logging.getLogger(__name__)
 
@@ -88,8 +89,8 @@ class PredictTop3Request(PredictRequest):
 
 class BacktestRequest(BaseModel):
     windows: List[int] = Field(default_factory=lambda: [50, 100, 200])
-    alphas: List[float] = Field(default_factory=lambda: [0.9, 0.95, 0.98])
-    lambdas: List[float] = Field(default_factory=lambda: [0.5, 1.0, 2.0])
+    alphas: List[float] = Field(default_factory=lambda: [0.7, 0.8, 0.9, 0.95])
+    lambdas: List[float] = Field(default_factory=lambda: [0.3, 0.8, 1.5, 2.5])
     recent_n: int = Field(default=200, ge=20)
     candidate_pool_size: int = Field(default=18, ge=8, le=30)
     random_runs: int = Field(default=500, ge=100, le=5000)
@@ -766,7 +767,9 @@ class BingoAnalyzer:
             "cluster_burst": bool(zone_burst or tail_cluster or consecutive_spike),
         }
 
-    def _adaptive_weights(self, spikes: Dict[str, bool]) -> Dict[str, float]:
+    def _adaptive_weights(
+        self, spikes: Dict[str, bool], cluster_score: float = 0.0
+    ) -> Dict[str, float]:
         weights = ScoreWeights().as_dict()
         if spikes.get("zone_burst"):
             weights["zone_distribution"] += 0.05
@@ -775,7 +778,7 @@ class BingoAnalyzer:
         if spikes.get("consecutive_spike"):
             weights["consecutive_pattern"] += 0.03
         if spikes.get("cluster_burst"):
-            weights["cluster_pattern"] += 0.04
+            weights["cluster_pattern"] = 0.07 + (0.02 * min(float(cluster_score), 5.0))
 
         total = float(sum(weights.values()))
         return {k: float(v / total) for k, v in weights.items()}
@@ -908,11 +911,11 @@ class BingoAnalyzer:
         query_sequence = [sorted(draw) for draw in list(recent_draws)[-window_size:]]
         query_zone_seq = [self._zone_counts(draw) for draw in query_sequence]
         query_range_seq = [self._range_counts(draw) for draw in query_sequence]
-        query_tail_seq = [self._tail_digit_stats([draw]) for draw in query_sequence]
         step_weights = np.arange(1, window_size + 1, dtype=float)
         step_weights = step_weights / step_weights.sum()
 
-        candidates: List[Tuple[float, int, int, int]] = []
+        coarse_candidates: List[Tuple[float, int, int]] = []
+        detailed_candidates: List[Tuple[float, float, int, int, int]] = []
         latest_index = self.issue_to_index.get(latest_issue)
         search_end_index = (
             latest_index if latest_index is not None else len(self.draw_numbers)
@@ -926,13 +929,14 @@ class BingoAnalyzer:
                 continue
 
             hist_sequence = self.draw_numbers[start_idx : end_idx + 1]
-            sequence_sim = 0.0
+            coarse_sim = 0.0
+            overlap_sim = 0.0
+            consecutive_sim = 0.0
             for pos in range(window_size):
                 hist_draw = hist_sequence[pos]
                 query_draw = query_sequence[pos]
                 hist_zone = self._zone_counts(hist_draw)
                 hist_range = self._range_counts(hist_draw)
-                hist_tail = self._tail_digit_stats([hist_draw])
 
                 zone_sim = 1 - (
                     sum(abs(hist_zone[k] - query_zone_seq[pos][k]) for k in hist_zone)
@@ -944,36 +948,50 @@ class BingoAnalyzer:
                     )
                     / 40
                 )
-                tail_sim = 1 - (
-                    sum(abs(hist_tail[k] - query_tail_seq[pos][k]) for k in hist_tail)
-                    / max(
-                        sum(hist_tail.values()) + sum(query_tail_seq[pos].values()), 1
-                    )
-                )
                 set_sim = len(set(hist_draw) & set(query_draw)) / len(
                     set(hist_draw) | set(query_draw)
                 )
-                sim = (
-                    0.30 * zone_sim
-                    + 0.20 * range_sim
-                    + 0.20 * tail_sim
-                    + 0.30 * set_sim
+                hist_runs = set(self._consecutive_runs(hist_draw))
+                query_runs = set(self._consecutive_runs(query_draw))
+                run_union = len(hist_runs | query_runs)
+                run_sim = (
+                    1.0 if run_union == 0 else len(hist_runs & query_runs) / run_union
                 )
-                sequence_sim += step_weights[pos] * sim
+
+                coarse_sim += step_weights[pos] * (0.60 * zone_sim + 0.40 * range_sim)
+                overlap_sim += step_weights[pos] * set_sim
+                consecutive_sim += step_weights[pos] * run_sim
 
             start_issue = int(self.df.iloc[start_idx]["issue"])
             end_issue = int(self.df.iloc[end_idx]["issue"])
             next_issue = int(self.df.iloc[next_idx]["issue"])
-            candidates.append((float(sequence_sim), start_issue, end_issue, next_issue))
+            coarse_candidates.append((float(coarse_sim), start_idx, next_issue))
+            detailed_candidates.append(
+                (
+                    float(0.70 * overlap_sim + 0.30 * consecutive_sim),
+                    float(coarse_sim),
+                    start_issue,
+                    end_issue,
+                    next_issue,
+                )
+            )
 
-        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        selected = [item for item in candidates if item[0] > 0][:top_n]
+        coarse_candidates.sort(key=lambda x: x[0], reverse=True)
+        coarse_allowed_next_issue = {
+            next_issue for _, _, next_issue in coarse_candidates[:1000]
+        }
+        filtered_candidates = [
+            item for item in detailed_candidates if item[4] in coarse_allowed_next_issue
+        ]
+        filtered_candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+
+        selected = [item for item in filtered_candidates if item[0] > 0][:top_n]
         history_scores = np.zeros(80, dtype=float)
         details: List[Dict[str, object]] = []
         total_weight = sum(x[0] for x in selected)
         if total_weight <= 0:
             return history_scores, details
-        for sim, start_issue, end_issue, next_issue in selected:
+        for sim, _, start_issue, end_issue, next_issue in selected:
             next_draw = self.draw_numbers[self.issue_to_index[next_issue]]
             details.append(
                 {
@@ -987,6 +1005,55 @@ class BingoAnalyzer:
             for n in next_draw:
                 history_scores[n - 1] += sim
         return history_scores / total_weight, details
+
+    def _blended_tail_component(
+        self,
+        recent_draws: Sequence[Sequence[int]],
+        baseline_window: int = 30,
+    ) -> np.ndarray:
+        recent_tail = self._tail_digit_stats(recent_draws)
+        baseline_tail = self._tail_digit_stats(self.draw_numbers[-baseline_window:])
+        tail_scores = np.array(
+            [
+                0.5 * recent_tail[n % 10] + 0.5 * baseline_tail[n % 10]
+                for n in range(1, 81)
+            ],
+            dtype=float,
+        )
+        return self._normalize_vector(tail_scores)
+
+    def _gap_skip_hotspot_component(
+        self, recent_draws: Sequence[Sequence[int]]
+    ) -> np.ndarray:
+        gap_stats = self._fixed_gap_stats(recent_draws)
+        skip_stats = self._skip_pattern_stats(recent_draws)
+        hotspot_numbers = {
+            number
+            for number in range(1, 81)
+            if gap_stats.get(number, 0) > 0 or skip_stats.get(number, 0) > 0
+        }
+        hotspot_component = np.zeros(80, dtype=float)
+        for idx, number in enumerate(range(1, 81)):
+            boost = 0.0
+            for shift in (10, 20):
+                if (
+                    number - shift in hotspot_numbers
+                    or number + shift in hotspot_numbers
+                ):
+                    boost = max(boost, 0.06 if shift == 10 else 0.04)
+            hotspot_component[idx] = boost
+        return self._normalize_vector(hotspot_component)
+
+    def _resolve_last_draw_penalty(
+        self, recent_draws: Sequence[Sequence[int]]
+    ) -> float:
+        recent_three = list(recent_draws)[-3:]
+        if len(recent_three) < 3:
+            return DEFAULT_LAST_DRAW_PENALTY
+        for zone in ZONE_LABELS:
+            if all(self._zone_counts(draw)[zone] >= 7 for draw in recent_three):
+                return RELAXED_LAST_DRAW_PENALTY
+        return DEFAULT_LAST_DRAW_PENALTY
 
     def _combo_resonance_scores(
         self, recent_draws: Sequence[Sequence[int]]
@@ -1102,11 +1169,11 @@ class BingoAnalyzer:
 
     @staticmethod
     def _apply_last_draw_penalty(
-        score: np.ndarray, last_draw: Sequence[int]
+        score: np.ndarray, last_draw: Sequence[int], penalty_factor: float
     ) -> np.ndarray:
         penalized = score.copy()
         for number in last_draw:
-            penalized[number - 1] *= DEFAULT_LAST_DRAW_PENALTY
+            penalized[number - 1] *= penalty_factor
         return penalized
 
     @staticmethod
@@ -1237,7 +1304,6 @@ class BingoAnalyzer:
             : max(1, len(self.draw_numbers) - short_window)
         ]
         spikes = self._detect_pattern_spikes(recent_draws, baseline_draws)
-        adaptive_weights = self._adaptive_weights(spikes)
 
         zone_target = self._predict_distribution_target(recent_draws, mode="zone")
         range_target = self._predict_distribution_target(recent_draws, mode="range")
@@ -1259,9 +1325,7 @@ class BingoAnalyzer:
         )
         history_component = self._normalize_vector(history_component)
 
-        tail_recent = self._tail_digit_stats(recent_draws)
-        tail_scores = np.array([tail_recent[n % 10] for n in range(1, 81)], dtype=float)
-        tail_component = self._normalize_vector(tail_scores)
+        tail_component = self._blended_tail_component(recent_draws)
 
         cons = self._consecutive_pattern_tables(recent_draws)
         consecutive_numbers = {
@@ -1278,23 +1342,14 @@ class BingoAnalyzer:
                 window=min(10, short_window),
             )
         )
+        cluster_score = (
+            cluster_metadata["interval_cluster"]
+            + cluster_metadata["tail_cluster"]
+            + cluster_metadata["consecutive_cluster"]
+        ) / max(cluster_metadata["window"], 1)
+        adaptive_weights = self._adaptive_weights(spikes, cluster_score=cluster_score)
 
-        gap_stats = self._fixed_gap_stats(recent_draws)
-        skip_stats = self._skip_pattern_stats(recent_draws)
-        gap_anchor = [k for k, v in gap_stats.items() if v > 0]
-        skip_anchor = [k for k, v in skip_stats.items() if v > 0]
-        gap_component = np.array(
-            [
-                float(
-                    any(
-                        ((i + 1) + g) <= 80 or ((i + 1) - g) >= 1
-                        for g in gap_anchor + skip_anchor
-                    )
-                )
-                for i in range(80)
-            ]
-        )
-        gap_component = self._normalize_vector(gap_component)
+        gap_component = self._gap_skip_hotspot_component(recent_draws)
 
         pattern_component = self._normalize_vector(
             (history_component + (lambda_value * hot_component)) / (1.0 + lambda_value)
@@ -1312,7 +1367,10 @@ class BingoAnalyzer:
             + adaptive_weights["gap_skip_pattern"] * gap_component
         )
 
-        penalized_score = self._apply_last_draw_penalty(score, recent_draws[-1])
+        penalty_factor = self._resolve_last_draw_penalty(recent_draws)
+        penalized_score = self._apply_last_draw_penalty(
+            score, recent_draws[-1], penalty_factor
+        )
         ranking = (np.argsort(penalized_score)[::-1] + 1).tolist()
         selected = self._select_with_last_draw_cap(
             ranking,
@@ -1351,7 +1409,7 @@ class BingoAnalyzer:
             "weights": adaptive_weights,
             "similar_cases_used": len(similar_cases),
             "sequence_similarity_window_size": sequence_window_size,
-            "last_draw_penalty": DEFAULT_LAST_DRAW_PENALTY,
+            "last_draw_penalty": penalty_factor,
             "last_draw_max_in_topk": min(DEFAULT_LAST_DRAW_MAX_IN_TOPK, top_k),
             "last_draw_overlap_in_prediction": len(
                 set(selected) & set(recent_draws[-1])

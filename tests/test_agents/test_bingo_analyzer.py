@@ -14,6 +14,7 @@ from agent import (
     ScoreWeights,
     app,
 )
+from backtest import run_grid_search
 
 
 def _make_recent(start_issue: int = 1, periods: int = 10) -> list[dict]:
@@ -219,6 +220,33 @@ def test_cluster_burst_analysis_detects_interval_tail_and_consecutive() -> None:
     assert any(len(group) >= 3 for group in groups)
 
 
+def test_dynamic_cluster_weight() -> None:
+    analyzer = BingoAnalyzer()
+    spikes = {
+        "zone_burst": False,
+        "tail_cluster": False,
+        "consecutive_spike": False,
+        "cluster_burst": True,
+    }
+    weights_low = analyzer._adaptive_weights(spikes, cluster_score=1.0)
+    weights_high = analyzer._adaptive_weights(spikes, cluster_score=9.0)
+
+    assert abs(sum(weights_low.values()) - 1.0) < 1e-9
+    assert abs(sum(weights_high.values()) - 1.0) < 1e-9
+    assert weights_high["cluster_pattern"] > weights_low["cluster_pattern"]
+
+
+def test_tail_blend() -> None:
+    analyzer = BingoAnalyzer()
+    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000021, periods=12)
+    recent_draws = [item["numbers"] for item in recent_payload]
+
+    component = analyzer._blended_tail_component(recent_draws)
+    assert len(component) == 80
+    assert component.max() == 1.0
+    assert component.min() >= 0.0
+
+
 def test_feature_extraction_contains_required_modules() -> None:
     analyzer = BingoAnalyzer()
     recent_draws = [x["numbers"] for x in _make_recent(periods=20)]
@@ -297,6 +325,23 @@ def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
     assert "best_overall" in report
     assert "best_recent" in report
     assert "±" in report
+
+
+def test_grid_search_saves_best_params(tmp_path: Path) -> None:
+    csv_path = tmp_path / "small.csv"
+    _build_small_csv(csv_path, draws=260)
+    analyzer = BingoAnalyzer(csv_path=csv_path)
+    out = tmp_path / "best_params.json"
+
+    best = run_grid_search(analyzer, train_window=120, max_steps=20, output_path=out)
+    assert out.exists()
+    assert best["alpha"] in [0.7, 0.8, 0.9, 0.95]
+    assert best["lambda"] in [0.3, 0.8, 1.5, 2.5]
+    assert set(best["metrics"].keys()) == {
+        "top20_hit_rate",
+        "top10_hit_rate",
+        "top3_hit_rate",
+    }
 
 
 def test_walk_forward_backtest_endpoint() -> None:
