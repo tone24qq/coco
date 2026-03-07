@@ -46,17 +46,18 @@ ADJUSTMENT_VERSION = "v2.0-event-effect-calibrated"
 ZONE_LABELS = ["A", "B", "C", "D"]
 
 
+# 歷史主導 baseline v1
 @dataclass(frozen=True)
 class ScoreWeights:
-    recent_momentum: float = 0.00
-    zone_distribution: float = 0.30
-    pattern_similarity: float = 0.35
-    hot_frequency: float = 0.15
+    recent_momentum: float = 0.02
+    zone_distribution: float = 0.28
+    pattern_similarity: float = 0.32
+    hot_frequency: float = 0.16
     big_mid_small: float = 0.08
-    consecutive_pattern: float = 0.05
+    consecutive_pattern: float = 0.06
     tail_concentration: float = 0.04
-    gap_skip_pattern: float = 0.03
-
+    gap_skip_pattern: float = 0.04
+    
     def as_dict(self) -> Dict[str, float]:
         return asdict(self)
 
