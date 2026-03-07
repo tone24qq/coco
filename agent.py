@@ -48,10 +48,10 @@ ZONE_LABELS = ["A", "B", "C", "D"]
 
 @dataclass(frozen=True)
 class ScoreWeights:
-    recent_momentum: float = 0.35
-    zone_distribution: float = 0.20
-    pattern_similarity: float = 0.15
-    hot_frequency: float = 0.10
+    recent_momentum: float = 0.00
+    zone_distribution: float = 0.30
+    pattern_similarity: float = 0.35
+    hot_frequency: float = 0.15
     big_mid_small: float = 0.08
     consecutive_pattern: float = 0.05
     tail_concentration: float = 0.04
