@@ -57,11 +57,16 @@ class ScoreWeights:
     hot_frequency: float = 0.16
     big_mid_small: float = 0.08
     consecutive_pattern: float = 0.06
+    cluster_pattern: float = 0.15
     tail_concentration: float = 0.04
     gap_skip_pattern: float = 0.04
 
     def as_dict(self) -> Dict[str, float]:
-        return asdict(self)
+        weights = asdict(self)
+        total = float(sum(weights.values()))
+        if total <= 0:
+            return weights
+        return {k: float(v / total) for k, v in weights.items()}
 
 
 class RecentDraw(BaseModel):
@@ -758,6 +763,7 @@ class BingoAnalyzer:
             "zone_burst": zone_burst,
             "tail_cluster": tail_cluster,
             "consecutive_spike": consecutive_spike,
+            "cluster_burst": bool(zone_burst or tail_cluster or consecutive_spike),
         }
 
     def _adaptive_weights(self, spikes: Dict[str, bool]) -> Dict[str, float]:
@@ -768,9 +774,125 @@ class BingoAnalyzer:
             weights["tail_concentration"] += 0.03
         if spikes.get("consecutive_spike"):
             weights["consecutive_pattern"] += 0.03
+        if spikes.get("cluster_burst"):
+            weights["cluster_pattern"] += 0.04
 
         total = float(sum(weights.values()))
         return {k: float(v / total) for k, v in weights.items()}
+
+    def _cluster_burst_analysis(
+        self,
+        draws: Sequence[Sequence[int]],
+        window: int = 10,
+    ) -> Tuple[np.ndarray, List[List[int]], Dict[str, object]]:
+        recent_draws = list(draws)[-min(window, len(draws)) :]
+        if not recent_draws:
+            return (
+                np.zeros(80, dtype=float),
+                [],
+                {
+                    "window": 0,
+                    "interval_cluster": 0,
+                    "tail_cluster": 0,
+                    "consecutive_cluster": 0,
+                },
+            )
+
+        interval_hits = [0, 0, 0, 0]
+        tail_hits: Counter = Counter()
+        consecutive_number_hits: Counter = Counter()
+        consecutive_group_pool: List[List[int]] = []
+
+        for draw in recent_draws:
+            zone_counts = self._zone_counts(draw)
+            for idx, zone in enumerate(ZONE_LABELS):
+                if zone_counts[zone] >= 7:
+                    interval_hits[idx] += 1
+
+            tail_counter = Counter(n % 10 for n in draw)
+            for tail, count in tail_counter.items():
+                if count >= 3:
+                    tail_hits[tail] += 1
+
+            sorted_draw = sorted(draw)
+            run_groups: List[List[int]] = []
+            current_run = [sorted_draw[0]]
+            for i in range(1, len(sorted_draw)):
+                if sorted_draw[i] == sorted_draw[i - 1] + 1:
+                    current_run.append(sorted_draw[i])
+                else:
+                    if len(current_run) >= 2:
+                        run_groups.append(current_run[:])
+                    current_run = [sorted_draw[i]]
+            if len(current_run) >= 2:
+                run_groups.append(current_run)
+
+            if len(run_groups) >= 2:
+                for group in run_groups:
+                    consecutive_group_pool.append(group)
+                    for number in group:
+                        consecutive_number_hits[number] += 1
+
+        interval_component = np.zeros(80, dtype=float)
+        for zone_idx, hit in enumerate(interval_hits):
+            if hit <= 0:
+                continue
+            start = zone_idx * 20
+            interval_component[start : start + 20] = float(hit)
+
+        tail_component = np.array(
+            [float(tail_hits[(i + 1) % 10]) for i in range(80)],
+            dtype=float,
+        )
+        consecutive_component = np.array(
+            [float(consecutive_number_hits.get(i + 1, 0)) for i in range(80)],
+            dtype=float,
+        )
+
+        cluster_raw = interval_component + tail_component + consecutive_component
+        cluster_component = self._normalize_vector(cluster_raw)
+
+        cluster_groups: List[List[int]] = []
+        for group in sorted(consecutive_group_pool, key=lambda x: (-len(x), x[0])):
+            if len(group) < 3:
+                continue
+            if group not in cluster_groups:
+                cluster_groups.append(group)
+            if len(cluster_groups) >= 5:
+                break
+
+        if not cluster_groups:
+            for tail, hit in tail_hits.most_common(2):
+                if hit <= 0:
+                    continue
+                group = [n for n in range(tail if tail > 0 else 10, 81, 10)]
+                if len(group) >= 3:
+                    cluster_groups.append(group)
+
+        if not cluster_groups:
+            for zone_idx, hit in sorted(
+                enumerate(interval_hits),
+                key=lambda x: x[1],
+                reverse=True,
+            ):
+                if hit <= 0:
+                    continue
+                start = zone_idx * 20 + 1
+                cluster_groups.append(list(range(start, min(start + 5, start + 20))))
+                if len(cluster_groups) >= 2:
+                    break
+
+        metadata = {
+            "window": len(recent_draws),
+            "interval_cluster": int(sum(interval_hits)),
+            "tail_cluster": int(sum(tail_hits.values())),
+            "consecutive_cluster": int(sum(consecutive_number_hits.values())),
+            "interval_zones": {
+                zone: int(interval_hits[idx]) for idx, zone in enumerate(ZONE_LABELS)
+            },
+            "tail_digits": {str(t): int(c) for t, c in sorted(tail_hits.items())},
+        }
+        return cluster_component, cluster_groups, metadata
 
     def _history_pattern_similarity_component(
         self,
@@ -1150,6 +1272,13 @@ class BingoAnalyzer:
         )
         cons_component = self._normalize_vector(cons_component)
 
+        cluster_component, cluster_groups, cluster_metadata = (
+            self._cluster_burst_analysis(
+                recent_draws,
+                window=min(10, short_window),
+            )
+        )
+
         gap_stats = self._fixed_gap_stats(recent_draws)
         skip_stats = self._skip_pattern_stats(recent_draws)
         gap_anchor = [k for k, v in gap_stats.items() if v > 0]
@@ -1178,6 +1307,7 @@ class BingoAnalyzer:
             + adaptive_weights["hot_frequency"] * hot_component
             + adaptive_weights["big_mid_small"] * range_component
             + adaptive_weights["consecutive_pattern"] * cons_component
+            + adaptive_weights["cluster_pattern"] * cluster_component
             + adaptive_weights["tail_concentration"] * tail_component
             + adaptive_weights["gap_skip_pattern"] * gap_component
         )
@@ -1209,6 +1339,15 @@ class BingoAnalyzer:
             "consecutive_trend": (
                 "detected" if spikes["consecutive_spike"] else "not_detected"
             ),
+            "cluster_burst": (
+                "detected" if spikes["cluster_burst"] else "not_detected"
+            ),
+            "cluster_score": {
+                "interval_cluster": cluster_metadata["interval_cluster"],
+                "tail_cluster": cluster_metadata["tail_cluster"],
+                "consecutive_cluster": cluster_metadata["consecutive_cluster"],
+            },
+            "cluster_analysis": cluster_metadata,
             "weights": adaptive_weights,
             "similar_cases_used": len(similar_cases),
             "sequence_similarity_window_size": sequence_window_size,
@@ -1230,6 +1369,7 @@ class BingoAnalyzer:
             "top_10_candidate_numbers": top10,
             "top10_numbers": top10,
             "predicted_numbers_top20": selected,
+            "cluster_groups": cluster_groups,
             "top_3_same_draw_combinations": top3_combos,
             "top3_combinations": top3_combos,
             "top3_triplet": {

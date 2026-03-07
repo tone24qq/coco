@@ -127,6 +127,8 @@ def test_predict_next_output_constraints_with_recent() -> None:
     assert sum(pred["predicted_big_mid_small_distribution"].values()) == 20
     assert len(pred["predicted_numbers_top20"]) == 20
     assert len(set(pred["predicted_numbers_top20"])) == 20
+    assert "cluster_groups" in pred
+    assert isinstance(pred["cluster_groups"], list)
     assert len(pred["top3_triplet"]["numbers"]) == 3
     assert len(pred["top_3_same_draw_combinations"]) == 3
     assert len(pred["top_10_candidate_numbers"]) == 10
@@ -198,6 +200,23 @@ def test_adaptive_weights_normalized() -> None:
     assert abs(sum(weights.values()) - 1.0) < 1e-9
     base = ScoreWeights().as_dict()
     assert weights["zone_distribution"] > base["zone_distribution"]
+    assert "cluster_pattern" in weights
+
+
+def test_cluster_burst_analysis_detects_interval_tail_and_consecutive() -> None:
+    analyzer = BingoAnalyzer()
+    draws = [
+        [1, 2, 3, 4, 5, 6, 7, 8, 25, 35, 45, 55, 65, 75, 10, 20, 30, 40, 50, 60],
+        [21, 22, 23, 24, 25, 26, 27, 28, 18, 38, 48, 58, 68, 78, 9, 19, 29, 39, 49, 59],
+    ]
+    component, groups, meta = analyzer._cluster_burst_analysis(draws, window=2)
+
+    assert len(component) == 80
+    assert component.max() == 1.0
+    assert meta["interval_cluster"] > 0
+    assert meta["tail_cluster"] > 0
+    assert meta["consecutive_cluster"] > 0
+    assert any(len(group) >= 3 for group in groups)
 
 
 def test_feature_extraction_contains_required_modules() -> None:
