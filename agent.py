@@ -770,7 +770,7 @@ class BingoAnalyzer:
         return {k: float(v / total) for k, v in weights.items()}
 
     def _history_pattern_similarity_component(
-        self, latest_draw: Sequence[int], latest_issue: int, top_n: int = 100
+        self, latest_draw: Sequence[int], latest_issue: int, top_n: int = 500
     ) -> Tuple[np.ndarray, List[Dict[str, object]]]:
         latest_zone = self._zone_counts(latest_draw)
         latest_range = self._range_counts(latest_draw)
