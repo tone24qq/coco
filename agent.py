@@ -49,7 +49,7 @@ ZONE_LABELS = ["A", "B", "C", "D"]
 # 歷史主導 baseline v1
 @dataclass(frozen=True)
 class ScoreWeights:
-    recent_momentum: float = 0.02
+    recent_momentum: float = 0
     zone_distribution: float = 0.28
     pattern_similarity: float = 0.32
     hot_frequency: float = 0.16
