@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 
 from agent import (
     CSV_FILES,
+    DEFAULT_LAST_DRAW_MAX_IN_TOPK,
+    DEFAULT_LAST_DRAW_PENALTY,
     PREDICT_REQUIRED_MESSAGE,
     BacktestRequest,
     BingoAnalyzer,
@@ -128,6 +130,30 @@ def test_predict_next_output_constraints_with_recent() -> None:
     assert len(pred["top3_triplet"]["numbers"]) == 3
     assert len(pred["top_3_same_draw_combinations"]) == 3
     assert len(pred["top_10_candidate_numbers"]) == 10
+
+
+def test_predict_next_penalizes_last_draw_overlap() -> None:
+    analyzer = BingoAnalyzer()
+    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000031, periods=12)
+    recent_draws = [item["numbers"] for item in recent_payload]
+    pred = analyzer.predict_next(recent_draws=recent_draws, latest_issue=115000042)
+
+    last_draw_set = set(recent_draws[-1])
+    overlap_count = len(set(pred["predicted_numbers_top20"]) & last_draw_set)
+
+    assert overlap_count <= DEFAULT_LAST_DRAW_MAX_IN_TOPK
+    assert (
+        pred["explanation_of_influential_patterns"]["last_draw_penalty"]
+        == DEFAULT_LAST_DRAW_PENALTY
+    )
+    assert (
+        pred["explanation_of_influential_patterns"]["last_draw_max_in_topk"]
+        == DEFAULT_LAST_DRAW_MAX_IN_TOPK
+    )
+    assert (
+        pred["explanation_of_influential_patterns"]["last_draw_overlap_in_prediction"]
+        == overlap_count
+    )
 
 
 def test_historical_data_verification_is_used() -> None:

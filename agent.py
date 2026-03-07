@@ -24,6 +24,8 @@ CSV_FILES = [
 DEFAULT_SEED = 42
 PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆），才可進行下一期預測。"
 HISTORY_MIN_THRESHOLD = 200
+DEFAULT_LAST_DRAW_PENALTY = 0.35
+DEFAULT_LAST_DRAW_MAX_IN_TOPK = 4
 logger = logging.getLogger(__name__)
 
 DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS = {
@@ -57,7 +59,7 @@ class ScoreWeights:
     consecutive_pattern: float = 0.06
     tail_concentration: float = 0.04
     gap_skip_pattern: float = 0.04
-    
+
     def as_dict(self) -> Dict[str, float]:
         return asdict(self)
 
@@ -897,17 +899,80 @@ class BingoAnalyzer:
     ) -> Dict[str, int]:
         if mode == "zone":
             latest = self._zone_counts(recent_draws[-1])
-            means = pd.DataFrame(
+            short_means = pd.DataFrame(
                 [self._zone_counts(d) for d in recent_draws[-10:]]
             ).mean()
-            target = {k: int(round((latest[k] + means[k]) / 2)) for k in latest}
+            long_means = pd.DataFrame(
+                [self._zone_counts(d) for d in self.draw_numbers[-200:]]
+            ).mean()
+            target = {
+                k: int(
+                    round(
+                        (0.15 * latest[k])
+                        + (0.35 * short_means[k])
+                        + (0.50 * long_means[k])
+                    )
+                )
+                for k in latest
+            }
         else:
             latest = self._range_counts(recent_draws[-1])
-            means = pd.DataFrame(
+            short_means = pd.DataFrame(
                 [self._range_counts(d) for d in recent_draws[-10:]]
             ).mean()
-            target = {k: int(round((latest[k] + means[k]) / 2)) for k in latest}
+            long_means = pd.DataFrame(
+                [self._range_counts(d) for d in self.draw_numbers[-200:]]
+            ).mean()
+            target = {
+                k: int(
+                    round(
+                        (0.15 * latest[k])
+                        + (0.35 * short_means[k])
+                        + (0.50 * long_means[k])
+                    )
+                )
+                for k in latest
+            }
         return self._normalize_target_counts(target)
+
+    @staticmethod
+    def _apply_last_draw_penalty(
+        score: np.ndarray, last_draw: Sequence[int]
+    ) -> np.ndarray:
+        penalized = score.copy()
+        for number in last_draw:
+            penalized[number - 1] *= DEFAULT_LAST_DRAW_PENALTY
+        return penalized
+
+    @staticmethod
+    def _select_with_last_draw_cap(
+        ranking: Sequence[int],
+        last_draw: Sequence[int],
+        top_k: int,
+        max_last_draw: int = DEFAULT_LAST_DRAW_MAX_IN_TOPK,
+    ) -> List[int]:
+        selected: List[int] = []
+        last_draw_set = set(last_draw)
+        last_draw_count = 0
+        deferred: List[int] = []
+
+        for number in ranking:
+            if len(selected) >= top_k:
+                break
+            if number in last_draw_set and last_draw_count >= max_last_draw:
+                deferred.append(number)
+                continue
+            selected.append(int(number))
+            if number in last_draw_set:
+                last_draw_count += 1
+
+        if len(selected) < top_k:
+            for number in deferred:
+                if len(selected) >= top_k:
+                    break
+                selected.append(int(number))
+
+        return selected
 
     def _momentum_scores(
         self, draws: Sequence[Sequence[int]], window: int
@@ -1071,13 +1136,22 @@ class BingoAnalyzer:
             + adaptive_weights["gap_skip_pattern"] * gap_component
         )
 
-        ranking = np.argsort(score)[::-1] + 1
-        selected = ranking[:top_k].tolist()
-        top10 = ranking[:10].tolist()
+        penalized_score = self._apply_last_draw_penalty(score, recent_draws[-1])
+        ranking = (np.argsort(penalized_score)[::-1] + 1).tolist()
+        selected = self._select_with_last_draw_cap(
+            ranking,
+            recent_draws[-1],
+            top_k=top_k,
+        )
+        top10 = self._select_with_last_draw_cap(
+            ranking,
+            recent_draws[-1],
+            top_k=10,
+        )
         _, triplet_counter = self._combo_resonance_scores(recent_draws)
         top3_combos = self._top_same_draw_combinations(
             selected,
-            score,
+            penalized_score,
             triplet_counter,
             top_n=3,
             pool_size=candidate_pool_size,
@@ -1091,6 +1165,11 @@ class BingoAnalyzer:
             ),
             "weights": adaptive_weights,
             "similar_cases_used": len(similar_cases),
+            "last_draw_penalty": DEFAULT_LAST_DRAW_PENALTY,
+            "last_draw_max_in_topk": min(DEFAULT_LAST_DRAW_MAX_IN_TOPK, top_k),
+            "last_draw_overlap_in_prediction": len(
+                set(selected) & set(recent_draws[-1])
+            ),
         }
 
         return {
@@ -1108,7 +1187,9 @@ class BingoAnalyzer:
             "top3_combinations": top3_combos,
             "top3_triplet": {
                 "numbers": top3_combos[0],
-                "score": float(np.mean([score[n - 1] for n in top3_combos[0]])),
+                "score": float(
+                    np.mean([penalized_score[n - 1] for n in top3_combos[0]])
+                ),
             },
             "explanation_of_influential_patterns": explanation,
             "explanation": explanation,
