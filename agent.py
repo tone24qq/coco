@@ -773,35 +773,76 @@ class BingoAnalyzer:
         return {k: float(v / total) for k, v in weights.items()}
 
     def _history_pattern_similarity_component(
-        self, latest_draw: Sequence[int], latest_issue: int, top_n: int = 500
+        self,
+        recent_draws: Sequence[Sequence[int]],
+        latest_issue: int,
+        sequence_window_size: int = 10,
+        top_n: int = 500,
     ) -> Tuple[np.ndarray, List[Dict[str, object]]]:
-        latest_zone = self._zone_counts(latest_draw)
-        latest_range = self._range_counts(latest_draw)
-        latest_tail = self._tail_digit_stats([latest_draw])
+        if not recent_draws:
+            return np.zeros(80, dtype=float), []
 
-        candidates: List[Tuple[float, int, int]] = []
-        for issue, idx in self.issue_to_index.items():
-            if issue >= latest_issue:
-                continue
-            next_issue = issue + 1
-            if next_issue not in self.issue_to_index:
-                continue
-            draw = self.draw_numbers[idx]
-            zone = self._zone_counts(draw)
-            ranges = self._range_counts(draw)
-            tail = self._tail_digit_stats([draw])
+        window_size = min(max(sequence_window_size, 1), len(recent_draws))
+        query_sequence = [sorted(draw) for draw in list(recent_draws)[-window_size:]]
+        query_zone_seq = [self._zone_counts(draw) for draw in query_sequence]
+        query_range_seq = [self._range_counts(draw) for draw in query_sequence]
+        query_tail_seq = [self._tail_digit_stats([draw]) for draw in query_sequence]
+        step_weights = np.arange(1, window_size + 1, dtype=float)
+        step_weights = step_weights / step_weights.sum()
 
-            zone_sim = 1 - (sum(abs(zone[k] - latest_zone[k]) for k in zone) / 40)
-            range_sim = 1 - (sum(abs(ranges[k] - latest_range[k]) for k in ranges) / 40)
-            tail_sim = 1 - (
-                sum(abs(tail[k] - latest_tail[k]) for k in tail)
-                / max(sum(latest_tail.values()) + sum(tail.values()), 1)
-            )
-            set_sim = len(set(draw) & set(latest_draw)) / len(
-                set(draw) | set(latest_draw)
-            )
-            sim = 0.30 * zone_sim + 0.20 * range_sim + 0.20 * tail_sim + 0.30 * set_sim
-            candidates.append((float(sim), issue, next_issue))
+        candidates: List[Tuple[float, int, int, int]] = []
+        latest_index = self.issue_to_index.get(latest_issue)
+        search_end_index = (
+            latest_index if latest_index is not None else len(self.draw_numbers)
+        )
+        max_start_exclusive = max(search_end_index - window_size, 0)
+        search_start_index = max(0, max_start_exclusive - 1200)
+        for start_idx in range(search_start_index, max_start_exclusive):
+            end_idx = start_idx + window_size - 1
+            next_idx = end_idx + 1
+            if next_idx >= search_end_index:
+                continue
+
+            hist_sequence = self.draw_numbers[start_idx : end_idx + 1]
+            sequence_sim = 0.0
+            for pos in range(window_size):
+                hist_draw = hist_sequence[pos]
+                query_draw = query_sequence[pos]
+                hist_zone = self._zone_counts(hist_draw)
+                hist_range = self._range_counts(hist_draw)
+                hist_tail = self._tail_digit_stats([hist_draw])
+
+                zone_sim = 1 - (
+                    sum(abs(hist_zone[k] - query_zone_seq[pos][k]) for k in hist_zone)
+                    / 40
+                )
+                range_sim = 1 - (
+                    sum(
+                        abs(hist_range[k] - query_range_seq[pos][k]) for k in hist_range
+                    )
+                    / 40
+                )
+                tail_sim = 1 - (
+                    sum(abs(hist_tail[k] - query_tail_seq[pos][k]) for k in hist_tail)
+                    / max(
+                        sum(hist_tail.values()) + sum(query_tail_seq[pos].values()), 1
+                    )
+                )
+                set_sim = len(set(hist_draw) & set(query_draw)) / len(
+                    set(hist_draw) | set(query_draw)
+                )
+                sim = (
+                    0.30 * zone_sim
+                    + 0.20 * range_sim
+                    + 0.20 * tail_sim
+                    + 0.30 * set_sim
+                )
+                sequence_sim += step_weights[pos] * sim
+
+            start_issue = int(self.df.iloc[start_idx]["issue"])
+            end_issue = int(self.df.iloc[end_idx]["issue"])
+            next_issue = int(self.df.iloc[next_idx]["issue"])
+            candidates.append((float(sequence_sim), start_issue, end_issue, next_issue))
 
         candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
         selected = [item for item in candidates if item[0] > 0][:top_n]
@@ -810,12 +851,14 @@ class BingoAnalyzer:
         total_weight = sum(x[0] for x in selected)
         if total_weight <= 0:
             return history_scores, details
-        for sim, issue, next_issue in selected:
+        for sim, start_issue, end_issue, next_issue in selected:
             next_draw = self.draw_numbers[self.issue_to_index[next_issue]]
             details.append(
                 {
-                    "issue": int(issue),
+                    "sequence_start_issue": int(start_issue),
+                    "sequence_end_issue": int(end_issue),
                     "next_issue": int(next_issue),
+                    "sequence_window_size": int(window_size),
                     "similarity": round(float(sim), 6),
                 }
             )
@@ -1086,8 +1129,11 @@ class BingoAnalyzer:
         recent_component = self._normalize_vector(recent_freq)
         hot_component = self._normalize_vector(self._hot_frequency_scores())
 
+        sequence_window_size = min(10, max(5, len(recent_draws)))
         history_component, similar_cases = self._history_pattern_similarity_component(
-            recent_draws[-1], latest_issue
+            recent_draws=recent_draws,
+            latest_issue=latest_issue,
+            sequence_window_size=sequence_window_size,
         )
         history_component = self._normalize_vector(history_component)
 
@@ -1165,6 +1211,7 @@ class BingoAnalyzer:
             ),
             "weights": adaptive_weights,
             "similar_cases_used": len(similar_cases),
+            "sequence_similarity_window_size": sequence_window_size,
             "last_draw_penalty": DEFAULT_LAST_DRAW_PENALTY,
             "last_draw_max_in_topk": min(DEFAULT_LAST_DRAW_MAX_IN_TOPK, top_k),
             "last_draw_overlap_in_prediction": len(

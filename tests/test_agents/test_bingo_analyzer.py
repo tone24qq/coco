@@ -156,6 +156,26 @@ def test_predict_next_penalizes_last_draw_overlap() -> None:
     )
 
 
+def test_history_similarity_uses_sequence_window() -> None:
+    analyzer = BingoAnalyzer()
+    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000031, periods=12)
+    recent_draws = [item["numbers"] for item in recent_payload]
+
+    _, details = analyzer._history_pattern_similarity_component(
+        recent_draws=recent_draws,
+        latest_issue=115000042,
+        sequence_window_size=8,
+        top_n=5,
+    )
+
+    assert len(details) <= 5
+    if details:
+        first = details[0]
+        assert first["sequence_window_size"] == 8
+        assert first["sequence_end_issue"] >= first["sequence_start_issue"]
+        assert first["next_issue"] > first["sequence_end_issue"]
+
+
 def test_historical_data_verification_is_used() -> None:
     analyzer = BingoAnalyzer()
     recent_draws = [x["numbers"] for x in _make_recent(periods=20)]
@@ -164,6 +184,10 @@ def test_historical_data_verification_is_used() -> None:
     assert hist["loaded_draws"] > 0
     assert hist["history_baseline"] >= 0
     assert pred["explanation_of_influential_patterns"]["similar_cases_used"] >= 0
+    assert (
+        pred["explanation_of_influential_patterns"]["sequence_similarity_window_size"]
+        == 10
+    )
 
 
 def test_adaptive_weights_normalized() -> None:
