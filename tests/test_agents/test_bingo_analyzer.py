@@ -116,6 +116,8 @@ def test_basic_statistics_structure() -> None:
     assert len(stats["number_probabilities"]) == 80
     assert len(stats["top_triplets"]) == 5
     assert "big_mid_small_stats" in stats
+    assert "big_small_stats" in stats
+    assert "odd_even_stats" in stats
 
 
 def test_predict_next_output_constraints_with_recent() -> None:
@@ -135,6 +137,11 @@ def test_predict_next_output_constraints_with_recent() -> None:
     assert len(pred["top3_triplet"]["numbers"]) == 3
     assert len(pred["top_3_same_draw_combinations"]) == 3
     assert len(pred["top_10_candidate_numbers"]) == 10
+    assert sum(pred["big_small_count"].values()) == 20
+    assert sum(pred["odd_even_count"].values()) == 20
+    assert pred["big_small_type"].startswith("大")
+    assert pred["odd_even_type"].startswith("單")
+    assert 0.0 <= pred["odd_even_score"] <= 1.0
 
 
 def test_predict_next_penalizes_last_draw_overlap() -> None:
@@ -281,6 +288,8 @@ def test_feature_extraction_contains_required_modules() -> None:
     assert "zone_mean" in rf
     assert "range_mean" in rf
     assert "tail" in rf
+    assert "big_small_mean" in rf
+    assert "odd_even_mean" in rf
     assert "gaps" in rf
     assert "skip" in rf
     assert "consecutive" in rf
@@ -322,6 +331,10 @@ def test_classify_board_endpoint() -> None:
     assert payload["board_type"] in {"小盤", "平均盤", "大盤"}
     assert set(payload["zone_counts"].keys()) == {"A", "B", "C", "D"}
     assert sum(payload["zone_counts"].values()) == 20
+    assert sum(payload["big_small_count"].values()) == 20
+    assert sum(payload["odd_even_count"].values()) == 20
+    assert payload["big_small_type"].startswith("大")
+    assert payload["odd_even_type"].startswith("單")
 
 
 def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:
@@ -391,6 +404,7 @@ def test_walk_forward_backtest_endpoint() -> None:
     assert data["steps"] == 10
     assert "metrics" in data
     assert "avg_top10_hits" in data["metrics"]
+    assert "odd_even_accuracy" in data["metrics"]
 
 
 def test_predict_top3_endpoint(tmp_path: Path) -> None:
@@ -441,6 +455,7 @@ def test_predict_top3_endpoint(tmp_path: Path) -> None:
     assert data["config_used"]["config"]["candidate_pool_size"] == 10
     assert "single_scores" in data["diagnostics"]
     assert "pair_score_sum" in data["diagnostics"]
+    assert "odd_even_score" in data["diagnostics"]
 
     resp_overall = client.post("/predict/top3?use=overall", json=payload)
     assert resp_overall.status_code == 200
@@ -512,6 +527,8 @@ def test_sequence_similarity_prediction_output_schema() -> None:
         assert "top_similarity_component_breakdown" in pred["debug"]
         assert "prefilter_candidate_count" in pred
         assert "postfilter_candidate_count" in pred
+        assert "odd_even_score" in pred
+        assert "odd_even_type" in pred
 
 
 def test_sequence_similarity_backtest_endpoint() -> None:
@@ -534,6 +551,7 @@ def test_sequence_similarity_backtest_endpoint() -> None:
     assert "ab_comparison" in data["metrics"]
     assert {"A", "B", "C", "D"}.issubset(data["metrics"]["ab_comparison"].keys())
     assert "sample_insufficient_rate" in data
+    assert "odd_even_score" in data["metrics"]
 
 
 def test_sequence_similarity_predict_endpoint() -> None:

@@ -62,9 +62,10 @@ DEFAULT_SEQUENCE_SIMILARITY_WEIGHTS = {
 }
 
 DEFAULT_SEQUENCE_SCORE_WEIGHTS = {
-    "similar_following_frequency": 0.40,
-    "similarity_weighted_frequency": 0.40,
+    "similar_following_frequency": 0.38,
+    "similarity_weighted_frequency": 0.37,
     "current_pattern_adjustment": 0.20,
+    "odd_even_structure_score": 0.05,
 }
 
 FEATURE_VERSION = "v2.0-standardized-5board"
@@ -324,6 +325,63 @@ class BingoAnalyzer:
             "mid": sum(1 for n in draw if 27 <= n <= 53),
             "large": sum(1 for n in draw if 54 <= n <= 80),
         }
+
+    @staticmethod
+    def _big_small_counts(draw: Sequence[int]) -> Dict[str, int]:
+        return {
+            "big": sum(1 for n in draw if 41 <= n <= 80),
+            "small": sum(1 for n in draw if 1 <= n <= 40),
+        }
+
+    @staticmethod
+    def _odd_even_counts(draw: Sequence[int]) -> Dict[str, int]:
+        odd_count = sum(1 for n in draw if n % 2 == 1)
+        return {
+            "odd": odd_count,
+            "even": len(draw) - odd_count,
+        }
+
+    def _distribution_stats(self, draw: Sequence[int]) -> Dict[str, object]:
+        big_small = self._big_small_counts(draw)
+        odd_even = self._odd_even_counts(draw)
+        return {
+            "big_small_count": big_small,
+            "odd_even_count": odd_even,
+            "big_small_type": f"大{big_small['big']}小{big_small['small']}",
+            "odd_even_type": f"單{odd_even['odd']}雙{odd_even['even']}",
+            "odd_even_diff": int(abs(odd_even["odd"] - odd_even["even"])),
+        }
+
+    def _odd_even_target_counts(
+        self, draws: Sequence[Sequence[int]], window: int = 10
+    ) -> Dict[str, int]:
+        ref_draws = list(draws)[-min(window, len(draws)) :]
+        if not ref_draws:
+            return {"odd": 10, "even": 10}
+        odd_avg = float(
+            np.mean([self._odd_even_counts(draw)["odd"] for draw in ref_draws])
+        )
+        target = {"odd": int(round(odd_avg)), "even": int(20 - round(odd_avg))}
+        return self._normalize_target_counts(target)
+
+    def _odd_even_structure_score(
+        self, numbers: Sequence[int], target: Dict[str, int]
+    ) -> float:
+        if not numbers:
+            return 0.0
+        counts = self._odd_even_counts(numbers)
+        gap = abs(counts["odd"] - target.get("odd", 10)) + abs(
+            counts["even"] - target.get("even", 10)
+        )
+        return float(max(0.0, 1.0 - gap / 20.0))
+
+    def _odd_even_component(self, target: Dict[str, int]) -> np.ndarray:
+        component = np.zeros(80, dtype=float)
+        odd_target = target.get("odd", 10)
+        even_target = target.get("even", 10)
+        for idx, number in enumerate(range(1, 81)):
+            component[idx] = float(odd_target if number % 2 == 1 else even_target)
+        return self._normalize_vector(component)
 
     @staticmethod
     def _consecutive_runs(draw: Sequence[int]) -> List[int]:
@@ -771,6 +829,8 @@ class BingoAnalyzer:
     ) -> Dict[str, object]:
         zone_df = pd.DataFrame([self._zone_counts(d) for d in draws])
         range_df = pd.DataFrame([self._range_counts(d) for d in draws])
+        big_small_df = pd.DataFrame([self._big_small_counts(d) for d in draws])
+        odd_even_df = pd.DataFrame([self._odd_even_counts(d) for d in draws])
         tail = self._tail_digit_stats(draws)
         gaps = self._fixed_gap_stats(draws)
         skip = self._skip_pattern_stats(draws)
@@ -778,6 +838,12 @@ class BingoAnalyzer:
         return {
             "zone_mean": {k: float(v) for k, v in zone_df.mean().to_dict().items()},
             "range_mean": {k: float(v) for k, v in range_df.mean().to_dict().items()},
+            "big_small_mean": {
+                k: float(v) for k, v in big_small_df.mean().to_dict().items()
+            },
+            "odd_even_mean": {
+                k: float(v) for k, v in odd_even_df.mean().to_dict().items()
+            },
             "tail": tail,
             "gaps": gaps,
             "skip": skip,
@@ -1391,6 +1457,12 @@ class BingoAnalyzer:
             [self._range_counts(d) for d in self.draw_numbers]
         )
         range_avg = range_per_draw.mean().to_dict()
+        big_small_per_draw = pd.DataFrame(
+            [self._big_small_counts(d) for d in self.draw_numbers]
+        )
+        odd_even_per_draw = pd.DataFrame(
+            [self._odd_even_counts(d) for d in self.draw_numbers]
+        )
         triplets = Counter()
         for draw in self.draw_numbers:
             for combo in combinations(draw, 3):
@@ -1407,6 +1479,16 @@ class BingoAnalyzer:
             },
             "big_mid_small_stats": {
                 "average_per_draw": {k: float(v) for k, v in range_avg.items()}
+            },
+            "big_small_stats": {
+                "average_per_draw": {
+                    k: float(v) for k, v in big_small_per_draw.mean().to_dict().items()
+                }
+            },
+            "odd_even_stats": {
+                "average_per_draw": {
+                    k: float(v) for k, v in odd_even_per_draw.mean().to_dict().items()
+                }
             },
             "top_triplets": [
                 {"numbers": list(nums), "count": c}
@@ -1429,11 +1511,30 @@ class BingoAnalyzer:
         baseline = self.draw_numbers[
             : max(1, len(self.draw_numbers) - len(recent_window))
         ]
+        latest_distribution = self._distribution_stats(latest_draw)
+        odd_even_window = [self._odd_even_counts(draw) for draw in draws[-10:]]
+        odd_avg = (
+            float(np.mean([item["odd"] for item in odd_even_window]))
+            if odd_even_window
+            else 10.0
+        )
+        even_avg = (
+            float(np.mean([item["even"] for item in odd_even_window]))
+            if odd_even_window
+            else 10.0
+        )
         return {
             "latest_issue": resolved_latest_issue,
             "latest_draw": list(latest_draw),
+            "latest_distribution": latest_distribution,
             "recent_features": self._build_feature_snapshot(recent_window),
             "history_features": self._build_feature_snapshot(baseline),
+            "odd_even_recent_trend": {
+                "window": int(min(10, len(draws))),
+                "odd_average": odd_avg,
+                "even_average": even_avg,
+                "average_diff": float(abs(odd_avg - even_avg)),
+            },
             "history_verification": self._verify_history_usage(len(recent_window)),
         }
 
@@ -1468,6 +1569,7 @@ class BingoAnalyzer:
 
         zone_target = self._predict_distribution_target(recent_draws, mode="zone")
         range_target = self._predict_distribution_target(recent_draws, mode="range")
+        odd_even_target = self._odd_even_target_counts(recent_draws, window=10)
 
         zone_component = self._number_weights_from_group_counts(
             zone_target, kind="zone"
@@ -1584,6 +1686,10 @@ class BingoAnalyzer:
             pool_size=candidate_pool_size,
         )
 
+        predicted_distribution = self._distribution_stats(selected)
+        latest_distribution = self._distribution_stats(recent_draws[-1])
+        odd_even_score = self._odd_even_structure_score(selected, odd_even_target)
+
         explanation = {
             "zone_burst": "detected" if spikes["zone_burst"] else "not_detected",
             "tail_cluster": "detected" if spikes["tail_cluster"] else "not_detected",
@@ -1616,6 +1722,10 @@ class BingoAnalyzer:
             "last_draw_overlap_in_prediction": len(
                 set(selected) & set(recent_draws[-1])
             ),
+            "latest_distribution": latest_distribution,
+            "predicted_distribution": predicted_distribution,
+            "odd_even_target": odd_even_target,
+            "odd_even_score": odd_even_score,
         }
 
         return {
@@ -1626,6 +1736,10 @@ class BingoAnalyzer:
             "predicted_zone_counts": zone_target,
             "predicted_big_mid_small_distribution": range_target,
             "predicted_big_mid_small": range_target,
+            "predicted_big_small_distribution": self._big_small_counts(selected),
+            "predicted_big_small": self._big_small_counts(selected),
+            "predicted_odd_even_distribution": predicted_distribution["odd_even_count"],
+            "predicted_odd_even": predicted_distribution["odd_even_count"],
             "top_10_candidate_numbers": top10,
             "top10_numbers": top10,
             "predicted_numbers_top20": selected,
@@ -1644,6 +1758,12 @@ class BingoAnalyzer:
                 "base": ScoreWeights().as_dict(),
                 "adaptive": adaptive_weights,
             },
+            "big_small_count": predicted_distribution["big_small_count"],
+            "odd_even_count": predicted_distribution["odd_even_count"],
+            "big_small_type": predicted_distribution["big_small_type"],
+            "odd_even_type": predicted_distribution["odd_even_type"],
+            "odd_even_diff": predicted_distribution["odd_even_diff"],
+            "odd_even_score": odd_even_score,
             "history_verification": self._verify_history_usage(short_window),
         }
 
@@ -1872,6 +1992,7 @@ class BingoAnalyzer:
                 "similar_following_frequency",
                 "similarity_weighted_frequency",
                 "current_pattern_adjustment",
+                "odd_even_structure_score",
             ],
         )
 
@@ -2118,11 +2239,16 @@ class BingoAnalyzer:
             historical_features=history_window_features,
         )
         pattern_adjustment_norm = self._normalize_vector(pattern_adjustment)
+        odd_even_target = self._odd_even_target_counts(
+            window_draws, window=min(10, len(window_draws))
+        )
+        odd_even_component = self._odd_even_component(odd_even_target)
 
         final_scores = (
             pred_weights["similar_following_frequency"] * raw_frequency
             + pred_weights["similarity_weighted_frequency"] * weighted_frequency
             + pred_weights["current_pattern_adjustment"] * pattern_adjustment_norm
+            + pred_weights["odd_even_structure_score"] * odd_even_component
         )
 
         ranking = sorted(
@@ -2150,6 +2276,7 @@ class BingoAnalyzer:
                     "pattern_bonus": round(
                         float(pattern_adjustment_norm[number - 1]), 6
                     ),
+                    "odd_even_bonus": round(float(odd_even_component[number - 1]), 6),
                 }
             )
 
@@ -2199,9 +2326,15 @@ class BingoAnalyzer:
                 "minimum_required_matches": min_match_count,
                 "similarity_weights": sim_weights,
                 "score_weights": pred_weights,
+                "odd_even_target": odd_even_target,
                 "prefilter_candidate_count": int(prefilter_size),
                 "postfilter_candidate_count": int(len(candidate_rows)),
             },
+            "odd_even_count": self._odd_even_counts(ranking[:20]),
+            "odd_even_type": f"單{self._odd_even_counts(ranking[:20])['odd']}雙{self._odd_even_counts(ranking[:20])['even']}",
+            "odd_even_score": self._odd_even_structure_score(
+                ranking[:20], odd_even_target
+            ),
             "debug": base_debug,
         }
 
@@ -2265,6 +2398,7 @@ class BingoAnalyzer:
             top5_hits = 0
             top10_hits = 0
             total_hit_count = 0
+            odd_even_score_sum = 0.0
             insufficient = 0
             hit_distribution: Counter = Counter()
             version_details = []
@@ -2301,6 +2435,12 @@ class BingoAnalyzer:
                 top3 = set(pred["predicted_top_3"])
                 top5 = set(pred["predicted_top_5"])
                 top10 = set(pred["predicted_top_10"])
+                odd_even_target = self._odd_even_target_counts(
+                    recent_draws, window=min(10, len(recent_draws))
+                )
+                odd_even_score = self._odd_even_structure_score(
+                    pred["predicted_top_10"], odd_even_target
+                )
                 hit_count = len(actual & top10)
                 top3_hit = int(len(actual & top3) > 0)
                 top5_hit = int(len(actual & top5) > 0)
@@ -2309,6 +2449,7 @@ class BingoAnalyzer:
                 top5_hits += top5_hit
                 top10_hits += top10_hit
                 total_hit_count += hit_count
+                odd_even_score_sum += odd_even_score
                 hit_distribution[hit_count] += 1
                 version_details.append(
                     {
@@ -2319,6 +2460,7 @@ class BingoAnalyzer:
                         "top5_hit": top5_hit,
                         "top10_hit": top10_hit,
                         "top10_hit_count": hit_count,
+                        "odd_even_score": float(odd_even_score),
                     }
                 )
 
@@ -2328,6 +2470,7 @@ class BingoAnalyzer:
                 "top5_hit_rate": self._safe_div(top5_hits, valid_steps),
                 "top10_hit_rate": self._safe_div(top10_hits, valid_steps),
                 "average_top10_hits": self._safe_div(total_hit_count, valid_steps),
+                "odd_even_score": self._safe_div(odd_even_score_sum, valid_steps),
                 "sample_insufficient_rate": (
                     self._safe_div(insufficient, len(version_details))
                     if version_details
@@ -2356,6 +2499,7 @@ class BingoAnalyzer:
                 "top5_hit_rate": baseline["top5_hit_rate"],
                 "top10_hit_rate": baseline["top10_hit_rate"],
                 "average_top10_hits": baseline["average_top10_hits"],
+                "odd_even_score": baseline["odd_even_score"],
                 "hit_distribution": baseline["hit_distribution"],
                 "ab_comparison": results_by_version,
             },
@@ -2384,6 +2528,7 @@ class BingoAnalyzer:
             )
             zone_actual = self._zone_counts(self.draw_numbers[idx])
             range_actual = self._range_counts(self.draw_numbers[idx])
+            odd_even_actual = self._odd_even_counts(self.draw_numbers[idx])
             zone_acc = (
                 1
                 - sum(
@@ -2403,6 +2548,14 @@ class BingoAnalyzer:
                 )
                 / 40
             )
+            odd_even_acc = (
+                1
+                - sum(
+                    abs(odd_even_actual[k] - pred["predicted_odd_even_distribution"][k])
+                    for k in odd_even_actual
+                )
+                / 40
+            )
             rows.append(
                 {
                     "issue": int(self.df.iloc[idx]["issue"]),
@@ -2410,6 +2563,7 @@ class BingoAnalyzer:
                     "combo_hit": int(combo_hit),
                     "zone_accuracy": float(zone_acc),
                     "big_mid_small_accuracy": float(range_acc),
+                    "odd_even_accuracy": float(odd_even_acc),
                 }
             )
 
@@ -2428,6 +2582,9 @@ class BingoAnalyzer:
                 ),
                 "big_mid_small_accuracy": (
                     float(df["big_mid_small_accuracy"].mean()) if not df.empty else 0.0
+                ),
+                "odd_even_accuracy": (
+                    float(df["odd_even_accuracy"].mean()) if not df.empty else 0.0
                 ),
             },
             "detail": rows,
@@ -2578,6 +2735,11 @@ class BingoAnalyzer:
             "diagnostics": {
                 "single_scores": pred["top_10_candidate_numbers"],
                 "pair_score_sum": float(len(pred["top_3_same_draw_combinations"])),
+                "big_small_count": pred["big_small_count"],
+                "odd_even_count": pred["odd_even_count"],
+                "big_small_type": pred["big_small_type"],
+                "odd_even_type": pred["odd_even_type"],
+                "odd_even_score": pred["odd_even_score"],
             },
         }
 
@@ -2633,9 +2795,15 @@ def classify_board() -> Dict[str, object]:
     latest_draw = analyzer.draw_numbers[-1]
     zone_counts = analyzer._zone_counts(latest_draw)
     board_type = analyzer.classify_board([zone_counts[zone] for zone in ZONE_LABELS])
+    distribution = analyzer._distribution_stats(latest_draw)
     return {
         "board_type": board_type,
         "zone_counts": zone_counts,
+        "big_small_count": distribution["big_small_count"],
+        "odd_even_count": distribution["odd_even_count"],
+        "big_small_type": distribution["big_small_type"],
+        "odd_even_type": distribution["odd_even_type"],
+        "odd_even_diff": distribution["odd_even_diff"],
     }
 
 
