@@ -1,24 +1,82 @@
-# coco bingo analyzer
+# BingoBingo 訓練 / 推論分離專案
 
-## Dynamic Cluster Weighting
+本專案已整理成 **本地訓練、雲端只載模預測** 的流程。
 
-`_adaptive_weights()` 現在支援動態 cluster 權重：
+## 專案結構
 
-- `cluster_weight = 0.07 + 0.02 * min(cluster_score, 5)`
-- `cluster_score` 由最近視窗內 `interval_cluster + tail_cluster + consecutive_cluster` 計算後再除以 window 大小。
+```text
+project/
+├─ data/
+│  ├─ raw/
+│  ├─ processed/
+│  └─ feature_store/
+├─ models/
+├─ reports/
+├─ src/
+│  ├─ prepare_data.py
+│  ├─ build_features.py
+│  ├─ train_lgbm.py
+│  ├─ backtest.py
+│  ├─ predict.py
+│  ├─ api.py
+│  └─ utils.py
+├─ configs/
+│  ├─ train.yaml
+│  └─ predict.yaml
+└─ README.md
+```
 
-這可在 cluster 爆發期提高 `cluster_pattern` 權重，平穩期則維持較保守比例。
+## 1) 本地訓練指令
 
+```bash
+python src/prepare_data.py
+python src/build_features.py
+python src/train_lgbm.py
+python src/backtest.py
+```
 
-## Six Statistical Vectors
+### 流程說明
+- `prepare_data.py`：讀取 `賓果賓果_2023~2026.csv`，清洗為 `issue, draw_date, numbers`。
+- `build_features.py`：建立單期特徵（僅用當期以前資料），輸出特徵表與固定欄位清單。
+- `train_lgbm.py`：訓練 LightGBM，輸出模型、metadata、特徵重要度。
+- `backtest.py`：使用 `TimeSeriesSplit` 做 walk-forward 回測，輸出每折與總指標。
 
-`predict_next()` 新增六個統計向量並納入加權計分：
+## 2) 上線預測指令
 
-- `sum_range`: 近 800 期和值直方圖眾數區間（±1 bin）
-- `odd_even_balance`: 奇偶與大小（1-40 / 41-80）平衡補償
-- `delta_pattern`: 前 10 熱號差值模式
-- `skip_heat`: skip=0 與 skip=1-5 熱冷補強
-- `prime_boost`: 質數號碼加權
-- `compression_boost`: 三期內區間壓縮（zone <= 4）補強
+```bash
+uvicorn src.api:app --host 0.0.0.0 --port 10000
+```
 
-以上權重由 `ScoreWeights.as_dict()` 統一正規化，並與既有 dynamic cluster 權重機制共同運作。
+API 端點：
+- `GET /health`
+- `GET /analysis`
+- `POST /predict`
+
+> API **只載入已訓練模型**，不會重新訓練。
+
+## 3) 訓練輸出物
+
+訓練後會產生：
+- `models/lgbm_top20.txt`
+- `models/feature_columns.json`
+- `models/metadata.json`
+- `reports/backtest_metrics.json`
+- `reports/feature_importance.csv`
+- `reports/walkforward_report.csv`
+
+## 4) 重訓與替換模型
+
+### 如何重訓
+1. 更新根目錄歷史資料 CSV（或 `data/raw`）。
+2. 重新執行四步訓練指令。
+3. 新模型會覆蓋 `models/` 舊檔。
+
+### 如何替換上線模型
+- 將本地最新 `models/` 檔案部署到雲端相同路徑。
+- 重啟 FastAPI 服務即可生效。
+
+## 特徵一致性保證
+
+- 訓練與推論都透過 `src/utils.py::build_issue_features` 與 `build_candidate_matrix`。
+- 避免 train/inference feature mismatch。
+- 回測使用時間序列切分，避免未來資料洩漏。
