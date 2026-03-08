@@ -206,6 +206,30 @@ def test_adaptive_weights_normalized() -> None:
     assert "cluster_pattern" in weights
 
 
+def test_classify_board_rule_based_thresholds() -> None:
+    analyzer = BingoAnalyzer()
+
+    assert analyzer.classify_board([8, 4, 4, 4]) == "大盤"
+    assert analyzer.classify_board([5, 5, 5, 5]) == "小盤"
+    assert analyzer.classify_board([6, 6, 4, 4]) == "平均盤"
+
+
+def test_predict_next_exposes_rule_based_board_weights() -> None:
+    analyzer = BingoAnalyzer()
+    recent_payload = _make_recent_from_csv(analyzer, start_issue=115000031, periods=12)
+    recent_draws = [item["numbers"] for item in recent_payload]
+    pred = analyzer.predict_next(recent_draws=recent_draws, latest_issue=115000042)
+    explanation = pred["explanation_of_influential_patterns"]
+
+    assert explanation["rule_based_board_type"] in {"小盤", "平均盤", "大盤"}
+    assert set(explanation["rule_based_zone_counts"].keys()) == {"A", "B", "C", "D"}
+    assert explanation["rule_based_score_weights"] in [
+        {"recent": 0.30, "history": 0.40, "other": 0.30},
+        {"recent": 0.20, "history": 0.50, "other": 0.30},
+        {"recent": 0.15, "history": 0.55, "other": 0.30},
+    ]
+
+
 def test_cluster_burst_analysis_detects_interval_tail_and_consecutive() -> None:
     analyzer = BingoAnalyzer()
     draws = [
@@ -287,6 +311,17 @@ def test_fastapi_predict_validates_recent_and_predicts() -> None:
     assert len(data["predicted_numbers_top20"]) == 20
     assert "predicted_zone_distribution" in data
     assert "explanation_of_influential_patterns" in data
+
+
+def test_classify_board_endpoint() -> None:
+    client = TestClient(app)
+    resp = client.get("/classify_board")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["board_type"] in {"小盤", "平均盤", "大盤"}
+    assert set(payload["zone_counts"].keys()) == {"A", "B", "C", "D"}
+    assert sum(payload["zone_counts"].values()) == 20
 
 
 def test_run_top3_backtest_exports_files_and_fields(tmp_path: Path) -> None:

@@ -71,6 +71,11 @@ FEATURE_VERSION = "v2.0-standardized-5board"
 SIMILARITY_VERSION = "v2.0-two-stage-prefilter"
 ADJUSTMENT_VERSION = "v2.0-event-effect-calibrated"
 ZONE_LABELS = ["A", "B", "C", "D"]
+WEIGHT_TABLE = {
+    "小盤": (0.30, 0.40, 0.30),
+    "平均盤": (0.20, 0.50, 0.30),
+    "大盤": (0.15, 0.55, 0.30),
+}
 
 
 # 歷史主導 baseline v1
@@ -301,6 +306,16 @@ class BingoAnalyzer:
             "C": sum(1 for n in draw if 41 <= n <= 60),
             "D": sum(1 for n in draw if 61 <= n <= 80),
         }
+
+    @staticmethod
+    def classify_board(zone_counts: Sequence[int]) -> str:
+        max_k = max(zone_counts)
+        std_k = float(np.std(zone_counts))
+        if max_k >= 7 or std_k > 1.4:
+            return "大盤"
+        if max_k <= 5 or std_k < 0.9:
+            return "小盤"
+        return "平均盤"
 
     @staticmethod
     def _range_counts(draw: Sequence[int]) -> Dict[str, int]:
@@ -1507,22 +1522,42 @@ class BingoAnalyzer:
             (history_component + (lambda_value * hot_component)) / (1.0 + lambda_value)
         )
 
+        latest_zone_counts_map = self._zone_counts(recent_draws[-1])
+        latest_zone_counts = [latest_zone_counts_map[zone] for zone in ZONE_LABELS]
+        board_type = self.classify_board(latest_zone_counts)
+        recent_w, hist_w, other_w = WEIGHT_TABLE[board_type]
+
+        other_weights = {
+            key: value
+            for key, value in adaptive_weights.items()
+            if key not in {"recent_momentum", "pattern_similarity"}
+        }
+        other_total = float(sum(other_weights.values()))
+        if other_total <= 0:
+            other_total = 1.0
+        other_component = self._normalize_vector(
+            (
+                other_weights["zone_distribution"] * zone_component
+                + other_weights["hot_frequency"] * hot_component
+                + other_weights["big_mid_small"] * range_component
+                + other_weights["consecutive_pattern"] * cons_component
+                + other_weights["cluster_pattern"] * cluster_component
+                + other_weights["tail_concentration"] * tail_component
+                + other_weights["gap_skip_pattern"] * gap_component
+                + other_weights["sum_range"] * sum_component
+                + other_weights["odd_even_balance"] * balance_component
+                + other_weights["delta_pattern"] * delta_component
+                + other_weights["skip_heat"] * skip_component
+                + other_weights["prime_boost"] * prime_component
+                + other_weights["compression_boost"] * compression_component
+            )
+            / other_total
+        )
+
         score = (
-            adaptive_weights["recent_momentum"] * recent_component
-            + adaptive_weights["zone_distribution"] * zone_component
-            + adaptive_weights["pattern_similarity"] * pattern_component
-            + adaptive_weights["hot_frequency"] * hot_component
-            + adaptive_weights["big_mid_small"] * range_component
-            + adaptive_weights["consecutive_pattern"] * cons_component
-            + adaptive_weights["cluster_pattern"] * cluster_component
-            + adaptive_weights["tail_concentration"] * tail_component
-            + adaptive_weights["gap_skip_pattern"] * gap_component
-            + adaptive_weights["sum_range"] * sum_component
-            + adaptive_weights["odd_even_balance"] * balance_component
-            + adaptive_weights["delta_pattern"] * delta_component
-            + adaptive_weights["skip_heat"] * skip_component
-            + adaptive_weights["prime_boost"] * prime_component
-            + adaptive_weights["compression_boost"] * compression_component
+            recent_w * recent_component
+            + hist_w * pattern_component
+            + other_w * other_component
         )
 
         penalty_factor = self._resolve_last_draw_penalty(recent_draws)
@@ -1565,6 +1600,15 @@ class BingoAnalyzer:
             },
             "cluster_analysis": cluster_metadata,
             "weights": adaptive_weights,
+            "rule_based_board_type": board_type,
+            "rule_based_zone_counts": {
+                zone: latest_zone_counts_map[zone] for zone in ZONE_LABELS
+            },
+            "rule_based_score_weights": {
+                "recent": recent_w,
+                "history": hist_w,
+                "other": other_w,
+            },
             "similar_cases_used": len(similar_cases),
             "sequence_similarity_window_size": sequence_window_size,
             "last_draw_penalty": penalty_factor,
@@ -2580,6 +2624,18 @@ def analysis() -> Dict[str, object]:
     return {
         "basic": analyzer.basic_statistics(),
         "dynamic": analyzer.dynamic_analysis(),
+    }
+
+
+@app.get("/classify_board")
+def classify_board() -> Dict[str, object]:
+    analyzer = get_analyzer()
+    latest_draw = analyzer.draw_numbers[-1]
+    zone_counts = analyzer._zone_counts(latest_draw)
+    board_type = analyzer.classify_board([zone_counts[zone] for zone in ZONE_LABELS])
+    return {
+        "board_type": board_type,
+        "zone_counts": zone_counts,
     }
 
 
