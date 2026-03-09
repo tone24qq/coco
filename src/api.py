@@ -123,4 +123,12 @@ def predict(payload: PredictPayload) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     result["analysis_report"] = build_recent_report(payload.recent_draws)
+    result["model_version"] = METADATA.get("model_type", "unknown")
+    result["feature_version"] = METADATA.get("feature_version", "unknown")
+    result["training_data_snapshot"] = {
+        "train_issue_start": METADATA.get("train_issue_start"),
+        "train_issue_end": METADATA.get("train_issue_end"),
+        "feature_rows": METADATA.get("feature_rows"),
+    }
+    result["calibration_method"] = METADATA.get("calibration_method", "none")
     return result

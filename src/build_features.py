@@ -10,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import json
 
 from src.utils import (  # noqa: E402
+    CANDIDATE_FEATURE_COLUMNS,
     CONFIG_DIR,
     FEATURE_STORE_DIR,
     MODELS_DIR,
@@ -30,17 +31,7 @@ def main() -> None:
     feat_df.to_csv(FEATURE_STORE_DIR / "issue_features.csv", index=False)
 
     cols = issue_feature_columns(feat_df)
-    model_cols = cols + [
-        "num",
-        "num_norm",
-        "num_zone",
-        "num_is_odd",
-        "num_is_big",
-        "cand_in_prev_plus1",
-        "cand_in_prev_plus2",
-        "cand_in_prev_minus1",
-        "cand_in_prev_pm1",
-    ]
+    model_cols = cols + CANDIDATE_FEATURE_COLUMNS
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     (MODELS_DIR / "feature_columns.json").write_text(
         json.dumps(model_cols, ensure_ascii=False, indent=2), encoding="utf-8"

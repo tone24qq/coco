@@ -24,6 +24,29 @@ RAW_FILES = [
     "賓果賓果_2026.csv",
 ]
 ZONE_NAMES = ["A", "B", "C", "D"]
+CANDIDATE_FEATURE_COLUMNS = [
+    "num",
+    "num_norm",
+    "num_zone",
+    "num_is_odd",
+    "num_is_big",
+    "cand_in_prev_plus1",
+    "cand_in_prev_plus2",
+    "cand_in_prev_minus1",
+    "cand_in_prev_pm1",
+    "freq_last_10",
+    "freq_last_20",
+    "freq_last_50",
+    "freq_last_100",
+    "gap_since_last_seen",
+    "freq10_minus_freq50",
+    "min_abs_distance_to_last_draw",
+    "mean_abs_distance_to_last_draw",
+    "count_distance_1",
+    "count_distance_2",
+    "count_distance_3",
+    "cooccur_mean_last_200",
+]
 
 
 @dataclass
@@ -146,6 +169,32 @@ def _shifted_set(numbers: Sequence[int], shift: int) -> set[int]:
     return out
 
 
+def _find_latest_gap(draws: Sequence[Sequence[int]], num: int) -> float:
+    for idx, draw in enumerate(reversed(draws), start=1):
+        if num in draw:
+            return float(idx)
+    return float(len(draws) + 1)
+
+
+def _pair_cooccur_mean(
+    history: Sequence[Sequence[int]], num: int, anchors: set[int]
+) -> float:
+    if not anchors:
+        return 0.0
+    pair_hits = 0
+    anchor_hits = 0
+    for draw in history:
+        draw_set = set(draw)
+        has_num = num in draw_set
+        for anchor in anchors:
+            if anchor in draw_set:
+                anchor_hits += 1
+                pair_hits += int(has_num)
+    if anchor_hits == 0:
+        return 0.0
+    return float(pair_hits / anchor_hits)
+
+
 def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFrame:
     rows: list[dict] = []
     draws = [json.loads(v) if isinstance(v, str) else v for v in df["numbers"]]
@@ -195,6 +244,7 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
             "small_odd_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 1)),
             "small_even_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 0)),
             "prev_numbers": json.dumps(sorted(draws[i - 1]), ensure_ascii=False),
+            "history_numbers": json.dumps(hist, ensure_ascii=False),
         }
         feat.update(_gap_features(nums))
         feat.update(_tail_features(nums))
@@ -358,8 +408,41 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
+def build_latest_issue_features_for_inference(
+    df: pd.DataFrame, min_history: int = 20
+) -> pd.Series:
+    if len(df) <= min_history:
+        raise ValueError("not enough history for feature generation")
+
+    rows = [
+        {
+            "issue": int(df.iloc[-1]["issue"]) + 1,
+            "draw_date": str(df.iloc[-1]["draw_date"]),
+            "numbers": json.dumps(sorted(json.loads(df.iloc[-1]["numbers"]))),
+        }
+    ]
+    extended = pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+    latest = build_issue_features(extended, min_history=min_history).iloc[-1].copy()
+    latest["target_issue"] = int(df.iloc[-1]["issue"]) + 1
+    latest["target_numbers"] = "[]"
+    latest["issue"] = int(df.iloc[-1]["issue"])
+    latest["draw_date"] = str(df.iloc[-1]["draw_date"])
+    latest["history_numbers"] = json.dumps(
+        [json.loads(v) if isinstance(v, str) else v for v in df["numbers"]],
+        ensure_ascii=False,
+    )
+    return latest
+
+
 def issue_feature_columns(df: pd.DataFrame) -> List[str]:
-    skip = {"issue", "draw_date", "target_issue", "target_numbers", "prev_numbers"}
+    skip = {
+        "issue",
+        "draw_date",
+        "target_issue",
+        "target_numbers",
+        "prev_numbers",
+        "history_numbers",
+    }
     return [c for c in df.columns if c not in skip]
 
 
@@ -368,6 +451,14 @@ def build_candidate_matrix(
 ) -> pd.DataFrame:
     base = issue_row.to_dict()
     prev_numbers = set(json.loads(base.get("prev_numbers", "[]")))
+    history_numbers = json.loads(base.get("history_numbers", "[]"))
+    last_draw = set(history_numbers[-1]) if history_numbers else set()
+
+    freq_last_10 = _recent_frequency(history_numbers, 10) if history_numbers else {}
+    freq_last_20 = _recent_frequency(history_numbers, 20) if history_numbers else {}
+    freq_last_50 = _recent_frequency(history_numbers, 50) if history_numbers else {}
+    freq_last_100 = _recent_frequency(history_numbers, 100) if history_numbers else {}
+
     prev_plus1 = _shifted_set(prev_numbers, 1)
     prev_plus2 = _shifted_set(prev_numbers, 2)
     prev_minus1 = _shifted_set(prev_numbers, -1)
@@ -388,7 +479,20 @@ def build_candidate_matrix(
                 "cand_in_prev_plus2",
                 "cand_in_prev_minus1",
                 "cand_in_prev_pm1",
+                "freq_last_10",
+                "freq_last_20",
+                "freq_last_50",
+                "freq_last_100",
+                "gap_since_last_seen",
+                "freq10_minus_freq50",
+                "min_abs_distance_to_last_draw",
+                "mean_abs_distance_to_last_draw",
+                "count_distance_1",
+                "count_distance_2",
+                "count_distance_3",
+                "cooccur_mean_last_200",
                 "prev_numbers",
+                "history_numbers",
             }
         }
         row["num"] = float(num)
@@ -400,6 +504,35 @@ def build_candidate_matrix(
         row["cand_in_prev_plus2"] = float(num in prev_plus2)
         row["cand_in_prev_minus1"] = float(num in prev_minus1)
         row["cand_in_prev_pm1"] = float(num in prev_pm1)
+
+        f10 = float(freq_last_10.get(num, 0))
+        f20 = float(freq_last_20.get(num, 0))
+        f50 = float(freq_last_50.get(num, 0))
+        f100 = float(freq_last_100.get(num, 0))
+        row["freq_last_10"] = f10
+        row["freq_last_20"] = f20
+        row["freq_last_50"] = f50
+        row["freq_last_100"] = f100
+        row["gap_since_last_seen"] = _find_latest_gap(history_numbers, num)
+        row["freq10_minus_freq50"] = f10 - f50
+
+        if last_draw:
+            distances = np.array([abs(num - x) for x in last_draw])
+            row["min_abs_distance_to_last_draw"] = float(distances.min())
+            row["mean_abs_distance_to_last_draw"] = float(distances.mean())
+            row["count_distance_1"] = float((distances <= 1).sum())
+            row["count_distance_2"] = float((distances <= 2).sum())
+            row["count_distance_3"] = float((distances <= 3).sum())
+        else:
+            row["min_abs_distance_to_last_draw"] = 0.0
+            row["mean_abs_distance_to_last_draw"] = 0.0
+            row["count_distance_1"] = 0.0
+            row["count_distance_2"] = 0.0
+            row["count_distance_3"] = 0.0
+
+        row["cooccur_mean_last_200"] = _pair_cooccur_mean(
+            history_numbers[-200:], num, last_draw
+        )
         rows.append(row)
     return pd.DataFrame(rows)[list(feature_columns)]
 
