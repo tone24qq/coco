@@ -71,6 +71,7 @@ def main() -> None:
         "model_path": "models/lgbm_top20.txt",
         "best_params": params,
         "feature_version": "v1",
+        "calibration_method": "none",
     }
 
     save_json(MODELS_DIR / "metadata.json", metadata)

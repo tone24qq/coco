@@ -12,6 +12,10 @@ class _StubPredictor:
             "top20_numbers": list(range(1, 21)),
             "compact10_numbers": list(range(1, 11)),
             "top3_core_group": [1, 2, 3],
+            "raw_score_table": [{"number": i, "score": 1.0 / i} for i in range(1, 81)],
+            "calibrated_probability_table": [
+                {"number": i, "probability": 1.0 / i} for i in range(1, 81)
+            ],
             "score_table": [{"number": i, "score": 1.0 / i} for i in range(1, 81)],
             "board_type_prediction": "balanced",
         }
@@ -71,6 +75,11 @@ def test_predict_success_contains_analysis_report(monkeypatch):
     assert "analysis_report" in body
     assert "odd_even" in body["analysis_report"]
     assert "recent_frequency" in body["analysis_report"]
+    assert "model_version" in body
+    assert "feature_version" in body
+    assert "training_data_snapshot" in body
+    assert "raw_score_table" in body
+    assert "calibrated_probability_table" in body
 
 
 def test_predict_converts_value_error_to_400(monkeypatch):

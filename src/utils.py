@@ -146,12 +146,17 @@ def _shifted_set(numbers: Sequence[int], shift: int) -> set[int]:
     return out
 
 
-def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFrame:
+def build_issue_features(
+    df: pd.DataFrame,
+    min_history: int = 20,
+    include_latest_for_inference: bool = False,
+) -> pd.DataFrame:
     rows: list[dict] = []
     draws = [json.loads(v) if isinstance(v, str) else v for v in df["numbers"]]
     board_history: list[dict] = []
 
-    for i in range(min_history, len(df) - 1):
+    end = len(df) if include_latest_for_inference else len(df) - 1
+    for i in range(min_history, end):
         nums = sorted(draws[i])
         hist = draws[: i + 1]
         zc = _zone_counts(nums)
@@ -159,11 +164,20 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
         big_cnt = int((arr > 40).sum())
         odd_cnt = int((arr % 2 == 1).sum())
 
+        has_target = i + 1 < len(df)
         feat: dict[str, float | int | str] = {
             "issue": int(df.iloc[i]["issue"]),
             "draw_date": str(df.iloc[i]["draw_date"]),
-            "target_issue": int(df.iloc[i + 1]["issue"]),
-            "target_numbers": json.dumps(sorted(draws[i + 1]), ensure_ascii=False),
+            "target_issue": (
+                int(df.iloc[i + 1]["issue"])
+                if has_target
+                else int(df.iloc[i]["issue"]) + 1
+            ),
+            "target_numbers": (
+                json.dumps(sorted(draws[i + 1]), ensure_ascii=False)
+                if has_target
+                else json.dumps([], ensure_ascii=False)
+            ),
             "sum_all": float(arr.sum()),
             "mean_all": float(arr.mean()),
             "std_all": float(arr.std()),
@@ -195,6 +209,8 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
             "small_odd_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 1)),
             "small_even_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 0)),
             "prev_numbers": json.dumps(sorted(draws[i - 1]), ensure_ascii=False),
+            "current_numbers": json.dumps(nums, ensure_ascii=False),
+            "history_numbers": json.dumps(hist, ensure_ascii=False),
         }
         feat.update(_gap_features(nums))
         feat.update(_tail_features(nums))
@@ -358,8 +374,27 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
+def build_latest_issue_features_for_inference(
+    df: pd.DataFrame,
+    min_history: int = 20,
+) -> pd.DataFrame:
+    return build_issue_features(
+        df,
+        min_history=min_history,
+        include_latest_for_inference=True,
+    )
+
+
 def issue_feature_columns(df: pd.DataFrame) -> List[str]:
-    skip = {"issue", "draw_date", "target_issue", "target_numbers", "prev_numbers"}
+    skip = {
+        "issue",
+        "draw_date",
+        "target_issue",
+        "target_numbers",
+        "prev_numbers",
+        "current_numbers",
+        "history_numbers",
+    }
     return [c for c in df.columns if c not in skip]
 
 
@@ -367,11 +402,25 @@ def build_candidate_matrix(
     issue_row: pd.Series, feature_columns: Sequence[str]
 ) -> pd.DataFrame:
     base = issue_row.to_dict()
+    history = [sorted(x) for x in json.loads(base.get("history_numbers", "[]"))]
+    last_draw = set(json.loads(base.get("current_numbers", "[]")))
+    freq_windows = [10, 20, 50, 100, 200, 500, 1000]
+    freq_by_window = {w: _recent_frequency(history, w) for w in freq_windows}
+
+    def _ema_for_num(num: int, alpha: float) -> float:
+        ema = 0.0
+        for draw in history:
+            hit = 1.0 if num in draw else 0.0
+            ema = alpha * hit + (1 - alpha) * ema
+        return ema
+
     prev_numbers = set(json.loads(base.get("prev_numbers", "[]")))
     prev_plus1 = _shifted_set(prev_numbers, 1)
     prev_plus2 = _shifted_set(prev_numbers, 2)
     prev_minus1 = _shifted_set(prev_numbers, -1)
     prev_pm1 = prev_plus1 | prev_minus1
+    pair_window = history[-200:]
+    last5_draws = history[-5:]
     rows = []
     for num in range(1, 81):
         row = {
@@ -389,6 +438,8 @@ def build_candidate_matrix(
                 "cand_in_prev_minus1",
                 "cand_in_prev_pm1",
                 "prev_numbers",
+                "current_numbers",
+                "history_numbers",
             }
         }
         row["num"] = float(num)
@@ -400,8 +451,99 @@ def build_candidate_matrix(
         row["cand_in_prev_plus2"] = float(num in prev_plus2)
         row["cand_in_prev_minus1"] = float(num in prev_minus1)
         row["cand_in_prev_pm1"] = float(num in prev_pm1)
+
+        for window in freq_windows:
+            row[f"freq_last_{window}"] = float(freq_by_window[window][num])
+        row["ema_freq_alpha_0_05"] = float(_ema_for_num(num, 0.05))
+        row["ema_freq_alpha_0_1"] = float(_ema_for_num(num, 0.1))
+        row["ema_freq_alpha_0_2"] = float(_ema_for_num(num, 0.2))
+
+        occurrences = [idx for idx, draw in enumerate(history) if num in draw]
+        if occurrences:
+            gap_since_last_seen = len(history) - 1 - occurrences[-1]
+            gaps = np.diff(occurrences)
+            recent_gaps = gaps[-5:] if len(gaps) else np.array([], dtype=float)
+            row["gap_since_last_seen"] = float(gap_since_last_seen)
+            row["avg_gap_last_3"] = (
+                float(np.mean(gaps[-3:])) if len(gaps) else float(len(history))
+            )
+            row["avg_gap_last_5"] = (
+                float(np.mean(gaps[-5:])) if len(gaps) else float(len(history))
+            )
+            row["std_gap_last_5"] = (
+                float(np.std(recent_gaps)) if len(recent_gaps) else 0.0
+            )
+            row["min_gap_last_5"] = (
+                float(np.min(recent_gaps)) if len(recent_gaps) else float(len(history))
+            )
+            row["max_gap_last_5"] = (
+                float(np.max(recent_gaps)) if len(recent_gaps) else float(len(history))
+            )
+        else:
+            row["gap_since_last_seen"] = float(len(history))
+            row["avg_gap_last_3"] = float(len(history))
+            row["avg_gap_last_5"] = float(len(history))
+            row["std_gap_last_5"] = 0.0
+            row["min_gap_last_5"] = float(len(history))
+            row["max_gap_last_5"] = float(len(history))
+
+        row["freq_10_minus_50"] = float(row["freq_last_10"] - row["freq_last_50"])
+        row["freq_20_minus_100"] = float(row["freq_last_20"] - row["freq_last_100"])
+        row["recent_trend_up_down"] = float(np.sign(row["freq_10_minus_50"]))
+        row["ema_short_minus_ema_long"] = float(
+            row["ema_freq_alpha_0_2"] - row["ema_freq_alpha_0_05"]
+        )
+
+        cooccur_counts = []
+        for draw in pair_window:
+            if num in draw:
+                cooccur_counts.append(len(set(draw) & last_draw))
+        row["cooccur_with_last_draw_sum"] = float(np.sum(cooccur_counts))
+        row["cooccur_with_last_draw_mean"] = (
+            float(np.mean(cooccur_counts)) if cooccur_counts else 0.0
+        )
+        row["cooccur_with_last_draw_max"] = (
+            float(np.max(cooccur_counts)) if cooccur_counts else 0.0
+        )
+
+        if last_draw:
+            distances = np.array([abs(num - n) for n in last_draw])
+            row["distance_to_last_draw_min"] = float(np.min(distances))
+            row["distance_to_last_draw_mean"] = float(np.mean(distances))
+            row["count_close_to_last_draw_within_1"] = float((distances <= 1).sum())
+            row["count_close_to_last_draw_within_2"] = float((distances <= 2).sum())
+            row["count_close_to_last_draw_within_3"] = float((distances <= 3).sum())
+            row["is_adjacent_to_last_draw"] = float(np.any(distances == 1))
+            row["adjacent_count_vs_last_draw"] = float((distances == 1).sum())
+        else:
+            row["distance_to_last_draw_min"] = 80.0
+            row["distance_to_last_draw_mean"] = 80.0
+            row["count_close_to_last_draw_within_1"] = 0.0
+            row["count_close_to_last_draw_within_2"] = 0.0
+            row["count_close_to_last_draw_within_3"] = 0.0
+            row["is_adjacent_to_last_draw"] = 0.0
+            row["adjacent_count_vs_last_draw"] = 0.0
+
+        row["pair_score_with_last_5_draws"] = float(
+            sum(1 for draw in last5_draws if num in draw)
+        )
         rows.append(row)
-    return pd.DataFrame(rows)[list(feature_columns)]
+
+    out = pd.DataFrame(rows)
+    out["rank_by_recent_freq"] = out["freq_last_20"].rank(
+        method="dense", ascending=False
+    )
+    out["rank_by_gap_inverse"] = out["gap_since_last_seen"].rank(
+        method="dense", ascending=True
+    )
+    out["rank_by_cooccur_score"] = out["cooccur_with_last_draw_mean"].rank(
+        method="dense", ascending=False
+    )
+
+    for col in feature_columns:
+        if col not in out.columns:
+            out[col] = 0.0
+    return out[list(feature_columns)]
 
 
 def compact_10_from_top20(top20: Sequence[int]) -> List[int]:

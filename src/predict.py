@@ -18,7 +18,7 @@ from src.utils import (  # noqa: E402
     DATA_PROCESSED_DIR,
     MODELS_DIR,
     build_candidate_matrix,
-    build_issue_features,
+    build_latest_issue_features_for_inference,
     classify_board,
     compact_10_from_top20,
     load_yaml,
@@ -40,7 +40,9 @@ class Predictor:
         return cls(model=model, feature_columns=cols)
 
     def predict_from_draws(self, draws_df: pd.DataFrame, min_history: int) -> dict:
-        issue_df = build_issue_features(draws_df, min_history=min_history)
+        issue_df = build_latest_issue_features_for_inference(
+            draws_df, min_history=min_history
+        )
         if issue_df.empty:
             raise ValueError("not enough history for feature generation")
         row = issue_df.iloc[-1]
@@ -52,14 +54,21 @@ class Predictor:
         top20 = score_table["number"].head(20).astype(int).tolist()
         compact10 = compact_10_from_top20(top20)
         top3 = top20[:3]
+        latest_issue = int(row["issue"])
         zc = {z: sum(1 for n in top20 if zone_of(n) == z) for z in ["A", "B", "C", "D"]}
         board_type = classify_board(zc)
+        raw_score_table = score_table.to_dict(orient="records")
+        calibrated_probability_table = [
+            {"number": x["number"], "probability": x["score"]} for x in raw_score_table
+        ]
         return {
-            "target_issue": int(row["target_issue"]) + 1,
+            "target_issue": latest_issue + 1,
             "top20_numbers": top20,
             "compact10_numbers": compact10,
             "top3_core_group": top3,
-            "score_table": score_table.to_dict(orient="records"),
+            "raw_score_table": raw_score_table,
+            "calibrated_probability_table": calibrated_probability_table,
+            "score_table": raw_score_table,
             "board_type_prediction": board_type,
         }
 
