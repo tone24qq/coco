@@ -5,6 +5,7 @@ import pandas as pd
 from src.utils import (
     build_candidate_matrix,
     build_issue_features,
+    build_recent_report,
     issue_feature_columns,
 )
 
@@ -33,6 +34,8 @@ def test_build_issue_features_has_required_columns() -> None:
         "delta_sum_1",
         "roll5_sum_mean",
         "sim_top1_score",
+        "shift_p1_hit_rate",
+        "shift_pm1_hit_rate",
     }
     assert required.issubset(set(feat_df.columns))
 
@@ -55,7 +58,25 @@ def test_candidate_matrix_matches_feature_columns() -> None:
         "num_zone",
         "num_is_odd",
         "num_is_big",
+        "cand_in_prev_plus1",
+        "cand_in_prev_plus2",
+        "cand_in_prev_minus1",
+        "cand_in_prev_pm1",
     ]
     x = build_candidate_matrix(feat_df.iloc[-1], cols)
     assert list(x.columns) == cols
     assert len(x) == 80
+
+
+def test_build_recent_report_contains_expected_sections() -> None:
+    recent_draws = []
+    for i in range(25):
+        recent_draws.append([((i + k) % 80) + 1 for k in range(20)])
+
+    report = build_recent_report(recent_draws)
+
+    assert set(report) == {"odd_even", "big_small", "zone", "recent_frequency"}
+    assert "odd_cnt" in report["odd_even"]
+    assert "big_cnt" in report["big_small"]
+    assert "board_regime" in report["zone"]
+    assert "recent_freq_20" in report["recent_frequency"]

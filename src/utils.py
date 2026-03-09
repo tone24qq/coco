@@ -137,6 +137,15 @@ def _recent_frequency(history: Sequence[Sequence[int]], window: int) -> Dict[int
     return freq
 
 
+def _shifted_set(numbers: Sequence[int], shift: int) -> set[int]:
+    out = set()
+    for n in numbers:
+        s = n + shift
+        if 1 <= s <= 80:
+            out.add(s)
+    return out
+
+
 def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFrame:
     rows: list[dict] = []
     draws = [json.loads(v) if isinstance(v, str) else v for v in df["numbers"]]
@@ -185,6 +194,7 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
             "big_even_cnt": float(sum(1 for n in nums if n > 40 and n % 2 == 0)),
             "small_odd_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 1)),
             "small_even_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 0)),
+            "prev_numbers": json.dumps(sorted(draws[i - 1]), ensure_ascii=False),
         }
         feat.update(_gap_features(nums))
         feat.update(_tail_features(nums))
@@ -202,6 +212,16 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
 
         prev = board_history[-1] if board_history else None
         prev3 = board_history[-3] if len(board_history) >= 3 else None
+        prev_nums = set(hist[-2]) if len(hist) >= 2 else set()
+        shift_p1 = _shifted_set(prev_nums, 1)
+        shift_p2 = _shifted_set(prev_nums, 2)
+        shift_m1 = _shifted_set(prev_nums, -1)
+        shift_pm1 = shift_p1 | shift_m1
+        current_nums = set(nums)
+        feat["shift_p1_hit_rate"] = float(len(current_nums & shift_p1) / 20)
+        feat["shift_p2_hit_rate"] = float(len(current_nums & shift_p2) / 20)
+        feat["shift_m1_hit_rate"] = float(len(current_nums & shift_m1) / 20)
+        feat["shift_pm1_hit_rate"] = float(len(current_nums & shift_pm1) / 20)
         feat["delta_sum_1"] = float(
             feat["sum_all"] - (prev["sum_all"] if prev else feat["sum_all"])
         )
@@ -339,7 +359,7 @@ def build_issue_features(df: pd.DataFrame, min_history: int = 20) -> pd.DataFram
 
 
 def issue_feature_columns(df: pd.DataFrame) -> List[str]:
-    skip = {"issue", "draw_date", "target_issue", "target_numbers"}
+    skip = {"issue", "draw_date", "target_issue", "target_numbers", "prev_numbers"}
     return [c for c in df.columns if c not in skip]
 
 
@@ -347,18 +367,39 @@ def build_candidate_matrix(
     issue_row: pd.Series, feature_columns: Sequence[str]
 ) -> pd.DataFrame:
     base = issue_row.to_dict()
+    prev_numbers = set(json.loads(base.get("prev_numbers", "[]")))
+    prev_plus1 = _shifted_set(prev_numbers, 1)
+    prev_plus2 = _shifted_set(prev_numbers, 2)
+    prev_minus1 = _shifted_set(prev_numbers, -1)
+    prev_pm1 = prev_plus1 | prev_minus1
     rows = []
     for num in range(1, 81):
         row = {
             k: base.get(k, 0.0)
             for k in feature_columns
-            if k not in {"num", "num_norm", "num_zone", "num_is_odd", "num_is_big"}
+            if k
+            not in {
+                "num",
+                "num_norm",
+                "num_zone",
+                "num_is_odd",
+                "num_is_big",
+                "cand_in_prev_plus1",
+                "cand_in_prev_plus2",
+                "cand_in_prev_minus1",
+                "cand_in_prev_pm1",
+                "prev_numbers",
+            }
         }
         row["num"] = float(num)
         row["num_norm"] = float(num / 80)
         row["num_zone"] = float((num - 1) // 20)
         row["num_is_odd"] = float(num % 2 == 1)
         row["num_is_big"] = float(num > 40)
+        row["cand_in_prev_plus1"] = float(num in prev_plus1)
+        row["cand_in_prev_plus2"] = float(num in prev_plus2)
+        row["cand_in_prev_minus1"] = float(num in prev_minus1)
+        row["cand_in_prev_pm1"] = float(num in prev_pm1)
         rows.append(row)
     return pd.DataFrame(rows)[list(feature_columns)]
 
@@ -382,3 +423,121 @@ def save_json(path: Path, payload: dict) -> None:
 
 def load_processed() -> pd.DataFrame:
     return pd.read_csv(DATA_PROCESSED_DIR / "bingo_draws.csv")
+
+
+def _direction(current: float, baseline: float) -> str:
+    if current > baseline:
+        return "up"
+    if current < baseline:
+        return "down"
+    return "flat"
+
+
+def build_recent_report(recent_draws: Sequence[Sequence[int]]) -> dict:
+    if not recent_draws:
+        return {}
+
+    draws = [sorted(list(d)) for d in recent_draws]
+    arr = np.array(draws)
+    odd_cnt_series = (arr % 2 == 1).sum(axis=1)
+    even_cnt_series = 20 - odd_cnt_series
+    small_cnt_series = (arr <= 40).sum(axis=1)
+    big_cnt_series = 20 - small_cnt_series
+
+    def _avg(series: np.ndarray, w: int) -> float:
+        return float(series[-min(w, len(series)) :].mean())
+
+    latest = draws[-1]
+    zc = _zone_counts(latest)
+    zone_values = list(zc.values())
+    if max(zone_values) - min(zone_values) <= 1:
+        zone_pattern = "均衡盤"
+    elif max(zone_values) >= 9:
+        zone_pattern = "單區爆發"
+    elif (
+        sorted(zone_values, reverse=True)[0] >= 7
+        and sorted(zone_values, reverse=True)[1] >= 6
+    ):
+        zone_pattern = "雙區震盪"
+    else:
+        zone_pattern = "中段主導"
+
+    freq_stats = {}
+    for w in [3, 5, 10, 20]:
+        freq = _recent_frequency(draws, min(w, len(draws)))
+        freq_stats[f"recent_freq_{w}"] = {
+            "max": int(max(freq.values())),
+            "min": int(min(freq.values())),
+            "mean": float(np.mean(list(freq.values()))),
+        }
+
+    freq20 = _recent_frequency(draws, min(20, len(draws)))
+    sorted_freq = sorted(freq20.items(), key=lambda x: (-x[1], x[0]))
+    hot_numbers = [n for n, _ in sorted_freq[:5]]
+    cold_numbers = [
+        n for n, _ in sorted(freq20.items(), key=lambda x: (x[1], x[0]))[:5]
+    ]
+    prev_set = set(draws[-2]) if len(draws) >= 2 else set()
+    latest_set = set(latest)
+    overlap_prev = float(len(latest_set & prev_set) / 20) if prev_set else 0.0
+    overlap_prev_p1 = (
+        float(len(latest_set & _shifted_set(prev_set, 1)) / 20) if prev_set else 0.0
+    )
+    overlap_prev_p2 = (
+        float(len(latest_set & _shifted_set(prev_set, 2)) / 20) if prev_set else 0.0
+    )
+
+    return {
+        "odd_even": {
+            "odd_cnt": int(odd_cnt_series[-1]),
+            "even_cnt": int(even_cnt_series[-1]),
+            "odd_minus_even": int(odd_cnt_series[-1] - even_cnt_series[-1]),
+            "odd_cnt_roll_mean": {str(w): _avg(odd_cnt_series, w) for w in [5, 10, 20]},
+            "even_cnt_roll_mean": {
+                str(w): _avg(even_cnt_series, w) for w in [5, 10, 20]
+            },
+            "odd_even_shift_direction": _direction(
+                float(odd_cnt_series[-1] - even_cnt_series[-1]),
+                _avg(odd_cnt_series - even_cnt_series, 5),
+            ),
+        },
+        "big_small": {
+            "small_cnt": int(small_cnt_series[-1]),
+            "big_cnt": int(big_cnt_series[-1]),
+            "big_minus_small": int(big_cnt_series[-1] - small_cnt_series[-1]),
+            "small_cnt_roll_mean": {
+                str(w): _avg(small_cnt_series, w) for w in [5, 10, 20]
+            },
+            "big_cnt_roll_mean": {str(w): _avg(big_cnt_series, w) for w in [5, 10, 20]},
+            "big_small_shift_direction": _direction(
+                float(big_cnt_series[-1] - small_cnt_series[-1]),
+                _avg(big_cnt_series - small_cnt_series, 5),
+            ),
+        },
+        "zone": {
+            "zone_A_cnt": zc["A"],
+            "zone_B_cnt": zc["B"],
+            "zone_C_cnt": zc["C"],
+            "zone_D_cnt": zc["D"],
+            "zone_roll_mean": {
+                str(w): {
+                    f"zone_{z}": float(
+                        np.mean(
+                            [_zone_counts(d)[z] for d in draws[-min(w, len(draws)) :]]
+                        )
+                    )
+                    for z in ZONE_NAMES
+                }
+                for w in [5, 10]
+            },
+            "board_regime": zone_pattern,
+        },
+        "recent_frequency": {
+            **freq_stats,
+            "hot_numbers": hot_numbers,
+            "cold_numbers": cold_numbers,
+            "overlap_with_prev_draw": overlap_prev,
+            "overlap_with_prev_plus1": overlap_prev_p1,
+            "overlap_with_prev_plus2": overlap_prev_p2,
+        },
+    }
