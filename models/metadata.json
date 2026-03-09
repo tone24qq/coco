@@ -1,9 +1,9 @@
 {
   "model_type": "lightgbm_binary_v1",
-  "trained_at_utc": "2026-03-08T14:28:48.650834+00:00",
-  "feature_rows": 2979,
-  "sample_rows": 238320,
-  "train_issue_start": 115003314,
+  "trained_at_utc": "2026-03-09T05:59:18.299155+00:00",
+  "feature_rows": 2977,
+  "sample_rows": 238160,
+  "train_issue_start": 115003316,
   "train_issue_end": 115006293,
   "feature_columns_path": "models/feature_columns.json",
   "model_path": "models/lgbm_top20.txt",
@@ -17,5 +17,6 @@
     "random_state": 42,
     "n_jobs": -1
   },
-  "feature_version": "v1"
+  "feature_version": "v1",
+  "calibration_method": "none"
 }
