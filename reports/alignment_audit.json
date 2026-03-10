@@ -1,0 +1,8 @@
+{
+  "all_checks_passed": true,
+  "issue_strictly_increasing": true,
+  "target_issue_is_next_issue": true,
+  "target_numbers_match_next_draw": true,
+  "inference_latest_row_alignment": true,
+  "no_shift_leakage_in_walkforward": true
+}

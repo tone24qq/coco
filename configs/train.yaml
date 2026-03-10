@@ -1,6 +1,8 @@
-max_draws_for_training: 3000
+max_draws_for_training: 300
 feature_min_history: 22
 backtest_splits: 5
+backtest_max_draws: 80
+backtest_iterations: 20
 catboost_params:
   iterations: 300
   learning_rate: 0.05

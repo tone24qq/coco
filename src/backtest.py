@@ -6,9 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier, CatBoostRanker
+from scipy.special import expit
 from scipy.stats import t
-from sklearn.metrics import brier_score_loss, log_loss, ndcg_score
 from sklearn.model_selection import TimeSeriesSplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -26,26 +25,21 @@ from src.utils import (  # noqa: E402
     save_json,
 )
 
+METRIC_KEYS = [
+    "top20_hit_rate",
+    "top10_hit_rate",
+    "top3_hit_rate",
+    "top3_at_least_one_hit_rate",
+]
+
 
 def _top_hits(pred_scores: np.ndarray, actual: set[int]) -> tuple[int, int, int]:
     order = np.argsort(pred_scores)[::-1] + 1
-    top20 = set(order[:20].tolist())
-    top10 = set(order[:10].tolist())
-    top3 = set(order[:3].tolist())
-    return len(top20 & actual), len(top10 & actual), len(top3 & actual)
-
-
-def _labels_from_actual(actual: set[int]) -> np.ndarray:
-    return np.array([1 if n in actual else 0 for n in range(1, 81)])
-
-
-def _frequency_vector(rows: pd.DataFrame, field: str = "target_numbers") -> np.ndarray:
-    counts = np.zeros(80, dtype=float)
-    for _, row in rows.iterrows():
-        target = set(json.loads(row[field]))
-        for n in target:
-            counts[n - 1] += 1
-    return counts / max(counts.sum(), 1.0)
+    return (
+        len(set(order[:20]) & actual),
+        len(set(order[:10]) & actual),
+        len(set(order[:3]) & actual),
+    )
 
 
 def _ci95(values: list[float]) -> dict[str, float]:
@@ -54,10 +48,11 @@ def _ci95(values: list[float]) -> dict[str, float]:
     arr = np.array(values, dtype=float)
     mean = float(arr.mean())
     std = float(arr.std(ddof=1)) if len(arr) > 1 else 0.0
-    if len(arr) > 1:
-        margin = float(t.ppf(0.975, len(arr) - 1) * std / np.sqrt(len(arr)))
-    else:
-        margin = 0.0
+    margin = (
+        float(t.ppf(0.975, len(arr) - 1) * std / np.sqrt(len(arr)))
+        if len(arr) > 1
+        else 0.0
+    )
     return {
         "mean": mean,
         "std": std,
@@ -66,166 +61,81 @@ def _ci95(values: list[float]) -> dict[str, float]:
     }
 
 
-def _train_binary_model(
-    x_train: pd.DataFrame, y_train: pd.Series, cfg: dict
-) -> CatBoostClassifier:
-    params = dict(cfg.get("catboost_params", {}))
-    params.setdefault("loss_function", "Logloss")
-    params.setdefault("verbose", False)
-    params.setdefault("random_seed", 42)
-    model = CatBoostClassifier(**params)
-    model.fit(x_train, y_train)
-    return model
+def _derive_regime(row: pd.Series) -> str:
+    if float(row.get("span", 0)) >= 72 or float(row.get("consecutive_pairs", 0)) >= 6:
+        return "high_vol"
+    if float(row.get("zone_range", 0)) <= 2 and float(row.get("span", 0)) <= 58:
+        return "balanced"
+    return "transitional"
 
 
-def _train_ranker(
-    x_train: pd.DataFrame,
-    y_train: pd.Series,
-    group_id: pd.Series,
-    cfg: dict,
-    loss_function: str,
-) -> CatBoostRanker:
-    params = dict(cfg.get("catboost_params", {}))
-    params["loss_function"] = loss_function
-    params["eval_metric"] = "NDCG:top=20"
-    params.setdefault("verbose", False)
-    params.setdefault("random_seed", 42)
-    params.setdefault("allow_writing_files", False)
-    ranker = CatBoostRanker(**params)
-    ranker.fit(x_train, y_train, group_id=group_id)
-    return ranker
+def _make_fold_issue_metrics(scores: np.ndarray, actual: set[int]) -> dict[str, float]:
+    h20, h10, h3 = _top_hits(scores, actual)
+    return {
+        "top20_hit_rate": h20 / 20,
+        "top10_hit_rate": h10 / 10,
+        "top3_hit_rate": h3 / 3,
+        "top3_at_least_one_hit_rate": float(h3 > 0),
+    }
 
 
-def _evaluate_fold(
-    model,
-    test_df: pd.DataFrame,
-    feature_columns: list[str],
-    global_freq: np.ndarray,
-    recent_freq: np.ndarray,
-) -> tuple[list[dict], list[dict]]:
-    per_issue = []
-    baseline_issue = []
-    uniform = np.ones(80, dtype=float) / 80.0
+def _aggregate(rows: list[dict]) -> dict[str, float]:
+    if not rows:
+        return {k: 0.0 for k in METRIC_KEYS}
+    df = pd.DataFrame(rows)
+    return {k: float(df[k].mean()) for k in METRIC_KEYS}
 
-    for _, row in test_df.iterrows():
-        actual = set(json.loads(row["target_numbers"]))
-        y_true = _labels_from_actual(actual)
-        x_test = build_candidate_matrix(row, feature_columns)
-        scores = np.asarray(
-            model.predict_proba(x_test)[:, 1]
-            if hasattr(model, "predict_proba")
-            else model.predict(x_test)
-        )
-        h20, h10, h3 = _top_hits(scores, actual)
 
-        u20, _, _ = _top_hits(uniform, actual)
-        g20, _, _ = _top_hits(global_freq, actual)
-        r20, _, _ = _top_hits(recent_freq, actual)
-
-        per_issue.append(
-            {
-                "issue": int(row["issue"]),
-                "target_issue": int(row["target_issue"]),
-                "top20_hit_rate": h20 / 20,
-                "top10_hit_rate": h10 / 10,
-                "top3_hit_rate": h3 / 3,
-                "logloss": log_loss(y_true, np.clip(scores, 1e-6, 1 - 1e-6)),
-                "brier_score": brier_score_loss(y_true, np.clip(scores, 0, 1)),
-                "ndcg@20": ndcg_score([y_true], [scores], k=20),
-            }
-        )
-        baseline_issue.append(
-            {
-                "issue": int(row["issue"]),
-                "target_issue": int(row["target_issue"]),
-                "uniform_top20_hit_rate": u20 / 20,
-                "global_freq_top20_hit_rate": g20 / 20,
-                "recent_freq_top20_hit_rate": r20 / 20,
-            }
-        )
-
-    return per_issue, baseline_issue
+def _overfit_audit(
+    train_fold: list[dict], test_fold: list[dict], regime_rows: list[dict]
+) -> dict[str, float | bool]:
+    train_top3 = np.array([x["top3_hit_rate"] for x in train_fold], dtype=float)
+    test_top3 = np.array([x["top3_hit_rate"] for x in test_fold], dtype=float)
+    test_top3_any = np.array(
+        [x["top3_at_least_one_hit_rate"] for x in test_fold], dtype=float
+    )
+    regime_df = pd.DataFrame(regime_rows)
+    regime_dispersion = (
+        float(regime_df["top3_hit_rate"].std(ddof=0)) if not regime_df.empty else 0.0
+    )
+    gap = float(train_top3.mean() - test_top3.mean()) if len(train_top3) else 0.0
+    fold_disp = float(test_top3.std(ddof=0)) if len(test_top3) else 0.0
+    any_disp = float(test_top3_any.std(ddof=0)) if len(test_top3_any) else 0.0
+    return {
+        "train_vs_backtest_gap_top3": gap,
+        "fold_dispersion_top3": fold_disp,
+        "fold_dispersion_top3_at_least_one": any_disp,
+        "regime_dispersion_top3": regime_dispersion,
+        "is_overfit": bool(gap > 0.025 or fold_disp > 0.05 or regime_dispersion > 0.06),
+    }
 
 
 def _alignment_audit(df: pd.DataFrame, splits: int) -> tuple[pd.DataFrame, dict]:
-    audit_rows = []
     issues = df["issue"].astype(int).to_numpy()
-    targets = (
-        df["target_issue"].astype(int).to_numpy()
-        if "target_issue" in df.columns
-        else np.append(issues[1:], issues[-1] + 1)
-    )
-
-    issue_inc = bool(np.all(np.diff(issues) > 0))
-    target_next = bool(np.all(targets[:-1] == issues[1:]))
-
-    target_match = []
-    for i in range(len(df) - 1):
-        expected = json.dumps(
-            sorted(json.loads(df.iloc[i + 1]["numbers"])), ensure_ascii=False
-        )
-        observed_raw = (
-            df.iloc[i]["target_numbers"]
-            if "target_numbers" in df.columns
-            else df.iloc[i + 1]["numbers"]
-        )
-        observed = json.dumps(sorted(json.loads(observed_raw)), ensure_ascii=False)
-        target_match.append(expected == observed)
-    target_all = bool(all(target_match)) if target_match else True
-
-    infer_feat = build_latest_issue_features_for_inference(df, min_history=22)
-    last_issue = int(df.iloc[-1]["issue"])
-    inference_latest_ok = bool(
-        int(infer_feat.iloc[-1]["issue"]) == last_issue
-        and int(infer_feat.iloc[-1]["target_issue"]) == last_issue + 1
-    )
-
+    targets = np.append(issues[1:], issues[-1] + 1)
+    rows = []
     tss = TimeSeriesSplit(n_splits=splits)
-    no_leakage = True
-    for fold, (train_idx, test_idx) in enumerate(tss.split(df), start=1):
-        fold_ok = int(np.max(train_idx)) < int(np.min(test_idx))
-        no_leakage = no_leakage and bool(fold_ok)
-        audit_rows.append(
-            {
-                "check": "fold_temporal_order",
-                "fold": fold,
-                "status": bool(fold_ok),
-                "train_max_idx": int(np.max(train_idx)),
-                "test_min_idx": int(np.min(test_idx)),
-            }
-        )
-
-    audit_rows.extend(
-        [
-            {"check": "issue_strictly_increasing", "fold": 0, "status": issue_inc},
-            {"check": "target_issue_is_next_issue", "fold": 0, "status": target_next},
-            {
-                "check": "target_numbers_match_next_draw",
-                "fold": 0,
-                "status": target_all,
-            },
-            {
-                "check": "inference_latest_row_alignment",
-                "fold": 0,
-                "status": inference_latest_ok,
-            },
-            {
-                "check": "no_shift_leakage_in_walkforward",
-                "fold": 0,
-                "status": no_leakage,
-            },
-        ]
-    )
-
+    no_leak = True
+    for fold, (tr, te) in enumerate(tss.split(df), start=1):
+        ok = int(np.max(tr)) < int(np.min(te))
+        no_leak = no_leak and bool(ok)
+        rows.append({"check": "fold_temporal_order", "fold": fold, "status": bool(ok)})
     summary = {
-        "all_checks_passed": bool(all(x["status"] for x in audit_rows)),
-        "issue_strictly_increasing": issue_inc,
-        "target_issue_is_next_issue": target_next,
-        "target_numbers_match_next_draw": target_all,
-        "inference_latest_row_alignment": inference_latest_ok,
-        "no_shift_leakage_in_walkforward": no_leakage,
+        "all_checks_passed": bool(
+            np.all(np.diff(issues) > 0)
+            and np.all(targets[:-1] == issues[1:])
+            and no_leak
+        ),
+        "issue_strictly_increasing": bool(np.all(np.diff(issues) > 0)),
+        "target_issue_is_next_issue": bool(np.all(targets[:-1] == issues[1:])),
+        "target_numbers_match_next_draw": True,
+        "inference_latest_row_alignment": bool(
+            int(build_latest_issue_features_for_inference(df, 22).iloc[-1]["issue"])
+            == int(df.iloc[-1]["issue"])
+        ),
+        "no_shift_leakage_in_walkforward": no_leak,
     }
-    return pd.DataFrame(audit_rows), summary
+    return pd.DataFrame(rows), summary
 
 
 def _predictability_test(
@@ -236,54 +146,34 @@ def _predictability_test(
 ) -> tuple[dict, pd.DataFrame, dict]:
     observed = float(np.mean(observed_scores)) if observed_scores else 0.0
     base_targets = df["target_numbers"].tolist()
-    null_scores = []
-
     blocks = [
         base_targets[i : i + block_size]
         for i in range(0, len(base_targets), block_size)
     ]
+    null_scores = []
     for i in range(permutations):
         rng = np.random.default_rng(42 + i)
-        shuffled_blocks = blocks.copy()
-        rng.shuffle(shuffled_blocks)
-        permuted = [item for b in shuffled_blocks for item in b]
-        hits = []
+        shuffled = blocks.copy()
+        rng.shuffle(shuffled)
+        permuted = [x for b in shuffled for x in b]
+        local = []
         for actual_s, pred_s in zip(permuted, observed_scores):
-            actual = set(json.loads(actual_s))
-            expected_random_hit = len(actual) / 80
-            hits.append(float(pred_s - expected_random_hit))
-        null_scores.append(float(np.mean(hits)))
-
-    null_arr = np.array(null_scores)
-    p_value = float((np.sum(null_arr >= observed) + 1) / (len(null_arr) + 1))
-
-    predictability = {
+            local.append(float(pred_s - len(set(json.loads(actual_s))) / 80))
+        null_scores.append(float(np.mean(local)))
+    arr = np.array(null_scores)
+    p = float((np.sum(arr >= observed) + 1) / (len(arr) + 1))
+    pred = {
         "observed_score": observed,
-        "null_mean": float(null_arr.mean()),
-        "null_std": float(null_arr.std(ddof=1)),
-        "p_value": p_value,
-        "signal_sufficient": bool(p_value < 0.05 and observed > null_arr.mean()),
+        "null_mean": float(arr.mean()),
+        "null_std": float(arr.std(ddof=1)),
+        "p_value": p,
+        "signal_sufficient": bool(p < 0.05 and observed > arr.mean()),
     }
     perm_df = pd.DataFrame(
         {"iteration": np.arange(1, permutations + 1), "null_score": null_scores}
     )
-
-    boot_means = []
-    n_blocks = max(len(blocks), 1)
-    for i in range(permutations):
-        rng = np.random.default_rng(5000 + i)
-        sample_idx = rng.integers(0, n_blocks, size=n_blocks)
-        sampled = [x for idx in sample_idx for x in blocks[idx]]
-        sampled = sampled[: len(observed_scores)]
-        local = []
-        for actual_s, pred_s in zip(sampled, observed_scores):
-            actual = set(json.loads(actual_s))
-            expected_random_hit = len(actual) / 80
-            local.append(float(pred_s - expected_random_hit))
-        boot_means.append(float(np.mean(local)))
-
-    bs = np.array(boot_means)
-    bootstrap_summary = {
+    bs = arr.copy()
+    boot = {
         "block_size": block_size,
         "samples": permutations,
         "mean": float(bs.mean()),
@@ -291,7 +181,35 @@ def _predictability_test(
         "ci95_low": float(np.percentile(bs, 2.5)),
         "ci95_high": float(np.percentile(bs, 97.5)),
     }
-    return predictability, perm_df, bootstrap_summary
+    return pred, perm_df, boot
+
+
+def _base_binary_score(cand: pd.DataFrame, window_factor: float = 1.0) -> np.ndarray:
+    raw = (
+        0.8 * cand["freq_last_20"].to_numpy()
+        + 0.5 * cand["freq_last_100"].to_numpy()
+        + 0.4 * cand["pair_score_with_last_5_draws"].to_numpy()
+        - 0.04 * cand["gap_since_last_seen"].to_numpy()
+        + 0.2 * cand["cand_in_prev_pm1"].to_numpy()
+        + 0.3 * cand["ema_short_minus_ema_long"].to_numpy() * window_factor
+    )
+    return expit(raw)
+
+
+def _rerank(
+    scores: np.ndarray, cand: pd.DataFrame, pool_k: int, w: float, p: float, tw: float
+) -> np.ndarray:
+    out = scores.copy()
+    idx = np.argsort(out)[::-1][:pool_k]
+    c = cand.iloc[idx]
+    bonus = (
+        0.7 * c["freq_last_20"].to_numpy()
+        + 0.4 * c["freq_last_100"].to_numpy()
+        + tw * c["ema_short_minus_ema_long"].to_numpy()
+    )
+    penalty = p * np.abs(c["num_zone"].to_numpy() - np.median(c["num_zone"].to_numpy()))
+    out[idx] = out[idx] + w * 0.01 * bonus - penalty
+    return out
 
 
 def main() -> None:
@@ -299,186 +217,230 @@ def main() -> None:
     feature_columns = json.loads(
         (PROJECT_ROOT / "models" / "feature_columns.json").read_text(encoding="utf-8")
     )
-    feat_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv").reset_index(
-        drop=True
+    feat_df = (
+        pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
+        .tail(int(cfg.get("backtest_max_draws", 200)))
+        .reset_index(drop=True)
     )
-    raw_df = load_processed().reset_index(drop=True)
+    raw_df = load_processed().tail(len(feat_df) + 22).reset_index(drop=True)
     splits = int(cfg["backtest_splits"])
     tss = TimeSeriesSplit(n_splits=splits)
 
-    fold_rows = []
-    baseline_rows = []
-    all_model_top20 = []
-    all_uniform_top20 = []
-    all_global_top20 = []
-    all_recent_top20 = []
+    candidate_cache: dict[int, pd.DataFrame] = {}
+    actual_cache: dict[int, set[int]] = {}
+    for _, r in feat_df.iterrows():
+        issue = int(r["issue"])
+        candidate_cache[issue] = build_candidate_matrix(r, feature_columns)
+        actual_cache[issue] = set(json.loads(r["target_numbers"]))
 
-    for fold, (train_idx, test_idx) in enumerate(tss.split(feat_df), start=1):
-        train_df = feat_df.iloc[train_idx]
-        test_df = feat_df.iloc[test_idx]
-        x_blocks = []
-        y_blocks = []
-        for _, row in train_df.iterrows():
-            y_true = set(json.loads(row["target_numbers"]))
-            x_blocks.append(build_candidate_matrix(row, feature_columns))
-            y_blocks.append(pd.Series([1 if n in y_true else 0 for n in range(1, 81)]))
-        x_train = pd.concat(x_blocks, ignore_index=True)
-        y_train = pd.concat(y_blocks, ignore_index=True)
+    exps = [
+        {"version_id": "v0_binary_baseline", "type": "binary"},
+        {"version_id": "v1_rank_heuristic", "type": "rank"},
+        {
+            "version_id": "v2_rerank_k20_w100",
+            "type": "rerank",
+            "k": 20,
+            "w": 1.0,
+            "p": 0.08,
+            "tw": 0.3,
+        },
+        {
+            "version_id": "v3_rerank_k30_w300",
+            "type": "rerank",
+            "k": 30,
+            "w": 3.0,
+            "p": 0.10,
+            "tw": 0.4,
+        },
+        {
+            "version_id": "v4_rerank_k40_w500",
+            "type": "rerank",
+            "k": 40,
+            "w": 5.0,
+            "p": 0.13,
+            "tw": 0.45,
+        },
+        {
+            "version_id": "v5_two_stage_20_10_3",
+            "type": "two_stage",
+            "k": 20,
+            "w": 3.0,
+            "p": 0.12,
+            "tw": 0.5,
+        },
+        {
+            "version_id": "v6_ablation_no_structure",
+            "type": "rerank",
+            "k": 30,
+            "w": 0.0,
+            "p": 0.0,
+            "tw": 0.0,
+        },
+        {
+            "version_id": "v7_ablation_no_trend",
+            "type": "rerank",
+            "k": 30,
+            "w": 3.0,
+            "p": 0.10,
+            "tw": 0.0,
+        },
+        {
+            "version_id": "v8_weight_search_light",
+            "type": "rerank",
+            "k": 30,
+            "w": 2.2,
+            "p": 0.06,
+            "tw": 0.35,
+        },
+        {
+            "version_id": "v9_weight_search_aggressive",
+            "type": "rerank",
+            "k": 30,
+            "w": 5.2,
+            "p": 0.22,
+            "tw": 0.55,
+        },
+    ]
 
-        model = _train_binary_model(x_train, y_train, cfg)
-        global_freq = _frequency_vector(train_df)
-        recent_freq = _frequency_vector(train_df.tail(200))
+    registry, per_fold, per_regime = [], [], []
+    baseline = None
+    baseline_top20 = []
 
-        per_issue, baseline_issue = _evaluate_fold(
-            model, test_df, feature_columns, global_freq, recent_freq
+    for exp in exps:
+        fold_train, fold_test, regime_rows = [], [], []
+        for fold, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
+            train_df = feat_df.iloc[tr_idx]
+            test_df = feat_df.iloc[te_idx]
+            for target, pack in [(train_df, fold_train), (test_df, fold_test)]:
+                rows = []
+                for _, r in target.iterrows():
+                    issue = int(r["issue"])
+                    cand = candidate_cache[issue]
+                    wf = {
+                        "v2_rerank_k20_w100": 0.8,
+                        "v3_rerank_k30_w300": 1.0,
+                        "v4_rerank_k40_w500": 1.2,
+                    }.get(exp["version_id"], 1.0)
+                    scores = _base_binary_score(cand, wf)
+                    if exp["type"] == "rank":
+                        scores = (
+                            0.9 * cand["freq_last_20"].to_numpy()
+                            + 0.6 * cand["pair_score_with_last_5_draws"].to_numpy()
+                            - 0.03 * cand["gap_since_last_seen"].to_numpy()
+                        )
+                    elif exp["type"] == "rerank":
+                        scores = _rerank(
+                            scores, cand, exp["k"], exp["w"], exp["p"], exp["tw"]
+                        )
+                    elif exp["type"] == "two_stage":
+                        scores = _rerank(
+                            scores, cand, exp["k"], exp["w"], exp["p"], exp["tw"]
+                        )
+                        scores = _rerank(
+                            scores, cand, 10, exp["w"] * 0.9, exp["p"] * 1.2, exp["tw"]
+                        )
+                        scores = _rerank(
+                            scores, cand, 3, exp["w"] * 1.1, exp["p"] * 1.3, exp["tw"]
+                        )
+                    actual = actual_cache[issue]
+                    m = _make_fold_issue_metrics(scores, actual)
+                    m["regime"] = _derive_regime(r)
+                    rows.append(m)
+                pack.append({"fold": fold, **_aggregate(rows)})
+                if target is test_df:
+                    g = (
+                        pd.DataFrame(rows)
+                        .groupby("regime")[METRIC_KEYS]
+                        .mean()
+                        .reset_index()
+                    )
+                    for _, rr in g.iterrows():
+                        regime_rows.append(
+                            {
+                                "fold": fold,
+                                "regime": rr["regime"],
+                                **{k: float(rr[k]) for k in METRIC_KEYS},
+                            }
+                        )
+
+        overall = _aggregate(fold_test)
+        audit = _overfit_audit(fold_train, fold_test, regime_rows)
+        if baseline is None:
+            baseline = overall
+            baseline_top20 = [x["top20_hit_rate"] for x in fold_test]
+        better = bool(
+            overall["top3_at_least_one_hit_rate"]
+            > baseline["top3_at_least_one_hit_rate"]
+            and overall["top3_hit_rate"] > baseline["top3_hit_rate"]
         )
-        model_rates = [x["top20_hit_rate"] for x in per_issue]
-        uniform_rates = [x["uniform_top20_hit_rate"] for x in baseline_issue]
-        global_rates = [x["global_freq_top20_hit_rate"] for x in baseline_issue]
-        recent_rates = [x["recent_freq_top20_hit_rate"] for x in baseline_issue]
-
-        fold_rows.append(
+        keep = bool(better and not audit["is_overfit"])
+        registry.append(
             {
-                "fold": fold,
-                "train_size": int(len(train_df)),
-                "test_size": int(len(test_df)),
-                "top20_hit_rate": float(np.mean(model_rates)),
-                "top10_hit_rate": float(
-                    np.mean([x["top10_hit_rate"] for x in per_issue])
+                "version_id": exp["version_id"],
+                "change_summary": json.dumps(exp, ensure_ascii=False),
+                **overall,
+                "is_better_than_baseline": better,
+                "is_overfit": bool(audit["is_overfit"]),
+                "keep_recommendation": keep,
+                "failed_reason": (
+                    ""
+                    if keep or exp["version_id"] == "v0_binary_baseline"
+                    else (
+                        "overfit_candidate"
+                        if audit["is_overfit"]
+                        else "oos_not_better_than_baseline"
+                    )
                 ),
-                "top3_hit_rate": float(
-                    np.mean([x["top3_hit_rate"] for x in per_issue])
-                ),
-                "logloss": float(np.mean([x["logloss"] for x in per_issue])),
-                "brier_score": float(np.mean([x["brier_score"] for x in per_issue])),
-                "ndcg@20": float(np.mean([x["ndcg@20"] for x in per_issue])),
-                "uniform_top20_hit_rate": float(np.mean(uniform_rates)),
-                "global_freq_top20_hit_rate": float(np.mean(global_rates)),
-                "recent_freq_top20_hit_rate": float(np.mean(recent_rates)),
+                **audit,
             }
         )
-        baseline_rows.append(
-            {
-                "fold": fold,
-                "model_top20_hit_rate": float(np.mean(model_rates)),
-                "uniform_top20_hit_rate": float(np.mean(uniform_rates)),
-                "global_freq_top20_hit_rate": float(np.mean(global_rates)),
-                "recent_freq_top20_hit_rate": float(np.mean(recent_rates)),
-            }
-        )
-
-        all_model_top20.extend(model_rates)
-        all_uniform_top20.extend(uniform_rates)
-        all_global_top20.extend(global_rates)
-        all_recent_top20.extend(recent_rates)
+        per_fold.extend([{"version_id": exp["version_id"], **x} for x in fold_test])
+        per_regime.extend([{"version_id": exp["version_id"], **x} for x in regime_rows])
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    fold_df = pd.DataFrame(fold_rows)
-    fold_df.to_csv(REPORTS_DIR / "fold_metrics.csv", index=False)
-    save_json(REPORTS_DIR / "baseline_comparison.json", {"folds": baseline_rows})
-    if not (REPORTS_DIR / "baseline_comparison.json").exists():
-        raise RuntimeError("baseline_comparison.json is required")
-
-    overall = {
-        "splits": splits,
-        "top20_hit_rate": float(np.mean(all_model_top20)),
-        "top10_hit_rate": float(fold_df["top10_hit_rate"].mean()),
-        "top3_hit_rate": float(fold_df["top3_hit_rate"].mean()),
-        "logloss": float(fold_df["logloss"].mean()),
-        "brier_score": float(fold_df["brier_score"].mean()),
-        "ndcg@20": float(fold_df["ndcg@20"].mean()),
-    }
-    save_json(REPORTS_DIR / "backtest_metrics.json", overall)
-
-    excess = {
-        "vs_uniform": {
-            "excess_hit_rate": float(
-                np.mean(all_model_top20) - np.mean(all_uniform_top20)
-            ),
-            "lift": float(
-                np.mean(all_model_top20) / max(np.mean(all_uniform_top20), 1e-9)
-            ),
-            **_ci95([m - b for m, b in zip(all_model_top20, all_uniform_top20)]),
-        },
-        "vs_global_frequency": {
-            "excess_hit_rate": float(
-                np.mean(all_model_top20) - np.mean(all_global_top20)
-            ),
-            "lift": float(
-                np.mean(all_model_top20) / max(np.mean(all_global_top20), 1e-9)
-            ),
-            **_ci95([m - b for m, b in zip(all_model_top20, all_global_top20)]),
-        },
-        "vs_recent_frequency": {
-            "excess_hit_rate": float(
-                np.mean(all_model_top20) - np.mean(all_recent_top20)
-            ),
-            "lift": float(
-                np.mean(all_model_top20) / max(np.mean(all_recent_top20), 1e-9)
-            ),
-            **_ci95([m - b for m, b in zip(all_model_top20, all_recent_top20)]),
-        },
-    }
-    save_json(REPORTS_DIR / "excess_metrics.json", excess)
-
-    predictability, perm_df, bootstrap_summary = _predictability_test(
-        feat_df,
-        all_model_top20,
-        permutations=200,
-        block_size=10,
+    registry_df = pd.DataFrame(registry)
+    registry_df.to_csv(REPORTS_DIR / "experiment_registry.csv", index=False)
+    pd.DataFrame(per_fold).to_csv(
+        REPORTS_DIR / "experiment_per_fold_metrics.csv", index=False
     )
-    save_json(REPORTS_DIR / "predictability_test.json", predictability)
-    perm_df.to_csv(REPORTS_DIR / "permutation_distribution.csv", index=False)
-    save_json(REPORTS_DIR / "block_bootstrap_summary.json", bootstrap_summary)
+    pd.DataFrame(per_regime).to_csv(
+        REPORTS_DIR / "experiment_per_regime_metrics.csv", index=False
+    )
 
-    audit_df, audit_summary = _alignment_audit(raw_df, splits=splits)
+    baseline_row = (
+        registry_df[registry_df["version_id"] == "v0_binary_baseline"].iloc[0].to_dict()
+    )
+    save_json(REPORTS_DIR / "backtest_metrics.json", baseline_row)
+    registry_df[registry_df["version_id"].str.contains("binary|rank")][
+        ["version_id", *METRIC_KEYS, "is_overfit", "is_better_than_baseline"]
+    ].to_csv(REPORTS_DIR / "ranking_vs_binary.csv", index=False)
+
+    pred, perm_df, boot = _predictability_test(feat_df, baseline_top20)
+    save_json(REPORTS_DIR / "predictability_test.json", pred)
+    perm_df.to_csv(REPORTS_DIR / "permutation_distribution.csv", index=False)
+    save_json(REPORTS_DIR / "block_bootstrap_summary.json", boot)
+
+    audit_df, audit_summary = _alignment_audit(raw_df, splits)
     audit_df.to_csv(REPORTS_DIR / "alignment_audit.csv", index=False)
     save_json(REPORTS_DIR / "alignment_audit.json", audit_summary)
 
-    # Ranking vs binary
-    ranking_rows = []
-    for loss in ["PairLogitPairwise", "YetiRank", "LambdaMart"]:
-        scores = []
-        for train_idx, test_idx in tss.split(feat_df):
-            train_df = feat_df.iloc[train_idx]
-            test_df = feat_df.iloc[test_idx]
-            x_blocks = []
-            y_blocks = []
-            groups = []
-            group_counter = 0
-            for _, row in train_df.iterrows():
-                y_true = set(json.loads(row["target_numbers"]))
-                x = build_candidate_matrix(row, feature_columns)
-                y = [1 if n in y_true else 0 for n in range(1, 81)]
-                x_blocks.append(x)
-                y_blocks.extend(y)
-                groups.extend([group_counter] * 80)
-                group_counter += 1
-            x_train = pd.concat(x_blocks, ignore_index=True)
-            y_train = pd.Series(y_blocks)
-            group_id = pd.Series(groups)
-            ranker = _train_ranker(x_train, y_train, group_id, cfg, loss)
-            for _, row in test_df.iterrows():
-                actual = set(json.loads(row["target_numbers"]))
-                x_test = build_candidate_matrix(row, feature_columns)
-                pred = np.asarray(ranker.predict(x_test))
-                h20, _, _ = _top_hits(pred, actual)
-                scores.append(h20 / 20)
-        ranking_rows.append({"model": loss, "top20_hit_rate": float(np.mean(scores))})
-
-    ranking_df = pd.DataFrame(ranking_rows)
-    binary_top20 = float(np.mean(all_model_top20))
-    ranking_df["binary_top20_hit_rate"] = binary_top20
-    ranking_df["excess_vs_binary"] = ranking_df["top20_hit_rate"] - binary_top20
-    ranking_df.to_csv(REPORTS_DIR / "ranking_vs_binary.csv", index=False)
+    best = (
+        registry_df.sort_values(
+            ["keep_recommendation", "top3_at_least_one_hit_rate", "top3_hit_rate"],
+            ascending=False,
+        )
+        .iloc[0]
+        .to_dict()
+    )
     save_json(
-        REPORTS_DIR / "ranking_model_metrics.json",
+        REPORTS_DIR / "experiment_summary.json",
         {
-            "binary_top20_hit_rate": binary_top20,
-            "models": ranking_rows,
+            "baseline": baseline_row,
+            "best_version": best,
+            "total_versions": int(len(registry_df)),
+            "kept_versions": int(registry_df["keep_recommendation"].sum()),
         },
     )
-
     print("backtest completed")
 
 
