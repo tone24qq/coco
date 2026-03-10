@@ -31,7 +31,7 @@ METADATA = (
     if (MODELS_DIR / "metadata.json").exists()
     else {}
 )
-PREDICTOR = Predictor.load() if (MODELS_DIR / "lgbm_top20.txt").exists() else None
+PREDICTOR = Predictor.load() if (MODELS_DIR / "catboost_top20.cbm").exists() else None
 
 
 class PredictPayload(BaseModel):

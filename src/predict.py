@@ -10,8 +10,8 @@ if str(PROJECT_ROOT) not in sys.path:
 import json
 from dataclasses import dataclass
 
-import lightgbm as lgb  # noqa: E402
 import pandas as pd  # noqa: E402
+from catboost import CatBoostClassifier  # noqa: E402
 
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -28,12 +28,13 @@ from src.utils import (  # noqa: E402
 
 @dataclass
 class Predictor:
-    model: lgb.Booster
+    model: CatBoostClassifier
     feature_columns: list[str]
 
     @classmethod
     def load(cls) -> "Predictor":
-        model = lgb.Booster(model_file=str(MODELS_DIR / "lgbm_top20.txt"))
+        model = CatBoostClassifier()
+        model.load_model(str(MODELS_DIR / "catboost_top20.cbm"))
         cols = json.loads(
             (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
         )
@@ -47,12 +48,14 @@ class Predictor:
             raise ValueError("not enough history for feature generation")
         row = issue_df.iloc[-1]
         x = build_candidate_matrix(row, self.feature_columns)
-        scores = self.model.predict(x)
+        x = x.reindex(columns=self.feature_columns)
+        scores = self.model.predict_proba(x)[:, 1]
         score_table = pd.DataFrame(
             {"number": list(range(1, 81)), "score": scores}
         ).sort_values("score", ascending=False)
         top20 = score_table["number"].head(20).astype(int).tolist()
         compact10 = compact_10_from_top20(top20)
+        top10 = top20[:10]
         top3 = top20[:3]
         latest_issue = int(row["issue"])
         zc = {z: sum(1 for n in top20 if zone_of(n) == z) for z in ["A", "B", "C", "D"]}
@@ -61,15 +64,33 @@ class Predictor:
         calibrated_probability_table = [
             {"number": x["number"], "probability": x["score"]} for x in raw_score_table
         ]
+        top20_scores = {
+            f"{int(rec['number']):02d}": float(rec["score"])
+            for rec in raw_score_table[:20]
+        }
+        big_count = sum(1 for n in top20 if n >= 41)
+        small_count = 20 - big_count
+        odd_count = sum(1 for n in top20 if n % 2 == 1)
+        even_count = 20 - odd_count
         return {
+            "model": "catboost",
             "target_issue": latest_issue + 1,
             "top20_numbers": top20,
+            "top10_numbers": top10,
+            "top3_numbers": top3,
+            "top20_scores": top20_scores,
             "compact10_numbers": compact10,
             "top3_core_group": top3,
             "raw_score_table": raw_score_table,
             "calibrated_probability_table": calibrated_probability_table,
             "score_table": raw_score_table,
             "board_type_prediction": board_type,
+            "big_count": big_count,
+            "small_count": small_count,
+            "size_summary": f"大{big_count} / 小{small_count}",
+            "odd_count": odd_count,
+            "even_count": even_count,
+            "odd_even_summary": f"單{odd_count} / 雙{even_count}",
         }
 
 

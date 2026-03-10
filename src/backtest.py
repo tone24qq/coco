@@ -9,9 +9,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import json
 
-import lightgbm as lgb  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
+from catboost import CatBoostClassifier  # noqa: E402
 from sklearn.metrics import brier_score_loss, log_loss, ndcg_score
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -75,7 +75,11 @@ def main() -> None:
         x_train = pd.concat(x_blocks, ignore_index=True)
         y_train = pd.concat(y_blocks, ignore_index=True)
 
-        model = lgb.LGBMClassifier(**cfg["lgbm_params"])
+        params = cfg.get("catboost_params", {})
+        params.setdefault("loss_function", "Logloss")
+        params.setdefault("verbose", False)
+        params.setdefault("random_seed", 42)
+        model = CatBoostClassifier(**params)
         model.fit(x_train, y_train)
         global_freq = _recent_frequency_baseline(train_df)
         uniform = np.ones(80, dtype=float) / 80.0

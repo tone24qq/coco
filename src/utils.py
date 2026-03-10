@@ -30,7 +30,7 @@ ZONE_NAMES = ["A", "B", "C", "D"]
 class TrainConfig:
     feature_min_history: int = 20
     backtest_splits: int = 5
-    lgbm_params: Dict[str, float] | None = None
+    catboost_params: Dict[str, float] | None = None
 
 
 def load_yaml(path: Path) -> dict:

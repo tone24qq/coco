@@ -10,8 +10,9 @@ if str(PROJECT_ROOT) not in sys.path:
 import json
 from datetime import datetime, timezone
 
-import lightgbm as lgb  # noqa: E402
 import pandas as pd  # noqa: E402
+from catboost import CatBoostClassifier  # noqa: E402
+from sklearn.metrics import log_loss  # noqa: E402
 
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -45,37 +46,57 @@ def main() -> None:
     feature_columns = json.loads(
         (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
     )
+    (MODELS_DIR / "feature_columns.json").write_text(
+        json.dumps(feature_columns, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     x_train, y_train = _expand_training_rows(feature_df, feature_columns)
-    params = cfg["lgbm_params"]
-    model = lgb.LGBMClassifier(**params)
-    model.fit(x_train, y_train)
+    split_at = int(len(x_train) * 0.8)
+    x_fit, x_valid = x_train.iloc[:split_at], x_train.iloc[split_at:]
+    y_fit, y_valid = y_train.iloc[:split_at], y_train.iloc[split_at:]
+
+    params = cfg.get("catboost_params", {})
+    params.setdefault("loss_function", "Logloss")
+    params.setdefault("verbose", False)
+    params.setdefault("random_seed", 42)
+    model = CatBoostClassifier(**params)
+    model.fit(x_fit, y_fit, eval_set=(x_valid, y_valid), use_best_model=True)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    model.booster_.save_model(str(MODELS_DIR / "lgbm_top20.txt"))
+    model.save_model(str(MODELS_DIR / "catboost_top20.cbm"))
+
+    valid_proba = model.predict_proba(x_valid)[:, 1]
+    valid_logloss = log_loss(y_valid, valid_proba)
 
     importance = pd.DataFrame(
         {
             "feature": feature_columns,
-            "importance": model.booster_.feature_importance(importance_type="gain"),
+            "importance": model.get_feature_importance(type="PredictionValuesChange"),
         }
     ).sort_values("importance", ascending=False)
 
     metadata = {
-        "model_type": "lightgbm_binary_v1",
+        "model_type": "catboost",
+        "loss_function": params["loss_function"],
+        "feature_count": len(feature_columns),
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),
         "feature_rows": int(len(feature_df)),
-        "sample_rows": int(len(x_train)),
+        "training_rows": int(len(x_train)),
         "train_issue_start": int(feature_df["issue"].min()),
         "train_issue_end": int(feature_df["target_issue"].max()),
         "feature_columns_path": "models/feature_columns.json",
-        "model_path": "models/lgbm_top20.txt",
-        "best_params": params,
+        "model_path": "models/catboost_top20.cbm",
+        "params": params,
+        "validation_metric": {"logloss": float(valid_logloss)},
         "feature_version": "v1",
         "calibration_method": "none",
     }
 
     save_json(MODELS_DIR / "metadata.json", metadata)
     importance.to_csv("reports/feature_importance.csv", index=False)
+    save_json(
+        Path("reports") / "feature_importance.json",
+        {"type": "PredictionValuesChange", "features": importance.to_dict("records")},
+    )
     print("saved model and metadata")
 
 

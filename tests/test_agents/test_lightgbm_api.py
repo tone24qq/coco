@@ -8,8 +8,12 @@ class _StubPredictor:
         if len(df) <= min_history:
             raise ValueError("not enough history for feature generation")
         return {
+            "model": "catboost",
             "target_issue": int(df.iloc[-1]["issue"]) + 1,
             "top20_numbers": list(range(1, 21)),
+            "top10_numbers": list(range(1, 11)),
+            "top3_numbers": [1, 2, 3],
+            "top20_scores": {f"{i:02d}": 1.0 / i for i in range(1, 21)},
             "compact10_numbers": list(range(1, 11)),
             "top3_core_group": [1, 2, 3],
             "raw_score_table": [{"number": i, "score": 1.0 / i} for i in range(1, 81)],
@@ -18,6 +22,12 @@ class _StubPredictor:
             ],
             "score_table": [{"number": i, "score": 1.0 / i} for i in range(1, 81)],
             "board_type_prediction": "balanced",
+            "big_count": 0,
+            "small_count": 20,
+            "size_summary": "大0 / 小20",
+            "odd_count": 10,
+            "even_count": 10,
+            "odd_even_summary": "單10 / 雙10",
         }
 
 
@@ -72,6 +82,7 @@ def test_predict_success_contains_analysis_report(monkeypatch):
 
     assert resp.status_code == 200
     body = resp.json()
+    assert body["model"] == "catboost"
     assert "analysis_report" in body
     assert "odd_even" in body["analysis_report"]
     assert "recent_frequency" in body["analysis_report"]
@@ -80,6 +91,12 @@ def test_predict_success_contains_analysis_report(monkeypatch):
     assert "training_data_snapshot" in body
     assert "raw_score_table" in body
     assert "calibrated_probability_table" in body
+    assert len(body["top20_numbers"]) == 20
+    assert len(body["top10_numbers"]) == 10
+    assert len(body["top3_numbers"]) == 3
+    assert len(body["top20_scores"]) == 20
+    assert "size_summary" in body
+    assert "odd_even_summary" in body
 
 
 def test_predict_converts_value_error_to_400(monkeypatch):

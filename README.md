@@ -38,7 +38,7 @@ python src/backtest.py
 ### 流程說明
 - `prepare_data.py`：讀取 `賓果賓果_2023~2026.csv`，清洗為 `issue, draw_date, numbers`。
 - `build_features.py`：建立單期特徵（僅用當期以前資料），輸出特徵表與固定欄位清單。
-- `train_lgbm.py`：訓練 LightGBM，輸出模型、metadata、特徵重要度。
+- `train_lgbm.py`：訓練 CatBoost，輸出模型、metadata、特徵重要度。
 - `backtest.py`：使用 `TimeSeriesSplit` 做 walk-forward 回測，輸出每折與總指標。
 
 ## 2) 上線預測指令
@@ -57,7 +57,7 @@ API 端點：
 ## 3) 訓練輸出物
 
 訓練後會產生：
-- `models/lgbm_top20.txt`
+- `models/catboost_top20.cbm`
 - `models/feature_columns.json`
 - `models/metadata.json`
 - `reports/backtest_metrics.json`
