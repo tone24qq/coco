@@ -57,7 +57,7 @@ API 端點：
 ## 3) 訓練輸出物
 
 訓練後會產生：
-- `models/catboost_top20.cbm`
+- `models/catboost_top20.cbm`（訓練產物，不納入 Git；部署時需由本地訓練產出或另行提供到 `models/` 目錄）
 - `models/feature_columns.json`
 - `models/metadata.json`
 - `reports/backtest_metrics.json`
