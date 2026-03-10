@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.special import expit
+from catboost import CatBoostClassifier
 from scipy.stats import t
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -14,6 +14,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from src.strategy import (  # noqa: E402
+    StrategyConfig,
+    apply_strategy,
+    default_experiments,
+    derive_regime,
+    issue_metrics,
+    strategy_to_dict,
+)
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
     FEATURE_STORE_DIR,
@@ -31,15 +39,6 @@ METRIC_KEYS = [
     "top3_hit_rate",
     "top3_at_least_one_hit_rate",
 ]
-
-
-def _top_hits(pred_scores: np.ndarray, actual: set[int]) -> tuple[int, int, int]:
-    order = np.argsort(pred_scores)[::-1] + 1
-    return (
-        len(set(order[:20]) & actual),
-        len(set(order[:10]) & actual),
-        len(set(order[:3]) & actual),
-    )
 
 
 def _ci95(values: list[float]) -> dict[str, float]:
@@ -61,24 +60,6 @@ def _ci95(values: list[float]) -> dict[str, float]:
     }
 
 
-def _derive_regime(row: pd.Series) -> str:
-    if float(row.get("span", 0)) >= 72 or float(row.get("consecutive_pairs", 0)) >= 6:
-        return "high_vol"
-    if float(row.get("zone_range", 0)) <= 2 and float(row.get("span", 0)) <= 58:
-        return "balanced"
-    return "transitional"
-
-
-def _make_fold_issue_metrics(scores: np.ndarray, actual: set[int]) -> dict[str, float]:
-    h20, h10, h3 = _top_hits(scores, actual)
-    return {
-        "top20_hit_rate": h20 / 20,
-        "top10_hit_rate": h10 / 10,
-        "top3_hit_rate": h3 / 3,
-        "top3_at_least_one_hit_rate": float(h3 > 0),
-    }
-
-
 def _aggregate(rows: list[dict]) -> dict[str, float]:
     if not rows:
         return {k: 0.0 for k in METRIC_KEYS}
@@ -86,21 +67,30 @@ def _aggregate(rows: list[dict]) -> dict[str, float]:
     return {k: float(df[k].mean()) for k in METRIC_KEYS}
 
 
+def _make_fold_issue_metrics(scores: np.ndarray, actual: set[int]) -> dict[str, float]:
+    return issue_metrics(scores, actual)
+
+
 def _overfit_audit(
     train_fold: list[dict], test_fold: list[dict], regime_rows: list[dict]
 ) -> dict[str, float | bool]:
     train_top3 = np.array([x["top3_hit_rate"] for x in train_fold], dtype=float)
     test_top3 = np.array([x["top3_hit_rate"] for x in test_fold], dtype=float)
-    test_top3_any = np.array(
-        [x["top3_at_least_one_hit_rate"] for x in test_fold], dtype=float
-    )
     regime_df = pd.DataFrame(regime_rows)
     regime_dispersion = (
         float(regime_df["top3_hit_rate"].std(ddof=0)) if not regime_df.empty else 0.0
     )
     gap = float(train_top3.mean() - test_top3.mean()) if len(train_top3) else 0.0
     fold_disp = float(test_top3.std(ddof=0)) if len(test_top3) else 0.0
-    any_disp = float(test_top3_any.std(ddof=0)) if len(test_top3_any) else 0.0
+    any_disp = (
+        float(
+            np.array(
+                [x["top3_at_least_one_hit_rate"] for x in test_fold], dtype=float
+            ).std(ddof=0)
+        )
+        if test_fold
+        else 0.0
+    )
     return {
         "train_vs_backtest_gap_top3": gap,
         "fold_dispersion_top3": fold_disp,
@@ -172,44 +162,37 @@ def _predictability_test(
     perm_df = pd.DataFrame(
         {"iteration": np.arange(1, permutations + 1), "null_score": null_scores}
     )
-    bs = arr.copy()
     boot = {
         "block_size": block_size,
         "samples": permutations,
-        "mean": float(bs.mean()),
-        "std": float(bs.std(ddof=1)),
-        "ci95_low": float(np.percentile(bs, 2.5)),
-        "ci95_high": float(np.percentile(bs, 97.5)),
+        "mean": float(arr.mean()),
+        "std": float(arr.std(ddof=1)),
+        "ci95_low": float(np.percentile(arr, 2.5)),
+        "ci95_high": float(np.percentile(arr, 97.5)),
     }
     return pred, perm_df, boot
 
 
-def _base_binary_score(cand: pd.DataFrame, window_factor: float = 1.0) -> np.ndarray:
-    raw = (
-        0.8 * cand["freq_last_20"].to_numpy()
-        + 0.5 * cand["freq_last_100"].to_numpy()
-        + 0.4 * cand["pair_score_with_last_5_draws"].to_numpy()
-        - 0.04 * cand["gap_since_last_seen"].to_numpy()
-        + 0.2 * cand["cand_in_prev_pm1"].to_numpy()
-        + 0.3 * cand["ema_short_minus_ema_long"].to_numpy() * window_factor
-    )
-    return expit(raw)
+def _load_experiments() -> list[StrategyConfig]:
+    exp_cfg_path = CONFIG_DIR / "experiments.yaml"
+    if not exp_cfg_path.exists():
+        return default_experiments()
+    payload = load_yaml(exp_cfg_path)
+    return [StrategyConfig(**row) for row in payload.get("experiments", [])]
 
 
-def _rerank(
-    scores: np.ndarray, cand: pd.DataFrame, pool_k: int, w: float, p: float, tw: float
-) -> np.ndarray:
-    out = scores.copy()
-    idx = np.argsort(out)[::-1][:pool_k]
-    c = cand.iloc[idx]
-    bonus = (
-        0.7 * c["freq_last_20"].to_numpy()
-        + 0.4 * c["freq_last_100"].to_numpy()
-        + tw * c["ema_short_minus_ema_long"].to_numpy()
+def _expand_rows(
+    feature_df: pd.DataFrame, feature_columns: list[str]
+) -> tuple[pd.DataFrame, pd.Series]:
+    x_blocks, y_blocks = [], []
+    for _, row in feature_df.iterrows():
+        cand = build_candidate_matrix(row, feature_columns)
+        target = set(json.loads(row["target_numbers"]))
+        y_blocks.append(pd.Series([1 if n in target else 0 for n in range(1, 81)]))
+        x_blocks.append(cand)
+    return pd.concat(x_blocks, ignore_index=True), pd.concat(
+        y_blocks, ignore_index=True
     )
-    penalty = p * np.abs(c["num_zone"].to_numpy() - np.median(c["num_zone"].to_numpy()))
-    out[idx] = out[idx] + w * 0.01 * bonus - penalty
-    return out
 
 
 def main() -> None:
@@ -219,132 +202,43 @@ def main() -> None:
     )
     feat_df = (
         pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
-        .tail(int(cfg.get("backtest_max_draws", 200)))
+        .tail(int(cfg.get("backtest_max_draws", 1000)))
         .reset_index(drop=True)
     )
     raw_df = load_processed().tail(len(feat_df) + 22).reset_index(drop=True)
     splits = int(cfg["backtest_splits"])
+
     tss = TimeSeriesSplit(n_splits=splits)
-
-    candidate_cache: dict[int, pd.DataFrame] = {}
-    actual_cache: dict[int, set[int]] = {}
-    for _, r in feat_df.iterrows():
-        issue = int(r["issue"])
-        candidate_cache[issue] = build_candidate_matrix(r, feature_columns)
-        actual_cache[issue] = set(json.loads(r["target_numbers"]))
-
-    exps = [
-        {"version_id": "v0_binary_baseline", "type": "binary"},
-        {"version_id": "v1_rank_heuristic", "type": "rank"},
-        {
-            "version_id": "v2_rerank_k20_w100",
-            "type": "rerank",
-            "k": 20,
-            "w": 1.0,
-            "p": 0.08,
-            "tw": 0.3,
-        },
-        {
-            "version_id": "v3_rerank_k30_w300",
-            "type": "rerank",
-            "k": 30,
-            "w": 3.0,
-            "p": 0.10,
-            "tw": 0.4,
-        },
-        {
-            "version_id": "v4_rerank_k40_w500",
-            "type": "rerank",
-            "k": 40,
-            "w": 5.0,
-            "p": 0.13,
-            "tw": 0.45,
-        },
-        {
-            "version_id": "v5_two_stage_20_10_3",
-            "type": "two_stage",
-            "k": 20,
-            "w": 3.0,
-            "p": 0.12,
-            "tw": 0.5,
-        },
-        {
-            "version_id": "v6_ablation_no_structure",
-            "type": "rerank",
-            "k": 30,
-            "w": 0.0,
-            "p": 0.0,
-            "tw": 0.0,
-        },
-        {
-            "version_id": "v7_ablation_no_trend",
-            "type": "rerank",
-            "k": 30,
-            "w": 3.0,
-            "p": 0.10,
-            "tw": 0.0,
-        },
-        {
-            "version_id": "v8_weight_search_light",
-            "type": "rerank",
-            "k": 30,
-            "w": 2.2,
-            "p": 0.06,
-            "tw": 0.35,
-        },
-        {
-            "version_id": "v9_weight_search_aggressive",
-            "type": "rerank",
-            "k": 30,
-            "w": 5.2,
-            "p": 0.22,
-            "tw": 0.55,
-        },
-    ]
+    experiments = _load_experiments() or default_experiments()
+    params = cfg.get("catboost_params", {})
+    params.setdefault("verbose", False)
 
     registry, per_fold, per_regime = [], [], []
     baseline = None
     baseline_top20 = []
 
-    for exp in exps:
+    for exp in experiments:
         fold_train, fold_test, regime_rows = [], [], []
         for fold, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
             train_df = feat_df.iloc[tr_idx]
             test_df = feat_df.iloc[te_idx]
-            for target, pack in [(train_df, fold_train), (test_df, fold_test)]:
+            x_train, y_train = _expand_rows(train_df, feature_columns)
+            model = CatBoostClassifier(**params)
+            model.fit(x_train, y_train, verbose=False)
+
+            for target, pack in [
+                (train_df.tail(min(50, len(train_df))), fold_train),
+                (test_df, fold_test),
+            ]:
                 rows = []
                 for _, r in target.iterrows():
-                    issue = int(r["issue"])
-                    cand = candidate_cache[issue]
-                    wf = {
-                        "v2_rerank_k20_w100": 0.8,
-                        "v3_rerank_k30_w300": 1.0,
-                        "v4_rerank_k40_w500": 1.2,
-                    }.get(exp["version_id"], 1.0)
-                    scores = _base_binary_score(cand, wf)
-                    if exp["type"] == "rank":
-                        scores = (
-                            0.9 * cand["freq_last_20"].to_numpy()
-                            + 0.6 * cand["pair_score_with_last_5_draws"].to_numpy()
-                            - 0.03 * cand["gap_since_last_seen"].to_numpy()
-                        )
-                    elif exp["type"] == "rerank":
-                        scores = _rerank(
-                            scores, cand, exp["k"], exp["w"], exp["p"], exp["tw"]
-                        )
-                    elif exp["type"] == "two_stage":
-                        scores = _rerank(
-                            scores, cand, exp["k"], exp["w"], exp["p"], exp["tw"]
-                        )
-                        scores = _rerank(
-                            scores, cand, 10, exp["w"] * 0.9, exp["p"] * 1.2, exp["tw"]
-                        )
-                        scores = _rerank(
-                            scores, cand, 3, exp["w"] * 1.1, exp["p"] * 1.3, exp["tw"]
-                        )
-                    actual = actual_cache[issue]
-                    m = _make_fold_issue_metrics(scores, actual)
-                    m["regime"] = _derive_regime(r)
+                    cand = build_candidate_matrix(r, feature_columns)
+                    base_scores = model.predict_proba(cand)[:, 1]
+                    scores = apply_strategy(base_scores, cand, exp, derive_regime(r))
+                    m = _make_fold_issue_metrics(
+                        scores, set(json.loads(r["target_numbers"]))
+                    )
+                    m["regime"] = derive_regime(r)
                     rows.append(m)
                 pack.append({"fold": fold, **_aggregate(rows)})
                 if target is test_df:
@@ -362,12 +256,12 @@ def main() -> None:
                                 **{k: float(rr[k]) for k in METRIC_KEYS},
                             }
                         )
+                    baseline_top20.extend([r["top20_hit_rate"] for r in rows])
 
         overall = _aggregate(fold_test)
         audit = _overfit_audit(fold_train, fold_test, regime_rows)
         if baseline is None:
             baseline = overall
-            baseline_top20 = [x["top20_hit_rate"] for x in fold_test]
         better = bool(
             overall["top3_at_least_one_hit_rate"]
             > baseline["top3_at_least_one_hit_rate"]
@@ -376,26 +270,15 @@ def main() -> None:
         keep = bool(better and not audit["is_overfit"])
         registry.append(
             {
-                "version_id": exp["version_id"],
-                "change_summary": json.dumps(exp, ensure_ascii=False),
+                **strategy_to_dict(exp),
                 **overall,
-                "is_better_than_baseline": better,
-                "is_overfit": bool(audit["is_overfit"]),
-                "keep_recommendation": keep,
-                "failed_reason": (
-                    ""
-                    if keep or exp["version_id"] == "v0_binary_baseline"
-                    else (
-                        "overfit_candidate"
-                        if audit["is_overfit"]
-                        else "oos_not_better_than_baseline"
-                    )
-                ),
                 **audit,
+                "is_better_than_baseline": better,
+                "keep_recommendation": keep,
             }
         )
-        per_fold.extend([{"version_id": exp["version_id"], **x} for x in fold_test])
-        per_regime.extend([{"version_id": exp["version_id"], **x} for x in regime_rows])
+        per_fold.extend([{"version_id": exp.version_id, **x} for x in fold_test])
+        per_regime.extend([{"version_id": exp.version_id, **x} for x in regime_rows])
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     registry_df = pd.DataFrame(registry)
@@ -411,10 +294,6 @@ def main() -> None:
         registry_df[registry_df["version_id"] == "v0_binary_baseline"].iloc[0].to_dict()
     )
     save_json(REPORTS_DIR / "backtest_metrics.json", baseline_row)
-    registry_df[registry_df["version_id"].str.contains("binary|rank")][
-        ["version_id", *METRIC_KEYS, "is_overfit", "is_better_than_baseline"]
-    ].to_csv(REPORTS_DIR / "ranking_vs_binary.csv", index=False)
-
     pred, perm_df, boot = _predictability_test(feat_df, baseline_top20)
     save_json(REPORTS_DIR / "predictability_test.json", pred)
     perm_df.to_csv(REPORTS_DIR / "permutation_distribution.csv", index=False)

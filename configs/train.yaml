@@ -1,8 +1,7 @@
-max_draws_for_training: 300
+max_draws_for_training: 3200
 feature_min_history: 22
 backtest_splits: 5
-backtest_max_draws: 80
-backtest_iterations: 20
+backtest_max_draws: 1000
 catboost_params:
   iterations: 300
   learning_rate: 0.05
@@ -13,3 +12,7 @@ catboost_params:
   random_seed: 42
   allow_writing_files: false
   verbose: false
+overfit_thresholds:
+  train_vs_oos_gap: 0.03
+  fold_dispersion: 0.05
+  regime_dispersion: 0.06

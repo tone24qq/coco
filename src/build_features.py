@@ -45,6 +45,7 @@ def main() -> None:
         "freq_last_50",
         "freq_last_100",
         "freq_last_200",
+        "freq_last_300",
         "freq_last_500",
         "freq_last_1000",
         "ema_freq_alpha_0_05",

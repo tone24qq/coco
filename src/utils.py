@@ -404,7 +404,7 @@ def build_candidate_matrix(
     base = issue_row.to_dict()
     history = [sorted(x) for x in json.loads(base.get("history_numbers", "[]"))]
     last_draw = set(json.loads(base.get("current_numbers", "[]")))
-    freq_windows = [10, 20, 50, 100, 200, 500, 1000]
+    freq_windows = [10, 20, 50, 100, 200, 300, 500, 1000]
     freq_by_window = {w: _recent_frequency(history, w) for w in freq_windows}
 
     def _ema_for_num(num: int, alpha: float) -> float:
