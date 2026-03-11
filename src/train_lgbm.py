@@ -27,8 +27,8 @@ from src.utils import (  # noqa: E402
     FEATURE_STORE_DIR,
     MODELS_DIR,
     REPORTS_DIR,
-    build_candidate_matrix,
     load_yaml,
+    precompute_issue_payloads,
     save_json,
 )
 
@@ -41,12 +41,14 @@ METRIC_KEYS = [
 
 
 def _expand_rows(
-    feature_df: pd.DataFrame, feature_columns: list[str]
+    issue_payloads: dict[int, dict[str, object]],
+    indices: list[int],
 ) -> tuple[pd.DataFrame, pd.Series]:
     x_blocks, y_blocks = [], []
-    for _, row in feature_df.iterrows():
-        cand = build_candidate_matrix(row, feature_columns)
-        target = set(json.loads(row["target_numbers"]))
+    for idx in indices:
+        payload = issue_payloads[int(idx)]
+        cand = payload["cand"]
+        target = payload["target"]
         labels = pd.Series([1 if n in target else 0 for n in range(1, 81)])
         x_blocks.append(cand)
         y_blocks.append(labels)
@@ -99,7 +101,7 @@ def _load_experiments() -> list[StrategyConfig]:
 
 def _evaluate_strategies(
     feat_df: pd.DataFrame,
-    feature_columns: list[str],
+    issue_payloads: dict[int, dict[str, object]],
     params: dict,
     splits: int,
     experiments: list[StrategyConfig],
@@ -110,31 +112,32 @@ def _evaluate_strategies(
     best = None
     baseline = None
     for exp in experiments:
+        print(f"[版本開始] {exp.version_id}")
         fold_train, fold_test, regime_rows = [], [], []
         for fold_id, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
-            train_df = feat_df.iloc[tr_idx]
-            test_df = feat_df.iloc[te_idx]
-            x_train, y_train = _expand_rows(train_df, feature_columns)
+            x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
             model = CatBoostClassifier(**params)
             model.fit(x_train, y_train, verbose=False)
 
-            def _score_issue(row: pd.Series) -> tuple[dict, str]:
-                cand = build_candidate_matrix(row, feature_columns)
+            def _score_issue(row_idx: int) -> tuple[dict, str]:
+                payload = issue_payloads[int(row_idx)]
+                cand = payload["cand"]
                 base_scores = model.predict_proba(cand)[:, 1]
-                regime = derive_regime(row)
+                regime = payload["regime"]
+                if regime is None:
+                    regime = derive_regime(feat_df.iloc[row_idx])
+                    payload["regime"] = regime
                 final_scores = apply_strategy(base_scores, cand, exp, regime)
-                metric = issue_metrics(
-                    final_scores, set(json.loads(row["target_numbers"]))
-                )
+                metric = issue_metrics(final_scores, payload["target"])
                 return metric, regime
 
             train_eval_rows = []
-            for _, r in train_df.tail(min(50, len(train_df))).iterrows():
-                m, _ = _score_issue(r)
+            for row_idx in tr_idx[-min(50, len(tr_idx)) :]:
+                m, _ = _score_issue(int(row_idx))
                 train_eval_rows.append(m)
             test_eval_rows = []
-            for _, r in test_df.iterrows():
-                m, regime = _score_issue(r)
+            for row_idx in te_idx:
+                m, regime = _score_issue(int(row_idx))
                 test_eval_rows.append(m)
                 regime_rows.append({"fold": fold_id, "regime": regime, **m})
 
@@ -194,6 +197,8 @@ def _evaluate_strategies(
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     feature_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
+    max_draws = int(cfg.get("max_draws_for_training", len(feature_df)))
+    feature_df = feature_df.tail(max_draws).reset_index(drop=True)
     feature_columns = json.loads(
         (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
     )
@@ -207,27 +212,75 @@ def main() -> None:
     params.setdefault("random_seed", 42)
 
     print("[訓練開始] 模型：CatBoost Binary")
+    print(f"[訓練設定] max_draws_for_training={max_draws}")
     print(
         f"[資料摘要] 訓練期數：{len(feature_df)}，特徵數：{len(feature_columns)}，模型類型：catboost"
     )
 
-    experiments = _load_experiments()
-    registry_df, best, baseline = _evaluate_strategies(
+    all_experiments = _load_experiments()
+    fast_version_ids = {
+        "v0_binary_baseline",
+        "v2_rerank_k30_p300",
+        "v4_two_stage_20_10_3",
+    }
+    fast_experiments = [
+        exp for exp in all_experiments if exp.version_id in fast_version_ids
+    ]
+    issue_payloads = precompute_issue_payloads(feature_df, feature_columns)
+
+    print("[研究流程] 快速階段：3個版本、3 folds、較低 iterations")
+    fast_params = dict(params)
+    fast_params["iterations"] = int(cfg.get("research_iterations", 140))
+    fast_registry_df, fast_best, _ = _evaluate_strategies(
         feature_df,
-        feature_columns,
-        params=params,
-        splits=int(cfg.get("backtest_splits", 5)),
-        experiments=experiments,
+        issue_payloads,
+        params=fast_params,
+        splits=int(cfg.get("research_backtest_splits", 3)),
+        experiments=fast_experiments,
         overfit_th=cfg.get("overfit_thresholds", {}),
     )
 
-    x_train, y_train = _expand_rows(feature_df, feature_columns)
+    candidates = [
+        row
+        for row in fast_registry_df.sort_values(
+            ["keep_recommendation", "top3_at_least_one_hit_rate", "top3_hit_rate"],
+            ascending=False,
+        ).to_dict(orient="records")
+        if row["version_id"] in fast_version_ids
+    ]
+    selected_final_ids = [
+        x["version_id"] for x in candidates[: int(cfg.get("final_stage_versions", 2))]
+    ]
+    if not selected_final_ids:
+        selected_final_ids = [fast_best["version_id"]]
+    if "v0_binary_baseline" not in selected_final_ids:
+        selected_final_ids = ["v0_binary_baseline", *selected_final_ids]
+    final_experiments = [
+        exp for exp in all_experiments if exp.version_id in set(selected_final_ids)
+    ]
+
+    print(
+        f"[研究流程] 正式階段：版本={selected_final_ids}、{int(cfg.get('backtest_splits', 5))} folds"
+    )
+    registry_df, best, baseline = _evaluate_strategies(
+        feature_df,
+        issue_payloads,
+        params=params,
+        splits=int(cfg.get("backtest_splits", 5)),
+        experiments=final_experiments,
+        overfit_th=cfg.get("overfit_thresholds", {}),
+    )
+
+    x_train, y_train = _expand_rows(issue_payloads, list(range(len(feature_df))))
     final_model = CatBoostClassifier(**params)
     final_model.fit(x_train, y_train, verbose=False)
     final_model.save_model(str(MODELS_DIR / "catboost_top20.cbm"))
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     registry_df.to_csv(REPORTS_DIR / "experiment_registry.csv", index=False)
+    fast_registry_df.to_csv(
+        REPORTS_DIR / "experiment_registry_research.csv", index=False
+    )
 
     print(
         "[整體結果] "
@@ -247,6 +300,12 @@ def main() -> None:
     print(
         f"[正式預測版本] {best['version_id'] if bool(best.get('keep_recommendation')) else baseline['version_id']}"
     )
+
+    strategy_payload = {
+        "selected_strategy": best,
+        "fallback_strategy": baseline,
+    }
+    save_json(MODELS_DIR / "strategy_config.json", strategy_payload)
 
     metadata = {
         "model_type": "catboost",

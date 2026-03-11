@@ -546,6 +546,21 @@ def build_candidate_matrix(
     return out[list(feature_columns)]
 
 
+def precompute_issue_payloads(
+    feature_df: pd.DataFrame,
+    feature_columns: Sequence[str],
+) -> dict[int, dict[str, object]]:
+    payloads: dict[int, dict[str, object]] = {}
+    for idx, row in feature_df.iterrows():
+        cand = build_candidate_matrix(row, feature_columns)
+        payloads[int(idx)] = {
+            "cand": cand,
+            "target": set(json.loads(row["target_numbers"])),
+            "regime": None,
+        }
+    return payloads
+
+
 def compact_10_from_top20(top20: Sequence[int]) -> List[int]:
     buckets = {z: [] for z in ZONE_NAMES}
     for n in top20:

@@ -1,11 +1,9 @@
 {
   "model_type": "catboost",
-  "loss_function": "Logloss",
-  "feature_count": 145,
-  "trained_at_utc": "2026-03-10T05:14:11.006395+00:00",
-  "feature_rows": 2977,
-  "training_rows": 238160,
-  "train_issue_start": 115003316,
+  "trained_at_utc": "2026-03-11T06:25:37.372567+00:00",
+  "feature_rows": 3177,
+  "feature_count": 146,
+  "train_issue_start": 115003116,
   "train_issue_end": 115006293,
   "feature_columns_path": "models/feature_columns.json",
   "model_path": "models/catboost_top20.cbm",
@@ -20,9 +18,45 @@
     "allow_writing_files": false,
     "verbose": false
   },
-  "validation_metric": {
-    "logloss": 0.5624982755448379
+  "selected_strategy": {
+    "version_id": "v0_binary_baseline",
+    "stage_type": "baseline",
+    "candidate_pool": 20,
+    "prior_window": 100,
+    "rerank_weight": 0.0,
+    "penalty_weight": 0.0,
+    "trend_weight": 0.0,
+    "regime_aware": false,
+    "top20_hit_rate": 0.2522495274102079,
+    "top10_hit_rate": 0.24941398865784498,
+    "top3_hit_rate": 0.25494643982356646,
+    "top3_at_least_one_hit_rate": 0.596219281663516,
+    "train_vs_oos_gap": 0.5770535601764336,
+    "fold_dispersion": 0.0034420920689975263,
+    "regime_dispersion": 0.24609788616335496,
+    "is_overfit": true,
+    "is_better_than_baseline": true,
+    "keep_recommendation": false
   },
-  "feature_version": "v1",
-  "calibration_method": "none"
+  "fallback_strategy": {
+    "version_id": "v0_binary_baseline",
+    "stage_type": "baseline",
+    "candidate_pool": 20,
+    "prior_window": 100,
+    "rerank_weight": 0.0,
+    "penalty_weight": 0.0,
+    "trend_weight": 0.0,
+    "regime_aware": false,
+    "top20_hit_rate": 0.2522495274102079,
+    "top10_hit_rate": 0.24941398865784498,
+    "top3_hit_rate": 0.25494643982356646,
+    "top3_at_least_one_hit_rate": 0.596219281663516,
+    "train_vs_oos_gap": 0.5770535601764336,
+    "fold_dispersion": 0.0034420920689975263,
+    "regime_dispersion": 0.24609788616335496,
+    "is_overfit": true,
+    "is_better_than_baseline": true,
+    "keep_recommendation": false
+  },
+  "feature_version": "v2"
 }

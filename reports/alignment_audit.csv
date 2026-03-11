@@ -1,0 +1,6 @@
+check,fold,status
+fold_temporal_order,1,True
+fold_temporal_order,2,True
+fold_temporal_order,3,True
+fold_temporal_order,4,True
+fold_temporal_order,5,True

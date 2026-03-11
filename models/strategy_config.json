@@ -1,0 +1,42 @@
+{
+  "selected_strategy": {
+    "version_id": "v0_binary_baseline",
+    "stage_type": "baseline",
+    "candidate_pool": 20,
+    "prior_window": 100,
+    "rerank_weight": 0.0,
+    "penalty_weight": 0.0,
+    "trend_weight": 0.0,
+    "regime_aware": false,
+    "top20_hit_rate": 0.2522495274102079,
+    "top10_hit_rate": 0.24941398865784498,
+    "top3_hit_rate": 0.25494643982356646,
+    "top3_at_least_one_hit_rate": 0.596219281663516,
+    "train_vs_oos_gap": 0.5770535601764336,
+    "fold_dispersion": 0.0034420920689975263,
+    "regime_dispersion": 0.24609788616335496,
+    "is_overfit": true,
+    "is_better_than_baseline": true,
+    "keep_recommendation": false
+  },
+  "fallback_strategy": {
+    "version_id": "v0_binary_baseline",
+    "stage_type": "baseline",
+    "candidate_pool": 20,
+    "prior_window": 100,
+    "rerank_weight": 0.0,
+    "penalty_weight": 0.0,
+    "trend_weight": 0.0,
+    "regime_aware": false,
+    "top20_hit_rate": 0.2522495274102079,
+    "top10_hit_rate": 0.24941398865784498,
+    "top3_hit_rate": 0.25494643982356646,
+    "top3_at_least_one_hit_rate": 0.596219281663516,
+    "train_vs_oos_gap": 0.5770535601764336,
+    "fold_dispersion": 0.0034420920689975263,
+    "regime_dispersion": 0.24609788616335496,
+    "is_overfit": true,
+    "is_better_than_baseline": true,
+    "keep_recommendation": false
+  }
+}

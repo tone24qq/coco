@@ -42,8 +42,18 @@ class Predictor:
         metadata = json.loads(
             (MODELS_DIR / "metadata.json").read_text(encoding="utf-8")
         )
+        strategy_cfg_path = MODELS_DIR / "strategy_config.json"
+        strategy_cfg = (
+            json.loads(strategy_cfg_path.read_text(encoding="utf-8"))
+            if strategy_cfg_path.exists()
+            else {}
+        )
         strat = (
-            metadata.get("selected_strategy") or metadata.get("fallback_strategy") or {}
+            strategy_cfg.get("selected_strategy")
+            or metadata.get("selected_strategy")
+            or strategy_cfg.get("fallback_strategy")
+            or metadata.get("fallback_strategy")
+            or {}
         )
         strategy = StrategyConfig(
             version_id=strat.get("version_id", "v0_binary_baseline"),
