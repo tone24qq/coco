@@ -1,0 +1,2 @@
+trained_at_utc,feature_version,version_id,top20_hit_rate,top10_hit_rate,top5_hit_rate,top3_hit_rate,top3_at_least_one_hit_rate,ndcg_at_10,fold_dispersion_top3,regime_dispersion_top3
+2026-03-11T08:18:56.387643+00:00,v3_core20,v3_rerank_k30_p300,0.2520604914933837,0.2526654064272212,0.2535349716446125,0.2578449905482042,0.6045368620037808,0.25380722942010614,0.009038649566246311,0.023796792101940953

@@ -1,0 +1,5 @@
+{
+  "available": false,
+  "reason": "missing historical v3_core20 reference",
+  "current_feature_version": "v3_core20"
+}

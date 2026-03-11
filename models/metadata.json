@@ -1,8 +1,8 @@
 {
   "model_type": "catboost",
-  "trained_at_utc": "2026-03-11T06:25:37.372567+00:00",
+  "trained_at_utc": "2026-03-11T07:58:40.764786+00:00",
   "feature_rows": 3177,
-  "feature_count": 146,
+  "feature_count": 20,
   "train_issue_start": 115003116,
   "train_issue_end": 115006293,
   "feature_columns_path": "models/feature_columns.json",
@@ -27,13 +27,15 @@
     "penalty_weight": 0.0,
     "trend_weight": 0.0,
     "regime_aware": false,
-    "top20_hit_rate": 0.2522495274102079,
-    "top10_hit_rate": 0.24941398865784498,
-    "top3_hit_rate": 0.25494643982356646,
-    "top3_at_least_one_hit_rate": 0.596219281663516,
-    "train_vs_oos_gap": 0.5770535601764336,
-    "fold_dispersion": 0.0034420920689975263,
-    "regime_dispersion": 0.24609788616335496,
+    "top20_hit_rate": 0.24916824196597348,
+    "top5_hit_rate": 0.25262759924385636,
+    "top10_hit_rate": 0.24646502835538753,
+    "top3_hit_rate": 0.2604914933837429,
+    "top3_at_least_one_hit_rate": 0.5935727788279773,
+    "ndcg_at_10": 0.2500748825819844,
+    "train_vs_oos_gap": 0.5248418399495904,
+    "fold_dispersion": 0.00935128239903675,
+    "regime_dispersion": 0.25332837934394487,
     "is_overfit": true,
     "is_better_than_baseline": true,
     "keep_recommendation": false
@@ -47,16 +49,34 @@
     "penalty_weight": 0.0,
     "trend_weight": 0.0,
     "regime_aware": false,
-    "top20_hit_rate": 0.2522495274102079,
-    "top10_hit_rate": 0.24941398865784498,
-    "top3_hit_rate": 0.25494643982356646,
-    "top3_at_least_one_hit_rate": 0.596219281663516,
-    "train_vs_oos_gap": 0.5770535601764336,
-    "fold_dispersion": 0.0034420920689975263,
-    "regime_dispersion": 0.24609788616335496,
+    "top20_hit_rate": 0.24916824196597348,
+    "top5_hit_rate": 0.25262759924385636,
+    "top10_hit_rate": 0.24646502835538753,
+    "top3_hit_rate": 0.2604914933837429,
+    "top3_at_least_one_hit_rate": 0.5935727788279773,
+    "ndcg_at_10": 0.2500748825819844,
+    "train_vs_oos_gap": 0.5248418399495904,
+    "fold_dispersion": 0.00935128239903675,
+    "regime_dispersion": 0.25332837934394487,
     "is_overfit": true,
     "is_better_than_baseline": true,
     "keep_recommendation": false
   },
-  "feature_version": "v2"
+  "feature_version": "v3_core20",
+  "runtime_config": {
+    "core_windows": {
+      "z_window": 50,
+      "freq_short": 20,
+      "freq_long": 200,
+      "pmi_window": 200,
+      "handoff_window": 200
+    },
+    "smoothing_alpha": 0.5,
+    "decay_half_lives": {
+      "ewma": 50,
+      "recent_hit": 5,
+      "neighbor": 10
+    },
+    "distance_kernel_tau": 2
+  }
 }
