@@ -26,10 +26,10 @@ from src.utils import (  # noqa: E402
     CONFIG_DIR,
     FEATURE_STORE_DIR,
     REPORTS_DIR,
-    build_candidate_matrix,
     build_latest_issue_features_for_inference,
     load_processed,
     load_yaml,
+    precompute_issue_payloads,
     save_json,
 )
 
@@ -182,66 +182,59 @@ def _load_experiments() -> list[StrategyConfig]:
 
 
 def _expand_rows(
-    feature_df: pd.DataFrame, feature_columns: list[str]
+    issue_payloads: dict[int, dict[str, object]], indices: list[int]
 ) -> tuple[pd.DataFrame, pd.Series]:
     x_blocks, y_blocks = [], []
-    for _, row in feature_df.iterrows():
-        cand = build_candidate_matrix(row, feature_columns)
-        target = set(json.loads(row["target_numbers"]))
-        y_blocks.append(pd.Series([1 if n in target else 0 for n in range(1, 81)]))
-        x_blocks.append(cand)
+    for idx in indices:
+        payload = issue_payloads[int(idx)]
+        x_blocks.append(payload["cand"])
+        y_blocks.append(
+            pd.Series([1 if n in payload["target"] else 0 for n in range(1, 81)])
+        )
     return pd.concat(x_blocks, ignore_index=True), pd.concat(
         y_blocks, ignore_index=True
     )
 
 
-def main() -> None:
-    cfg = load_yaml(CONFIG_DIR / "train.yaml")
-    feature_columns = json.loads(
-        (PROJECT_ROOT / "models" / "feature_columns.json").read_text(encoding="utf-8")
-    )
-    feat_df = (
-        pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
-        .tail(int(cfg.get("backtest_max_draws", 1000)))
-        .reset_index(drop=True)
-    )
-    raw_df = load_processed().tail(len(feat_df) + 22).reset_index(drop=True)
-    splits = int(cfg["backtest_splits"])
-
+def _run_experiments(
+    feat_df: pd.DataFrame,
+    splits: int,
+    experiments: list[StrategyConfig],
+    params: dict,
+    issue_payloads: dict[int, dict[str, object]],
+) -> tuple[list[dict], list[dict], list[dict], list[float]]:
     tss = TimeSeriesSplit(n_splits=splits)
-    experiments = _load_experiments() or default_experiments()
-    params = cfg.get("catboost_params", {})
-    params.setdefault("verbose", False)
-
     registry, per_fold, per_regime = [], [], []
     baseline = None
     baseline_top20 = []
 
     for exp in experiments:
+        print(f"[版本開始] {exp.version_id}")
         fold_train, fold_test, regime_rows = [], [], []
         for fold, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
-            train_df = feat_df.iloc[tr_idx]
-            test_df = feat_df.iloc[te_idx]
-            x_train, y_train = _expand_rows(train_df, feature_columns)
+            x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
             model = CatBoostClassifier(**params)
             model.fit(x_train, y_train, verbose=False)
 
-            for target, pack in [
-                (train_df.tail(min(50, len(train_df))), fold_train),
-                (test_df, fold_test),
+            for idx_set, pack in [
+                (tr_idx[-min(50, len(tr_idx)) :], fold_train),
+                (te_idx, fold_test),
             ]:
                 rows = []
-                for _, r in target.iterrows():
-                    cand = build_candidate_matrix(r, feature_columns)
+                for row_idx in idx_set:
+                    payload = issue_payloads[int(row_idx)]
+                    cand = payload["cand"]
                     base_scores = model.predict_proba(cand)[:, 1]
-                    scores = apply_strategy(base_scores, cand, exp, derive_regime(r))
-                    m = _make_fold_issue_metrics(
-                        scores, set(json.loads(r["target_numbers"]))
-                    )
-                    m["regime"] = derive_regime(r)
+                    regime = payload["regime"]
+                    if regime is None:
+                        regime = derive_regime(feat_df.iloc[int(row_idx)])
+                        payload["regime"] = regime
+                    scores = apply_strategy(base_scores, cand, exp, regime)
+                    m = _make_fold_issue_metrics(scores, payload["target"])
+                    m["regime"] = regime
                     rows.append(m)
                 pack.append({"fold": fold, **_aggregate(rows)})
-                if target is test_df:
+                if list(idx_set) == list(te_idx):
                     g = (
                         pd.DataFrame(rows)
                         .groupby("regime")[METRIC_KEYS]
@@ -257,6 +250,20 @@ def main() -> None:
                             }
                         )
                     baseline_top20.extend([r["top20_hit_rate"] for r in rows])
+
+            te_agg = fold_test[-1]
+            print(
+                f"[Fold {fold}/{splits}] {exp.version_id} top20命中率={te_agg['top20_hit_rate']:.4f}"
+            )
+            print(
+                f"[Fold {fold}/{splits}] {exp.version_id} top10命中率={te_agg['top10_hit_rate']:.4f}"
+            )
+            print(
+                f"[Fold {fold}/{splits}] {exp.version_id} top3命中率={te_agg['top3_hit_rate']:.4f}"
+            )
+            print(
+                f"[Fold {fold}/{splits}] {exp.version_id} top3至少中1顆率={te_agg['top3_at_least_one_hit_rate']:.4f}"
+            )
 
         overall = _aggregate(fold_test)
         audit = _overfit_audit(fold_train, fold_test, regime_rows)
@@ -280,9 +287,74 @@ def main() -> None:
         per_fold.extend([{"version_id": exp.version_id, **x} for x in fold_test])
         per_regime.extend([{"version_id": exp.version_id, **x} for x in regime_rows])
 
+    return registry, per_fold, per_regime, baseline_top20
+
+
+def main() -> None:
+    cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    feature_columns = json.loads(
+        (PROJECT_ROOT / "models" / "feature_columns.json").read_text(encoding="utf-8")
+    )
+    feat_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
+    max_draws = int(cfg.get("max_draws_for_training", len(feat_df)))
+    feat_df = feat_df.tail(max_draws).reset_index(drop=True)
+    raw_df = load_processed().tail(len(feat_df) + 22).reset_index(drop=True)
+    splits = int(cfg["backtest_splits"])
+
+    experiments = _load_experiments() or default_experiments()
+    params = cfg.get("catboost_params", {})
+    params.setdefault("verbose", False)
+    issue_payloads = precompute_issue_payloads(feat_df, feature_columns)
+
+    fast_version_ids = {
+        "v0_binary_baseline",
+        "v2_rerank_k30_p300",
+        "v4_two_stage_20_10_3",
+    }
+    fast_experiments = [
+        exp for exp in experiments if exp.version_id in fast_version_ids
+    ]
+    print("[研究流程] backtest 快速階段：3個版本、3 folds、較低 iterations")
+    fast_params = dict(params)
+    fast_params["iterations"] = int(cfg.get("research_iterations", 140))
+    fast_registry, _, _, _ = _run_experiments(
+        feat_df=feat_df,
+        splits=int(cfg.get("research_backtest_splits", 3)),
+        experiments=fast_experiments,
+        params=fast_params,
+        issue_payloads=issue_payloads,
+    )
+    fast_df = pd.DataFrame(fast_registry)
+    selected_final_ids = (
+        fast_df.sort_values(
+            ["keep_recommendation", "top3_at_least_one_hit_rate", "top3_hit_rate"],
+            ascending=False,
+        )["version_id"]
+        .head(int(cfg.get("final_stage_versions", 2)))
+        .tolist()
+    )
+    if not selected_final_ids:
+        selected_final_ids = ["v0_binary_baseline"]
+    if "v0_binary_baseline" not in selected_final_ids:
+        selected_final_ids = ["v0_binary_baseline", *selected_final_ids]
+    final_experiments = [
+        exp for exp in experiments if exp.version_id in set(selected_final_ids)
+    ]
+    print(f"[研究流程] backtest 正式階段：版本={selected_final_ids}、{splits} folds")
+    registry, per_fold, per_regime, baseline_top20 = _run_experiments(
+        feat_df=feat_df,
+        splits=splits,
+        experiments=final_experiments,
+        params=params,
+        issue_payloads=issue_payloads,
+    )
+
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     registry_df = pd.DataFrame(registry)
     registry_df.to_csv(REPORTS_DIR / "experiment_registry.csv", index=False)
+    pd.DataFrame(fast_registry).to_csv(
+        REPORTS_DIR / "experiment_registry_research.csv", index=False
+    )
     pd.DataFrame(per_fold).to_csv(
         REPORTS_DIR / "experiment_per_fold_metrics.csv", index=False
     )
@@ -320,7 +392,22 @@ def main() -> None:
             "kept_versions": int(registry_df["keep_recommendation"].sum()),
         },
     )
-    print("backtest completed")
+    print(
+        "[整體結果] "
+        f"top20_hit_rate={best['top20_hit_rate']:.4f}, "
+        f"top10_hit_rate={best['top10_hit_rate']:.4f}, "
+        f"top3_hit_rate={best['top3_hit_rate']:.4f}, "
+        f"top3_at_least_one_hit_rate={best['top3_at_least_one_hit_rate']:.4f}"
+    )
+    print(
+        "[過擬合檢查] "
+        f"gap={best['train_vs_backtest_gap_top3']:.4f}, "
+        f"fold_dispersion={best['fold_dispersion_top3']:.4f}, "
+        f"regime_dispersion={best['regime_dispersion_top3']:.4f}, "
+        f"overfit={bool(best['is_overfit'])}"
+    )
+    print(f"[最佳版本] {best['version_id']}")
+    print(f"[正式預測版本] {best['version_id']}")
 
 
 if __name__ == "__main__":

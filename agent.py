@@ -1392,7 +1392,8 @@ class BingoAnalyzer:
         )
         range_avg = range_per_draw.mean().to_dict()
         triplets = Counter()
-        for draw in self.draw_numbers:
+        triplet_draws = self.draw_numbers[-min(total_draws, 1200) :]
+        for draw in triplet_draws:
             for combo in combinations(draw, 3):
                 triplets[combo] += 1
 
@@ -2375,7 +2376,7 @@ class BingoAnalyzer:
         for idx in indices:
             train = self.draw_numbers[idx - train_window : idx]
             latest_issue = int(self.df.iloc[idx - 1]["issue"])
-            pred = self.predict_next(train[-50:], latest_issue=latest_issue, top_k=20)
+            pred = self.predict_next(train[-20:], latest_issue=latest_issue, top_k=20)
             actual = set(self.draw_numbers[idx])
             top10 = set(pred["top_10_candidate_numbers"])
             combo_hit = any(
