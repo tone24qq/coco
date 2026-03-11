@@ -1,0 +1,16 @@
+{
+  "version_id": "v0_binary_baseline",
+  "change_summary": "{\"version_id\": \"v0_binary_baseline\", \"type\": \"binary\"}",
+  "top20_hit_rate": 0.2584615384615384,
+  "top10_hit_rate": 0.2646153846153846,
+  "top3_hit_rate": 0.28717948717948716,
+  "top3_at_least_one_hit_rate": 0.6615384615384615,
+  "is_better_than_baseline": false,
+  "is_overfit": true,
+  "keep_recommendation": false,
+  "failed_reason": "",
+  "train_vs_backtest_gap_top3": -0.0016016530310911659,
+  "fold_dispersion_top3": 0.029902317409463065,
+  "fold_dispersion_top3_at_least_one": 0.07844645405527362,
+  "regime_dispersion_top3": 0.11921675182165736
+}

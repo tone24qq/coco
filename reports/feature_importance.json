@@ -1,0 +1,585 @@
+{
+  "type": "PredictionValuesChange",
+  "features": [
+    {
+      "feature": "max_gap_last_5",
+      "importance": 3.6317484011593977
+    },
+    {
+      "feature": "count_close_to_last_draw_within_1",
+      "importance": 2.395049405747547
+    },
+    {
+      "feature": "cooccur_with_last_draw_sum",
+      "importance": 2.2034779941669793
+    },
+    {
+      "feature": "rank_by_recent_freq",
+      "importance": 2.0269518121586763
+    },
+    {
+      "feature": "delta_sum_1",
+      "importance": 1.9638282473635338
+    },
+    {
+      "feature": "freq_20_minus_100",
+      "importance": 1.9557968632778329
+    },
+    {
+      "feature": "distance_to_last_draw_mean",
+      "importance": 1.696636811110216
+    },
+    {
+      "feature": "ema_short_minus_ema_long",
+      "importance": 1.6898299373953245
+    },
+    {
+      "feature": "avg_gap_last_3",
+      "importance": 1.6286217841348356
+    },
+    {
+      "feature": "std_gap_last_5",
+      "importance": 1.5797701303792369
+    },
+    {
+      "feature": "cooccur_with_last_draw_mean",
+      "importance": 1.454390890613765
+    },
+    {
+      "feature": "rank_by_cooccur_score",
+      "importance": 1.4084225816372529
+    },
+    {
+      "feature": "num",
+      "importance": 1.4056378318463865
+    },
+    {
+      "feature": "freq_last_1000",
+      "importance": 1.3954805460708934
+    },
+    {
+      "feature": "freq_last_20",
+      "importance": 1.3250749219161186
+    },
+    {
+      "feature": "pair_score_with_last_5_draws",
+      "importance": 1.3157634398114741
+    },
+    {
+      "feature": "freq_10_minus_50",
+      "importance": 1.2993439686677384
+    },
+    {
+      "feature": "avg_gap_last_5",
+      "importance": 1.27452593025111
+    },
+    {
+      "feature": "rank_by_gap_inverse",
+      "importance": 1.2673831944305125
+    },
+    {
+      "feature": "freq_last_200",
+      "importance": 1.2643148764628398
+    },
+    {
+      "feature": "min_gap_last_5",
+      "importance": 1.248496934834215
+    },
+    {
+      "feature": "ema_freq_alpha_0_05",
+      "importance": 1.2276043920238178
+    },
+    {
+      "feature": "num_norm",
+      "importance": 1.2113941098107959
+    },
+    {
+      "feature": "recent_freq_20",
+      "importance": 1.1558814218478815
+    },
+    {
+      "feature": "tail_7_cnt",
+      "importance": 1.1410433607114283
+    },
+    {
+      "feature": "freq_last_10",
+      "importance": 1.1200861447394612
+    },
+    {
+      "feature": "abs_delta_zone_C_1",
+      "importance": 1.0719745957373097
+    },
+    {
+      "feature": "gap_since_last_seen",
+      "importance": 1.0653675684509138
+    },
+    {
+      "feature": "big_odd_cnt",
+      "importance": 1.0590610910188987
+    },
+    {
+      "feature": "adjacent_count_vs_last_draw",
+      "importance": 1.0441246072303503
+    },
+    {
+      "feature": "tail_3_cnt",
+      "importance": 0.9981876683306142
+    },
+    {
+      "feature": "delta_gap_mean_1",
+      "importance": 0.9953140438588386
+    },
+    {
+      "feature": "recent_freq_5",
+      "importance": 0.9877744172723415
+    },
+    {
+      "feature": "shift_p2_hit_rate",
+      "importance": 0.9769882572362996
+    },
+    {
+      "feature": "odd_cnt",
+      "importance": 0.9562949250876605
+    },
+    {
+      "feature": "odd_even_vs_roll5_mean",
+      "importance": 0.9431747484068803
+    },
+    {
+      "feature": "freq_last_50",
+      "importance": 0.9149649939907532
+    },
+    {
+      "feature": "roll3_sum_std",
+      "importance": 0.9036045477909911
+    },
+    {
+      "feature": "delta_sum_3",
+      "importance": 0.9026939370106432
+    },
+    {
+      "feature": "delta_zone_D_1",
+      "importance": 0.8840086327380603
+    },
+    {
+      "feature": "cooccur_with_last_draw_max",
+      "importance": 0.8745865683290671
+    },
+    {
+      "feature": "freq_last_500",
+      "importance": 0.8666535277589544
+    },
+    {
+      "feature": "hot_score_max",
+      "importance": 0.8516055098295544
+    },
+    {
+      "feature": "num_zone",
+      "importance": 0.8504912329267521
+    },
+    {
+      "feature": "tail_1_cnt",
+      "importance": 0.8395334294335147
+    },
+    {
+      "feature": "same_tail_pair_cnt",
+      "importance": 0.8363461602519762
+    },
+    {
+      "feature": "gap_mean",
+      "importance": 0.8144129326986062
+    },
+    {
+      "feature": "abs_delta_zone_A_1",
+      "importance": 0.8062676256878818
+    },
+    {
+      "feature": "freq_last_100",
+      "importance": 0.7676660309928822
+    },
+    {
+      "feature": "count_close_to_last_draw_within_2",
+      "importance": 0.7549279061923446
+    },
+    {
+      "feature": "roll5_sum_mean",
+      "importance": 0.7521983828225378
+    },
+    {
+      "feature": "gap_lt_3_cnt",
+      "importance": 0.741843669978606
+    },
+    {
+      "feature": "tail_5_cnt",
+      "importance": 0.7399232970699575
+    },
+    {
+      "feature": "ema_freq_alpha_0_2",
+      "importance": 0.7322188616320188
+    },
+    {
+      "feature": "tail_8_cnt",
+      "importance": 0.7225476428162898
+    },
+    {
+      "feature": "shift_pm1_hit_rate",
+      "importance": 0.7160274994864877
+    },
+    {
+      "feature": "sim_following_zone_D_mean",
+      "importance": 0.7133674080795124
+    },
+    {
+      "feature": "sim_top1_score",
+      "importance": 0.7028779489239648
+    },
+    {
+      "feature": "roll5_zone_D_mean",
+      "importance": 0.69138268246222
+    },
+    {
+      "feature": "sim_following_zone_C_mean",
+      "importance": 0.685147239575775
+    },
+    {
+      "feature": "consecutive_pairs",
+      "importance": 0.672727523780696
+    },
+    {
+      "feature": "count_close_to_last_draw_within_3",
+      "importance": 0.6595182276166625
+    },
+    {
+      "feature": "roll5_zone_B_mean",
+      "importance": 0.6454606807835873
+    },
+    {
+      "feature": "max_consecutive_run",
+      "importance": 0.6412324808556213
+    },
+    {
+      "feature": "gap_ge_8_cnt",
+      "importance": 0.6336144916423059
+    },
+    {
+      "feature": "sum_vs_roll3_mean",
+      "importance": 0.627636695641127
+    },
+    {
+      "feature": "sum_all",
+      "importance": 0.6207156461874126
+    },
+    {
+      "feature": "big_cnt",
+      "importance": 0.61942332278852
+    },
+    {
+      "feature": "roll5_zone_C_mean",
+      "importance": 0.6147090333035494
+    },
+    {
+      "feature": "std_all",
+      "importance": 0.6131263883257362
+    },
+    {
+      "feature": "zone_range",
+      "importance": 0.6109033535663173
+    },
+    {
+      "feature": "zone_A_vs_roll5_mean",
+      "importance": 0.5994088075306986
+    },
+    {
+      "feature": "cand_in_prev_plus1",
+      "importance": 0.5944819450327953
+    },
+    {
+      "feature": "delta_zone_A_1",
+      "importance": 0.5795828721066903
+    },
+    {
+      "feature": "roll10_zone_A_std",
+      "importance": 0.5571828043420308
+    },
+    {
+      "feature": "zone_A_cnt",
+      "importance": 0.5498033578486827
+    },
+    {
+      "feature": "recent_freq_10",
+      "importance": 0.5481159459605921
+    },
+    {
+      "feature": "num_is_big",
+      "importance": 0.547392982016998
+    },
+    {
+      "feature": "zone_D_vs_roll5_mean",
+      "importance": 0.5465331759515791
+    },
+    {
+      "feature": "abs_delta_zone_D_1",
+      "importance": 0.5442485982813626
+    },
+    {
+      "feature": "roll10_zone_C_std",
+      "importance": 0.5309137966685513
+    },
+    {
+      "feature": "shift_m1_hit_rate",
+      "importance": 0.5302245355935622
+    },
+    {
+      "feature": "tail_9_cnt",
+      "importance": 0.5231912673996892
+    },
+    {
+      "feature": "zone_C_vs_roll5_mean",
+      "importance": 0.5220379630867558
+    },
+    {
+      "feature": "big_small_vs_roll5_mean",
+      "importance": 0.519772381721055
+    },
+    {
+      "feature": "small_even_cnt",
+      "importance": 0.5109059975970371
+    },
+    {
+      "feature": "roll5_sum_std",
+      "importance": 0.5091898835802927
+    },
+    {
+      "feature": "zone_D_cnt",
+      "importance": 0.5086143063525942
+    },
+    {
+      "feature": "cand_in_prev_pm1",
+      "importance": 0.4923253281550804
+    },
+    {
+      "feature": "delta_odd_even_1",
+      "importance": 0.4650260549512909
+    },
+    {
+      "feature": "num_is_odd",
+      "importance": 0.46065426906274054
+    },
+    {
+      "feature": "dominant_zone",
+      "importance": 0.4559564840432424
+    },
+    {
+      "feature": "gap_std",
+      "importance": 0.4366950964600193
+    },
+    {
+      "feature": "gap_max",
+      "importance": 0.43021424546450854
+    },
+    {
+      "feature": "shift_p1_hit_rate",
+      "importance": 0.4116896263337702
+    },
+    {
+      "feature": "big_even_cnt",
+      "importance": 0.4112195285001864
+    },
+    {
+      "feature": "roll5_zone_A_mean",
+      "importance": 0.40464531284285277
+    },
+    {
+      "feature": "roll3_sum_mean",
+      "importance": 0.40246893590859767
+    },
+    {
+      "feature": "delta_big_small_1",
+      "importance": 0.3930895604093085
+    },
+    {
+      "feature": "is_adjacent_to_last_draw",
+      "importance": 0.37846127146485187
+    },
+    {
+      "feature": "tail_unique_cnt",
+      "importance": 0.368949370295221
+    },
+    {
+      "feature": "roll10_zone_B_std",
+      "importance": 0.3422890343780635
+    },
+    {
+      "feature": "even_cnt",
+      "importance": 0.33708622216285533
+    },
+    {
+      "feature": "min_num",
+      "importance": 0.3341196944361725
+    },
+    {
+      "feature": "distance_to_last_draw_min",
+      "importance": 0.31865032497364915
+    },
+    {
+      "feature": "mean_all",
+      "importance": 0.31656183844886676
+    },
+    {
+      "feature": "cand_in_prev_plus2",
+      "importance": 0.3105147542879945
+    },
+    {
+      "feature": "delta_consecutive_pairs_1",
+      "importance": 0.30534468567763107
+    },
+    {
+      "feature": "roll10_zone_D_std",
+      "importance": 0.3019873826944343
+    },
+    {
+      "feature": "tail_0_cnt",
+      "importance": 0.289269636848442
+    },
+    {
+      "feature": "cold_score_cnt",
+      "importance": 0.28787359551848374
+    },
+    {
+      "feature": "tail_6_cnt",
+      "importance": 0.2780456538928075
+    },
+    {
+      "feature": "sim_top5_mean_score",
+      "importance": 0.2767288161693803
+    },
+    {
+      "feature": "small_odd_cnt",
+      "importance": 0.2746359838033904
+    },
+    {
+      "feature": "sim_following_big_small_mean",
+      "importance": 0.26379596533175204
+    },
+    {
+      "feature": "tail_max_cnt",
+      "importance": 0.2450113068805344
+    },
+    {
+      "feature": "ema_freq_alpha_0_1",
+      "importance": 0.21991330028647998
+    },
+    {
+      "feature": "odd_minus_even",
+      "importance": 0.20814649923226516
+    },
+    {
+      "feature": "sim_following_zone_B_mean",
+      "importance": 0.2069543948607468
+    },
+    {
+      "feature": "zone_C_cnt",
+      "importance": 0.20074898043273304
+    },
+    {
+      "feature": "delta_zone_B_1",
+      "importance": 0.19196333786205
+    },
+    {
+      "feature": "run_len_ge_3",
+      "importance": 0.18444015471615205
+    },
+    {
+      "feature": "tail_4_cnt",
+      "importance": 0.1827512401220776
+    },
+    {
+      "feature": "sim_following_zone_A_mean",
+      "importance": 0.17739948813163556
+    },
+    {
+      "feature": "delta_zone_C_1",
+      "importance": 0.16278338902150805
+    },
+    {
+      "feature": "hot_score_mean",
+      "importance": 0.15442386322061022
+    },
+    {
+      "feature": "is_extreme_burst",
+      "importance": 0.1504009199318101
+    },
+    {
+      "feature": "recent_freq_3",
+      "importance": 0.1474312311520002
+    },
+    {
+      "feature": "abs_delta_zone_B_1",
+      "importance": 0.14571197184917564
+    },
+    {
+      "feature": "tail_2_cnt",
+      "importance": 0.14105893172506717
+    },
+    {
+      "feature": "span",
+      "importance": 0.1373827878196587
+    },
+    {
+      "feature": "run_len_ge_4",
+      "importance": 0.13378156325786497
+    },
+    {
+      "feature": "median",
+      "importance": 0.12374194690889607
+    },
+    {
+      "feature": "small_cnt",
+      "importance": 0.12315651560651156
+    },
+    {
+      "feature": "sim_following_odd_even_mean",
+      "importance": 0.11201399620019953
+    },
+    {
+      "feature": "zone_B_cnt",
+      "importance": 0.10953507492027503
+    },
+    {
+      "feature": "big_minus_small",
+      "importance": 0.058466200397112734
+    },
+    {
+      "feature": "max_num",
+      "importance": 0.05434029730797588
+    },
+    {
+      "feature": "zone_B_vs_roll5_mean",
+      "importance": 0.049359946399838095
+    },
+    {
+      "feature": "is_balanced_5_5_5_5",
+      "importance": 0.0
+    },
+    {
+      "feature": "is_single_zone_burst",
+      "importance": 0.0
+    },
+    {
+      "feature": "is_double_zone_shake",
+      "importance": 0.0
+    },
+    {
+      "feature": "gap_min",
+      "importance": 0.0
+    },
+    {
+      "feature": "cand_in_prev_minus1",
+      "importance": 0.0
+    },
+    {
+      "feature": "recent_trend_up_down",
+      "importance": 0.0
+    }
+  ]
+}
