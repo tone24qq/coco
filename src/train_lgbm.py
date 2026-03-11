@@ -55,6 +55,35 @@ def _expand_rows(
     )
 
 
+def _build_issue_cache(
+    feature_df: pd.DataFrame, feature_columns: list[str]
+) -> dict[int, dict[str, object]]:
+    cache: dict[int, dict[str, object]] = {}
+    for idx, row in feature_df.iterrows():
+        target = set(json.loads(row["target_numbers"]))
+        cache[int(idx)] = {
+            "candidate": build_candidate_matrix(row, feature_columns),
+            "target": target,
+        }
+    return cache
+
+
+def _expand_rows_from_cache(
+    indices: np.ndarray, cache: dict[int, dict[str, object]]
+) -> tuple[pd.DataFrame, pd.Series]:
+    x_blocks, y_blocks = [], []
+    for idx in indices:
+        cached = cache[int(idx)]
+        cand = cached["candidate"]
+        target = cached["target"]
+        labels = pd.Series([1 if n in target else 0 for n in range(1, 81)])
+        x_blocks.append(cand)
+        y_blocks.append(labels)
+    return pd.concat(x_blocks, ignore_index=True), pd.concat(
+        y_blocks, ignore_index=True
+    )
+
+
 def _aggregate(rows: list[dict]) -> dict[str, float]:
     if not rows:
         return {k: 0.0 for k in METRIC_KEYS}
@@ -104,37 +133,37 @@ def _evaluate_strategies(
     splits: int,
     experiments: list[StrategyConfig],
     overfit_th: dict,
+    issue_cache: dict[int, dict[str, object]],
 ) -> tuple[pd.DataFrame, dict, dict]:
     tss = TimeSeriesSplit(n_splits=splits)
     rows = []
     best = None
     baseline = None
     for exp in experiments:
+        print(f"[版本開始] {exp.version_id}")
         fold_train, fold_test, regime_rows = [], [], []
         for fold_id, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
-            train_df = feat_df.iloc[tr_idx]
-            test_df = feat_df.iloc[te_idx]
-            x_train, y_train = _expand_rows(train_df, feature_columns)
+            x_train, y_train = _expand_rows_from_cache(tr_idx, issue_cache)
             model = CatBoostClassifier(**params)
             model.fit(x_train, y_train, verbose=False)
 
-            def _score_issue(row: pd.Series) -> tuple[dict, str]:
-                cand = build_candidate_matrix(row, feature_columns)
+            def _score_issue(row_idx: int) -> tuple[dict, str]:
+                row = feat_df.iloc[row_idx]
+                cached = issue_cache[int(row_idx)]
+                cand = cached["candidate"]
                 base_scores = model.predict_proba(cand)[:, 1]
                 regime = derive_regime(row)
                 final_scores = apply_strategy(base_scores, cand, exp, regime)
-                metric = issue_metrics(
-                    final_scores, set(json.loads(row["target_numbers"]))
-                )
+                metric = issue_metrics(final_scores, cached["target"])
                 return metric, regime
 
             train_eval_rows = []
-            for _, r in train_df.tail(min(50, len(train_df))).iterrows():
-                m, _ = _score_issue(r)
+            for row_idx in tr_idx[-min(50, len(tr_idx)) :]:
+                m, _ = _score_issue(int(row_idx))
                 train_eval_rows.append(m)
             test_eval_rows = []
-            for _, r in test_df.iterrows():
-                m, regime = _score_issue(r)
+            for row_idx in te_idx:
+                m, regime = _score_issue(int(row_idx))
                 test_eval_rows.append(m)
                 regime_rows.append({"fold": fold_id, "regime": regime, **m})
 
@@ -194,6 +223,8 @@ def _evaluate_strategies(
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     feature_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
+    max_draws = int(cfg.get("max_draws_for_training", len(feature_df)))
+    feature_df = feature_df.tail(max_draws).reset_index(drop=True)
     feature_columns = json.loads(
         (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
     )
@@ -201,10 +232,22 @@ def main() -> None:
     if len(feature_df) < 3000:
         raise ValueError("訓練資料不足 3000 期，請先更新資料。")
 
-    params = cfg.get("catboost_params", {})
+    params = cfg.get("catboost_params", {}).copy()
     params.setdefault("loss_function", "Logloss")
     params.setdefault("verbose", False)
     params.setdefault("random_seed", 42)
+
+    focus_versions = [
+        "v0_binary_baseline",
+        "v2_rerank_k30_p300",
+        "v4_two_stage_20_10_3",
+    ]
+    research_splits = int(cfg.get("research_backtest_splits", 3))
+    research_iterations = int(cfg.get("research_catboost_iterations", 140))
+    formal_splits = int(cfg.get("backtest_splits", 5))
+    formal_iterations = int(
+        cfg.get("formal_catboost_iterations", params.get("iterations", 300))
+    )
 
     print("[訓練開始] 模型：CatBoost Binary")
     print(
@@ -212,17 +255,54 @@ def main() -> None:
     )
 
     experiments = _load_experiments()
-    registry_df, best, baseline = _evaluate_strategies(
+    exp_by_id = {exp.version_id: exp for exp in experiments}
+    research_experiments = [exp_by_id[v] for v in focus_versions if v in exp_by_id]
+    if not research_experiments:
+        raise ValueError("研究版策略清單為空，請檢查 experiments.yaml")
+    issue_cache = _build_issue_cache(feature_df, feature_columns)
+
+    print("[研究流程] 先用 3 版本快速尋找方向")
+    research_params = params.copy()
+    research_params["iterations"] = research_iterations
+    research_registry_df, _research_best_unused, baseline = _evaluate_strategies(
         feature_df,
         feature_columns,
-        params=params,
-        splits=int(cfg.get("backtest_splits", 5)),
-        experiments=experiments,
+        params=research_params,
+        splits=research_splits,
+        experiments=research_experiments,
         overfit_th=cfg.get("overfit_thresholds", {}),
+        issue_cache=issue_cache,
     )
 
-    x_train, y_train = _expand_rows(feature_df, feature_columns)
-    final_model = CatBoostClassifier(**params)
+    ranked_ids = research_registry_df.sort_values(
+        ["keep_recommendation", "top3_at_least_one_hit_rate", "top3_hit_rate"],
+        ascending=False,
+    )["version_id"].tolist()
+    formal_ids = ranked_ids[: min(2, len(ranked_ids))]
+    formal_experiments = [exp_by_id[v] for v in formal_ids if v in exp_by_id]
+    print(f"[正式流程] 以完整 {formal_splits} folds 驗證：{', '.join(formal_ids)}")
+
+    formal_params = params.copy()
+    formal_params["iterations"] = formal_iterations
+    formal_registry_df, best, baseline = _evaluate_strategies(
+        feature_df,
+        feature_columns,
+        params=formal_params,
+        splits=formal_splits,
+        experiments=formal_experiments,
+        overfit_th=cfg.get("overfit_thresholds", {}),
+        issue_cache=issue_cache,
+    )
+    registry_df = pd.concat(
+        [research_registry_df, formal_registry_df], ignore_index=True
+    )
+    registry_df = registry_df.drop_duplicates(
+        subset=["version_id"], keep="last"
+    ).reset_index(drop=True)
+
+    all_indices = np.arange(len(feature_df))
+    x_train, y_train = _expand_rows_from_cache(all_indices, issue_cache)
+    final_model = CatBoostClassifier(**formal_params)
     final_model.fit(x_train, y_train, verbose=False)
     final_model.save_model(str(MODELS_DIR / "catboost_top20.cbm"))
 
@@ -243,10 +323,9 @@ def main() -> None:
         f"regime_dispersion={best['regime_dispersion']:.4f}, "
         f"overfit={bool(best['is_overfit'])}"
     )
+    selected_for_predict = best if bool(best.get("keep_recommendation")) else baseline
     print(f"[最佳版本] {best['version_id']}")
-    print(
-        f"[正式預測版本] {best['version_id'] if bool(best.get('keep_recommendation')) else baseline['version_id']}"
-    )
+    print(f"[正式預測版本] {selected_for_predict['version_id']}")
 
     metadata = {
         "model_type": "catboost",
@@ -258,11 +337,20 @@ def main() -> None:
         "feature_columns_path": "models/feature_columns.json",
         "model_path": "models/catboost_top20.cbm",
         "params": params,
-        "selected_strategy": best,
+        "selected_strategy": selected_for_predict,
         "fallback_strategy": baseline,
         "feature_version": "v2",
     }
     save_json(MODELS_DIR / "metadata.json", metadata)
+    save_json(
+        MODELS_DIR / "strategy_config.json",
+        {
+            "selected_strategy": selected_for_predict,
+            "fallback_strategy": baseline,
+            "formal_candidate_versions": formal_ids,
+            "research_candidate_versions": [x.version_id for x in research_experiments],
+        },
+    )
 
 
 if __name__ == "__main__":

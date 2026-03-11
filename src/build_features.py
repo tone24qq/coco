@@ -24,6 +24,8 @@ def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     df = load_processed()
     max_draws = int(cfg.get("max_draws_for_training", len(df)))
+    if max_draws < 3000:
+        raise ValueError("max_draws_for_training 不可低於 3000，正式訓練資料不可縮水。")
     df = df.tail(max_draws).reset_index(drop=True)
     feat_df = build_issue_features(df, min_history=int(cfg["feature_min_history"]))
     FEATURE_STORE_DIR.mkdir(parents=True, exist_ok=True)

@@ -26,6 +26,16 @@ from src.utils import (  # noqa: E402
 )
 
 
+def _load_strategy_payload() -> dict:
+    strategy_path = MODELS_DIR / "strategy_config.json"
+    if strategy_path.exists():
+        return json.loads(strategy_path.read_text(encoding="utf-8"))
+    metadata_path = MODELS_DIR / "metadata.json"
+    if metadata_path.exists():
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+    return {}
+
+
 @dataclass
 class Predictor:
     model: CatBoostClassifier
@@ -39,11 +49,11 @@ class Predictor:
         cols = json.loads(
             (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
         )
-        metadata = json.loads(
-            (MODELS_DIR / "metadata.json").read_text(encoding="utf-8")
-        )
+        strategy_payload = _load_strategy_payload()
         strat = (
-            metadata.get("selected_strategy") or metadata.get("fallback_strategy") or {}
+            strategy_payload.get("selected_strategy")
+            or strategy_payload.get("fallback_strategy")
+            or {}
         )
         strategy = StrategyConfig(
             version_id=strat.get("version_id", "v0_binary_baseline"),
