@@ -111,7 +111,7 @@ class RecentDraw(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    recent: List[RecentDraw] = Field(..., min_length=10, max_length=50)
+    recent: List[RecentDraw] = Field(..., min_length=10, max_length=500)
     top_k: int = Field(default=20, ge=1, le=20)
 
 
