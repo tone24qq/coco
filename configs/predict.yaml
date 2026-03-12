@@ -5,5 +5,4 @@ fetch_timeout_seconds: 8
 fetch_retries: 2
 fetch_retry_backoff_seconds: 0.5
 auto_fetch_sources:
-  - https://lotto.auzo.tw/RI.php
-  - https://lotto.auzo.tw/RL.php
+  - https://lotto.auzo.tw/bingobingoV1.php
