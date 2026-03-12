@@ -11,8 +11,7 @@ from urllib.parse import urlparse
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_SOURCES = [
-    "https://lotto.auzo.tw/RI.php",
-    "https://lotto.auzo.tw/RL.php",
+    "https://lotto.auzo.tw/bingobingoV1.php",
 ]
 
 
@@ -138,20 +137,36 @@ class BingoDrawFetcher:
         self, source: str
     ) -> Callable[[str], list[dict[str, Any]]]:
         path = urlparse(source).path.lower()
-        if path.endswith("/ri.php"):
-            return self._parse_auzo_ri
-        if path.endswith("/rl.php"):
-            return self._parse_auzo_rl
+        if path.endswith("/bingobingov1.php"):
+            return self._parse_auzo_bingobingov1
         hostname = urlparse(source).netloc.lower()
         if "auzo.tw" in hostname:
             return self._parse_auzo_generic
         raise FetchDrawsError(f"unsupported source parser for url: {source}")
 
-    def _parse_auzo_ri(self, html: str) -> list[dict[str, Any]]:
-        return self._parse_auzo_generic(html)
+    def _parse_auzo_bingobingov1(self, html: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        row_pattern = re.compile(
+            r'<tr\s+class="bingo_text_row">\s*'
+            r"<td[^>]*>\s*<b>(?P<issue>\d{6,12})</b><br>(?P<draw_time>\d{1,2}:\d{2})\s*</td>\s*"
+            r'<td\s+class="BBALL">(?P<balls>.*?)</td>\s*'
+            r'<td\s+class="bingof17">',
+            flags=re.S | re.I,
+        )
 
-    def _parse_auzo_rl(self, html: str) -> list[dict[str, Any]]:
-        return self._parse_auzo_generic(html)
+        for match in row_pattern.finditer(html):
+            balls_text = re.sub(r"<[^>]+>", " ", match.group("balls"))
+            numbers = [int(x) for x in re.findall(r"\b\d{1,2}\b", balls_text)]
+            if len(numbers) != 20:
+                continue
+            records.append(
+                {
+                    "issue": int(match.group("issue")),
+                    "draw_time": match.group("draw_time"),
+                    "numbers": numbers,
+                }
+            )
+        return records
 
     def _parse_auzo_generic(self, html: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -176,6 +191,7 @@ class BingoDrawFetcher:
 
     def _extract_latest_issue_hint_auzo(self, html: str) -> int | None:
         markers = [
+            r"id=\"LastPeriod\"[^>]*>\s*(\d{6,12})\s*<",
             r"最新(?:一期|期數)[^\d]{0,8}(\d{6,12})",
             r"第\s*(\d{6,12})\s*期",
         ]
