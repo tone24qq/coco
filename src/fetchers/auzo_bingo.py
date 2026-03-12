@@ -11,7 +11,8 @@ from urllib.parse import urlparse
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_SOURCES = [
-    "https://lotto.auzo.tw/bingobingoV1.php",
+    "https://www.pilio.idv.tw/bingo/list.asp",
+    "https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx",
 ]
 
 
@@ -24,6 +25,9 @@ class DrawRecord:
     issue: int
     draw_time: str | None
     numbers: list[int]
+    super_number: int | None = None
+    big_small: str | None = None
+    odd_even: str | None = None
 
 
 class BingoDrawFetcher:
@@ -131,18 +135,85 @@ class BingoDrawFetcher:
         hostname = urlparse(source).netloc.lower()
         if "auzo.tw" in hostname:
             return self._extract_latest_issue_hint_auzo(html)
+        if "pilio.idv.tw" in hostname:
+            return self._extract_latest_issue_hint_pilio(html)
+        if "taiwanlottery.com.tw" in hostname:
+            return self._extract_latest_issue_hint_taiwanlottery(html)
         return None
 
     def _choose_source_parser(
         self, source: str
     ) -> Callable[[str], list[dict[str, Any]]]:
         path = urlparse(source).path.lower()
+        hostname = urlparse(source).netloc.lower()
+        if "pilio.idv.tw" in hostname and path.endswith("/bingo/list.asp"):
+            return self._parse_pilio_bingo_list
+        if "taiwanlottery.com.tw" in hostname:
+            return self._parse_taiwan_lottery_generic
         if path.endswith("/bingobingov1.php"):
             return self._parse_auzo_bingobingov1
-        hostname = urlparse(source).netloc.lower()
         if "auzo.tw" in hostname:
             return self._parse_auzo_generic
         raise FetchDrawsError(f"unsupported source parser for url: {source}")
+
+    def _parse_pilio_bingo_list(self, html: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        row_pattern = re.compile(
+            r"<tr[^>]*>\s*<td[^>]*>\s*" r"(?P<content>.*?)" r"</td>\s*</tr>",
+            flags=re.S | re.I,
+        )
+        issue_pattern = re.compile(r"期別\s*:\s*(\d{6,12})")
+        for row in row_pattern.finditer(html):
+            content = row.group("content")
+            issue_match = issue_pattern.search(content)
+            if not issue_match:
+                continue
+
+            issue = int(issue_match.group(1))
+            content_text = re.sub(r"<[^>]+>", " ", content)
+            draw_time_match = re.search(r"\((\d{1,2}:\d{2})\)", content_text)
+            draw_time = draw_time_match.group(1) if draw_time_match else None
+            super_match = re.search(r"超級獎號\s*:\s*(\d{1,2})", content_text)
+            big_small_match = re.search(r"猜大小\s*:\s*([大小－])", content_text)
+            odd_even_match = re.search(r"猜單雙\s*:\s*([單雙－])", content_text)
+
+            numbers_section = re.sub(r"<br\s*/?>", "\n", content, flags=re.I)
+            numbers_section = re.split(r"超級獎號\s*:", numbers_section, maxsplit=1)[0]
+            numbers = [int(x) for x in re.findall(r"\b\d{1,2}\b", numbers_section)]
+
+            records.append(
+                {
+                    "issue": issue,
+                    "draw_time": draw_time,
+                    "numbers": numbers,
+                    "super_number": (
+                        int(super_match.group(1)) if super_match else None
+                    ),
+                    "big_small": (
+                        big_small_match.group(1) if big_small_match else None
+                    ),
+                    "odd_even": odd_even_match.group(1) if odd_even_match else None,
+                }
+            )
+        return records
+
+    def _parse_taiwan_lottery_generic(self, html: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        pattern = re.compile(
+            r"(?P<issue>\d{6,12}).{0,800}?"
+            r"(?P<numbers>(?:\b\d{1,2}\b(?:\D+)){19}\b\d{1,2}\b)",
+            flags=re.S,
+        )
+        for match in pattern.finditer(html):
+            issue = int(match.group("issue"))
+            around = html[max(0, match.start() - 400) : match.end() + 400]
+            draw_time_match = re.search(r"(\d{1,2}:\d{2})", around)
+            draw_time = draw_time_match.group(1) if draw_time_match else None
+            numbers = [
+                int(x) for x in re.findall(r"\b\d{1,2}\b", match.group("numbers"))
+            ]
+            records.append({"issue": issue, "draw_time": draw_time, "numbers": numbers})
+        return records
 
     def _parse_auzo_bingobingov1(self, html: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -201,6 +272,18 @@ class BingoDrawFetcher:
                 candidates.append(int(matched))
         return max(candidates) if candidates else None
 
+    def _extract_latest_issue_hint_pilio(self, html: str) -> int | None:
+        matches = re.findall(r"期別\s*:\s*(\d{6,12})", html)
+        if not matches:
+            return None
+        return max(int(x) for x in matches)
+
+    def _extract_latest_issue_hint_taiwanlottery(self, html: str) -> int | None:
+        matches = re.findall(r"第\s*(\d{6,12})\s*期", html)
+        if not matches:
+            return None
+        return max(int(x) for x in matches)
+
     def _normalize_row(self, row: dict[str, Any]) -> DrawRecord:
         issue = int(row["issue"])
         draw_time = row.get("draw_time")
@@ -215,7 +298,20 @@ class BingoDrawFetcher:
             raise FetchDrawsError(f"issue {issue} contains numbers out of range 1-80")
         if len(set(numbers)) != 20:
             raise FetchDrawsError(f"issue {issue} contains duplicate numbers")
-        return DrawRecord(issue=issue, draw_time=draw_time, numbers=sorted(numbers))
+        super_number = row.get("super_number")
+        if super_number is not None:
+            super_number = int(super_number)
+            if super_number < 1 or super_number > 80:
+                raise FetchDrawsError(f"issue {issue} super_number out of range 1-80")
+
+        return DrawRecord(
+            issue=issue,
+            draw_time=draw_time,
+            numbers=sorted(numbers),
+            super_number=super_number,
+            big_small=row.get("big_small"),
+            odd_even=row.get("odd_even"),
+        )
 
     def _ensure_consecutive_issues(self, records: list[DrawRecord]) -> None:
         for prev, cur in zip(records, records[1:]):

@@ -5,4 +5,5 @@ fetch_timeout_seconds: 8
 fetch_retries: 2
 fetch_retry_backoff_seconds: 0.5
 auto_fetch_sources:
-  - https://lotto.auzo.tw/bingobingoV1.php
+  - https://www.pilio.idv.tw/bingo/list.asp
+  - https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
