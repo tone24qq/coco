@@ -8,12 +8,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 import json
+import logging
 from typing import List
 
 import pandas as pd  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
+from src.fetchers.auzo_bingo import (  # noqa: E402
+    BingoDrawFetcher,
+    FetchDrawsError,
+    build_recent_draws,
+)
 from src.predict import Predictor  # noqa: E402
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -23,9 +29,14 @@ from src.utils import (  # noqa: E402
 )
 
 app = FastAPI(title="BingoBingo Predictor", version="1.0.0")
+LOGGER = logging.getLogger(__name__)
 PREDICT_CFG = load_yaml(CONFIG_DIR / "predict.yaml")
 MIN_RECENT_DRAWS = int(PREDICT_CFG.get("min_recent_draws", 22))
 MAX_RECENT_DRAWS = int(PREDICT_CFG.get("max_recent_draws", 50))
+FETCH_TIMEOUT = float(PREDICT_CFG.get("fetch_timeout_seconds", 8.0))
+FETCH_RETRIES = int(PREDICT_CFG.get("fetch_retries", 2))
+FETCH_SOURCES = list(PREDICT_CFG.get("auto_fetch_sources", []))
+FETCH_BACKOFF_SECONDS = float(PREDICT_CFG.get("fetch_retry_backoff_seconds", 0.5))
 METADATA = (
     json.loads((MODELS_DIR / "metadata.json").read_text(encoding="utf-8"))
     if (MODELS_DIR / "metadata.json").exists()
@@ -87,7 +98,7 @@ def analysis() -> dict:
             "max": MAX_RECENT_DRAWS,
             "numbers_per_draw": 20,
             "number_range": [1, 80],
-            "required": True,
+            "required": False,
         },
     }
 
@@ -96,23 +107,57 @@ def analysis() -> dict:
 def predict(payload: PredictPayload) -> dict:
     if PREDICTOR is None:
         return {"error": "model not found, please train first"}
-    if payload.recent_draws is None:
-        raise HTTPException(
-            status_code=400,
-            detail="請先提供最新 22–50 期資料（每期20顆），才可進行下一期預測。",
+    auto_fetched = payload.recent_draws is None
+    data_source = "manual"
+    records: list[dict] = []
+
+    if auto_fetched:
+        fetcher = BingoDrawFetcher(
+            sources=FETCH_SOURCES,
+            timeout=FETCH_TIMEOUT,
+            retries=FETCH_RETRIES,
+            retry_backoff_seconds=FETCH_BACKOFF_SECONDS,
         )
+        try:
+            recent_draws, fetched_records, data_source = build_recent_draws(
+                fetcher=fetcher,
+                min_draws=MIN_RECENT_DRAWS,
+                max_draws=MAX_RECENT_DRAWS,
+            )
+        except FetchDrawsError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"auto fetch failed: {exc}"
+            ) from exc
+        payload.recent_draws = recent_draws
+        records = [
+            {
+                "issue": record.issue,
+                "draw_date": record.draw_time,
+                "numbers": json.dumps(record.numbers, ensure_ascii=False),
+            }
+            for record in fetched_records
+        ]
+    else:
+        _validate_recent_draws(payload.recent_draws)
+
+    assert payload.recent_draws is not None
     _validate_recent_draws(payload.recent_draws)
 
-    draws = []
-    start_issue = 900000000
-    for i, nums in enumerate(payload.recent_draws):
-        draws.append(
+    if not records:
+        records = [
             {
-                "issue": start_issue + i,
-                "draw_date": f"2026-01-{(i % 28) + 1:02d}",
+                "issue": i - len(payload.recent_draws) + 1,
+                "draw_date": None,
                 "numbers": json.dumps(sorted(nums), ensure_ascii=False),
             }
+            for i, nums in enumerate(payload.recent_draws)
+        ]
+    if len(records) != len(payload.recent_draws):
+        raise HTTPException(
+            status_code=400, detail="records and recent_draws length mismatch"
         )
+
+    draws = records
     df = pd.DataFrame(draws)
 
     try:
@@ -131,4 +176,13 @@ def predict(payload: PredictPayload) -> dict:
         "feature_rows": METADATA.get("feature_rows"),
     }
     result["calibration_method"] = METADATA.get("calibration_method", "none")
+    issues_used = [record["issue"] for record in records]
+    result["data_source"] = data_source
+    result["recent_draws_count"] = len(payload.recent_draws)
+    result["first_issue_used"] = issues_used[0] if auto_fetched else None
+    result["last_issue_used"] = issues_used[-1] if auto_fetched else None
+    result["issues_used"] = (
+        issues_used if auto_fetched else [None for _ in payload.recent_draws]
+    )
+    result["auto_fetched"] = auto_fetched
     return result

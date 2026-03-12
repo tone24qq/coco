@@ -38,14 +38,36 @@ def _payload(periods: int):
     return {"recent_draws": draws}
 
 
-def test_predict_requires_recent_draws(monkeypatch):
+def test_predict_auto_fetch_when_recent_draws_missing(monkeypatch):
     monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+    monkeypatch.setattr(
+        api_module,
+        "build_recent_draws",
+        lambda fetcher, min_draws, max_draws: (
+            _payload(23)["recent_draws"],
+            [
+                type(
+                    "R",
+                    (),
+                    {"issue": 2000 + i, "draw_time": "2026-01-01", "numbers": draw},
+                )
+                for i, draw in enumerate(_payload(23)["recent_draws"])
+            ],
+            "https://primary.example",
+        ),
+    )
     client = TestClient(api_module.app)
 
     resp = client.post("/predict", json={})
 
-    assert resp.status_code == 400
-    assert "22–50" in resp.json()["detail"]
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["auto_fetched"] is True
+    assert body["data_source"] == "https://primary.example"
+    assert body["recent_draws_count"] == 23
+    assert body["first_issue_used"] == 2000
+    assert body["last_issue_used"] == 2022
+    assert body["issues_used"] == list(range(2000, 2023))
 
 
 def test_predict_validates_shape_and_range(monkeypatch):
@@ -97,6 +119,11 @@ def test_predict_success_contains_analysis_report(monkeypatch):
     assert len(body["top20_scores"]) == 20
     assert "size_summary" in body
     assert "odd_even_summary" in body
+    assert body["auto_fetched"] is False
+    assert body["data_source"] == "manual"
+    assert body["first_issue_used"] is None
+    assert body["last_issue_used"] is None
+    assert body["issues_used"] == [None for _ in range(23)]
 
 
 def test_predict_converts_value_error_to_400(monkeypatch):
@@ -108,3 +135,28 @@ def test_predict_converts_value_error_to_400(monkeypatch):
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == "not enough history for feature generation"
+
+
+def test_predict_auto_fetch_error_to_502(monkeypatch):
+    monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+
+    def _raise(*_args, **_kwargs):
+        raise api_module.FetchDrawsError("parse failed")
+
+    monkeypatch.setattr(api_module, "build_recent_draws", _raise)
+    client = TestClient(api_module.app)
+
+    resp = client.post("/predict", json={})
+
+    assert resp.status_code == 502
+    assert "auto fetch failed" in resp.json()["detail"]
+
+
+def test_analysis_declares_recent_draws_optional(monkeypatch):
+    monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+    client = TestClient(api_module.app)
+
+    resp = client.get("/analysis")
+
+    assert resp.status_code == 200
+    assert resp.json()["recent_draws_rules"]["required"] is False
