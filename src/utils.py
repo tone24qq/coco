@@ -66,9 +66,9 @@ def min_required_history(
     normalize_feature_version(feature_version)
     cfg = runtime_config or {}
     windows = cfg.get("core_windows", {})
-    freq_long = int(windows.get("freq_long", 200))
-    pmi_window = int(windows.get("pmi_window", 200))
-    handoff_window = int(windows.get("handoff_window", 200))
+    freq_long = int(windows.get("freq_long", 20))
+    pmi_window = int(windows.get("pmi_window", 20))
+    handoff_window = int(windows.get("handoff_window", 20))
     return max(freq_long, pmi_window, handoff_window) + 1
 
 
