@@ -24,6 +24,7 @@ from src.utils import (  # noqa: E402
     classify_board,
     compact_10_from_top20,
     load_yaml,
+    normalize_feature_version,
     validate_feature_columns_contract,
     zone_of,
 )
@@ -49,10 +50,18 @@ class Predictor:
         metadata = json.loads(
             (MODELS_DIR / "metadata.json").read_text(encoding="utf-8")
         )
-        metadata_feature_version = str(metadata.get("feature_version", "v2_legacy"))
+        metadata_feature_version = normalize_feature_version(
+            metadata.get("feature_version", "v3_core20")
+        )
+        if metadata_feature_version != "v3_core20":
+            raise ValueError(
+                "unsupported model metadata feature_version; only v3_core20 is supported"
+            )
         validate_feature_columns_contract(cols, metadata_feature_version)
         yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
-        yaml_feature_version = str(yaml_cfg.get("feature_version", "v2_legacy"))
+        yaml_feature_version = normalize_feature_version(
+            yaml_cfg.get("feature_version", "v3_core20")
+        )
         if yaml_feature_version != metadata_feature_version:
             LOGGER.warning(
                 "predict runtime feature_version mismatch: metadata=%s yaml=%s, using metadata",

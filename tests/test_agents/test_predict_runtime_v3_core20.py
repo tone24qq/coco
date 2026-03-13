@@ -62,17 +62,47 @@ def test_predictor_warns_on_metadata_yaml_mismatch(monkeypatch, caplog) -> None:
         json.dumps(V3_CORE20_COLUMNS), encoding="utf-8"
     )
     (MODELS_DIR / "metadata.json").write_text(
-        json.dumps({"feature_version": "v2_legacy"}), encoding="utf-8"
+        json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
     )
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyModel)
     caplog.set_level(logging.WARNING)
     Predictor.load()
-    assert "metadata=" in caplog.text and "using metadata" in caplog.text
+    assert "metadata=" not in caplog.text
 
 
-def test_predict_non_strict_missing_feature_warns_not_crash(
-    monkeypatch, caplog
-) -> None:
+def test_predictor_rejects_non_v3_metadata_feature_version(monkeypatch) -> None:
+    (MODELS_DIR / "feature_columns.json").write_text(
+        json.dumps(V3_CORE20_COLUMNS), encoding="utf-8"
+    )
+    (MODELS_DIR / "metadata.json").write_text(
+        json.dumps({"feature_version": "unsupported"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyModel)
+
+    try:
+        Predictor.load()
+        assert False, "Predictor.load() should fail for non-v3 metadata"
+    except ValueError as exc:
+        assert "only v3_core20" in str(exc)
+
+
+def test_predictor_rejects_invalid_v3_feature_columns_contract(monkeypatch) -> None:
+    (MODELS_DIR / "feature_columns.json").write_text(
+        json.dumps(V3_CORE20_COLUMNS[:-1]), encoding="utf-8"
+    )
+    (MODELS_DIR / "metadata.json").write_text(
+        json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
+    )
+    monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyModel)
+
+    try:
+        Predictor.load()
+        assert False, "Predictor.load() should fail for invalid feature columns"
+    except ValueError as exc:
+        assert "feature columns" in str(exc)
+
+
+def test_predict_rejects_invalid_feature_columns_contract(monkeypatch) -> None:
     df = _make_draw_df()
     build_issue_features(df, min_history=22)
 
@@ -80,12 +110,11 @@ def test_predict_non_strict_missing_feature_warns_not_crash(
         json.dumps(V3_CORE20_COLUMNS + ["prev_numbers"]), encoding="utf-8"
     )
     (MODELS_DIR / "metadata.json").write_text(
-        json.dumps({"feature_version": "v2_legacy"}), encoding="utf-8"
+        json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
     )
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyModel)
-    p = Predictor.load()
-
-    caplog.set_level(logging.WARNING)
-    out = p.predict_from_draws(df, min_history=22)
-    assert len(out["top20_numbers"]) == 20
-    assert "Missing feature columns" in caplog.text
+    try:
+        Predictor.load()
+        assert False, "Predictor.load() should fail for invalid feature columns"
+    except ValueError as exc:
+        assert "feature columns" in str(exc)

@@ -2,6 +2,8 @@
 
 本專案已整理成 **本地訓練、雲端只載模預測** 的流程。
 
+> 目前 repo 僅支援單一特徵版本：`v3_core20`。
+
 ## 專案結構
 
 ```text
@@ -51,6 +53,8 @@ API 端點：
 - `GET /health`
 - `GET /analysis`
 - `POST /predict`
+
+`/predict` 的 `recent_draws` 輸入範圍為 `1~999` 期；若模型特徵窗長需求較高（例如 v3_core20 預設需至少 201 期），API 會以 required history gate 回傳 400。
 
 > API **只載入已訓練模型**，不會重新訓練。
 

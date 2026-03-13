@@ -23,7 +23,7 @@ def default_experiments() -> list[StrategyConfig]:
     return [
         StrategyConfig("v0_binary_baseline", "baseline", 20, 100, 0.0, 0.0, 0.0, False),
         StrategyConfig("v1_rerank_k20_p100", "rerank", 20, 100, 2.2, 0.08, 0.25, True),
-        StrategyConfig("v2_rerank_k30_p300", "rerank", 30, 300, 3.2, 0.10, 0.35, True),
+        StrategyConfig("v3_rerank_k30_p300", "rerank", 30, 300, 3.2, 0.10, 0.35, True),
         StrategyConfig("v3_rerank_k40_p500", "rerank", 40, 500, 4.2, 0.12, 0.45, True),
         StrategyConfig(
             "v4_two_stage_20_10_3", "two_stage", 20, 300, 3.0, 0.11, 0.4, True

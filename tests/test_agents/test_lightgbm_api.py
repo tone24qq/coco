@@ -4,6 +4,11 @@ import src.api as api_module
 
 
 class _StubPredictor:
+    feature_version = "v3_core20"
+    runtime_config = {
+        "core_windows": {"freq_long": 20, "pmi_window": 20, "handoff_window": 20}
+    }
+
     def predict_from_draws(self, df, min_history):
         if len(df) <= min_history:
             raise ValueError("not enough history for feature generation")
@@ -74,7 +79,7 @@ def test_predict_validates_shape_and_range(monkeypatch):
     monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
     client = TestClient(api_module.app)
 
-    too_short = client.post("/predict", json=_payload(21))
+    too_short = client.post("/predict", json=_payload(0))
     assert too_short.status_code == 400
 
     invalid_len = _payload(22)
@@ -134,7 +139,7 @@ def test_predict_converts_value_error_to_400(monkeypatch):
     resp = client.post("/predict", json=_payload(22))
 
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "not enough history for feature generation"
+    assert "required_draws>=100" in resp.json()["detail"]
 
 
 def test_predict_auto_fetch_error_to_502(monkeypatch):
@@ -160,3 +165,20 @@ def test_analysis_declares_recent_draws_optional(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json()["recent_draws_rules"]["required"] is False
+    assert resp.json()["recent_draws_rules"]["min"] >= 1
+    assert resp.json()["recent_draws_rules"]["max"] == 999
+
+
+def test_predict_rejects_when_runtime_required_history_is_higher(monkeypatch):
+    predictor = _StubPredictor()
+    predictor.feature_version = "v3_core20"
+    predictor.runtime_config = {
+        "core_windows": {"freq_long": 200, "pmi_window": 200, "handoff_window": 200}
+    }
+    monkeypatch.setattr(api_module, "PREDICTOR", predictor)
+    client = TestClient(api_module.app)
+
+    resp = client.post("/predict", json=_payload(50))
+
+    assert resp.status_code == 400
+    assert "required_draws>=201" in resp.json()["detail"]

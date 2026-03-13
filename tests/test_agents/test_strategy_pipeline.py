@@ -15,7 +15,7 @@ def test_rerank_changes_scores_shape_and_values() -> None:
         }
     )
     base = np.linspace(0.01, 0.99, 80)
-    cfg = StrategyConfig("v2", "rerank", 30, 300, 3.0, 0.1, 0.3, True)
+    cfg = StrategyConfig("v3", "rerank", 30, 300, 3.0, 0.1, 0.3, True)
     out = apply_strategy(base, cand, cfg, "balanced")
     assert out.shape == base.shape
     assert float(np.abs(out - base).sum()) > 0

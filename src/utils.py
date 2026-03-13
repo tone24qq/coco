@@ -51,6 +51,27 @@ V3_CORE20_COLUMNS = [
 LOGGER = logging.getLogger(__name__)
 
 
+def normalize_feature_version(feature_version: str | None) -> str:
+    v = str(feature_version or "v3_core20").strip()
+    if v != "v3_core20":
+        raise ValueError(
+            f"unsupported feature_version: {v}; only v3_core20 is supported"
+        )
+    return v
+
+
+def min_required_history(
+    feature_version: str, runtime_config: dict | None = None
+) -> int:
+    normalize_feature_version(feature_version)
+    cfg = runtime_config or {}
+    windows = cfg.get("core_windows", {})
+    freq_long = int(windows.get("freq_long", 200))
+    pmi_window = int(windows.get("pmi_window", 200))
+    handoff_window = int(windows.get("handoff_window", 200))
+    return max(freq_long, pmi_window, handoff_window) + 1
+
+
 @dataclass
 class TrainConfig:
     feature_min_history: int = 20
@@ -203,7 +224,9 @@ def _exp_decay_weights(k: int, half_life: float) -> np.ndarray:
 def _load_feature_runtime_config() -> dict:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     runtime = {
-        "feature_version": cfg.get("feature_version", "v2_legacy"),
+        "feature_version": normalize_feature_version(
+            cfg.get("feature_version", "v3_core20")
+        ),
         "core_windows": cfg.get(
             "core_windows",
             {
@@ -223,19 +246,20 @@ def _load_feature_runtime_config() -> dict:
     if os.getenv("FEATURE_RUNTIME_CONFIG_JSON"):
         runtime.update(json.loads(os.getenv("FEATURE_RUNTIME_CONFIG_JSON", "{}")))
     if os.getenv("FEATURE_VERSION_OVERRIDE"):
-        runtime["feature_version"] = os.getenv("FEATURE_VERSION_OVERRIDE")
+        runtime["feature_version"] = normalize_feature_version(
+            os.getenv("FEATURE_VERSION_OVERRIDE")
+        )
     return runtime
 
 
 def _feature_version() -> str:
-    return _load_feature_runtime_config()["feature_version"]
+    return normalize_feature_version(_load_feature_runtime_config()["feature_version"])
 
 
 def validate_feature_columns_contract(
     feature_columns: Sequence[str], feature_version: str
 ) -> None:
-    if feature_version != "v3_core20":
-        return
+    normalize_feature_version(feature_version)
     cols = list(feature_columns)
     if len(cols) != len(V3_CORE20_COLUMNS):
         raise ValueError(
@@ -299,234 +323,13 @@ def build_issue_features(
     min_history: int = 20,
     include_latest_for_inference: bool = False,
 ) -> pd.DataFrame:
-    if _feature_version() == "v3_core20":
-        return _build_issue_features_v3(
-            df,
-            min_history=min_history,
-            include_latest_for_inference=include_latest_for_inference,
-        )
-
-    rows: list[dict] = []
-    draws = [json.loads(v) if isinstance(v, str) else v for v in df["numbers"]]
-    board_history: list[dict] = []
-
-    end = len(df) if include_latest_for_inference else len(df) - 1
-    for i in range(min_history, end):
-        nums = sorted(draws[i])
-        hist = draws[: i + 1]
-        zc = _zone_counts(nums)
-        arr = np.array(nums)
-        big_cnt = int((arr > 40).sum())
-        odd_cnt = int((arr % 2 == 1).sum())
-
-        has_target = i + 1 < len(df)
-        feat: dict[str, float | int | str] = {
-            "issue": int(df.iloc[i]["issue"]),
-            "draw_date": str(df.iloc[i]["draw_date"]),
-            "target_issue": (
-                int(df.iloc[i + 1]["issue"])
-                if has_target
-                else int(df.iloc[i]["issue"]) + 1
-            ),
-            "target_numbers": (
-                json.dumps(sorted(draws[i + 1]), ensure_ascii=False)
-                if has_target
-                else json.dumps([], ensure_ascii=False)
-            ),
-            "sum_all": float(arr.sum()),
-            "mean_all": float(arr.mean()),
-            "std_all": float(arr.std()),
-            "min_num": float(arr.min()),
-            "max_num": float(arr.max()),
-            "span": float(arr.max() - arr.min()),
-            "median": float(np.median(arr)),
-            "zone_A_cnt": float(zc["A"]),
-            "zone_B_cnt": float(zc["B"]),
-            "zone_C_cnt": float(zc["C"]),
-            "zone_D_cnt": float(zc["D"]),
-            "zone_range": float(max(zc.values()) - min(zc.values())),
-            "dominant_zone": float(np.argmax([zc[z] for z in ZONE_NAMES])),
-            "is_balanced_5_5_5_5": float(all(v == 5 for v in zc.values())),
-            "is_single_zone_burst": float(max(zc.values()) >= 9),
-            "is_double_zone_shake": float(
-                sorted(zc.values(), reverse=True)[0] >= 7
-                and sorted(zc.values(), reverse=True)[1] >= 6
-            ),
-            "is_extreme_burst": float(max(zc.values()) >= 10),
-            "small_cnt": float(20 - big_cnt),
-            "big_cnt": float(big_cnt),
-            "big_minus_small": float(big_cnt - (20 - big_cnt)),
-            "odd_cnt": float(odd_cnt),
-            "even_cnt": float(20 - odd_cnt),
-            "odd_minus_even": float(odd_cnt - (20 - odd_cnt)),
-            "big_odd_cnt": float(sum(1 for n in nums if n > 40 and n % 2 == 1)),
-            "big_even_cnt": float(sum(1 for n in nums if n > 40 and n % 2 == 0)),
-            "small_odd_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 1)),
-            "small_even_cnt": float(sum(1 for n in nums if n <= 40 and n % 2 == 0)),
-            "prev_numbers": json.dumps(sorted(draws[i - 1]), ensure_ascii=False),
-            "current_numbers": json.dumps(nums, ensure_ascii=False),
-            "history_numbers": json.dumps(hist, ensure_ascii=False),
-        }
-        feat.update(_gap_features(nums))
-        feat.update(_tail_features(nums))
-
-        for w in [3, 5, 10, 20]:
-            freq = _recent_frequency(hist, w)
-            feat[f"recent_freq_{w}"] = float(np.mean([freq[n] for n in nums]))
-        freq20 = _recent_frequency(hist, 20)
-        hot_scores = np.array([freq20[n] for n in nums])
-        feat["hot_score_mean"] = float(hot_scores.mean())
-        feat["hot_score_max"] = float(hot_scores.max())
-        feat["cold_score_cnt"] = float(
-            (hot_scores <= np.percentile(list(freq20.values()), 30)).sum()
-        )
-
-        prev = board_history[-1] if board_history else None
-        prev3 = board_history[-3] if len(board_history) >= 3 else None
-        prev_nums = set(hist[-2]) if len(hist) >= 2 else set()
-        shift_p1 = _shifted_set(prev_nums, 1)
-        shift_p2 = _shifted_set(prev_nums, 2)
-        shift_m1 = _shifted_set(prev_nums, -1)
-        shift_pm1 = shift_p1 | shift_m1
-        current_nums = set(nums)
-        feat["shift_p1_hit_rate"] = float(len(current_nums & shift_p1) / 20)
-        feat["shift_p2_hit_rate"] = float(len(current_nums & shift_p2) / 20)
-        feat["shift_m1_hit_rate"] = float(len(current_nums & shift_m1) / 20)
-        feat["shift_pm1_hit_rate"] = float(len(current_nums & shift_pm1) / 20)
-        feat["delta_sum_1"] = float(
-            feat["sum_all"] - (prev["sum_all"] if prev else feat["sum_all"])
-        )
-        feat["delta_sum_3"] = float(
-            feat["sum_all"] - (prev3["sum_all"] if prev3 else feat["sum_all"])
-        )
-        feat["delta_big_small_1"] = float(
-            feat["big_minus_small"]
-            - (prev["big_minus_small"] if prev else feat["big_minus_small"])
-        )
-        feat["delta_odd_even_1"] = float(
-            feat["odd_minus_even"]
-            - (prev["odd_minus_even"] if prev else feat["odd_minus_even"])
-        )
-        for z in ZONE_NAMES:
-            current = feat[f"zone_{z}_cnt"]
-            previous = prev[f"zone_{z}_cnt"] if prev else current
-            feat[f"delta_zone_{z}_1"] = float(current - previous)
-            feat[f"abs_delta_zone_{z}_1"] = float(abs(current - previous))
-        feat["delta_gap_mean_1"] = float(
-            feat["gap_mean"] - (prev["gap_mean"] if prev else feat["gap_mean"])
-        )
-        feat["delta_consecutive_pairs_1"] = float(
-            feat["consecutive_pairs"]
-            - (prev["consecutive_pairs"] if prev else feat["consecutive_pairs"])
-        )
-
-        history_df = pd.DataFrame(board_history)
-        for w in [3, 5]:
-            if len(history_df) >= w:
-                feat[f"roll{w}_sum_mean"] = float(history_df["sum_all"].tail(w).mean())
-                feat[f"roll{w}_sum_std"] = float(
-                    history_df["sum_all"].tail(w).std(ddof=0)
-                )
-            else:
-                feat[f"roll{w}_sum_mean"] = float(feat["sum_all"])
-                feat[f"roll{w}_sum_std"] = 0.0
-        for z in ZONE_NAMES:
-            if len(history_df) >= 5:
-                feat[f"roll5_zone_{z}_mean"] = float(
-                    history_df[f"zone_{z}_cnt"].tail(5).mean()
-                )
-            else:
-                feat[f"roll5_zone_{z}_mean"] = float(feat[f"zone_{z}_cnt"])
-            if len(history_df) >= 10:
-                feat[f"roll10_zone_{z}_std"] = float(
-                    history_df[f"zone_{z}_cnt"].tail(10).std(ddof=0)
-                )
-            else:
-                feat[f"roll10_zone_{z}_std"] = 0.0
-        feat["sum_vs_roll3_mean"] = float(feat["sum_all"] - feat["roll3_sum_mean"])
-        for z in ZONE_NAMES:
-            feat[f"zone_{z}_vs_roll5_mean"] = float(
-                feat[f"zone_{z}_cnt"] - feat[f"roll5_zone_{z}_mean"]
-            )
-        feat["big_small_vs_roll5_mean"] = float(
-            feat["big_minus_small"]
-            - (
-                history_df["big_minus_small"].tail(5).mean()
-                if len(history_df) >= 1
-                else feat["big_minus_small"]
-            )
-        )
-        feat["odd_even_vs_roll5_mean"] = float(
-            feat["odd_minus_even"]
-            - (
-                history_df["odd_minus_even"].tail(5).mean()
-                if len(history_df) >= 1
-                else feat["odd_minus_even"]
-            )
-        )
-
-        if len(board_history) >= 6:
-            candidates = []
-            cur_vec = np.array(
-                [
-                    feat["zone_A_cnt"],
-                    feat["zone_B_cnt"],
-                    feat["zone_C_cnt"],
-                    feat["zone_D_cnt"],
-                    feat["big_minus_small"],
-                    feat["odd_minus_even"],
-                    feat["sum_all"],
-                ]
-            )
-            for idx in range(len(board_history) - 1):
-                past = board_history[idx]
-                pvec = np.array(
-                    [
-                        past["zone_A_cnt"],
-                        past["zone_B_cnt"],
-                        past["zone_C_cnt"],
-                        past["zone_D_cnt"],
-                        past["big_minus_small"],
-                        past["odd_minus_even"],
-                        past["sum_all"],
-                    ]
-                )
-                dist = np.linalg.norm(cur_vec - pvec)
-                score = 1.0 / (1.0 + dist)
-                candidates.append((score, idx))
-            candidates.sort(reverse=True, key=lambda x: x[0])
-            top5 = candidates[:5]
-            feat["sim_top1_score"] = float(top5[0][0])
-            feat["sim_top5_mean_score"] = float(np.mean([s for s, _ in top5]))
-            following = [board_history[idx + 1] for _, idx in top5]
-            for z in ZONE_NAMES:
-                feat[f"sim_following_zone_{z}_mean"] = float(
-                    np.mean([x[f"zone_{z}_cnt"] for x in following])
-                )
-            feat["sim_following_big_small_mean"] = float(
-                np.mean([x["big_minus_small"] for x in following])
-            )
-            feat["sim_following_odd_even_mean"] = float(
-                np.mean([x["odd_minus_even"] for x in following])
-            )
-        else:
-            feat["sim_top1_score"] = 0.0
-            feat["sim_top5_mean_score"] = 0.0
-            for z in ZONE_NAMES:
-                feat[f"sim_following_zone_{z}_mean"] = float(feat[f"zone_{z}_cnt"])
-            feat["sim_following_big_small_mean"] = float(feat["big_minus_small"])
-            feat["sim_following_odd_even_mean"] = float(feat["odd_minus_even"])
-
-        rows.append(feat)
-        board_history.append(
-            {
-                k: feat[k]
-                for k in feat
-                if k not in {"issue", "draw_date", "target_issue", "target_numbers"}
-            }
-        )
-
-    return pd.DataFrame(rows)
+    feature_version = _feature_version()
+    normalize_feature_version(feature_version)
+    return _build_issue_features_v3(
+        df,
+        min_history=min_history,
+        include_latest_for_inference=include_latest_for_inference,
+    )
 
 
 def build_latest_issue_features_for_inference(
@@ -558,165 +361,9 @@ def build_candidate_matrix(
     feature_columns: Sequence[str],
     strict_features: bool | None = None,
 ) -> pd.DataFrame:
-    if _feature_version() == "v3_core20":
-        return _build_candidate_matrix_v3(
-            issue_row,
-            feature_columns,
-            strict_features=strict_features,
-        )
-
-    base = issue_row.to_dict()
-    history = [sorted(x) for x in json.loads(base.get("history_numbers", "[]"))]
-    last_draw = set(json.loads(base.get("current_numbers", "[]")))
-    freq_windows = [10, 20, 50, 100, 200, 300, 500, 1000]
-    freq_by_window = {w: _recent_frequency(history, w) for w in freq_windows}
-
-    def _ema_for_num(num: int, alpha: float) -> float:
-        ema = 0.0
-        for draw in history:
-            hit = 1.0 if num in draw else 0.0
-            ema = alpha * hit + (1 - alpha) * ema
-        return ema
-
-    prev_numbers = set(json.loads(base.get("prev_numbers", "[]")))
-    prev_plus1 = _shifted_set(prev_numbers, 1)
-    prev_plus2 = _shifted_set(prev_numbers, 2)
-    prev_minus1 = _shifted_set(prev_numbers, -1)
-    prev_pm1 = prev_plus1 | prev_minus1
-    pair_window = history[-200:]
-    last5_draws = history[-5:]
-    rows = []
-    for num in range(1, 81):
-        row = {
-            k: base.get(k, 0.0)
-            for k in feature_columns
-            if k
-            not in {
-                "num",
-                "num_norm",
-                "num_zone",
-                "num_is_odd",
-                "num_is_big",
-                "cand_in_prev_plus1",
-                "cand_in_prev_plus2",
-                "cand_in_prev_minus1",
-                "cand_in_prev_pm1",
-                "prev_numbers",
-                "current_numbers",
-                "history_numbers",
-            }
-        }
-        row["num"] = float(num)
-        row["num_norm"] = float(num / 80)
-        row["num_zone"] = float((num - 1) // 20)
-        row["num_is_odd"] = float(num % 2 == 1)
-        row["num_is_big"] = float(num > 40)
-        row["cand_in_prev_plus1"] = float(num in prev_plus1)
-        row["cand_in_prev_plus2"] = float(num in prev_plus2)
-        row["cand_in_prev_minus1"] = float(num in prev_minus1)
-        row["cand_in_prev_pm1"] = float(num in prev_pm1)
-
-        for window in freq_windows:
-            row[f"freq_last_{window}"] = float(freq_by_window[window][num])
-        row["ema_freq_alpha_0_05"] = float(_ema_for_num(num, 0.05))
-        row["ema_freq_alpha_0_1"] = float(_ema_for_num(num, 0.1))
-        row["ema_freq_alpha_0_2"] = float(_ema_for_num(num, 0.2))
-
-        occurrences = [idx for idx, draw in enumerate(history) if num in draw]
-        if occurrences:
-            gap_since_last_seen = len(history) - 1 - occurrences[-1]
-            gaps = np.diff(occurrences)
-            recent_gaps = gaps[-5:] if len(gaps) else np.array([], dtype=float)
-            row["gap_since_last_seen"] = float(gap_since_last_seen)
-            row["avg_gap_last_3"] = (
-                float(np.mean(gaps[-3:])) if len(gaps) else float(len(history))
-            )
-            row["avg_gap_last_5"] = (
-                float(np.mean(gaps[-5:])) if len(gaps) else float(len(history))
-            )
-            row["std_gap_last_5"] = (
-                float(np.std(recent_gaps)) if len(recent_gaps) else 0.0
-            )
-            row["min_gap_last_5"] = (
-                float(np.min(recent_gaps)) if len(recent_gaps) else float(len(history))
-            )
-            row["max_gap_last_5"] = (
-                float(np.max(recent_gaps)) if len(recent_gaps) else float(len(history))
-            )
-        else:
-            row["gap_since_last_seen"] = float(len(history))
-            row["avg_gap_last_3"] = float(len(history))
-            row["avg_gap_last_5"] = float(len(history))
-            row["std_gap_last_5"] = 0.0
-            row["min_gap_last_5"] = float(len(history))
-            row["max_gap_last_5"] = float(len(history))
-
-        row["freq_10_minus_50"] = float(row["freq_last_10"] - row["freq_last_50"])
-        row["freq_20_minus_100"] = float(row["freq_last_20"] - row["freq_last_100"])
-        row["recent_trend_up_down"] = float(np.sign(row["freq_10_minus_50"]))
-        row["ema_short_minus_ema_long"] = float(
-            row["ema_freq_alpha_0_2"] - row["ema_freq_alpha_0_05"]
-        )
-
-        cooccur_counts = []
-        for draw in pair_window:
-            if num in draw:
-                cooccur_counts.append(len(set(draw) & last_draw))
-        row["cooccur_with_last_draw_sum"] = float(np.sum(cooccur_counts))
-        row["cooccur_with_last_draw_mean"] = (
-            float(np.mean(cooccur_counts)) if cooccur_counts else 0.0
-        )
-        row["cooccur_with_last_draw_max"] = (
-            float(np.max(cooccur_counts)) if cooccur_counts else 0.0
-        )
-
-        if last_draw:
-            distances = np.array([abs(num - n) for n in last_draw])
-            row["distance_to_last_draw_min"] = float(np.min(distances))
-            row["distance_to_last_draw_mean"] = float(np.mean(distances))
-            row["count_close_to_last_draw_within_1"] = float((distances <= 1).sum())
-            row["count_close_to_last_draw_within_2"] = float((distances <= 2).sum())
-            row["count_close_to_last_draw_within_3"] = float((distances <= 3).sum())
-            row["is_adjacent_to_last_draw"] = float(np.any(distances == 1))
-            row["adjacent_count_vs_last_draw"] = float((distances == 1).sum())
-        else:
-            row["distance_to_last_draw_min"] = 80.0
-            row["distance_to_last_draw_mean"] = 80.0
-            row["count_close_to_last_draw_within_1"] = 0.0
-            row["count_close_to_last_draw_within_2"] = 0.0
-            row["count_close_to_last_draw_within_3"] = 0.0
-            row["is_adjacent_to_last_draw"] = 0.0
-            row["adjacent_count_vs_last_draw"] = 0.0
-
-        row["pair_score_with_last_5_draws"] = float(
-            sum(1 for draw in last5_draws if num in draw)
-        )
-        rows.append(row)
-
-    out = pd.DataFrame(rows)
-    out["rank_by_recent_freq"] = out["freq_last_20"].rank(
-        method="dense", ascending=False
-    )
-    out["rank_by_gap_inverse"] = out["gap_since_last_seen"].rank(
-        method="dense", ascending=True
-    )
-    out["rank_by_cooccur_score"] = out["cooccur_with_last_draw_mean"].rank(
-        method="dense", ascending=False
-    )
-
-    strict = (
-        bool(int(os.getenv("STRICT_FEATURES", "0")))
-        if strict_features is None
-        else strict_features
-    )
-    missing = [col for col in feature_columns if col not in out.columns]
-    if missing:
-        if strict:
-            raise ValueError(f"Missing feature columns: {missing}")
-        LOGGER.warning("Missing feature columns, filling zeros: %s", missing)
-        for col in missing:
-            out[col] = 0.0
-    return out[list(feature_columns)]
+    feature_version = _feature_version()
+    normalize_feature_version(feature_version)
+    return _build_candidate_matrix_v3(issue_row, feature_columns, strict_features)
 
 
 def _build_indicator_matrix(draws: Sequence[Sequence[int]], window: int) -> np.ndarray:

@@ -5,7 +5,7 @@ import pytest
 
 from src.build_features import main as build_features_main
 from src.predict import Predictor
-from src.utils import MODELS_DIR, precompute_issue_payloads
+from src.utils import MODELS_DIR, V3_CORE20_COLUMNS, precompute_issue_payloads
 
 
 def test_precompute_issue_payloads_builds_cached_candidate_and_target() -> None:
@@ -17,21 +17,14 @@ def test_precompute_issue_payloads_builds_cached_candidate_and_target() -> None:
                 "history_numbers": json.dumps([[1, 2, 3]]),
                 "current_numbers": json.dumps([1, 2, 3]),
                 "prev_numbers": json.dumps([1, 2, 3]),
-                "freq_last_10": 0.0,
-                "ema_short_minus_ema_long": 0.0,
-                "cooccur_with_last_draw_mean": 0.0,
-                "num_zone": 0.0,
+                "issue_zone_entropy": 0.0,
+                "issue_span_z50": 0.0,
+                "issue_sum_z50": 0.0,
+                "issue_consecutive_z50": 0.0,
             }
         ]
     )
-    feature_columns = [
-        "freq_last_10",
-        "ema_short_minus_ema_long",
-        "cooccur_with_last_draw_mean",
-        "num_zone",
-        "num",
-    ]
-    payloads = precompute_issue_payloads(feature_df, feature_columns)
+    payloads = precompute_issue_payloads(feature_df, V3_CORE20_COLUMNS)
 
     assert 0 in payloads
     assert payloads[0]["cand"].shape[0] == 80
@@ -91,11 +84,16 @@ def test_predictor_prefers_strategy_config(
     }
     (MODELS_DIR / "strategy_config.json").write_text(json.dumps(cfg), encoding="utf-8")
     (MODELS_DIR / "metadata.json").write_text(
-        json.dumps({"selected_strategy": {"version_id": "v0_binary_baseline"}}),
+        json.dumps(
+            {
+                "feature_version": "v3_core20",
+                "selected_strategy": {"version_id": "v0_binary_baseline"},
+            }
+        ),
         encoding="utf-8",
     )
     (MODELS_DIR / "feature_columns.json").write_text(
-        json.dumps(["num"]), encoding="utf-8"
+        json.dumps(V3_CORE20_COLUMNS), encoding="utf-8"
     )
 
     class DummyModel:

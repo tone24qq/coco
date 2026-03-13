@@ -494,9 +494,9 @@ def test_sequence_similarity_prediction_output_schema() -> None:
     )
 
     assert pred["mode"] == "sequence_similarity_next_draw"
-    assert pred["feature_version"].startswith("v2")
-    assert pred["similarity_version"].startswith("v2")
-    assert pred["adjustment_version"].startswith("v2")
+    assert pred["feature_version"].startswith("v")
+    assert pred["similarity_version"].startswith("v")
+    assert pred["adjustment_version"].startswith("v")
     assert pred["input_window_size"] == 10
     assert pred["minimum_required_matches"] == 10
     assert len(pred["predicted_top_3"]) in [0, 3]

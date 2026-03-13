@@ -19,5 +19,6 @@ def test_v3_contract_fails_when_wrong_order() -> None:
         validate_feature_columns_contract(cols, "v3_core20")
 
 
-def test_v2_contract_not_restricted() -> None:
-    validate_feature_columns_contract(["a", "b", "c"], "v2_legacy")
+def test_contract_rejects_non_v3_feature_version() -> None:
+    with pytest.raises(ValueError):
+        validate_feature_columns_contract(V3_CORE20_COLUMNS, "unsupported")

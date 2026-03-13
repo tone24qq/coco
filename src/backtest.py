@@ -199,46 +199,41 @@ def _build_feature_version_comparison(
     thresholds: dict,
 ) -> dict:
     full = pd.concat([history_df, pd.DataFrame([current_row])], ignore_index=True)
-    v2_rows = full[full["feature_version"] == "v2_legacy"]
     v3_rows = full[full["feature_version"] == "v3_core20"]
-    if v2_rows.empty:
-        return {
-            "available": False,
-            "reason": "missing v2_legacy reference",
-            "current_feature_version": current_row["feature_version"],
-        }
     if v3_rows.empty:
         return {
             "available": False,
             "reason": "missing v3_core20 reference",
             "current_feature_version": current_row["feature_version"],
         }
+    if len(v3_rows) < 2:
+        return {
+            "available": False,
+            "reason": "missing historical v3_core20 reference",
+            "current_feature_version": current_row["feature_version"],
+        }
 
-    v2_baseline = v2_rows.sort_values("trained_at_utc").iloc[-1].to_dict()
-    v3_baseline = v3_rows.sort_values("trained_at_utc").iloc[-1].to_dict()
+    sorted_v3 = v3_rows.sort_values("trained_at_utc")
+    v3_baseline = sorted_v3.iloc[-2].to_dict()
+    v3_current = sorted_v3.iloc[-1].to_dict()
     deltas = {
-        "delta_top3": float(
-            v3_baseline["top3_hit_rate"] - v2_baseline["top3_hit_rate"]
-        ),
-        "delta_top5": float(
-            v3_baseline["top5_hit_rate"] - v2_baseline["top5_hit_rate"]
-        ),
+        "delta_top3": float(v3_current["top3_hit_rate"] - v3_baseline["top3_hit_rate"]),
+        "delta_top5": float(v3_current["top5_hit_rate"] - v3_baseline["top5_hit_rate"]),
         "delta_top10": float(
-            v3_baseline["top10_hit_rate"] - v2_baseline["top10_hit_rate"]
+            v3_current["top10_hit_rate"] - v3_baseline["top10_hit_rate"]
         ),
         "delta_top20": float(
-            v3_baseline["top20_hit_rate"] - v2_baseline["top20_hit_rate"]
+            v3_current["top20_hit_rate"] - v3_baseline["top20_hit_rate"]
         ),
         "delta_top3_at_least_one_hit_rate": float(
-            v3_baseline["top3_at_least_one_hit_rate"]
-            - v2_baseline["top3_at_least_one_hit_rate"]
+            v3_current["top3_at_least_one_hit_rate"]
+            - v3_baseline["top3_at_least_one_hit_rate"]
         ),
         "delta_fold_dispersion_top3": float(
-            v3_baseline["fold_dispersion_top3"] - v2_baseline["fold_dispersion_top3"]
+            v3_current["fold_dispersion_top3"] - v3_baseline["fold_dispersion_top3"]
         ),
         "delta_regime_dispersion_top3": float(
-            v3_baseline["regime_dispersion_top3"]
-            - v2_baseline["regime_dispersion_top3"]
+            v3_current["regime_dispersion_top3"] - v3_baseline["regime_dispersion_top3"]
         ),
     }
 
@@ -257,8 +252,8 @@ def _build_feature_version_comparison(
     return {
         "available": True,
         "current_feature_version": current_row["feature_version"],
-        "v2_baseline": v2_baseline,
         "v3_baseline": v3_baseline,
+        "v3_current": v3_current,
         "thresholds": {
             "non_degradation_tol": tol,
             "stability_improvement_min": stability_min,
@@ -389,13 +384,15 @@ def _run_experiments(
 
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    if str(cfg.get("feature_version", "v3_core20")) != "v3_core20":
+        raise ValueError("only v3_core20 is supported")
     os.environ["STRICT_FEATURES"] = "1"
     feature_columns = json.loads(
         (PROJECT_ROOT / "models" / "feature_columns.json").read_text(encoding="utf-8")
     )
     validate_feature_columns_contract(
         feature_columns,
-        str(cfg.get("feature_version", "v2_legacy")),
+        str(cfg.get("feature_version", "v3_core20")),
     )
     feat_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
     max_draws = int(cfg.get("max_draws_for_training", len(feat_df)))
@@ -414,7 +411,7 @@ def main() -> None:
 
     fast_version_ids = {
         "v0_binary_baseline",
-        "v2_rerank_k30_p300",
+        "v3_rerank_k30_p300",
         "v4_two_stage_20_10_3",
     }
     fast_experiments = [
@@ -489,7 +486,7 @@ def main() -> None:
         .iloc[0]
         .to_dict()
     )
-    feature_version = str(cfg.get("feature_version", "unknown"))
+    feature_version = str(cfg.get("feature_version", "v3_core20"))
     history_path = REPORTS_DIR / "feature_version_history.csv"
     current_comp_row = {
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),

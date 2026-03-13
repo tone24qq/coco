@@ -91,22 +91,18 @@ def test_overfit_audit_flags_large_gap() -> None:
 
 
 def test_feature_version_comparison_no_reference() -> None:
-    history = pd.DataFrame(
-        [
-            {
-                "trained_at_utc": "2026-01-01T00:00:00+00:00",
-                "feature_version": "v3_core20",
-                "top20_hit_rate": 0.2,
-                "top10_hit_rate": 0.2,
-                "top5_hit_rate": 0.2,
-                "top3_hit_rate": 0.2,
-                "top3_at_least_one_hit_rate": 0.2,
-                "fold_dispersion_top3": 0.1,
-                "regime_dispersion_top3": 0.1,
-            }
-        ]
-    )
-    current = history.iloc[0].to_dict()
+    history = pd.DataFrame(columns=["trained_at_utc", "feature_version"])
+    current = {
+        "trained_at_utc": "2026-01-01T00:00:00+00:00",
+        "feature_version": "v3_core20",
+        "top20_hit_rate": 0.2,
+        "top10_hit_rate": 0.2,
+        "top5_hit_rate": 0.2,
+        "top3_hit_rate": 0.2,
+        "top3_at_least_one_hit_rate": 0.2,
+        "fold_dispersion_top3": 0.1,
+        "regime_dispersion_top3": 0.1,
+    }
     out = _build_feature_version_comparison(history, current, {})
     assert out["available"] is False
 
@@ -116,7 +112,7 @@ def test_feature_version_comparison_acceptance() -> None:
         [
             {
                 "trained_at_utc": "2026-01-01T00:00:00+00:00",
-                "feature_version": "v2_legacy",
+                "feature_version": "v3_core20",
                 "top20_hit_rate": 0.20,
                 "top10_hit_rate": 0.18,
                 "top5_hit_rate": 0.16,

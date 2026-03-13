@@ -15,7 +15,7 @@ experiments:
     penalty_weight: 0.08
     trend_weight: 0.25
     regime_aware: true
-  - version_id: v2_rerank_k30_p300
+  - version_id: v3_rerank_k30_p300
     stage_type: rerank
     candidate_pool: 30
     prior_window: 300

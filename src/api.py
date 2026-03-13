@@ -26,13 +26,15 @@ from src.utils import (  # noqa: E402
     MODELS_DIR,
     build_recent_report,
     load_yaml,
+    min_required_history,
+    normalize_feature_version,
 )
 
 app = FastAPI(title="BingoBingo Predictor", version="1.0.0")
 LOGGER = logging.getLogger(__name__)
 PREDICT_CFG = load_yaml(CONFIG_DIR / "predict.yaml")
-MIN_RECENT_DRAWS = int(PREDICT_CFG.get("min_recent_draws", 22))
-MAX_RECENT_DRAWS = int(PREDICT_CFG.get("max_recent_draws", 50))
+MIN_RECENT_DRAWS = int(PREDICT_CFG.get("min_recent_draws", 1))
+MAX_RECENT_DRAWS = int(PREDICT_CFG.get("max_recent_draws", 999))
 FETCH_TIMEOUT = float(PREDICT_CFG.get("fetch_timeout_seconds", 8.0))
 FETCH_RETRIES = int(PREDICT_CFG.get("fetch_retries", 2))
 FETCH_SOURCES = list(PREDICT_CFG.get("auto_fetch_sources", []))
@@ -42,16 +44,40 @@ METADATA = (
     if (MODELS_DIR / "metadata.json").exists()
     else {}
 )
-PREDICTOR = Predictor.load() if (MODELS_DIR / "catboost_top20.cbm").exists() else None
+MODEL_LOAD_ERROR: str | None = None
+if (MODELS_DIR / "catboost_top20.cbm").exists():
+    try:
+        PREDICTOR = Predictor.load()
+    except ValueError as exc:
+        PREDICTOR = None
+        MODEL_LOAD_ERROR = str(exc)
+else:
+    PREDICTOR = None
 
 
 class PredictPayload(BaseModel):
     recent_draws: List[List[int]] | None = Field(
         default=None,
         description=(
-            "required: 22-50 draws, each contains exactly 20 unique numbers "
+            "optional; when provided, must contain min~max draws with exactly 20 "
+            "unique numbers per draw "
             "between 1 and 80"
         ),
+    )
+
+
+def _required_history_for_predictor() -> int:
+    if PREDICTOR is None:
+        return int(PREDICT_CFG.get("feature_min_history", 22))
+    predictor_feature_version = normalize_feature_version(
+        getattr(
+            PREDICTOR, "feature_version", METADATA.get("feature_version", "v3_core20")
+        )
+    )
+    predictor_runtime_config = getattr(PREDICTOR, "runtime_config", {})
+    return max(
+        int(PREDICT_CFG.get("feature_min_history", 22)),
+        min_required_history(predictor_feature_version, predictor_runtime_config),
     )
 
 
@@ -83,18 +109,42 @@ def _validate_recent_draws(recent_draws: List[List[int]]) -> None:
             )
 
 
+def _validate_history_requirement(recent_draws: List[List[int]]) -> None:
+    required = _required_history_for_predictor()
+    if len(recent_draws) < required:
+        feature_version = (
+            normalize_feature_version(
+                getattr(PREDICTOR, "feature_version", "v3_core20")
+            )
+            if PREDICTOR is not None
+            else normalize_feature_version(METADATA.get("feature_version", "v3_core20"))
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "insufficient history for selected model features: "
+                f"feature_version={feature_version}, required_draws>={required}"
+            ),
+        )
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model_loaded": PREDICTOR is not None}
+    return {
+        "status": "ok",
+        "model_loaded": PREDICTOR is not None,
+        "model_load_error": MODEL_LOAD_ERROR,
+    }
 
 
 @app.get("/analysis")
 def analysis() -> dict:
+    required = _required_history_for_predictor()
     return {
         "metadata": METADATA,
-        "feature_min_history": PREDICT_CFG["feature_min_history"],
+        "feature_min_history": required,
         "recent_draws_rules": {
-            "min": MIN_RECENT_DRAWS,
+            "min": max(MIN_RECENT_DRAWS, required),
             "max": MAX_RECENT_DRAWS,
             "numbers_per_draw": 20,
             "number_range": [1, 80],
@@ -106,6 +156,8 @@ def analysis() -> dict:
 @app.post("/predict")
 def predict(payload: PredictPayload) -> dict:
     if PREDICTOR is None:
+        if MODEL_LOAD_ERROR:
+            return {"error": f"model unavailable: {MODEL_LOAD_ERROR}"}
         return {"error": "model not found, please train first"}
     auto_fetched = payload.recent_draws is None
     data_source = "manual"
@@ -142,6 +194,7 @@ def predict(payload: PredictPayload) -> dict:
 
     assert payload.recent_draws is not None
     _validate_recent_draws(payload.recent_draws)
+    _validate_history_requirement(payload.recent_draws)
 
     if not records:
         records = [
@@ -162,14 +215,14 @@ def predict(payload: PredictPayload) -> dict:
 
     try:
         result = PREDICTOR.predict_from_draws(
-            df, min_history=int(PREDICT_CFG["feature_min_history"])
+            df, min_history=_required_history_for_predictor()
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     result["analysis_report"] = build_recent_report(payload.recent_draws)
     result["model_version"] = METADATA.get("model_type", "unknown")
-    result["feature_version"] = METADATA.get("feature_version", "unknown")
+    result["feature_version"] = "v3_core20"
     result["training_data_snapshot"] = {
         "train_issue_start": METADATA.get("train_issue_start"),
         "train_issue_end": METADATA.get("train_issue_end"),

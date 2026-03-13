@@ -207,7 +207,9 @@ def main() -> None:
     feature_columns = json.loads(
         (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
     )
-    feature_version = str(cfg.get("feature_version", "v2_legacy"))
+    feature_version = str(cfg.get("feature_version", "v3_core20"))
+    if feature_version != "v3_core20":
+        raise ValueError("only v3_core20 is supported")
     validate_feature_columns_contract(feature_columns, feature_version)
 
     if len(feature_df) < 3000:
@@ -227,7 +229,7 @@ def main() -> None:
     all_experiments = _load_experiments()
     fast_version_ids = {
         "v0_binary_baseline",
-        "v2_rerank_k30_p300",
+        "v3_rerank_k30_p300",
         "v4_two_stage_20_10_3",
     }
     fast_experiments = [
@@ -353,7 +355,7 @@ def main() -> None:
             "distance_kernel_tau": cfg.get("distance_kernel_tau", 2),
         },
     }
-    if feature_version == "v3_core20" and len(feature_columns) != 20:
+    if len(feature_columns) != 20:
         raise ValueError("v3_core20 metadata requires feature_count=20")
     save_json(MODELS_DIR / "metadata.json", metadata)
 
