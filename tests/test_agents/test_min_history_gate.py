@@ -9,7 +9,11 @@ class _StubPredictor:
         "core_windows": {"freq_long": 200, "pmi_window": 200, "handoff_window": 200}
     }
 
+    def __init__(self):
+        self.last_min_history = None
+
     def predict_from_draws(self, df, min_history):
+        self.last_min_history = min_history
         return {
             "model": "catboost",
             "target_issue": int(df.iloc[-1]["issue"]) + 1,
@@ -42,21 +46,22 @@ def _payload(periods: int):
     }
 
 
-def test_api_accepts_1_to_999_range_and_blocks_insufficient_runtime_history(
-    monkeypatch,
-):
-    monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+def test_api_accepts_1_to_999_range_without_forced_201_history(monkeypatch):
+    predictor = _StubPredictor()
+    monkeypatch.setattr(api_module, "PREDICTOR", predictor)
     client = TestClient(api_module.app)
 
     resp = client.post("/predict", json=_payload(50))
-    assert resp.status_code == 400
-    assert "required_draws>=201" in resp.json()["detail"]
+    assert resp.status_code == 200
+    assert predictor.last_min_history == 49
 
 
 def test_api_accepts_sufficient_runtime_history(monkeypatch):
-    monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+    predictor = _StubPredictor()
+    monkeypatch.setattr(api_module, "PREDICTOR", predictor)
     client = TestClient(api_module.app)
 
     resp = client.post("/predict", json=_payload(220))
     assert resp.status_code == 200
     assert len(resp.json()["top20_numbers"]) == 20
+    assert predictor.last_min_history == 201

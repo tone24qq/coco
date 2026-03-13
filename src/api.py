@@ -81,6 +81,11 @@ def _required_history_for_predictor() -> int:
     )
 
 
+def _effective_min_history(recent_draws: List[List[int]]) -> int:
+    required = _required_history_for_predictor()
+    return max(0, min(required, len(recent_draws) - 1))
+
+
 def _validate_recent_draws(recent_draws: List[List[int]]) -> None:
     if not (MIN_RECENT_DRAWS <= len(recent_draws) <= MAX_RECENT_DRAWS):
         raise HTTPException(
@@ -109,25 +114,6 @@ def _validate_recent_draws(recent_draws: List[List[int]]) -> None:
             )
 
 
-def _validate_history_requirement(recent_draws: List[List[int]]) -> None:
-    required = _required_history_for_predictor()
-    if len(recent_draws) < required:
-        feature_version = (
-            normalize_feature_version(
-                getattr(PREDICTOR, "feature_version", "v3_core20")
-            )
-            if PREDICTOR is not None
-            else normalize_feature_version(METADATA.get("feature_version", "v3_core20"))
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "insufficient history for selected model features: "
-                f"feature_version={feature_version}, required_draws>={required}"
-            ),
-        )
-
-
 @app.get("/health")
 def health() -> dict:
     return {
@@ -144,7 +130,7 @@ def analysis() -> dict:
         "metadata": METADATA,
         "feature_min_history": required,
         "recent_draws_rules": {
-            "min": max(MIN_RECENT_DRAWS, required),
+            "min": MIN_RECENT_DRAWS,
             "max": MAX_RECENT_DRAWS,
             "numbers_per_draw": 20,
             "number_range": [1, 80],
@@ -194,7 +180,7 @@ def predict(payload: PredictPayload) -> dict:
 
     assert payload.recent_draws is not None
     _validate_recent_draws(payload.recent_draws)
-    _validate_history_requirement(payload.recent_draws)
+    effective_min_history = _effective_min_history(payload.recent_draws)
 
     if not records:
         records = [
@@ -214,9 +200,7 @@ def predict(payload: PredictPayload) -> dict:
     df = pd.DataFrame(draws)
 
     try:
-        result = PREDICTOR.predict_from_draws(
-            df, min_history=_required_history_for_predictor()
-        )
+        result = PREDICTOR.predict_from_draws(df, min_history=effective_min_history)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
