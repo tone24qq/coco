@@ -3,11 +3,11 @@ import json
 import pandas as pd
 
 from src.utils import (
+    V3_CORE20_COLUMNS,
     build_candidate_matrix,
     build_issue_features,
     build_latest_issue_features_for_inference,
     build_recent_report,
-    issue_feature_columns,
 )
 
 
@@ -26,17 +26,10 @@ def test_build_issue_features_has_required_columns() -> None:
     feat_df = build_issue_features(df, min_history=20)
 
     required = {
-        "sum_all",
-        "zone_A_cnt",
-        "small_cnt",
-        "consecutive_pairs",
-        "tail_0_cnt",
-        "recent_freq_20",
-        "delta_sum_1",
-        "roll5_sum_mean",
-        "sim_top1_score",
-        "shift_p1_hit_rate",
-        "shift_pm1_hit_rate",
+        "issue_zone_entropy",
+        "issue_span_z50",
+        "issue_sum_z50",
+        "issue_consecutive_z50",
     }
     assert required.issubset(set(feat_df.columns))
 
@@ -53,25 +46,11 @@ def test_candidate_matrix_matches_feature_columns() -> None:
             }
         )
     feat_df = build_issue_features(pd.DataFrame(rows), min_history=20)
-    cols = issue_feature_columns(feat_df) + [
-        "num",
-        "num_norm",
-        "num_zone",
-        "num_is_odd",
-        "num_is_big",
-        "cand_in_prev_plus1",
-        "cand_in_prev_plus2",
-        "cand_in_prev_minus1",
-        "cand_in_prev_pm1",
-        "freq_last_10",
-        "gap_since_last_seen",
-        "cooccur_with_last_draw_mean",
-        "rank_by_recent_freq",
-    ]
+    cols = V3_CORE20_COLUMNS
     x = build_candidate_matrix(feat_df.iloc[-1], cols)
     assert list(x.columns) == cols
     assert len(x) == 80
-    assert x["freq_last_10"].sum() >= 0
+    assert x["cand_freq_smooth_20"].sum() >= 0
 
 
 def test_latest_inference_row_aligns_to_next_issue() -> None:

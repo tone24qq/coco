@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence
@@ -24,6 +26,29 @@ RAW_FILES = [
     "賓果賓果_2026.csv",
 ]
 ZONE_NAMES = ["A", "B", "C", "D"]
+V3_CORE20_COLUMNS = [
+    "issue_zone_entropy",
+    "issue_span_z50",
+    "issue_sum_z50",
+    "issue_consecutive_z50",
+    "num_zone",
+    "cand_repeat_last_draw",
+    "cand_freq_smooth_20",
+    "cand_freq_smooth_200",
+    "cand_freq_trend_20_200",
+    "cand_freq_ewma_hl50",
+    "cand_gap_log1p",
+    "cand_recency_ratio_200",
+    "cand_gap_mad_5",
+    "cand_recent_hit_decay_hl5",
+    "cand_neighbor_pm1_decay_hl10",
+    "cand_neighbor_pm2_decay_hl10",
+    "cand_distance_kernel_last_draw_tau2",
+    "cand_pmi_last_draw_sum_200",
+    "cand_pmi_last_draw_max_200",
+    "cand_handoff_pm1_lift_200",
+]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -146,11 +171,141 @@ def _shifted_set(numbers: Sequence[int], shift: int) -> set[int]:
     return out
 
 
+def _entropy(ps: Sequence[float], eps: float = 1e-12) -> float:
+    return float(-sum(float(p) * np.log(float(p) + eps) for p in ps))
+
+
+def _zscore(
+    value: float, series: Sequence[float], window: int, eps: float = 1e-9
+) -> float:
+    recent = np.asarray(series[-window:], dtype=float)
+    if recent.size < window:
+        return 0.0
+    std = float(recent.std(ddof=0))
+    return float((value - float(recent.mean())) / (std + eps))
+
+
+def _half_life_alpha(half_life: float) -> float:
+    return float(1 - np.exp(np.log(0.5) / float(half_life)))
+
+
+def _laplace_rate(c: float, window: int, alpha: float) -> float:
+    return float((float(c) + alpha) / (float(window) + 2.0 * alpha))
+
+
+def _exp_decay_weights(k: int, half_life: float) -> np.ndarray:
+    if k <= 0:
+        return np.array([], dtype=float)
+    steps = np.arange(1, k + 1, dtype=float)
+    return np.power(0.5, steps / float(half_life))
+
+
+def _load_feature_runtime_config() -> dict:
+    cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    runtime = {
+        "feature_version": cfg.get("feature_version", "v2_legacy"),
+        "core_windows": cfg.get(
+            "core_windows",
+            {
+                "z_window": 50,
+                "freq_short": 20,
+                "freq_long": 200,
+                "pmi_window": 200,
+                "handoff_window": 200,
+            },
+        ),
+        "smoothing_alpha": float(cfg.get("smoothing_alpha", 0.5)),
+        "decay_half_lives": cfg.get(
+            "decay_half_lives", {"ewma": 50, "recent_hit": 5, "neighbor": 10}
+        ),
+        "distance_kernel_tau": float(cfg.get("distance_kernel_tau", 2)),
+    }
+    if os.getenv("FEATURE_RUNTIME_CONFIG_JSON"):
+        runtime.update(json.loads(os.getenv("FEATURE_RUNTIME_CONFIG_JSON", "{}")))
+    if os.getenv("FEATURE_VERSION_OVERRIDE"):
+        runtime["feature_version"] = os.getenv("FEATURE_VERSION_OVERRIDE")
+    return runtime
+
+
+def _feature_version() -> str:
+    return _load_feature_runtime_config()["feature_version"]
+
+
+def validate_feature_columns_contract(
+    feature_columns: Sequence[str], feature_version: str
+) -> None:
+    if feature_version != "v3_core20":
+        return
+    cols = list(feature_columns)
+    if len(cols) != len(V3_CORE20_COLUMNS):
+        raise ValueError(
+            f"v3_core20 feature columns must be {len(V3_CORE20_COLUMNS)}, got {len(cols)}"
+        )
+    if cols != V3_CORE20_COLUMNS:
+        raise ValueError("v3_core20 feature columns must match fixed core20 order")
+
+
+def _build_issue_features_v3(
+    df: pd.DataFrame,
+    min_history: int = 20,
+    include_latest_for_inference: bool = False,
+) -> pd.DataFrame:
+    draws = [sorted(json.loads(v) if isinstance(v, str) else v) for v in df["numbers"]]
+    rows: list[dict] = []
+    z_window = int(_load_feature_runtime_config()["core_windows"].get("z_window", 50))
+    end = len(df) if include_latest_for_inference else len(df) - 1
+
+    spans: list[float] = []
+    sums: list[float] = []
+    consecutives: list[float] = []
+    for i in range(min_history, end):
+        nums = draws[i]
+        arr = np.array(nums)
+        zc = _zone_counts(nums)
+        span = float(arr.max() - arr.min())
+        total = float(arr.sum())
+        consecutive_pairs = float((np.diff(np.array(nums)) == 1).sum())
+        ps = [zc[z] / 20.0 for z in ZONE_NAMES]
+        issue_row = {
+            "issue": int(df.iloc[i]["issue"]),
+            "draw_date": str(df.iloc[i]["draw_date"]),
+            "target_issue": (
+                int(df.iloc[i + 1]["issue"])
+                if i + 1 < len(df)
+                else int(df.iloc[i]["issue"]) + 1
+            ),
+            "target_numbers": (
+                json.dumps(draws[i + 1], ensure_ascii=False)
+                if i + 1 < len(df)
+                else json.dumps([], ensure_ascii=False)
+            ),
+            "prev_numbers": json.dumps(draws[i - 1], ensure_ascii=False),
+            "current_numbers": json.dumps(nums, ensure_ascii=False),
+            "history_numbers": json.dumps(draws[: i + 1], ensure_ascii=False),
+            "issue_zone_entropy": _entropy(ps) / np.log(4.0),
+            "issue_span_z50": _zscore(span, spans, z_window),
+            "issue_sum_z50": _zscore(total, sums, z_window),
+            "issue_consecutive_z50": _zscore(consecutive_pairs, consecutives, z_window),
+        }
+        rows.append(issue_row)
+        spans.append(span)
+        sums.append(total)
+        consecutives.append(consecutive_pairs)
+    return pd.DataFrame(rows)
+
+
 def build_issue_features(
     df: pd.DataFrame,
     min_history: int = 20,
     include_latest_for_inference: bool = False,
 ) -> pd.DataFrame:
+    if _feature_version() == "v3_core20":
+        return _build_issue_features_v3(
+            df,
+            min_history=min_history,
+            include_latest_for_inference=include_latest_for_inference,
+        )
+
     rows: list[dict] = []
     draws = [json.loads(v) if isinstance(v, str) else v for v in df["numbers"]]
     board_history: list[dict] = []
@@ -399,8 +554,17 @@ def issue_feature_columns(df: pd.DataFrame) -> List[str]:
 
 
 def build_candidate_matrix(
-    issue_row: pd.Series, feature_columns: Sequence[str]
+    issue_row: pd.Series,
+    feature_columns: Sequence[str],
+    strict_features: bool | None = None,
 ) -> pd.DataFrame:
+    if _feature_version() == "v3_core20":
+        return _build_candidate_matrix_v3(
+            issue_row,
+            feature_columns,
+            strict_features=strict_features,
+        )
+
     base = issue_row.to_dict()
     history = [sorted(x) for x in json.loads(base.get("history_numbers", "[]"))]
     last_draw = set(json.loads(base.get("current_numbers", "[]")))
@@ -540,8 +704,185 @@ def build_candidate_matrix(
         method="dense", ascending=False
     )
 
-    for col in feature_columns:
-        if col not in out.columns:
+    strict = (
+        bool(int(os.getenv("STRICT_FEATURES", "0")))
+        if strict_features is None
+        else strict_features
+    )
+    missing = [col for col in feature_columns if col not in out.columns]
+    if missing:
+        if strict:
+            raise ValueError(f"Missing feature columns: {missing}")
+        LOGGER.warning("Missing feature columns, filling zeros: %s", missing)
+        for col in missing:
+            out[col] = 0.0
+    return out[list(feature_columns)]
+
+
+def _build_indicator_matrix(draws: Sequence[Sequence[int]], window: int) -> np.ndarray:
+    data = np.zeros((min(window, len(draws)), 80), dtype=float)
+    for i, draw in enumerate(draws[-window:]):
+        for n in draw:
+            data[i, n - 1] = 1.0
+    return data
+
+
+def _build_candidate_matrix_v3(
+    issue_row: pd.Series,
+    feature_columns: Sequence[str],
+    strict_features: bool | None = None,
+) -> pd.DataFrame:
+    cfg = _load_feature_runtime_config()
+    windows = cfg["core_windows"]
+    decay = cfg["decay_half_lives"]
+    alpha = float(cfg["smoothing_alpha"])
+    tau = float(cfg["distance_kernel_tau"])
+
+    base = issue_row.to_dict()
+    history = [sorted(x) for x in json.loads(base.get("history_numbers", "[]"))]
+    last_draw = sorted(json.loads(base.get("current_numbers", "[]")))
+    last_draw_set = set(last_draw)
+    short_w = int(windows.get("freq_short", 20))
+    long_w = int(windows.get("freq_long", 200))
+    pmi_w = int(windows.get("pmi_window", 200))
+    handoff_w = int(windows.get("handoff_window", 200))
+    recent_k = min(20, len(history))
+
+    m_short = _build_indicator_matrix(history, short_w)
+    m_long = _build_indicator_matrix(history, long_w)
+    m_pmi = _build_indicator_matrix(history, pmi_w)
+
+    cnt_short = m_short.sum(axis=0) if len(m_short) else np.zeros(80)
+    cnt_long = m_long.sum(axis=0) if len(m_long) else np.zeros(80)
+    p_short = np.array(
+        [_laplace_rate(v, max(1, len(m_short)), alpha) for v in cnt_short]
+    )
+    p_long = np.array([_laplace_rate(v, max(1, len(m_long)), alpha) for v in cnt_long])
+
+    ewma_alpha = _half_life_alpha(float(decay.get("ewma", 50)))
+    ewma = np.zeros(80, dtype=float)
+    for draw in history:
+        hit = np.zeros(80, dtype=float)
+        for n in draw:
+            hit[n - 1] = 1.0
+        ewma = ewma_alpha * hit + (1 - ewma_alpha) * ewma
+
+    # pairwise PPMI
+    if len(m_pmi):
+        co = m_pmi.T @ m_pmi
+        n_rows = float(len(m_pmi))
+        pi = m_pmi.mean(axis=0)
+        pij = co / n_rows
+    else:
+        co = np.zeros((80, 80), dtype=float)
+        pi = np.zeros(80, dtype=float)
+        pij = np.zeros((80, 80), dtype=float)
+    eps = 1e-12
+
+    handoff_scores = np.zeros(80, dtype=float)
+    for idx, num in enumerate(range(1, 81)):
+        a_hits = 0.0
+        b_after_a = 0.0
+        b_hits = 0.0
+        transitions = history[-(handoff_w + 1) :] if len(history) >= 2 else []
+        for t in range(len(transitions) - 1):
+            draw_t = set(transitions[t])
+            draw_next = set(transitions[t + 1])
+            neigh = {num - 1, num + 1}
+            neigh = {x for x in neigh if 1 <= x <= 80}
+            has_a = bool(draw_t & neigh)
+            has_b = num in draw_next
+            if has_a:
+                a_hits += 1.0
+                if has_b:
+                    b_after_a += 1.0
+            if has_b:
+                b_hits += 1.0
+        p_b_given_a = (b_after_a + alpha) / (a_hits + 2 * alpha) if a_hits > 0 else 0.5
+        p_b = (b_hits + alpha) / (max(1.0, len(transitions) - 1) + 2 * alpha)
+        handoff_scores[idx] = float(np.log((p_b_given_a + eps) / (p_b + eps)))
+
+    neighbor_w = _exp_decay_weights(recent_k, float(decay.get("neighbor", 10)))
+    recent_w = _exp_decay_weights(recent_k, float(decay.get("recent_hit", 5)))
+    recent_draws = history[-recent_k:]
+
+    rows = []
+    for idx, num in enumerate(range(1, 81)):
+        occurrences = [i for i, draw in enumerate(history) if num in draw]
+        if occurrences:
+            gap = len(history) - 1 - occurrences[-1]
+            gaps = np.diff(occurrences)
+            recent_gaps = gaps[-5:] if len(gaps) else np.array([], dtype=float)
+            median_gap = (
+                float(np.median(recent_gaps))
+                if len(recent_gaps)
+                else float(len(history))
+            )
+            mad_gap = (
+                float(np.median(np.abs(recent_gaps - median_gap)))
+                if len(recent_gaps)
+                else 0.0
+            )
+        else:
+            gap = len(history)
+            mad_gap = 0.0
+
+        pmi_values = []
+        for n in last_draw:
+            j = n - 1
+            pmi = float(np.log((pij[idx, j] + eps) / ((pi[idx] * pi[j]) + eps)))
+            pmi_values.append(max(0.0, pmi))
+
+        neighbor_pm1 = 0.0
+        neighbor_pm2 = 0.0
+        recent_hit = 0.0
+        for step, draw in enumerate(reversed(recent_draws)):
+            dset = set(draw)
+            if neighbor_w.size > step:
+                w = float(neighbor_w[step])
+                neighbor_pm1 += w * float(num - 1 in dset or num + 1 in dset)
+                neighbor_pm2 += w * float(num - 2 in dset or num + 2 in dset)
+            if recent_w.size > step:
+                recent_hit += float(recent_w[step]) * float(num in dset)
+
+        row = {
+            "issue_zone_entropy": float(base.get("issue_zone_entropy", 0.0)),
+            "issue_span_z50": float(base.get("issue_span_z50", 0.0)),
+            "issue_sum_z50": float(base.get("issue_sum_z50", 0.0)),
+            "issue_consecutive_z50": float(base.get("issue_consecutive_z50", 0.0)),
+            "num_zone": float((num - 1) // 20),
+            "cand_repeat_last_draw": float(num in last_draw_set),
+            "cand_freq_smooth_20": float(p_short[idx]),
+            "cand_freq_smooth_200": float(p_long[idx]),
+            "cand_freq_trend_20_200": float(p_short[idx] - p_long[idx]),
+            "cand_freq_ewma_hl50": float(ewma[idx]),
+            "cand_gap_log1p": float(np.log1p(gap)),
+            "cand_recency_ratio_200": float(gap * p_long[idx]),
+            "cand_gap_mad_5": float(mad_gap),
+            "cand_recent_hit_decay_hl5": float(recent_hit),
+            "cand_neighbor_pm1_decay_hl10": float(neighbor_pm1),
+            "cand_neighbor_pm2_decay_hl10": float(neighbor_pm2),
+            "cand_distance_kernel_last_draw_tau2": float(
+                sum(np.exp(-abs(num - n) / tau) for n in last_draw)
+            ),
+            "cand_pmi_last_draw_sum_200": float(sum(pmi_values)),
+            "cand_pmi_last_draw_max_200": float(max(pmi_values) if pmi_values else 0.0),
+            "cand_handoff_pm1_lift_200": float(handoff_scores[idx]),
+        }
+        rows.append(row)
+
+    out = pd.DataFrame(rows)
+    strict = (
+        bool(int(os.getenv("STRICT_FEATURES", "0")))
+        if strict_features is None
+        else strict_features
+    )
+    missing = [col for col in feature_columns if col not in out.columns]
+    if missing:
+        if strict:
+            raise ValueError(f"Missing feature columns: {missing}")
+        LOGGER.warning("Missing feature columns, filling zeros: %s", missing)
+        for col in missing:
             out[col] = 0.0
     return out[list(feature_columns)]
 
@@ -549,10 +890,15 @@ def build_candidate_matrix(
 def precompute_issue_payloads(
     feature_df: pd.DataFrame,
     feature_columns: Sequence[str],
+    strict_features: bool | None = None,
 ) -> dict[int, dict[str, object]]:
     payloads: dict[int, dict[str, object]] = {}
     for idx, row in feature_df.iterrows():
-        cand = build_candidate_matrix(row, feature_columns)
+        cand = build_candidate_matrix(
+            row,
+            feature_columns,
+            strict_features=strict_features,
+        )
         payloads[int(idx)] = {
             "cand": cand,
             "target": set(json.loads(row["target_numbers"])),

@@ -1,5 +1,18 @@
+feature_version: v3_core20
 max_draws_for_training: 3200
 feature_min_history: 22
+core_windows:
+  z_window: 50
+  freq_short: 20
+  freq_long: 200
+  pmi_window: 200
+  handoff_window: 200
+smoothing_alpha: 0.5
+decay_half_lives:
+  ewma: 50
+  recent_hit: 5
+  neighbor: 10
+distance_kernel_tau: 2
 backtest_splits: 5
 research_backtest_splits: 3
 research_iterations: 140
@@ -19,3 +32,6 @@ overfit_thresholds:
   train_vs_oos_gap: 0.03
   fold_dispersion: 0.05
   regime_dispersion: 0.06
+acceptance_thresholds:
+  non_degradation_tol: 0.01
+  stability_improvement_min: 0.0

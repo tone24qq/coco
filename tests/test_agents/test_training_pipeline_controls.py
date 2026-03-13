@@ -38,6 +38,26 @@ def test_precompute_issue_payloads_builds_cached_candidate_and_target() -> None:
     assert payloads[0]["target"] == {1, 2, 3}
 
 
+def test_precompute_issue_payloads_strict_raises_for_missing_feature() -> None:
+    feature_df = pd.DataFrame(
+        [
+            {
+                "issue": 1,
+                "target_numbers": json.dumps([1, 2, 3]),
+                "history_numbers": json.dumps([[1, 2, 3]]),
+                "current_numbers": json.dumps([1, 2, 3]),
+                "prev_numbers": json.dumps([1, 2, 3]),
+            }
+        ]
+    )
+    with pytest.raises(ValueError):
+        precompute_issue_payloads(
+            feature_df,
+            ["missing_col"],
+            strict_features=True,
+        )
+
+
 def test_build_features_raises_when_max_draws_less_than_3000(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

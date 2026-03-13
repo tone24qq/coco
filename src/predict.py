@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,8 +24,11 @@ from src.utils import (  # noqa: E402
     classify_board,
     compact_10_from_top20,
     load_yaml,
+    validate_feature_columns_contract,
     zone_of,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -31,6 +36,8 @@ class Predictor:
     model: CatBoostClassifier
     feature_columns: list[str]
     strategy: StrategyConfig
+    feature_version: str
+    runtime_config: dict
 
     @classmethod
     def load(cls) -> "Predictor":
@@ -42,6 +49,18 @@ class Predictor:
         metadata = json.loads(
             (MODELS_DIR / "metadata.json").read_text(encoding="utf-8")
         )
+        metadata_feature_version = str(metadata.get("feature_version", "v2_legacy"))
+        validate_feature_columns_contract(cols, metadata_feature_version)
+        yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
+        yaml_feature_version = str(yaml_cfg.get("feature_version", "v2_legacy"))
+        if yaml_feature_version != metadata_feature_version:
+            LOGGER.warning(
+                "predict runtime feature_version mismatch: metadata=%s yaml=%s, using metadata",
+                metadata_feature_version,
+                yaml_feature_version,
+            )
+        runtime_cfg = dict(metadata.get("runtime_config", {}))
+        runtime_cfg.setdefault("feature_version", metadata_feature_version)
         strategy_cfg_path = MODELS_DIR / "strategy_config.json"
         strategy_cfg = (
             json.loads(strategy_cfg_path.read_text(encoding="utf-8"))
@@ -65,18 +84,43 @@ class Predictor:
             trend_weight=float(strat.get("trend_weight", 0.0)),
             regime_aware=bool(strat.get("regime_aware", False)),
         )
-        return cls(model=model, feature_columns=cols, strategy=strategy)
+        return cls(
+            model=model,
+            feature_columns=cols,
+            strategy=strategy,
+            feature_version=metadata_feature_version,
+            runtime_config=runtime_cfg,
+        )
 
     def predict_from_draws(self, draws_df: pd.DataFrame, min_history: int) -> dict:
-        issue_df = build_latest_issue_features_for_inference(
-            draws_df, min_history=min_history
-        )
-        if issue_df.empty:
-            raise ValueError("not enough history for feature generation")
-        row = issue_df.iloc[-1]
-        x = build_candidate_matrix(row, self.feature_columns).reindex(
-            columns=self.feature_columns
-        )
+        prev_runtime = os.getenv("FEATURE_RUNTIME_CONFIG_JSON")
+        prev_version = os.getenv("FEATURE_VERSION_OVERRIDE")
+        try:
+            os.environ["FEATURE_RUNTIME_CONFIG_JSON"] = json.dumps(
+                self.runtime_config,
+                ensure_ascii=False,
+            )
+            os.environ["FEATURE_VERSION_OVERRIDE"] = self.feature_version
+            issue_df = build_latest_issue_features_for_inference(
+                draws_df, min_history=min_history
+            )
+            if issue_df.empty:
+                raise ValueError("not enough history for feature generation")
+            row = issue_df.iloc[-1]
+            x = build_candidate_matrix(
+                row,
+                self.feature_columns,
+                strict_features=False,
+            ).reindex(columns=self.feature_columns)
+        finally:
+            if prev_runtime is None:
+                os.environ.pop("FEATURE_RUNTIME_CONFIG_JSON", None)
+            else:
+                os.environ["FEATURE_RUNTIME_CONFIG_JSON"] = prev_runtime
+            if prev_version is None:
+                os.environ.pop("FEATURE_VERSION_OVERRIDE", None)
+            else:
+                os.environ["FEATURE_VERSION_OVERRIDE"] = prev_version
         base_scores = self.model.predict_proba(x)[:, 1]
         regime = derive_regime(row)
         scores = apply_strategy(base_scores, x, self.strategy, regime)

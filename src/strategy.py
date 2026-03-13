@@ -32,14 +32,22 @@ def default_experiments() -> list[StrategyConfig]:
 
 
 def derive_regime(row: pd.Series) -> str:
-    if float(row.get("span", 0)) >= 72 or float(row.get("consecutive_pairs", 0)) >= 6:
+    if (
+        float(row.get("issue_span_z50", 0.0)) >= 1.25
+        or float(row.get("issue_consecutive_z50", 0.0)) >= 1.0
+    ):
         return "high_vol"
-    if float(row.get("zone_range", 0)) <= 2 and float(row.get("span", 0)) <= 58:
+    if (
+        float(row.get("issue_zone_entropy", 0.0)) >= 0.92
+        and float(row.get("issue_span_z50", 0.0)) <= 0.0
+    ):
         return "balanced"
     return "transitional"
 
 
 def _prior_feature_name(prior_window: int) -> str:
+    if prior_window >= 200:
+        return "cand_freq_smooth_200"
     return f"freq_last_{prior_window}"
 
 
@@ -82,8 +90,10 @@ def _rerank_once(
 
     prior_col = _prior_feature_name(cfg.prior_window)
     prior_signal = _safe_col(c, prior_col)
-    trend = _safe_col(c, "ema_short_minus_ema_long")
-    cooccur = _safe_col(c, "cooccur_with_last_draw_mean")
+    trend = _safe_col(c, "cand_freq_trend_20_200") + _safe_col(
+        c, "cand_recent_hit_decay_hl5"
+    )
+    cooccur = _safe_col(c, "cand_pmi_last_draw_sum_200")
     zone = _safe_col(c, "num_zone")
 
     regime_boost = 1.0
@@ -111,11 +121,22 @@ def top_hits(scores: np.ndarray, actual: set[int]) -> tuple[int, int, int]:
 
 def issue_metrics(scores: np.ndarray, actual: set[int]) -> dict[str, float]:
     h20, h10, h3 = top_hits(scores, actual)
+    order = np.argsort(scores)[::-1] + 1
+    h5 = len(set(order[:5]) & actual)
+    rel = np.array([1.0 if int(n) in actual else 0.0 for n in order[:10]], dtype=float)
+    discounts = 1.0 / np.log2(np.arange(2, 12, dtype=float))
+    dcg = float(np.sum(rel * discounts))
+    ideal_rel = np.array(
+        [1.0] * min(len(actual), 10) + [0.0] * max(0, 10 - len(actual))
+    )
+    idcg = float(np.sum(ideal_rel * discounts))
     return {
         "top20_hit_rate": h20 / 20,
+        "top5_hit_rate": h5 / 5,
         "top10_hit_rate": h10 / 10,
         "top3_hit_rate": h3 / 3,
         "top3_at_least_one_hit_rate": float(h3 > 0),
+        "ndcg_at_10": float(dcg / idcg) if idcg > 0 else 0.0,
     }
 
 

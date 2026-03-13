@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -26,18 +28,22 @@ from src.utils import (  # noqa: E402
     CONFIG_DIR,
     FEATURE_STORE_DIR,
     REPORTS_DIR,
+    build_issue_features,
     build_latest_issue_features_for_inference,
     load_processed,
     load_yaml,
     precompute_issue_payloads,
     save_json,
+    validate_feature_columns_contract,
 )
 
 METRIC_KEYS = [
     "top20_hit_rate",
+    "top5_hit_rate",
     "top10_hit_rate",
     "top3_hit_rate",
     "top3_at_least_one_hit_rate",
+    "ndcg_at_10",
 ]
 
 
@@ -110,15 +116,29 @@ def _alignment_audit(df: pd.DataFrame, splits: int) -> tuple[pd.DataFrame, dict]
         ok = int(np.max(tr)) < int(np.min(te))
         no_leak = no_leak and bool(ok)
         rows.append({"check": "fold_temporal_order", "fold": fold, "status": bool(ok)})
+    feat_df = build_issue_features(df, min_history=22)
+    target_match = True
+    for _, row in feat_df.iterrows():
+        issue = int(row["issue"])
+        idx = int(np.where(issues == issue)[0][0])
+        if idx + 1 >= len(df):
+            continue
+        expected = sorted(json.loads(df.iloc[idx + 1]["numbers"]))
+        actual = sorted(json.loads(row["target_numbers"]))
+        if expected != actual:
+            target_match = False
+            break
+
     summary = {
         "all_checks_passed": bool(
             np.all(np.diff(issues) > 0)
             and np.all(targets[:-1] == issues[1:])
             and no_leak
+            and target_match
         ),
         "issue_strictly_increasing": bool(np.all(np.diff(issues) > 0)),
         "target_issue_is_next_issue": bool(np.all(targets[:-1] == issues[1:])),
-        "target_numbers_match_next_draw": True,
+        "target_numbers_match_next_draw": bool(target_match),
         "inference_latest_row_alignment": bool(
             int(build_latest_issue_features_for_inference(df, 22).iloc[-1]["issue"])
             == int(df.iloc[-1]["issue"])
@@ -171,6 +191,83 @@ def _predictability_test(
         "ci95_high": float(np.percentile(arr, 97.5)),
     }
     return pred, perm_df, boot
+
+
+def _build_feature_version_comparison(
+    history_df: pd.DataFrame,
+    current_row: dict,
+    thresholds: dict,
+) -> dict:
+    full = pd.concat([history_df, pd.DataFrame([current_row])], ignore_index=True)
+    v2_rows = full[full["feature_version"] == "v2_legacy"]
+    v3_rows = full[full["feature_version"] == "v3_core20"]
+    if v2_rows.empty:
+        return {
+            "available": False,
+            "reason": "missing v2_legacy reference",
+            "current_feature_version": current_row["feature_version"],
+        }
+    if v3_rows.empty:
+        return {
+            "available": False,
+            "reason": "missing v3_core20 reference",
+            "current_feature_version": current_row["feature_version"],
+        }
+
+    v2_baseline = v2_rows.sort_values("trained_at_utc").iloc[-1].to_dict()
+    v3_baseline = v3_rows.sort_values("trained_at_utc").iloc[-1].to_dict()
+    deltas = {
+        "delta_top3": float(
+            v3_baseline["top3_hit_rate"] - v2_baseline["top3_hit_rate"]
+        ),
+        "delta_top5": float(
+            v3_baseline["top5_hit_rate"] - v2_baseline["top5_hit_rate"]
+        ),
+        "delta_top10": float(
+            v3_baseline["top10_hit_rate"] - v2_baseline["top10_hit_rate"]
+        ),
+        "delta_top20": float(
+            v3_baseline["top20_hit_rate"] - v2_baseline["top20_hit_rate"]
+        ),
+        "delta_top3_at_least_one_hit_rate": float(
+            v3_baseline["top3_at_least_one_hit_rate"]
+            - v2_baseline["top3_at_least_one_hit_rate"]
+        ),
+        "delta_fold_dispersion_top3": float(
+            v3_baseline["fold_dispersion_top3"] - v2_baseline["fold_dispersion_top3"]
+        ),
+        "delta_regime_dispersion_top3": float(
+            v3_baseline["regime_dispersion_top3"]
+            - v2_baseline["regime_dispersion_top3"]
+        ),
+    }
+
+    tol = float(thresholds.get("non_degradation_tol", 0.01))
+    stability_min = float(thresholds.get("stability_improvement_min", 0.0))
+    non_degradation_pass = bool(
+        deltas["delta_top3"] >= -tol
+        and deltas["delta_top5"] >= -tol
+        and deltas["delta_top10"] >= -tol
+    )
+    stability_pass = bool(
+        deltas["delta_fold_dispersion_top3"] <= -stability_min
+        and deltas["delta_regime_dispersion_top3"] <= -stability_min
+    )
+
+    return {
+        "available": True,
+        "current_feature_version": current_row["feature_version"],
+        "v2_baseline": v2_baseline,
+        "v3_baseline": v3_baseline,
+        "thresholds": {
+            "non_degradation_tol": tol,
+            "stability_improvement_min": stability_min,
+        },
+        "deltas": deltas,
+        "non_degradation_pass": non_degradation_pass,
+        "stability_pass": stability_pass,
+        "acceptance_pass": bool(non_degradation_pass and stability_pass),
+    }
 
 
 def _load_experiments() -> list[StrategyConfig]:
@@ -292,8 +389,13 @@ def _run_experiments(
 
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    os.environ["STRICT_FEATURES"] = "1"
     feature_columns = json.loads(
         (PROJECT_ROOT / "models" / "feature_columns.json").read_text(encoding="utf-8")
+    )
+    validate_feature_columns_contract(
+        feature_columns,
+        str(cfg.get("feature_version", "v2_legacy")),
     )
     feat_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
     max_draws = int(cfg.get("max_draws_for_training", len(feat_df)))
@@ -304,7 +406,11 @@ def main() -> None:
     experiments = _load_experiments() or default_experiments()
     params = cfg.get("catboost_params", {})
     params.setdefault("verbose", False)
-    issue_payloads = precompute_issue_payloads(feat_df, feature_columns)
+    issue_payloads = precompute_issue_payloads(
+        feat_df,
+        feature_columns,
+        strict_features=True,
+    )
 
     fast_version_ids = {
         "v0_binary_baseline",
@@ -383,15 +489,57 @@ def main() -> None:
         .iloc[0]
         .to_dict()
     )
+    feature_version = str(cfg.get("feature_version", "unknown"))
+    history_path = REPORTS_DIR / "feature_version_history.csv"
+    current_comp_row = {
+        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        "feature_version": feature_version,
+        "version_id": str(best.get("version_id", "unknown")),
+        "top20_hit_rate": float(best.get("top20_hit_rate", 0.0)),
+        "top10_hit_rate": float(best.get("top10_hit_rate", 0.0)),
+        "top5_hit_rate": float(best.get("top5_hit_rate", 0.0)),
+        "top3_hit_rate": float(best.get("top3_hit_rate", 0.0)),
+        "top3_at_least_one_hit_rate": float(
+            best.get("top3_at_least_one_hit_rate", 0.0)
+        ),
+        "ndcg_at_10": float(best.get("ndcg_at_10", 0.0)),
+        "fold_dispersion_top3": float(best.get("fold_dispersion_top3", 0.0)),
+        "regime_dispersion_top3": float(best.get("regime_dispersion_top3", 0.0)),
+    }
+    if history_path.exists():
+        history_df = pd.read_csv(history_path)
+    else:
+        history_df = pd.DataFrame(columns=list(current_comp_row.keys()))
+    updated_history = pd.concat(
+        [history_df, pd.DataFrame([current_comp_row])], ignore_index=True
+    )
+    updated_history.to_csv(history_path, index=False)
+
+    comparison = _build_feature_version_comparison(
+        history_df,
+        current_comp_row,
+        cfg.get("acceptance_thresholds", {}),
+    )
+    save_json(REPORTS_DIR / "feature_version_comparison.json", comparison)
+
     save_json(
         REPORTS_DIR / "experiment_summary.json",
         {
+            "feature_version": feature_version,
             "baseline": baseline_row,
             "best_version": best,
+            "top5_hit_rate": float(best.get("top5_hit_rate", 0.0)),
+            "ndcg_at_10": float(best.get("ndcg_at_10", 0.0)),
+            "comparison": comparison,
+            "acceptance": {
+                "available": bool(comparison.get("available", False)),
+                "acceptance_pass": bool(comparison.get("acceptance_pass", False)),
+            },
             "total_versions": int(len(registry_df)),
             "kept_versions": int(registry_df["keep_recommendation"].sum()),
         },
     )
+
     print(
         "[整體結果] "
         f"top20_hit_rate={best['top20_hit_rate']:.4f}, "

@@ -5,6 +5,7 @@ import pandas as pd
 
 from src.backtest import (
     _alignment_audit,
+    _build_feature_version_comparison,
     _ci95,
     _make_fold_issue_metrics,
     _overfit_audit,
@@ -68,6 +69,8 @@ def test_top3_at_least_one_metric() -> None:
     actual = {78, 79, 80}
     metrics = _make_fold_issue_metrics(scores, actual)
     assert metrics["top3_at_least_one_hit_rate"] == 1.0
+    assert "top5_hit_rate" in metrics
+    assert "ndcg_at_10" in metrics
 
 
 def test_overfit_audit_flags_large_gap() -> None:
@@ -85,3 +88,61 @@ def test_overfit_audit_flags_large_gap() -> None:
     ]
     out = _overfit_audit(train_fold, test_fold, regime_rows)
     assert out["is_overfit"] is True
+
+
+def test_feature_version_comparison_no_reference() -> None:
+    history = pd.DataFrame(
+        [
+            {
+                "trained_at_utc": "2026-01-01T00:00:00+00:00",
+                "feature_version": "v3_core20",
+                "top20_hit_rate": 0.2,
+                "top10_hit_rate": 0.2,
+                "top5_hit_rate": 0.2,
+                "top3_hit_rate": 0.2,
+                "top3_at_least_one_hit_rate": 0.2,
+                "fold_dispersion_top3": 0.1,
+                "regime_dispersion_top3": 0.1,
+            }
+        ]
+    )
+    current = history.iloc[0].to_dict()
+    out = _build_feature_version_comparison(history, current, {})
+    assert out["available"] is False
+
+
+def test_feature_version_comparison_acceptance() -> None:
+    history = pd.DataFrame(
+        [
+            {
+                "trained_at_utc": "2026-01-01T00:00:00+00:00",
+                "feature_version": "v2_legacy",
+                "top20_hit_rate": 0.20,
+                "top10_hit_rate": 0.18,
+                "top5_hit_rate": 0.16,
+                "top3_hit_rate": 0.14,
+                "top3_at_least_one_hit_rate": 0.35,
+                "fold_dispersion_top3": 0.08,
+                "regime_dispersion_top3": 0.09,
+            },
+            {
+                "trained_at_utc": "2026-01-02T00:00:00+00:00",
+                "feature_version": "v3_core20",
+                "top20_hit_rate": 0.21,
+                "top10_hit_rate": 0.19,
+                "top5_hit_rate": 0.17,
+                "top3_hit_rate": 0.145,
+                "top3_at_least_one_hit_rate": 0.36,
+                "fold_dispersion_top3": 0.07,
+                "regime_dispersion_top3": 0.08,
+            },
+        ]
+    )
+    current = history.iloc[-1].to_dict()
+    out = _build_feature_version_comparison(
+        history,
+        current,
+        {"non_degradation_tol": 0.01, "stability_improvement_min": 0.0},
+    )
+    assert out["available"] is True
+    assert out["acceptance_pass"] is True

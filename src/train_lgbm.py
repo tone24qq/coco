@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,13 +31,16 @@ from src.utils import (  # noqa: E402
     load_yaml,
     precompute_issue_payloads,
     save_json,
+    validate_feature_columns_contract,
 )
 
 METRIC_KEYS = [
     "top20_hit_rate",
+    "top5_hit_rate",
     "top10_hit_rate",
     "top3_hit_rate",
     "top3_at_least_one_hit_rate",
+    "ndcg_at_10",
 ]
 
 
@@ -196,12 +200,15 @@ def _evaluate_strategies(
 
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    os.environ["STRICT_FEATURES"] = "1"
     feature_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
     max_draws = int(cfg.get("max_draws_for_training", len(feature_df)))
     feature_df = feature_df.tail(max_draws).reset_index(drop=True)
     feature_columns = json.loads(
         (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
     )
+    feature_version = str(cfg.get("feature_version", "v2_legacy"))
+    validate_feature_columns_contract(feature_columns, feature_version)
 
     if len(feature_df) < 3000:
         raise ValueError("訓練資料不足 3000 期，請先更新資料。")
@@ -226,7 +233,11 @@ def main() -> None:
     fast_experiments = [
         exp for exp in all_experiments if exp.version_id in fast_version_ids
     ]
-    issue_payloads = precompute_issue_payloads(feature_df, feature_columns)
+    issue_payloads = precompute_issue_payloads(
+        feature_df,
+        feature_columns,
+        strict_features=True,
+    )
 
     print("[研究流程] 快速階段：3個版本、3 folds、較低 iterations")
     fast_params = dict(params)
@@ -276,10 +287,25 @@ def main() -> None:
     final_model.fit(x_train, y_train, verbose=False)
     final_model.save_model(str(MODELS_DIR / "catboost_top20.cbm"))
 
+    importances = final_model.get_feature_importance()
+    fi_df = pd.DataFrame(
+        {
+            "feature": feature_columns,
+            "importance": [float(x) for x in importances],
+        }
+    ).sort_values("importance", ascending=False)
+
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     registry_df.to_csv(REPORTS_DIR / "experiment_registry.csv", index=False)
     fast_registry_df.to_csv(
         REPORTS_DIR / "experiment_registry_research.csv", index=False
+    )
+    fi_df.to_csv(REPORTS_DIR / "feature_importance.csv", index=False)
+    save_json(
+        REPORTS_DIR / "feature_importance.json",
+        {
+            "features": fi_df.to_dict(orient="records"),
+        },
     )
 
     print(
@@ -319,8 +345,16 @@ def main() -> None:
         "params": params,
         "selected_strategy": best,
         "fallback_strategy": baseline,
-        "feature_version": "v2",
+        "feature_version": feature_version,
+        "runtime_config": {
+            "core_windows": cfg.get("core_windows", {}),
+            "smoothing_alpha": cfg.get("smoothing_alpha", 0.5),
+            "decay_half_lives": cfg.get("decay_half_lives", {}),
+            "distance_kernel_tau": cfg.get("distance_kernel_tau", 2),
+        },
     }
+    if feature_version == "v3_core20" and len(feature_columns) != 20:
+        raise ValueError("v3_core20 metadata requires feature_count=20")
     save_json(MODELS_DIR / "metadata.json", metadata)
 
 
