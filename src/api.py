@@ -139,7 +139,7 @@ def health() -> dict:
 
 @app.get("/analysis")
 def analysis() -> dict:
-    required = _required_history_for_predictor()
+    required = int(PREDICT_CFG.get("feature_min_history", 22))
     return {
         "metadata": METADATA,
         "feature_min_history": required,
