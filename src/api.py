@@ -148,6 +148,8 @@ def predict(payload: PredictPayload) -> dict:
     auto_fetched = payload.recent_draws is None
     data_source = "manual"
     records: list[dict] = []
+    response_records: list[dict] = []
+    fetch_attempts: list[dict[str, str | bool | None]] = []
 
     if auto_fetched:
         fetcher = BingoDrawFetcher(
@@ -157,21 +159,26 @@ def predict(payload: PredictPayload) -> dict:
             retry_backoff_seconds=FETCH_BACKOFF_SECONDS,
         )
         try:
-            recent_draws, fetched_records, data_source = build_recent_draws(
-                fetcher=fetcher,
-                min_draws=MIN_RECENT_DRAWS,
-                max_draws=MAX_RECENT_DRAWS,
+            recent_draws, fetched_records, data_source, fetch_attempts = (
+                build_recent_draws(
+                    fetcher=fetcher,
+                    min_draws=MIN_RECENT_DRAWS,
+                    max_draws=MAX_RECENT_DRAWS,
+                )
             )
         except FetchDrawsError as exc:
             raise HTTPException(
                 status_code=502, detail=f"auto fetch failed: {exc}"
             ) from exc
         payload.recent_draws = recent_draws
-        records = [
+        fetch_attempts = [
+            {"source": a.source, "ok": a.ok, "error": a.error} for a in fetch_attempts
+        ]
+        response_records = [
             {
                 "issue": record.issue,
                 "draw_date": record.draw_time,
-                "numbers": json.dumps(record.numbers, ensure_ascii=False),
+                "numbers": list(record.numbers),
                 "size_label": getattr(record, "size_label", None)
                 or getattr(record, "big_small", None),
                 "odd_even_label": getattr(record, "odd_even_label", None)
@@ -179,6 +186,17 @@ def predict(payload: PredictPayload) -> dict:
                 "streak_count": getattr(record, "streak_count", None),
             }
             for record in fetched_records
+        ]
+        records = [
+            {
+                "issue": item["issue"],
+                "draw_date": item["draw_date"],
+                "numbers": json.dumps(item["numbers"], ensure_ascii=False),
+                "size_label": item["size_label"],
+                "odd_even_label": item["odd_even_label"],
+                "streak_count": item["streak_count"],
+            }
+            for item in response_records
         ]
     else:
         _validate_recent_draws(payload.recent_draws)
@@ -230,4 +248,6 @@ def predict(payload: PredictPayload) -> dict:
         issues_used if auto_fetched else [None for _ in payload.recent_draws]
     )
     result["auto_fetched"] = auto_fetched
+    result["fetch_attempts"] = fetch_attempts
+    result["records"] = response_records if auto_fetched else []
     return result
