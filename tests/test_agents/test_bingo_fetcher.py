@@ -8,6 +8,7 @@ from src.fetchers.auzo_bingo import (
     FetchDrawsError,
     build_recent_draws,
 )
+from src.fetchers.winwin_bingo import extract_latest_issue_hint_winwin
 
 
 def _nums(start: int) -> list[int]:
@@ -297,3 +298,54 @@ def test_parse_winwin_fixture_extracts_required_fields():
     assert [r.size_label for r in normalized] == ["大", "小"]
     assert [r.odd_even_label for r in normalized] == ["單", "雙"]
     assert [r.streak_count for r in normalized] == [2, 1]
+
+
+def test_winwin_latest_issue_hint_ignores_unrelated_large_numbers() -> None:
+    html = """
+    <html>
+      <div>build: 202603141230</div>
+      <table>
+        <tr><td>115014499 22:45</td><td>01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20</td></tr>
+        <tr><td>115014500 22:50</td><td>21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40</td></tr>
+      </table>
+    </html>
+    """
+
+    hint = extract_latest_issue_hint_winwin(html)
+
+    assert hint == 115014500
+
+
+def test_winwin_latest_issue_hint_matches_parsed_rows_max_issue() -> None:
+    html = """
+    <table>
+      <tr><td>115014500 22:50</td><td>01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20</td></tr>
+      <tr><td>115014501 22:55</td><td>21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40</td></tr>
+    </table>
+    """
+
+    hint = extract_latest_issue_hint_winwin(html)
+
+    assert hint == 115014501
+
+
+def test_winwin_fetcher_does_not_reject_valid_payload_due_to_unrelated_large_number(
+    monkeypatch,
+) -> None:
+    fetcher = BingoDrawFetcher(sources=["https://winwin.tw/Bingo"])
+    html = """
+    <html>
+      <div>timestamp: 202603141230</div>
+      <table>
+        <tr><td>115014500 22:50</td><td>01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20</td></tr>
+        <tr><td>115014501 22:55</td><td>21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40</td></tr>
+      </table>
+    </html>
+    """
+
+    monkeypatch.setattr(fetcher, "_fetch_html", lambda _source: html)
+    monkeypatch.setattr(fetcher, "_check_source_health", lambda _html: None)
+
+    records, _ = fetcher.fetch_recent_records(min_draws=2, max_draws=10)
+
+    assert [r.issue for r in records] == [115014500, 115014501]

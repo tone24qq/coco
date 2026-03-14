@@ -28,6 +28,7 @@ from src.utils import (  # noqa: E402
     FEATURE_STORE_DIR,
     MODELS_DIR,
     REPORTS_DIR,
+    V3_CORE20_COLUMNS,
     load_yaml,
     precompute_issue_payloads,
     save_json,
@@ -42,6 +43,8 @@ METRIC_KEYS = [
     "top3_at_least_one_hit_rate",
     "ndcg_at_10",
 ]
+
+PREFERRED_STRATEGY_VERSION = "v3_rerank_k30_p300"
 
 
 def _expand_rows(
@@ -198,6 +201,20 @@ def _evaluate_strategies(
     return pd.DataFrame(rows), best, rows[0]
 
 
+def _select_formal_strategy(registry_df: pd.DataFrame) -> dict:
+    preferred_df = registry_df[registry_df["version_id"] == PREFERRED_STRATEGY_VERSION]
+    if not preferred_df.empty:
+        return preferred_df.iloc[0].to_dict()
+    return (
+        registry_df.sort_values(
+            ["keep_recommendation", "top3_at_least_one_hit_rate", "top3_hit_rate"],
+            ascending=False,
+        )
+        .iloc[0]
+        .to_dict()
+    )
+
+
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     os.environ["STRICT_FEATURES"] = "1"
@@ -283,6 +300,7 @@ def main() -> None:
         experiments=final_experiments,
         overfit_th=cfg.get("overfit_thresholds", {}),
     )
+    selected_strategy = _select_formal_strategy(registry_df)
 
     x_train, y_train = _expand_rows(issue_payloads, list(range(len(feature_df))))
     final_model = CatBoostClassifier(**params)
@@ -312,25 +330,24 @@ def main() -> None:
 
     print(
         "[整體結果] "
-        f"top20_hit_rate={best['top20_hit_rate']:.4f}, "
-        f"top10_hit_rate={best['top10_hit_rate']:.4f}, "
-        f"top3_hit_rate={best['top3_hit_rate']:.4f}, "
-        f"top3_at_least_one_hit_rate={best['top3_at_least_one_hit_rate']:.4f}"
+        f"top20_hit_rate={selected_strategy['top20_hit_rate']:.4f}, "
+        f"top10_hit_rate={selected_strategy['top10_hit_rate']:.4f}, "
+        f"top3_hit_rate={selected_strategy['top3_hit_rate']:.4f}, "
+        "top3_at_least_one_hit_rate="
+        f"{selected_strategy['top3_at_least_one_hit_rate']:.4f}"
     )
     print(
         "[過擬合檢查] "
-        f"gap={best['train_vs_oos_gap']:.4f}, "
-        f"fold_dispersion={best['fold_dispersion']:.4f}, "
-        f"regime_dispersion={best['regime_dispersion']:.4f}, "
-        f"overfit={bool(best['is_overfit'])}"
+        f"gap={selected_strategy['train_vs_oos_gap']:.4f}, "
+        f"fold_dispersion={selected_strategy['fold_dispersion']:.4f}, "
+        f"regime_dispersion={selected_strategy['regime_dispersion']:.4f}, "
+        f"overfit={bool(selected_strategy['is_overfit'])}"
     )
-    print(f"[最佳版本] {best['version_id']}")
-    print(
-        f"[正式預測版本] {best['version_id'] if bool(best.get('keep_recommendation')) else baseline['version_id']}"
-    )
+    print(f"[最佳版本] {selected_strategy['version_id']}")
+    print(f"[正式預測版本] {selected_strategy['version_id']}")
 
     strategy_payload = {
-        "selected_strategy": best,
+        "selected_strategy": selected_strategy,
         "fallback_strategy": baseline,
     }
     save_json(MODELS_DIR / "strategy_config.json", strategy_payload)
@@ -345,7 +362,7 @@ def main() -> None:
         "feature_columns_path": "models/feature_columns.json",
         "model_path": "models/catboost_top20.cbm",
         "params": params,
-        "selected_strategy": best,
+        "selected_strategy": selected_strategy,
         "fallback_strategy": baseline,
         "feature_version": feature_version,
         "runtime_config": {
@@ -355,14 +372,13 @@ def main() -> None:
             "distance_kernel_tau": cfg.get("distance_kernel_tau", 2),
         },
     }
-    from src.utils import V3_CORE20_COLUMNS
-
     if len(feature_columns) != len(V3_CORE20_COLUMNS):
-    raise ValueError(
-        f"v3_core20 metadata requires feature_count={len(V3_CORE20_COLUMNS)}"
-    )
+        raise ValueError(
+            f"v3_core20 metadata requires feature_count={len(V3_CORE20_COLUMNS)}"
+        )
 
-save_json(MODELS_DIR / "metadata.json", metadata)
+    save_json(MODELS_DIR / "metadata.json", metadata)
+
 
 if __name__ == "__main__":
     main()

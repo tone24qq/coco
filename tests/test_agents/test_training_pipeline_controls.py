@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import pytest
 
+from src import train_lgbm
 from src.build_features import main as build_features_main
 from src.predict import Predictor
 from src.utils import MODELS_DIR, V3_CORE20_COLUMNS, precompute_issue_payloads
@@ -104,3 +105,49 @@ def test_predictor_prefers_strategy_config(
     predictor = Predictor.load()
 
     assert predictor.strategy.version_id == "v4_two_stage_20_10_3"
+
+
+def test_select_formal_strategy_prefers_v3_when_present() -> None:
+    registry_df = pd.DataFrame(
+        [
+            {
+                "version_id": "v0_binary_baseline",
+                "keep_recommendation": True,
+                "top3_at_least_one_hit_rate": 0.7,
+                "top3_hit_rate": 0.2,
+            },
+            {
+                "version_id": "v3_rerank_k30_p300",
+                "keep_recommendation": False,
+                "top3_at_least_one_hit_rate": 0.4,
+                "top3_hit_rate": 0.1,
+            },
+        ]
+    )
+
+    selected = train_lgbm._select_formal_strategy(registry_df)
+
+    assert selected["version_id"] == "v3_rerank_k30_p300"
+
+
+def test_select_formal_strategy_falls_back_to_sorted_logic() -> None:
+    registry_df = pd.DataFrame(
+        [
+            {
+                "version_id": "v0_binary_baseline",
+                "keep_recommendation": False,
+                "top3_at_least_one_hit_rate": 0.4,
+                "top3_hit_rate": 0.1,
+            },
+            {
+                "version_id": "v4_two_stage_20_10_3",
+                "keep_recommendation": True,
+                "top3_at_least_one_hit_rate": 0.5,
+                "top3_hit_rate": 0.2,
+            },
+        ]
+    )
+
+    selected = train_lgbm._select_formal_strategy(registry_df)
+
+    assert selected["version_id"] == "v4_two_stage_20_10_3"

@@ -294,9 +294,9 @@ def _run_experiments(
     experiments: list[StrategyConfig],
     params: dict,
     issue_payloads: dict[int, dict[str, object]],
-) -> tuple[list[dict], list[dict], list[dict], list[float]]:
+) -> tuple[list[dict], list[dict], list[dict], list[float], list[dict]]:
     tss = TimeSeriesSplit(n_splits=splits)
-    registry, per_fold, per_regime = [], [], []
+    registry, per_fold, per_regime, per_issue = [], [], [], []
     baseline = None
     baseline_top20 = []
 
@@ -325,6 +325,36 @@ def _run_experiments(
                     m = _make_fold_issue_metrics(scores, payload["target"])
                     m["regime"] = regime
                     rows.append(m)
+
+                    if list(idx_set) == list(te_idx):
+                        pred_rank = np.argsort(scores)[::-1]
+                        pred_top10 = [int(x + 1) for x in pred_rank[:10]]
+                        pred_top3 = pred_top10[:3]
+                        feat_row = feat_df.iloc[int(row_idx)]
+                        actual = sorted(int(x) for x in payload["target"])
+                        prev_numbers = sorted(
+                            int(x)
+                            for x in json.loads(str(feat_row.get("prev_numbers", "[]")))
+                        )
+                        per_issue.append(
+                            {
+                                "version_id": exp.version_id,
+                                "fold": fold,
+                                "issue": int(feat_row["issue"]),
+                                "history_length": int(
+                                    len(
+                                        json.loads(
+                                            str(feat_row.get("history_numbers", "[]"))
+                                        )
+                                    )
+                                ),
+                                "pred_top3": pred_top3,
+                                "pred_top10": pred_top10,
+                                "actual": actual,
+                                "prev_numbers": prev_numbers,
+                            }
+                        )
+
                 pack.append({"fold": fold, **_aggregate(rows)})
                 if list(idx_set) == list(te_idx):
                     g = (
@@ -341,7 +371,8 @@ def _run_experiments(
                                 **{k: float(rr[k]) for k in METRIC_KEYS},
                             }
                         )
-                    baseline_top20.extend([r["top20_hit_rate"] for r in rows])
+                    if exp.version_id == "v0_binary_baseline":
+                        baseline_top20.extend([r["top20_hit_rate"] for r in rows])
 
             te_agg = fold_test[-1]
             print(
@@ -379,7 +410,7 @@ def _run_experiments(
         per_fold.extend([{"version_id": exp.version_id, **x} for x in fold_test])
         per_regime.extend([{"version_id": exp.version_id, **x} for x in regime_rows])
 
-    return registry, per_fold, per_regime, baseline_top20
+    return registry, per_fold, per_regime, baseline_top20, per_issue
 
 
 def _bucket_label(history_len: int) -> str:
@@ -394,24 +425,28 @@ def _bucket_label(history_len: int) -> str:
     return "201+"
 
 
-def _build_history_bucket_report(feat_df: pd.DataFrame) -> pd.DataFrame:
+def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for _, row in feat_df.iterrows():
-        history = json.loads(row.get("history_numbers", "[]"))
-        prev = set(json.loads(row.get("prev_numbers", "[]")))
-        actual = set(json.loads(row.get("target_numbers", "[]")))
-        pred_top10 = list(prev)[:10]
-        pred_top3 = pred_top10[:3]
-        min_dist_top3 = []
-        for n in pred_top3:
-            min_dist_top3.append(min(abs(n - p) for p in prev) if prev else 80.0)
+    for _, row in issue_rows.iterrows():
+        pred_top10 = [int(x) for x in row.get("pred_top10", [])]
+        pred_top3 = [int(x) for x in row.get("pred_top3", [])]
+        actual = set(int(x) for x in row.get("actual", []))
+        prev = set(int(x) for x in row.get("prev_numbers", []))
+        if not pred_top3:
+            continue
+        min_dist_to_actual = [
+            min(abs(n - a) for a in actual) if actual else 80.0 for n in pred_top3
+        ]
+        min_dist_to_prev = [
+            min(abs(n - p) for p in prev) if prev else 80.0 for n in pred_top3
+        ]
         rows.append(
             {
-                "history_bucket": _bucket_label(len(history)),
+                "history_bucket": _bucket_label(int(row["history_length"])),
                 "exact_hit@3": float(sum(1 for n in pred_top3 if n in actual) / 3.0),
                 "exact_hit@10": float(
                     sum(1 for n in pred_top10 if n in actual)
-                    / max(1.0, len(pred_top10))
+                    / max(1.0, float(len(pred_top10)))
                 ),
                 "top3_at_least_one_exact": float(any(n in actual for n in pred_top3)),
                 "adj_hit_pm1@3": float(
@@ -426,14 +461,8 @@ def _build_history_bucket_report(feat_df: pd.DataFrame) -> pd.DataFrame:
                     )
                     / 3.0
                 ),
-                "mean_min_distance_at_3": float(
-                    np.mean(min_dist_top3) if min_dist_top3 else 0.0
-                ),
-                "top3_avg_min_distance_to_prev": float(
-                    np.mean([min(abs(n - p) for p in prev) for n in pred_top3])
-                    if prev and pred_top3
-                    else 0.0
-                ),
+                "mean_min_distance_at_3": float(np.mean(min_dist_to_actual)),
+                "top3_prev_draw_mean_min_distance": float(np.mean(min_dist_to_prev)),
             }
         )
     out = pd.DataFrame(rows)
@@ -481,7 +510,7 @@ def main() -> None:
     print("[研究流程] backtest 快速階段：3個版本、3 folds、較低 iterations")
     fast_params = dict(params)
     fast_params["iterations"] = int(cfg.get("research_iterations", 140))
-    fast_registry, _, _, _ = _run_experiments(
+    fast_registry, _, _, _, _ = _run_experiments(
         feat_df=feat_df,
         splits=int(cfg.get("research_backtest_splits", 3)),
         experiments=fast_experiments,
@@ -505,7 +534,7 @@ def main() -> None:
         exp for exp in experiments if exp.version_id in set(selected_final_ids)
     ]
     print(f"[研究流程] backtest 正式階段：版本={selected_final_ids}、{splits} folds")
-    registry, per_fold, per_regime, baseline_top20 = _run_experiments(
+    registry, per_fold, per_regime, baseline_top20, per_issue_rows = _run_experiments(
         feat_df=feat_df,
         splits=splits,
         experiments=final_experiments,
@@ -579,7 +608,13 @@ def main() -> None:
         cfg.get("acceptance_thresholds", {}),
     )
     save_json(REPORTS_DIR / "feature_version_comparison.json", comparison)
-    history_bucket_df = _build_history_bucket_report(feat_df)
+    per_issue_df = pd.DataFrame(per_issue_rows)
+    selected_issue_df = (
+        per_issue_df[per_issue_df["version_id"] == best["version_id"]]
+        if "version_id" in per_issue_df.columns
+        else pd.DataFrame()
+    )
+    history_bucket_df = _build_history_bucket_report(selected_issue_df)
     history_bucket_df.to_csv(REPORTS_DIR / "history_bucket_report.csv", index=False)
     save_json(
         REPORTS_DIR / "history_bucket_report.json",

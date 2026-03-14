@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+ISSUE_CONTEXT_PATTERNS = [
+    re.compile(r"(?:期別|期數|開獎期別|開獎期數)\s*[:：]?\s*(\d{6,12})", re.I),
+    re.compile(r"(\d{6,12})\s*(?:期別|期數)", re.I),
+]
+
 
 def parse_winwin_bingo_rows(html: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
@@ -55,7 +60,14 @@ def parse_winwin_bingo_rows(html: str) -> list[dict[str, Any]]:
 
 
 def extract_latest_issue_hint_winwin(html: str) -> int | None:
-    matches = re.findall(r"\b(\d{6,12})\b", html)
-    if not matches:
+    parsed_rows = parse_winwin_bingo_rows(html)
+    if parsed_rows:
+        return max(int(row["issue"]) for row in parsed_rows)
+
+    contextual_candidates: list[int] = []
+    for pattern in ISSUE_CONTEXT_PATTERNS:
+        contextual_candidates.extend(int(x) for x in pattern.findall(html))
+
+    if not contextual_candidates:
         return None
-    return max(int(x) for x in matches)
+    return max(contextual_candidates)
