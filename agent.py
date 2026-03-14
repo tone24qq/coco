@@ -22,8 +22,8 @@ CSV_FILES = [
     "賓果賓果_2026.csv",
 ]
 DEFAULT_SEED = 42
-PREDICT_REQUIRED_MESSAGE = "請先提供最新 10–50 期資料（每期20顆），才可進行下一期預測。"
-HISTORY_MIN_THRESHOLD = 200
+PREDICT_REQUIRED_MESSAGE = "請先提供最新至少 1 期資料（每期20顆），才可進行下一期預測。"
+HISTORY_MIN_THRESHOLD = 1
 DEFAULT_LAST_DRAW_PENALTY = 0.35
 RELAXED_LAST_DRAW_PENALTY = 0.20
 DEFAULT_LAST_DRAW_MAX_IN_TOPK = 4
@@ -111,12 +111,12 @@ class RecentDraw(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    recent: List[RecentDraw] = Field(..., min_length=10, max_length=500)
+    recent: List[RecentDraw] = Field(..., min_length=1, max_length=3000)
     top_k: int = Field(default=20, ge=1, le=20)
 
 
 class PredictTop3Request(PredictRequest):
-    window: Optional[int] = Field(default=None, ge=10, le=50)
+    window: Optional[int] = Field(default=None, ge=1, le=3000)
     alpha: Optional[float] = Field(default=None, gt=0.0, le=1.0)
     lambda_: Optional[float] = Field(default=None, alias="lambda", ge=0.0)
     candidate_pool_size: Optional[int] = Field(default=None, ge=8, le=30)

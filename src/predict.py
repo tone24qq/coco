@@ -22,9 +22,11 @@ from src.utils import (  # noqa: E402
     build_candidate_matrix,
     build_latest_issue_features_for_inference,
     classify_board,
+    classify_feature_mode,
     compact_10_from_top20,
     load_yaml,
     normalize_feature_version,
+    resolve_effective_windows,
     validate_feature_columns_contract,
     zone_of,
 )
@@ -102,6 +104,14 @@ class Predictor:
         )
 
     def predict_from_draws(self, draws_df: pd.DataFrame, min_history: int) -> dict:
+        history_len = len(draws_df)
+        effective_windows = resolve_effective_windows(history_len, self.runtime_config)
+        configured_windows = self.runtime_config.get("core_windows", {})
+        degraded_features = [
+            key
+            for key, configured in configured_windows.items()
+            if int(configured) > int(effective_windows.get(key, configured))
+        ]
         prev_runtime = os.getenv("FEATURE_RUNTIME_CONFIG_JSON")
         prev_version = os.getenv("FEATURE_VERSION_OVERRIDE")
         try:
@@ -174,6 +184,10 @@ class Predictor:
             "odd_count": odd_count,
             "even_count": 20 - odd_count,
             "odd_even_summary": f"單{odd_count} / 雙{20 - odd_count}",
+            "history_length_used": history_len,
+            "feature_mode": classify_feature_mode(history_len),
+            "degraded_features": degraded_features,
+            "effective_windows": effective_windows,
         }
 
 

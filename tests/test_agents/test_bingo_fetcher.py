@@ -264,3 +264,36 @@ def test_fallback_to_taiwan_lottery_when_pilio_fails(monkeypatch):
 
     assert source == "https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx"
     assert [r.issue for r in records] == [201, 202]
+
+
+def test_parse_winwin_fixture_extracts_required_fields():
+    fixture = """
+    <table>
+      <tr><th>期別/時間</th><th>號碼</th><th>連莊球數</th><th>大小</th><th>單雙</th></tr>
+      <tr>
+        <td>115014500 22:50</td>
+        <td>01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20</td>
+        <td>連莊球數 2</td>
+        <td>大</td>
+        <td>單</td>
+      </tr>
+      <tr>
+        <td>115014501 22:55</td>
+        <td>21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40</td>
+        <td>連莊球數 1</td>
+        <td>小</td>
+        <td>雙</td>
+      </tr>
+    </table>
+    """
+    fetcher = BingoDrawFetcher(sources=["https://winwin.tw/Bingo"])
+
+    parsed = fetcher._parse_winwin_bingo(fixture)
+    normalized = [fetcher._normalize_row(row) for row in parsed]
+
+    assert [r.issue for r in normalized] == [115014500, 115014501]
+    assert [r.draw_time for r in normalized] == ["22:50", "22:55"]
+    assert all(len(r.numbers) == 20 for r in normalized)
+    assert [r.size_label for r in normalized] == ["大", "小"]
+    assert [r.odd_even_label for r in normalized] == ["單", "雙"]
+    assert [r.streak_count for r in normalized] == [2, 1]

@@ -172,6 +172,11 @@ def predict(payload: PredictPayload) -> dict:
                 "issue": record.issue,
                 "draw_date": record.draw_time,
                 "numbers": json.dumps(record.numbers, ensure_ascii=False),
+                "size_label": getattr(record, "size_label", None)
+                or getattr(record, "big_small", None),
+                "odd_even_label": getattr(record, "odd_even_label", None)
+                or getattr(record, "odd_even", None),
+                "streak_count": getattr(record, "streak_count", None),
             }
             for record in fetched_records
         ]
@@ -188,6 +193,9 @@ def predict(payload: PredictPayload) -> dict:
                 "issue": i - len(payload.recent_draws) + 1,
                 "draw_date": None,
                 "numbers": json.dumps(sorted(nums), ensure_ascii=False),
+                "size_label": None,
+                "odd_even_label": None,
+                "streak_count": None,
             }
             for i, nums in enumerate(payload.recent_draws)
         ]

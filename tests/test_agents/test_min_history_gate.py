@@ -35,6 +35,14 @@ class _StubPredictor:
             "odd_count": 10,
             "even_count": 10,
             "odd_even_summary": "單10 / 雙10",
+            "history_length_used": len(df),
+            "feature_mode": "short",
+            "degraded_features": [],
+            "effective_windows": {
+                "freq_long": min(len(df), 200),
+                "pmi_window": min(len(df), 200),
+                "handoff_window": min(len(df), 200),
+            },
         }
 
 
@@ -54,6 +62,9 @@ def test_api_accepts_1_to_999_range_without_forced_201_history(monkeypatch):
     resp = client.post("/predict", json=_payload(50))
     assert resp.status_code == 200
     assert predictor.last_min_history == 49
+    body = resp.json()
+    assert body["history_length_used"] == 50
+    assert body["feature_mode"] in {"short", "medium", "long", "full"}
 
 
 def test_api_accepts_sufficient_runtime_history(monkeypatch):

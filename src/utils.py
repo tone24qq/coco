@@ -47,6 +47,26 @@ V3_CORE20_COLUMNS = [
     "cand_pmi_last_draw_sum_200",
     "cand_pmi_last_draw_max_200",
     "cand_handoff_pm1_lift_200",
+    "ctx_prev_size_is_big",
+    "ctx_prev_odd_even_is_odd",
+    "ctx_size_big_ratio_w20",
+    "ctx_odd_ratio_w20",
+    "ctx_size_switches_w20",
+    "ctx_odd_even_switches_w20",
+    "cand_min_abs_distance_to_prev_draw",
+    "cand_mean_abs_distance_to_prev_draw",
+    "cand_is_exact_in_prev_draw",
+    "cand_has_prev_pm1",
+    "cand_has_prev_pm2",
+    "cand_has_prev_pm3",
+    "cand_count_prev_within_1",
+    "cand_count_prev_within_2",
+    "cand_count_prev_within_3",
+    "cand_min_distance_to_recent_3",
+    "cand_min_distance_to_recent_5",
+    "cand_min_distance_to_recent_10",
+    "cand_weighted_distance_decay_recent_10",
+    "cand_count_recent_within_1_10",
 ]
 LOGGER = logging.getLogger(__name__)
 
@@ -70,6 +90,31 @@ def min_required_history(
     pmi_window = int(windows.get("pmi_window", 20))
     handoff_window = int(windows.get("handoff_window", 20))
     return max(freq_long, pmi_window, handoff_window) + 1
+
+
+def classify_feature_mode(history_length: int) -> str:
+    if history_length <= 20:
+        return "short"
+    if history_length <= 60:
+        return "medium"
+    if history_length <= 200:
+        return "long"
+    return "full"
+
+
+def resolve_effective_windows(
+    actual_history: int, runtime_config: dict | None = None
+) -> dict[str, int]:
+    cfg = runtime_config or _load_feature_runtime_config()
+    windows = dict(cfg.get("core_windows", {}))
+    resolved: dict[str, int] = {}
+    for key, val in windows.items():
+        w = int(val)
+        if w <= 0:
+            resolved[key] = 0
+        else:
+            resolved[key] = min(actual_history, w)
+    return resolved
 
 
 @dataclass
@@ -275,6 +320,27 @@ def _build_issue_features_v3(
     include_latest_for_inference: bool = False,
 ) -> pd.DataFrame:
     draws = [sorted(json.loads(v) if isinstance(v, str) else v) for v in df["numbers"]]
+
+    def _derive_size_label(numbers: Sequence[int]) -> str:
+        big = sum(1 for n in numbers if n >= 41)
+        return "大" if big >= (20 - big) else "小"
+
+    def _derive_odd_even_label(numbers: Sequence[int]) -> str:
+        odd = sum(1 for n in numbers if n % 2 == 1)
+        return "單" if odd >= (20 - odd) else "雙"
+
+    size_series: list[str] = []
+    odd_even_series: list[str] = []
+    for i, nums in enumerate(draws):
+        raw_size = str(df.iloc[i].get("size_label", "") or "").strip()
+        raw_oe = str(df.iloc[i].get("odd_even_label", "") or "").strip()
+        size_series.append(
+            raw_size if raw_size in {"大", "小"} else _derive_size_label(nums)
+        )
+        odd_even_series.append(
+            raw_oe if raw_oe in {"單", "雙"} else _derive_odd_even_label(nums)
+        )
+
     rows: list[dict] = []
     z_window = int(_load_feature_runtime_config()["core_windows"].get("z_window", 50))
     end = len(df) if include_latest_for_inference else len(df) - 1
@@ -306,10 +372,16 @@ def _build_issue_features_v3(
             "prev_numbers": json.dumps(draws[i - 1], ensure_ascii=False),
             "current_numbers": json.dumps(nums, ensure_ascii=False),
             "history_numbers": json.dumps(draws[: i + 1], ensure_ascii=False),
+            "size_sequence": json.dumps(size_series[: i + 1], ensure_ascii=False),
+            "odd_even_sequence": json.dumps(
+                odd_even_series[: i + 1], ensure_ascii=False
+            ),
             "issue_zone_entropy": _entropy(ps) / np.log(4.0),
             "issue_span_z50": _zscore(span, spans, z_window),
             "issue_sum_z50": _zscore(total, sums, z_window),
             "issue_consecutive_z50": _zscore(consecutive_pairs, consecutives, z_window),
+            "size_label": size_series[i],
+            "odd_even_label": odd_even_series[i],
         }
         rows.append(issue_row)
         spans.append(span)
@@ -352,6 +424,10 @@ def issue_feature_columns(df: pd.DataFrame) -> List[str]:
         "prev_numbers",
         "current_numbers",
         "history_numbers",
+        "size_sequence",
+        "odd_even_sequence",
+        "size_label",
+        "odd_even_label",
     }
     return [c for c in df.columns if c not in skip]
 
@@ -380,19 +456,20 @@ def _build_candidate_matrix_v3(
     strict_features: bool | None = None,
 ) -> pd.DataFrame:
     cfg = _load_feature_runtime_config()
-    windows = cfg["core_windows"]
+    windows = resolve_effective_windows(0, cfg)
     decay = cfg["decay_half_lives"]
     alpha = float(cfg["smoothing_alpha"])
     tau = float(cfg["distance_kernel_tau"])
 
     base = issue_row.to_dict()
     history = [sorted(x) for x in json.loads(base.get("history_numbers", "[]"))]
+    windows = resolve_effective_windows(len(history), cfg)
     last_draw = sorted(json.loads(base.get("current_numbers", "[]")))
     last_draw_set = set(last_draw)
-    short_w = int(windows.get("freq_short", 20))
-    long_w = int(windows.get("freq_long", 200))
-    pmi_w = int(windows.get("pmi_window", 200))
-    handoff_w = int(windows.get("handoff_window", 200))
+    short_w = int(windows.get("freq_short", min(20, len(history))))
+    long_w = int(windows.get("freq_long", min(200, len(history))))
+    pmi_w = int(windows.get("pmi_window", min(200, len(history))))
+    handoff_w = int(windows.get("handoff_window", min(200, len(history))))
     recent_k = min(20, len(history))
 
     m_short = _build_indicator_matrix(history, short_w)
@@ -452,6 +529,32 @@ def _build_candidate_matrix_v3(
     neighbor_w = _exp_decay_weights(recent_k, float(decay.get("neighbor", 10)))
     recent_w = _exp_decay_weights(recent_k, float(decay.get("recent_hit", 5)))
     recent_draws = history[-recent_k:]
+
+    size_series = [
+        str(x)
+        for x in json.loads(
+            base.get("size_sequence", json.dumps([base.get("size_label", "小")]))
+        )
+    ]
+    odd_even_series = [
+        str(x)
+        for x in json.loads(
+            base.get(
+                "odd_even_sequence", json.dumps([base.get("odd_even_label", "雙")])
+            )
+        )
+    ]
+
+    def _window_ratio(series: Sequence[str], label: str, window: int) -> float:
+        local = list(series[-min(len(series), max(1, window)) :])
+        return float(sum(1 for x in local if x == label) / max(1, len(local)))
+
+    def _window_switches(series: Sequence[str], window: int) -> float:
+        local = list(series[-min(len(series), max(1, window)) :])
+        return float(sum(1 for a, b in zip(local, local[1:]) if a != b))
+
+    prev_size = str(base.get("size_label", "小"))
+    prev_oe = str(base.get("odd_even_label", "雙"))
 
     rows = []
     for idx, num in enumerate(range(1, 81)):
@@ -515,7 +618,47 @@ def _build_candidate_matrix_v3(
             "cand_pmi_last_draw_sum_200": float(sum(pmi_values)),
             "cand_pmi_last_draw_max_200": float(max(pmi_values) if pmi_values else 0.0),
             "cand_handoff_pm1_lift_200": float(handoff_scores[idx]),
+            "ctx_prev_size_is_big": float(prev_size == "大"),
+            "ctx_prev_odd_even_is_odd": float(prev_oe == "單"),
+            "ctx_size_big_ratio_w20": _window_ratio(size_series, "大", 20),
+            "ctx_odd_ratio_w20": _window_ratio(odd_even_series, "單", 20),
+            "ctx_size_switches_w20": _window_switches(size_series, 20),
+            "ctx_odd_even_switches_w20": _window_switches(odd_even_series, 20),
         }
+
+        prev_distances = [abs(num - n) for n in last_draw] if last_draw else [80.0]
+        row["cand_min_abs_distance_to_prev_draw"] = float(min(prev_distances))
+        row["cand_mean_abs_distance_to_prev_draw"] = float(np.mean(prev_distances))
+        row["cand_is_exact_in_prev_draw"] = float(num in last_draw_set)
+        row["cand_has_prev_pm1"] = float(any(abs(num - n) <= 1 for n in last_draw_set))
+        row["cand_has_prev_pm2"] = float(any(abs(num - n) <= 2 for n in last_draw_set))
+        row["cand_has_prev_pm3"] = float(any(abs(num - n) <= 3 for n in last_draw_set))
+        row["cand_count_prev_within_1"] = float(
+            sum(1 for n in last_draw if abs(num - n) <= 1)
+        )
+        row["cand_count_prev_within_2"] = float(
+            sum(1 for n in last_draw if abs(num - n) <= 2)
+        )
+        row["cand_count_prev_within_3"] = float(
+            sum(1 for n in last_draw if abs(num - n) <= 3)
+        )
+
+        for k in [3, 5, 10]:
+            recent = history[-min(k, len(history)) :]
+            flat = [x for draw in recent for x in draw]
+            distances = [abs(num - n) for n in flat] if flat else [80.0]
+            row[f"cand_min_distance_to_recent_{k}"] = float(min(distances))
+            if k == 10:
+                weights = np.exp(-np.arange(len(recent), 0, -1) / max(1.0, tau))
+                weighted = 0.0
+                denom = float(np.sum(weights)) or 1.0
+                for w_idx, draw in enumerate(recent):
+                    nearest = min(abs(num - n) for n in draw) if draw else 80.0
+                    weighted += float(weights[w_idx]) * float(nearest)
+                row["cand_weighted_distance_decay_recent_10"] = float(weighted / denom)
+                row["cand_count_recent_within_1_10"] = float(
+                    sum(1 for n in flat if abs(num - n) <= 1)
+                )
         rows.append(row)
 
     out = pd.DataFrame(rows)

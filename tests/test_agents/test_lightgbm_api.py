@@ -37,6 +37,14 @@ class _StubPredictor:
             "odd_count": 10,
             "even_count": 10,
             "odd_even_summary": "單10 / 雙10",
+            "history_length_used": len(df),
+            "feature_mode": "short",
+            "degraded_features": [],
+            "effective_windows": {
+                "freq_long": min(len(df), 20),
+                "pmi_window": min(len(df), 20),
+                "handoff_window": min(len(df), 20),
+            },
         }
 
 
@@ -77,6 +85,10 @@ def test_predict_auto_fetch_when_recent_draws_missing(monkeypatch):
     assert body["first_issue_used"] == 2000
     assert body["last_issue_used"] == 2022
     assert body["issues_used"] == list(range(2000, 2023))
+    assert body["history_length_used"] == 23
+    assert "feature_mode" in body
+    assert "degraded_features" in body
+    assert "effective_windows" in body
 
 
 def test_predict_validates_shape_and_range(monkeypatch):
@@ -171,7 +183,7 @@ def test_analysis_declares_recent_draws_optional(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["recent_draws_rules"]["required"] is False
     assert resp.json()["recent_draws_rules"]["min"] >= 1
-    assert resp.json()["recent_draws_rules"]["max"] == 999
+    assert resp.json()["recent_draws_rules"]["max"] >= 999
 
 
 def test_predict_rejects_when_runtime_required_history_is_higher(monkeypatch):

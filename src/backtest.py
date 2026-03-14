@@ -382,6 +382,67 @@ def _run_experiments(
     return registry, per_fold, per_regime, baseline_top20
 
 
+def _bucket_label(history_len: int) -> str:
+    if history_len <= 20:
+        return "1-20"
+    if history_len <= 50:
+        return "21-50"
+    if history_len <= 100:
+        return "51-100"
+    if history_len <= 200:
+        return "101-200"
+    return "201+"
+
+
+def _build_history_bucket_report(feat_df: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, row in feat_df.iterrows():
+        history = json.loads(row.get("history_numbers", "[]"))
+        prev = set(json.loads(row.get("prev_numbers", "[]")))
+        actual = set(json.loads(row.get("target_numbers", "[]")))
+        pred_top10 = list(prev)[:10]
+        pred_top3 = pred_top10[:3]
+        min_dist_top3 = []
+        for n in pred_top3:
+            min_dist_top3.append(min(abs(n - p) for p in prev) if prev else 80.0)
+        rows.append(
+            {
+                "history_bucket": _bucket_label(len(history)),
+                "exact_hit@3": float(sum(1 for n in pred_top3 if n in actual) / 3.0),
+                "exact_hit@10": float(
+                    sum(1 for n in pred_top10 if n in actual)
+                    / max(1.0, len(pred_top10))
+                ),
+                "top3_at_least_one_exact": float(any(n in actual for n in pred_top3)),
+                "adj_hit_pm1@3": float(
+                    sum(1 for n in pred_top3 if any(abs(n - a) <= 1 for a in actual))
+                    / 3.0
+                ),
+                "strict_adj_only_pm1@3": float(
+                    sum(
+                        1
+                        for n in pred_top3
+                        if n not in actual and any(abs(n - a) == 1 for a in actual)
+                    )
+                    / 3.0
+                ),
+                "mean_min_distance_at_3": float(
+                    np.mean(min_dist_top3) if min_dist_top3 else 0.0
+                ),
+                "top3_avg_min_distance_to_prev": float(
+                    np.mean([min(abs(n - p) for p in prev) for n in pred_top3])
+                    if prev and pred_top3
+                    else 0.0
+                ),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    metric_cols = [c for c in out.columns if c != "history_bucket"]
+    return out.groupby("history_bucket")[metric_cols].mean().reset_index()
+
+
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     if str(cfg.get("feature_version", "v3_core20")) != "v3_core20":
@@ -518,6 +579,12 @@ def main() -> None:
         cfg.get("acceptance_thresholds", {}),
     )
     save_json(REPORTS_DIR / "feature_version_comparison.json", comparison)
+    history_bucket_df = _build_history_bucket_report(feat_df)
+    history_bucket_df.to_csv(REPORTS_DIR / "history_bucket_report.csv", index=False)
+    save_json(
+        REPORTS_DIR / "history_bucket_report.json",
+        {"rows": history_bucket_df.to_dict(orient="records")},
+    )
 
     save_json(
         REPORTS_DIR / "experiment_summary.json",

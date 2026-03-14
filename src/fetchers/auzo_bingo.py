@@ -8,9 +8,15 @@ from typing import Any, Callable
 from urllib import error, request
 from urllib.parse import urlparse
 
+from src.fetchers.winwin_bingo import (
+    extract_latest_issue_hint_winwin,
+    parse_winwin_bingo_rows,
+)
+
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_SOURCES = [
+    "https://winwin.tw/Bingo",
     "https://www.pilio.idv.tw/bingo/list.asp",
     "https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx",
 ]
@@ -28,6 +34,9 @@ class DrawRecord:
     super_number: int | None = None
     big_small: str | None = None
     odd_even: str | None = None
+    streak_count: int | None = None
+    size_label: str | None = None
+    odd_even_label: str | None = None
 
 
 class BingoDrawFetcher:
@@ -135,6 +144,8 @@ class BingoDrawFetcher:
         hostname = urlparse(source).netloc.lower()
         if "auzo.tw" in hostname:
             return self._extract_latest_issue_hint_auzo(html)
+        if "winwin.tw" in hostname:
+            return extract_latest_issue_hint_winwin(html)
         if "pilio.idv.tw" in hostname:
             return self._extract_latest_issue_hint_pilio(html)
         if "taiwanlottery.com.tw" in hostname:
@@ -148,6 +159,8 @@ class BingoDrawFetcher:
         hostname = urlparse(source).netloc.lower()
         if "pilio.idv.tw" in hostname and path.endswith("/bingo/list.asp"):
             return self._parse_pilio_bingo_list
+        if "winwin.tw" in hostname and path.endswith("/bingo"):
+            return self._parse_winwin_bingo
         if "taiwanlottery.com.tw" in hostname:
             return self._parse_taiwan_lottery_generic
         if path.endswith("/bingobingov1.php"):
@@ -196,6 +209,9 @@ class BingoDrawFetcher:
                 }
             )
         return records
+
+    def _parse_winwin_bingo(self, html: str) -> list[dict[str, Any]]:
+        return parse_winwin_bingo_rows(html)
 
     def _parse_taiwan_lottery_generic(self, html: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -311,6 +327,13 @@ class BingoDrawFetcher:
             super_number=super_number,
             big_small=row.get("big_small"),
             odd_even=row.get("odd_even"),
+            streak_count=(
+                int(row.get("streak_count"))
+                if row.get("streak_count") is not None
+                else None
+            ),
+            size_label=row.get("size_label") or row.get("big_small"),
+            odd_even_label=row.get("odd_even_label") or row.get("odd_even"),
         )
 
     def _ensure_consecutive_issues(self, records: list[DrawRecord]) -> None:

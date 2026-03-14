@@ -1,9 +1,10 @@
 feature_min_history: 22
 min_recent_draws: 1
-max_recent_draws: 999
+max_recent_draws: 3000
 fetch_timeout_seconds: 8
 fetch_retries: 2
 fetch_retry_backoff_seconds: 0.5
 auto_fetch_sources:
+  - https://winwin.tw/Bingo
   - https://www.pilio.idv.tw/bingo/list.asp
   - https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
