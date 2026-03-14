@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, Callable
 from urllib import error, request
 from urllib.parse import urlparse
@@ -39,6 +41,13 @@ class DrawRecord:
     odd_even_label: str | None = None
 
 
+@dataclass(frozen=True)
+class FetchAttempt:
+    source: str
+    ok: bool
+    error: str | None = None
+
+
 class BingoDrawFetcher:
     def __init__(
         self,
@@ -54,15 +63,18 @@ class BingoDrawFetcher:
 
     def fetch_recent_records(
         self, min_draws: int, max_draws: int
-    ) -> tuple[list[DrawRecord], str]:
+    ) -> tuple[list[DrawRecord], str, list[FetchAttempt]]:
         errors: list[str] = []
+        attempts: list[FetchAttempt] = []
         for source in self.sources:
             try:
                 records = self._fetch_from_source(
                     source, min_draws=min_draws, max_draws=max_draws
                 )
-                return records, source
+                attempts.append(FetchAttempt(source=source, ok=True, error=None))
+                return records, source, attempts
             except FetchDrawsError as exc:
+                attempts.append(FetchAttempt(source=source, ok=False, error=str(exc)))
                 errors.append(f"{source}: {exc}")
         raise FetchDrawsError("all sources failed: " + " | ".join(errors))
 
@@ -72,8 +84,6 @@ class BingoDrawFetcher:
         html = self._fetch_html(source)
         self._check_source_health(html)
         parsed = self._parse_records_by_source(source, html)
-        if not parsed:
-            raise FetchDrawsError("cannot parse any valid draw rows")
 
         deduped: dict[int, DrawRecord] = {}
         for row in parsed:
@@ -113,11 +123,33 @@ class BingoDrawFetcher:
         )
         return selected
 
-    def _fetch_html(self, source: str) -> str:
+    def _fetch_html(
+        self,
+        source: str,
+        *,
+        accept_json: bool = False,
+        referer: str | None = None,
+    ) -> str:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "application/json,text/plain,*/*"
+                if accept_json
+                else "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": referer or source,
+        }
+
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
-                with request.urlopen(source, timeout=self.timeout) as resp:
+                req = request.Request(source, headers=headers)
+                with request.urlopen(req, timeout=self.timeout) as resp:
                     raw = resp.read()
                 return raw.decode("utf-8", errors="ignore")
             except (error.URLError, TimeoutError, OSError) as exc:
@@ -136,7 +168,15 @@ class BingoDrawFetcher:
 
     def _parse_records_by_source(self, source: str, html: str) -> list[dict[str, Any]]:
         parser = self._choose_source_parser(source)
-        return parser(html)
+        parsed = parser(html)
+        if parsed:
+            return parsed
+
+        hostname = urlparse(source).netloc.lower()
+        if "winwin.tw" in hostname:
+            return self._parse_winwin_dynamic(source=source, html=html)
+
+        raise FetchDrawsError("fetched content ok but no valid draw rows found")
 
     def _extract_latest_issue_hint_by_source(
         self, source: str, html: str
@@ -212,6 +252,117 @@ class BingoDrawFetcher:
 
     def _parse_winwin_bingo(self, html: str) -> list[dict[str, Any]]:
         return parse_winwin_bingo_rows(html)
+
+    def _parse_winwin_dynamic(self, source: str, html: str) -> list[dict[str, Any]]:
+        dynamic_markers = [
+            "loadBingoData(",
+            "/Bingo/GetBingoData",
+            'id="bingoTable"',
+        ]
+        has_dynamic_marker = any(marker in html for marker in dynamic_markers)
+
+        endpoint = self._resolve_winwin_data_endpoint(source, html)
+        attempted_dates = self._winwin_candidate_dates(html)
+        endpoint_errors: list[str] = []
+
+        for date_str in attempted_dates:
+            data_url = f"{endpoint}?date={date_str}"
+            try:
+                payload = self._fetch_html(
+                    data_url,
+                    accept_json=True,
+                    referer=source,
+                )
+            except FetchDrawsError as exc:
+                endpoint_errors.append(f"{data_url}: fetch error ({exc})")
+                continue
+
+            rows = self._parse_winwin_json_payload(payload)
+            if rows:
+                return rows
+            endpoint_errors.append(f"{data_url}: no draw rows in payload")
+
+        if has_dynamic_marker:
+            reason = "fetched HTML ok but no draw rows found; page seems dynamically rendered"
+            if endpoint_errors:
+                reason += "; endpoint attempts: " + " | ".join(endpoint_errors)
+            raise FetchDrawsError(reason)
+
+        raise FetchDrawsError("fetched HTML ok but no draw rows found")
+
+    def _resolve_winwin_data_endpoint(self, source: str, html: str) -> str:
+        absolute = re.search(r"https://winwin\.tw/Bingo/GetBingoData", html, re.I)
+        if absolute:
+            return absolute.group(0)
+        return "https://winwin.tw/Bingo/GetBingoData"
+
+    def _winwin_candidate_dates(self, html: str) -> list[str]:
+        dates: list[str] = []
+        hinted_date = re.search(
+            r'id="currentDate"[^>]*>\s*(\d{4}/\d{2}/\d{2})\s*<', html
+        )
+        if hinted_date:
+            dates.append(hinted_date.group(1).replace("/", "-"))
+
+        today = datetime.now().date()
+        for offset in range(0, 3):
+            dates.append((today - timedelta(days=offset)).isoformat())
+
+        deduped: list[str] = []
+        for date in dates:
+            if date not in deduped:
+                deduped.append(date)
+        return deduped
+
+    def _parse_winwin_json_payload(self, payload: str) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        rows: list[dict[str, Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+
+            issue = item.get("No")
+            issue_str = str(issue).strip() if issue is not None else ""
+            if not issue_str.isdigit():
+                continue
+
+            numbers_raw = item.get("BigShowOrder")
+            if isinstance(numbers_raw, str):
+                pieces = [x.strip() for x in numbers_raw.split(",")]
+            elif isinstance(numbers_raw, list):
+                pieces = [str(x).strip() for x in numbers_raw]
+            else:
+                pieces = []
+
+            try:
+                numbers = [int(x) for x in pieces if x]
+            except ValueError:
+                continue
+            if len(numbers) != 20:
+                continue
+
+            open_date = str(item.get("OpenDate") or "")
+            draw_time_match = re.search(r"(\d{1,2}:\d{2})(?::\d{2})?", open_date)
+            draw_time = draw_time_match.group(1) if draw_time_match else None
+
+            rows.append(
+                {
+                    "issue": int(issue_str),
+                    "draw_time": draw_time,
+                    "numbers": numbers,
+                    "streak_count": None,
+                    "size_label": item.get("HighLowTop") or None,
+                    "odd_even_label": item.get("OddEvenTop") or None,
+                }
+            )
+        return rows
 
     def _parse_taiwan_lottery_generic(self, html: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
@@ -346,8 +497,8 @@ class BingoDrawFetcher:
 
 def build_recent_draws(
     fetcher: BingoDrawFetcher, min_draws: int, max_draws: int
-) -> tuple[list[list[int]], list[DrawRecord], str]:
-    records, source = fetcher.fetch_recent_records(
+) -> tuple[list[list[int]], list[DrawRecord], str, list[FetchAttempt]]:
+    records, source, attempts = fetcher.fetch_recent_records(
         min_draws=min_draws, max_draws=max_draws
     )
     recent_draws = [record.numbers for record in records]
@@ -361,4 +512,4 @@ def build_recent_draws(
         records[0].issue,
         records[-1].issue,
     )
-    return recent_draws, records, source
+    return recent_draws, records, source, attempts

@@ -9,6 +9,24 @@ ISSUE_CONTEXT_PATTERNS = [
 ]
 
 
+def _extract_numbers_from_cells(cells: list[str]) -> list[int]:
+    candidates: list[list[int]] = []
+    for cell in cells:
+        plain = re.sub(r"<[^>]+>", " ", cell)
+        nums = [int(x) for x in re.findall(r"\b\d{1,2}\b", plain)]
+        nums = [x for x in nums if 1 <= x <= 80]
+        if len(nums) >= 20:
+            candidates.append(nums[:20])
+
+    if candidates:
+        return max(candidates, key=lambda item: len(set(item)))
+
+    whole_row = re.sub(r"<[^>]+>", " ", " ".join(cells))
+    row_nums = [int(x) for x in re.findall(r"\b\d{1,2}\b", whole_row)]
+    row_nums = [x for x in row_nums if 1 <= x <= 80]
+    return row_nums[:20] if len(row_nums) >= 20 else []
+
+
 def parse_winwin_bingo_rows(html: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     row_pattern = re.compile(r"<tr[^>]*>(?P<row>.*?)</tr>", flags=re.S | re.I)
@@ -18,23 +36,19 @@ def parse_winwin_bingo_rows(html: str) -> list[dict[str, Any]]:
         if not cells:
             continue
         plain_cells = [re.sub(r"<[^>]+>", " ", c) for c in cells]
-        issue_match = re.search(r"(\d{6,12})", " ".join(plain_cells))
+        joined = " ".join(plain_cells)
+        issue_match = re.search(r"(\d{6,12})", joined)
         if not issue_match:
             continue
         issue = int(issue_match.group(1))
-        draw_time_match = re.search(
-            r"(\d{1,2}:\d{2}(?::\d{2})?)", " ".join(plain_cells)
-        )
-        numbers_text = plain_cells[1] if len(plain_cells) > 1 else ""
-        numbers = [int(x) for x in re.findall(r"\b\d{1,2}\b", numbers_text)]
-        numbers = [x for x in numbers if 1 <= x <= 80]
-        if len(numbers) < 20:
+        draw_time_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?)", joined)
+        numbers = _extract_numbers_from_cells(cells)
+        if len(numbers) != 20 or len(set(numbers)) != 20:
             continue
-        numbers = numbers[:20]
 
-        streak_match = re.search(r"連莊\D*(\d+)", " ".join(plain_cells))
-        size_match = re.search(r"[大小]", " ".join(plain_cells))
-        odd_even_match = re.search(r"[單雙]", " ".join(plain_cells))
+        streak_match = re.search(r"連莊\D*(\d+)", joined)
+        size_match = re.search(r"[大小]", joined)
+        odd_even_match = re.search(r"[單雙]", joined)
 
         big_count = sum(1 for n in numbers if n >= 41)
         odd_count = sum(1 for n in numbers if n % 2 == 1)
