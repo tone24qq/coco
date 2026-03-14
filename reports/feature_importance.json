@@ -1,84 +1,164 @@
 {
   "features": [
     {
-      "feature": "cand_neighbor_pm1_decay_hl10",
-      "importance": 7.0909488135498115
+      "feature": "cand_handoff_pm1_lift_200",
+      "importance": 5.021507521650351
     },
     {
       "feature": "cand_neighbor_pm2_decay_hl10",
-      "importance": 7.055010125465247
+      "importance": 4.915135371464499
     },
     {
-      "feature": "cand_distance_kernel_last_draw_tau2",
-      "importance": 6.804655216806947
+      "feature": "cand_weighted_distance_decay_recent_10",
+      "importance": 4.651297272657759
     },
     {
-      "feature": "cand_handoff_pm1_lift_200",
-      "importance": 6.784291286693709
-    },
-    {
-      "feature": "issue_consecutive_z50",
-      "importance": 6.248105147102274
+      "feature": "cand_mean_abs_distance_to_prev_draw",
+      "importance": 4.614245242517955
     },
     {
       "feature": "cand_freq_ewma_hl50",
-      "importance": 5.900136237550298
-    },
-    {
-      "feature": "cand_pmi_last_draw_sum_200",
-      "importance": 5.895984179809887
+      "importance": 4.488680354487085
     },
     {
       "feature": "cand_freq_trend_20_200",
-      "importance": 5.666109274393422
+      "importance": 4.2475860762918245
     },
     {
-      "feature": "cand_recent_hit_decay_hl5",
-      "importance": 5.643593183876058
+      "feature": "cand_neighbor_pm1_decay_hl10",
+      "importance": 4.232100925166171
     },
     {
-      "feature": "cand_freq_smooth_200",
-      "importance": 5.629333872188328
-    },
-    {
-      "feature": "issue_sum_z50",
-      "importance": 5.433257604349917
+      "feature": "cand_pmi_last_draw_sum_200",
+      "importance": 4.223659553590257
     },
     {
       "feature": "cand_pmi_last_draw_max_200",
-      "importance": 5.218392048467587
+      "importance": 4.097387765509214
     },
     {
       "feature": "issue_span_z50",
-      "importance": 5.1805247968491095
+      "importance": 4.059726226378714
+    },
+    {
+      "feature": "issue_sum_z50",
+      "importance": 3.8817979309748805
+    },
+    {
+      "feature": "cand_distance_kernel_last_draw_tau2",
+      "importance": 3.714124725218225
+    },
+    {
+      "feature": "issue_consecutive_z50",
+      "importance": 3.5925127771203202
+    },
+    {
+      "feature": "cand_freq_smooth_200",
+      "importance": 3.5525697492034007
+    },
+    {
+      "feature": "ctx_size_big_ratio_w20",
+      "importance": 3.1507154637387824
     },
     {
       "feature": "issue_zone_entropy",
-      "importance": 4.539072048829838
-    },
-    {
-      "feature": "num_zone",
-      "importance": 4.172677276969
-    },
-    {
-      "feature": "cand_recency_ratio_200",
-      "importance": 4.160812652567319
+      "importance": 2.9330020710707156
     },
     {
       "feature": "cand_gap_mad_5",
-      "importance": 3.9477900535465107
+      "importance": 2.873446531052779
+    },
+    {
+      "feature": "cand_recent_hit_decay_hl5",
+      "importance": 2.7186688850400653
+    },
+    {
+      "feature": "ctx_size_switches_w20",
+      "importance": 2.6464205797092153
+    },
+    {
+      "feature": "ctx_odd_ratio_w20",
+      "importance": 2.612829265431317
+    },
+    {
+      "feature": "num_zone",
+      "importance": 2.596798307260821
+    },
+    {
+      "feature": "cand_recency_ratio_200",
+      "importance": 2.5515461169040172
+    },
+    {
+      "feature": "ctx_odd_even_switches_w20",
+      "importance": 2.433148174843125
+    },
+    {
+      "feature": "cand_count_prev_within_3",
+      "importance": 2.0971155235558974
+    },
+    {
+      "feature": "cand_count_recent_within_1_10",
+      "importance": 2.0530456385316085
     },
     {
       "feature": "cand_freq_smooth_20",
-      "importance": 2.434766136881327
+      "importance": 1.9539911484949994
+    },
+    {
+      "feature": "cand_count_prev_within_1",
+      "importance": 1.7412089453039914
+    },
+    {
+      "feature": "cand_min_distance_to_recent_3",
+      "importance": 1.206920175774898
+    },
+    {
+      "feature": "cand_count_prev_within_2",
+      "importance": 1.1808311388252999
     },
     {
       "feature": "cand_gap_log1p",
-      "importance": 2.16407640471977
+      "importance": 1.0523861277794513
+    },
+    {
+      "feature": "cand_min_abs_distance_to_prev_draw",
+      "importance": 1.035687856782952
+    },
+    {
+      "feature": "ctx_prev_odd_even_is_odd",
+      "importance": 0.7538858987062683
+    },
+    {
+      "feature": "cand_min_distance_to_recent_5",
+      "importance": 0.7082751841531058
+    },
+    {
+      "feature": "cand_min_distance_to_recent_10",
+      "importance": 0.5585475894875637
+    },
+    {
+      "feature": "cand_has_prev_pm3",
+      "importance": 0.5233437527575072
+    },
+    {
+      "feature": "cand_has_prev_pm1",
+      "importance": 0.5137939481617486
+    },
+    {
+      "feature": "ctx_prev_size_is_big",
+      "importance": 0.4839838264691089
+    },
+    {
+      "feature": "cand_has_prev_pm2",
+      "importance": 0.25693454714812397
     },
     {
       "feature": "cand_repeat_last_draw",
-      "importance": 0.03046363938365015
+      "importance": 0.07114181078594306
+    },
+    {
+      "feature": "cand_is_exact_in_prev_draw",
+      "importance": 0.0
     }
   ]
 }
