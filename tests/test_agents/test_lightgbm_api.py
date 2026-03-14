@@ -71,6 +71,22 @@ def test_predict_auto_fetch_when_recent_draws_missing(monkeypatch):
                 for i, draw in enumerate(_payload(23)["recent_draws"])
             ],
             "https://primary.example",
+            [
+                type(
+                    "A",
+                    (),
+                    {
+                        "source": "https://winwin.tw/Bingo",
+                        "ok": False,
+                        "error": "timeout",
+                    },
+                )(),
+                type(
+                    "A",
+                    (),
+                    {"source": "https://primary.example", "ok": True, "error": None},
+                )(),
+            ],
         ),
     )
     client = TestClient(api_module.app)
@@ -86,6 +102,10 @@ def test_predict_auto_fetch_when_recent_draws_missing(monkeypatch):
     assert body["last_issue_used"] == 2022
     assert body["issues_used"] == list(range(2000, 2023))
     assert body["history_length_used"] == 23
+    assert body["fetch_attempts"] == [
+        {"source": "https://winwin.tw/Bingo", "ok": False, "error": "timeout"},
+        {"source": "https://primary.example", "ok": True, "error": None},
+    ]
     assert "feature_mode" in body
     assert "degraded_features" in body
     assert "effective_windows" in body
@@ -145,6 +165,7 @@ def test_predict_success_contains_analysis_report(monkeypatch):
     assert body["first_issue_used"] is None
     assert body["last_issue_used"] is None
     assert body["issues_used"] == [None for _ in range(23)]
+    assert body["fetch_attempts"] == []
 
 
 def test_predict_converts_value_error_to_400(monkeypatch):

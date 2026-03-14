@@ -32,10 +32,11 @@ def test_reorders_new_to_old_into_old_to_new(monkeypatch):
         fetcher, "_extract_latest_issue_hint_by_source", lambda _source, _html: 103
     )
 
-    records, source = fetcher.fetch_recent_records(min_draws=3, max_draws=50)
+    records, source, attempts = fetcher.fetch_recent_records(min_draws=3, max_draws=50)
 
     assert source == "https://www.pilio.idv.tw/bingo/list.asp"
     assert [record.issue for record in records] == [101, 102, 103]
+    assert attempts[-1].ok is True
 
 
 def test_duplicate_issue_with_different_content_raises(monkeypatch):
@@ -169,16 +170,18 @@ def test_build_recent_draws_outputs_numbers(monkeypatch):
         lambda min_draws, max_draws: (
             ordered,
             "https://www.pilio.idv.tw/bingo/list.asp",
+            [],
         ),
     )
 
-    recent_draws, records, source = build_recent_draws(
+    recent_draws, records, source, attempts = build_recent_draws(
         fetcher, min_draws=2, max_draws=50
     )
 
     assert source == "https://www.pilio.idv.tw/bingo/list.asp"
     assert len(recent_draws) == len(records) == 2
     assert recent_draws[0] == _nums(1)
+    assert attempts == []
 
 
 def test_parse_bingobingov1_fixture_extracts_consecutive_issues_and_20_numbers(
@@ -191,9 +194,10 @@ def test_parse_bingobingov1_fixture_extracts_consecutive_issues_and_20_numbers(
 
     monkeypatch.setattr(fetcher, "_fetch_html", lambda _source: fixture)
 
-    records, source = fetcher.fetch_recent_records(min_draws=3, max_draws=50)
+    records, source, attempts = fetcher.fetch_recent_records(min_draws=3, max_draws=50)
 
     assert source == "https://lotto.auzo.tw/bingobingoV1.php"
+    assert attempts[-1].ok is True
     assert [record.issue for record in records] == [115014377, 115014378, 115014379]
     assert [record.draw_time for record in records] == ["20:55", "21:00", "21:05"]
     assert all(len(record.numbers) == 20 for record in records)
@@ -261,10 +265,13 @@ def test_fallback_to_taiwan_lottery_when_pilio_fails(monkeypatch):
         lambda source, _html: 202 if "taiwanlottery.com.tw" in source else None,
     )
 
-    records, source = fetcher.fetch_recent_records(min_draws=2, max_draws=10)
+    records, source, attempts = fetcher.fetch_recent_records(min_draws=2, max_draws=10)
 
     assert source == "https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx"
     assert [r.issue for r in records] == [201, 202]
+    assert attempts[0].source == "https://www.pilio.idv.tw/bingo/list.asp"
+    assert attempts[0].ok is False
+    assert attempts[1].ok is True
 
 
 def test_parse_winwin_fixture_extracts_required_fields():
@@ -298,6 +305,41 @@ def test_parse_winwin_fixture_extracts_required_fields():
     assert [r.size_label for r in normalized] == ["大", "小"]
     assert [r.odd_even_label for r in normalized] == ["單", "雙"]
     assert [r.streak_count for r in normalized] == [2, 1]
+
+
+def test_parse_winwin_fixture_tolerates_column_reorder_and_wrappers():
+    fixture = """
+    <table>
+      <tr><th>資訊</th><th>開獎球</th><th>期別</th><th>說明</th></tr>
+      <tr>
+        <td><span>大小:大</span> <span>單雙:單</span></td>
+        <td><div class="balls"><span>01</span> <span>02</span> <span>03</span> <span>04</span> <span>05</span>
+            <span>06</span> <span>07</span> <span>08</span> <span>09</span> <span>10</span>
+            <span>11</span> <span>12</span> <span>13</span> <span>14</span> <span>15</span>
+            <span>16</span> <span>17</span> <span>18</span> <span>19</span> <span>20</span></div></td>
+        <td><strong>115014510</strong> <em>23:00</em></td>
+        <td>連莊球數 3</td>
+      </tr>
+      <tr>
+        <td><span>大小:小</span> <span>單雙:雙</span></td>
+        <td><div class="balls"><span>21</span> <span>22</span> <span>23</span> <span>24</span> <span>25</span>
+            <span>26</span> <span>27</span> <span>28</span> <span>29</span> <span>30</span>
+            <span>31</span> <span>32</span> <span>33</span> <span>34</span> <span>35</span>
+            <span>36</span> <span>37</span> <span>38</span> <span>39</span> <span>40</span></div></td>
+        <td><strong>115014511</strong> <em>23:05</em></td>
+        <td>連莊球數 0</td>
+      </tr>
+    </table>
+    """
+    fetcher = BingoDrawFetcher(sources=["https://winwin.tw/Bingo"])
+
+    parsed = fetcher._parse_winwin_bingo(fixture)
+    normalized = [fetcher._normalize_row(row) for row in parsed]
+
+    assert [r.issue for r in normalized] == [115014510, 115014511]
+    assert [r.draw_time for r in normalized] == ["23:00", "23:05"]
+    assert all(len(r.numbers) == 20 for r in normalized)
+    assert extract_latest_issue_hint_winwin(fixture) == 115014511
 
 
 def test_winwin_latest_issue_hint_ignores_unrelated_large_numbers() -> None:
@@ -346,6 +388,7 @@ def test_winwin_fetcher_does_not_reject_valid_payload_due_to_unrelated_large_num
     monkeypatch.setattr(fetcher, "_fetch_html", lambda _source: html)
     monkeypatch.setattr(fetcher, "_check_source_health", lambda _html: None)
 
-    records, _ = fetcher.fetch_recent_records(min_draws=2, max_draws=10)
+    records, _, attempts = fetcher.fetch_recent_records(min_draws=2, max_draws=10)
 
     assert [r.issue for r in records] == [115014500, 115014501]
+    assert attempts[-1].ok is True

@@ -148,6 +148,7 @@ def predict(payload: PredictPayload) -> dict:
     auto_fetched = payload.recent_draws is None
     data_source = "manual"
     records: list[dict] = []
+    fetch_attempts: list[dict[str, str | bool | None]] = []
 
     if auto_fetched:
         fetcher = BingoDrawFetcher(
@@ -157,16 +158,21 @@ def predict(payload: PredictPayload) -> dict:
             retry_backoff_seconds=FETCH_BACKOFF_SECONDS,
         )
         try:
-            recent_draws, fetched_records, data_source = build_recent_draws(
-                fetcher=fetcher,
-                min_draws=MIN_RECENT_DRAWS,
-                max_draws=MAX_RECENT_DRAWS,
+            recent_draws, fetched_records, data_source, fetch_attempts = (
+                build_recent_draws(
+                    fetcher=fetcher,
+                    min_draws=MIN_RECENT_DRAWS,
+                    max_draws=MAX_RECENT_DRAWS,
+                )
             )
         except FetchDrawsError as exc:
             raise HTTPException(
                 status_code=502, detail=f"auto fetch failed: {exc}"
             ) from exc
         payload.recent_draws = recent_draws
+        fetch_attempts = [
+            {"source": a.source, "ok": a.ok, "error": a.error} for a in fetch_attempts
+        ]
         records = [
             {
                 "issue": record.issue,
@@ -230,4 +236,5 @@ def predict(payload: PredictPayload) -> dict:
         issues_used if auto_fetched else [None for _ in payload.recent_draws]
     )
     result["auto_fetched"] = auto_fetched
+    result["fetch_attempts"] = fetch_attempts
     return result
