@@ -355,10 +355,14 @@ def main() -> None:
             "distance_kernel_tau": cfg.get("distance_kernel_tau", 2),
         },
     }
-    if len(feature_columns) != 20:
-        raise ValueError("v3_core20 metadata requires feature_count=20")
-    save_json(MODELS_DIR / "metadata.json", metadata)
+    from src.utils import V3_CORE20_COLUMNS
 
+    if len(feature_columns) != len(V3_CORE20_COLUMNS):
+    raise ValueError(
+        f"v3_core20 metadata requires feature_count={len(V3_CORE20_COLUMNS)}"
+    )
+
+save_json(MODELS_DIR / "metadata.json", metadata)
 
 if __name__ == "__main__":
     main()
