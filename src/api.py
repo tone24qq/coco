@@ -38,6 +38,7 @@ MAX_RECENT_DRAWS = int(PREDICT_CFG.get("max_recent_draws", 999))
 FETCH_TIMEOUT = float(PREDICT_CFG.get("fetch_timeout_seconds", 8.0))
 FETCH_RETRIES = int(PREDICT_CFG.get("fetch_retries", 2))
 FETCH_SOURCES = list(PREDICT_CFG.get("auto_fetch_sources", []))
+FORCE_FETCH_SOURCE = str(PREDICT_CFG.get("auto_fetch_force_source", "")).strip()
 FETCH_BACKOFF_SECONDS = float(PREDICT_CFG.get("fetch_retry_backoff_seconds", 0.5))
 METADATA = (
     json.loads((MODELS_DIR / "metadata.json").read_text(encoding="utf-8"))
@@ -148,25 +149,34 @@ def predict(payload: PredictPayload) -> dict:
     auto_fetched = payload.recent_draws is None
     data_source = "manual"
     records: list[dict] = []
+    fetch_attempts: list[dict[str, str | bool | None]] = []
 
     if auto_fetched:
+        fetch_sources = FETCH_SOURCES
+        if FORCE_FETCH_SOURCE:
+            fetch_sources = [FORCE_FETCH_SOURCE]
         fetcher = BingoDrawFetcher(
-            sources=FETCH_SOURCES,
+            sources=fetch_sources,
             timeout=FETCH_TIMEOUT,
             retries=FETCH_RETRIES,
             retry_backoff_seconds=FETCH_BACKOFF_SECONDS,
         )
         try:
-            recent_draws, fetched_records, data_source = build_recent_draws(
-                fetcher=fetcher,
-                min_draws=MIN_RECENT_DRAWS,
-                max_draws=MAX_RECENT_DRAWS,
+            recent_draws, fetched_records, data_source, fetch_attempts = (
+                build_recent_draws(
+                    fetcher=fetcher,
+                    min_draws=MIN_RECENT_DRAWS,
+                    max_draws=MAX_RECENT_DRAWS,
+                )
             )
         except FetchDrawsError as exc:
             raise HTTPException(
                 status_code=502, detail=f"auto fetch failed: {exc}"
             ) from exc
         payload.recent_draws = recent_draws
+        fetch_attempts = [
+            {"source": a.source, "ok": a.ok, "error": a.error} for a in fetch_attempts
+        ]
         records = [
             {
                 "issue": record.issue,
@@ -230,4 +240,5 @@ def predict(payload: PredictPayload) -> dict:
         issues_used if auto_fetched else [None for _ in payload.recent_draws]
     )
     result["auto_fetched"] = auto_fetched
+    result["fetch_attempts"] = fetch_attempts
     return result

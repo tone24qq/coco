@@ -39,6 +39,13 @@ class DrawRecord:
     odd_even_label: str | None = None
 
 
+@dataclass(frozen=True)
+class FetchAttempt:
+    source: str
+    ok: bool
+    error: str | None = None
+
+
 class BingoDrawFetcher:
     def __init__(
         self,
@@ -54,15 +61,18 @@ class BingoDrawFetcher:
 
     def fetch_recent_records(
         self, min_draws: int, max_draws: int
-    ) -> tuple[list[DrawRecord], str]:
+    ) -> tuple[list[DrawRecord], str, list[FetchAttempt]]:
         errors: list[str] = []
+        attempts: list[FetchAttempt] = []
         for source in self.sources:
             try:
                 records = self._fetch_from_source(
                     source, min_draws=min_draws, max_draws=max_draws
                 )
-                return records, source
+                attempts.append(FetchAttempt(source=source, ok=True, error=None))
+                return records, source, attempts
             except FetchDrawsError as exc:
+                attempts.append(FetchAttempt(source=source, ok=False, error=str(exc)))
                 errors.append(f"{source}: {exc}")
         raise FetchDrawsError("all sources failed: " + " | ".join(errors))
 
@@ -346,8 +356,8 @@ class BingoDrawFetcher:
 
 def build_recent_draws(
     fetcher: BingoDrawFetcher, min_draws: int, max_draws: int
-) -> tuple[list[list[int]], list[DrawRecord], str]:
-    records, source = fetcher.fetch_recent_records(
+) -> tuple[list[list[int]], list[DrawRecord], str, list[FetchAttempt]]:
+    records, source, attempts = fetcher.fetch_recent_records(
         min_draws=min_draws, max_draws=max_draws
     )
     recent_draws = [record.numbers for record in records]
@@ -361,4 +371,4 @@ def build_recent_draws(
         records[0].issue,
         records[-1].issue,
     )
-    return recent_draws, records, source
+    return recent_draws, records, source, attempts

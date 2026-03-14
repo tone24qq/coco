@@ -71,6 +71,22 @@ def test_predict_auto_fetch_when_recent_draws_missing(monkeypatch):
                 for i, draw in enumerate(_payload(23)["recent_draws"])
             ],
             "https://primary.example",
+            [
+                type(
+                    "A",
+                    (),
+                    {
+                        "source": "https://winwin.tw/Bingo",
+                        "ok": False,
+                        "error": "timeout",
+                    },
+                )(),
+                type(
+                    "A",
+                    (),
+                    {"source": "https://primary.example", "ok": True, "error": None},
+                )(),
+            ],
         ),
     )
     client = TestClient(api_module.app)
@@ -86,9 +102,72 @@ def test_predict_auto_fetch_when_recent_draws_missing(monkeypatch):
     assert body["last_issue_used"] == 2022
     assert body["issues_used"] == list(range(2000, 2023))
     assert body["history_length_used"] == 23
+    assert body["fetch_attempts"] == [
+        {"source": "https://winwin.tw/Bingo", "ok": False, "error": "timeout"},
+        {"source": "https://primary.example", "ok": True, "error": None},
+    ]
     assert "feature_mode" in body
     assert "degraded_features" in body
     assert "effective_windows" in body
+
+
+def test_predict_auto_fetch_forces_single_source_when_configured(monkeypatch):
+    monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+    monkeypatch.setattr(api_module, "FORCE_FETCH_SOURCE", "https://winwin.tw/Bingo")
+
+    captured = {}
+
+    def _stub_build_recent_draws(fetcher, min_draws, max_draws):
+        captured["sources"] = fetcher.sources
+        return (
+            _payload(23)["recent_draws"],
+            [
+                type(
+                    "R",
+                    (),
+                    {"issue": 3000 + i, "draw_time": "2026-01-01", "numbers": draw},
+                )
+                for i, draw in enumerate(_payload(23)["recent_draws"])
+            ],
+            "https://winwin.tw/Bingo",
+            [
+                type(
+                    "A",
+                    (),
+                    {
+                        "source": "https://winwin.tw/Bingo",
+                        "ok": True,
+                        "error": None,
+                    },
+                )()
+            ],
+        )
+
+    monkeypatch.setattr(api_module, "build_recent_draws", _stub_build_recent_draws)
+    client = TestClient(api_module.app)
+
+    resp = client.post("/predict", json={})
+
+    assert resp.status_code == 200
+    assert captured["sources"] == ["https://winwin.tw/Bingo"]
+
+
+def test_predict_auto_fetch_force_source_failure_does_not_fallback(monkeypatch):
+    monkeypatch.setattr(api_module, "PREDICTOR", _StubPredictor())
+    monkeypatch.setattr(api_module, "FORCE_FETCH_SOURCE", "https://winwin.tw/Bingo")
+
+    def _raise(*_args, **_kwargs):
+        raise api_module.FetchDrawsError(
+            "all sources failed: https://winwin.tw/Bingo: timeout"
+        )
+
+    monkeypatch.setattr(api_module, "build_recent_draws", _raise)
+    client = TestClient(api_module.app)
+
+    resp = client.post("/predict", json={})
+
+    assert resp.status_code == 502
+    assert "https://winwin.tw/Bingo" in resp.json()["detail"]
 
 
 def test_predict_validates_shape_and_range(monkeypatch):
@@ -145,6 +224,7 @@ def test_predict_success_contains_analysis_report(monkeypatch):
     assert body["first_issue_used"] is None
     assert body["last_issue_used"] is None
     assert body["issues_used"] == [None for _ in range(23)]
+    assert body["fetch_attempts"] == []
 
 
 def test_predict_converts_value_error_to_400(monkeypatch):

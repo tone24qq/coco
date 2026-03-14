@@ -8,3 +8,4 @@ auto_fetch_sources:
   - https://winwin.tw/Bingo
   - https://www.pilio.idv.tw/bingo/list.asp
   - https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
+auto_fetch_force_source: https://winwin.tw/Bingo
