@@ -1,6 +1,9 @@
 experiments:
   - version_id: v0_binary_baseline
     stage_type: baseline
+    pipeline_version: baseline_flat_score
+    stage1_keep: 30
+    stage2_keep: 10
     candidate_pool: 20
     prior_window: 100
     rerank_weight: 0.0
@@ -9,6 +12,9 @@ experiments:
     regime_aware: false
   - version_id: v1_rerank_k20_p100
     stage_type: rerank
+    pipeline_version: baseline_flat_score
+    stage1_keep: 30
+    stage2_keep: 10
     candidate_pool: 20
     prior_window: 100
     rerank_weight: 2.2
@@ -17,6 +23,9 @@ experiments:
     regime_aware: true
   - version_id: v3_rerank_k30_p300
     stage_type: rerank
+    pipeline_version: baseline_flat_score
+    stage1_keep: 30
+    stage2_keep: 10
     candidate_pool: 30
     prior_window: 300
     rerank_weight: 3.2
@@ -25,6 +34,9 @@ experiments:
     regime_aware: true
   - version_id: v3_rerank_k40_p500
     stage_type: rerank
+    pipeline_version: baseline_flat_score
+    stage1_keep: 30
+    stage2_keep: 10
     candidate_pool: 40
     prior_window: 500
     rerank_weight: 4.2
@@ -33,9 +45,24 @@ experiments:
     regime_aware: true
   - version_id: v4_two_stage_20_10_3
     stage_type: two_stage
+    pipeline_version: baseline_flat_score
+    stage1_keep: 30
+    stage2_keep: 10
     candidate_pool: 20
     prior_window: 300
     rerank_weight: 3.0
     penalty_weight: 0.11
     trend_weight: 0.40
+    regime_aware: true
+  - version_id: cascade_v1_flow
+    stage_type: cascade
+    pipeline_version: cascade_v1
+    model_artifact_dir: models/cascade_v1
+    stage1_keep: 30
+    stage2_keep: 10
+    candidate_pool: 30
+    prior_window: 300
+    rerank_weight: 0.0
+    penalty_weight: 0.0
+    trend_weight: 0.0
     regime_aware: true

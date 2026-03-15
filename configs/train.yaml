@@ -1,4 +1,9 @@
 feature_version: v3_core20
+pipeline:
+  version: baseline_flat_score
+  stage1_keep: 30
+  stage2_keep: 10
+  artifact_dir: models/cascade_v1
 max_draws_for_training: 3200
 feature_min_history: 22
 core_windows:

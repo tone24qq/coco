@@ -45,14 +45,11 @@ METADATA = (
     else {}
 )
 MODEL_LOAD_ERROR: str | None = None
-if (MODELS_DIR / "catboost_top20.cbm").exists():
-    try:
-        PREDICTOR = Predictor.load()
-    except ValueError as exc:
-        PREDICTOR = None
-        MODEL_LOAD_ERROR = str(exc)
-else:
+try:
+    PREDICTOR = Predictor.load()
+except Exception as exc:  # noqa: BLE001
     PREDICTOR = None
+    MODEL_LOAD_ERROR = str(exc)
 
 
 class PredictPayload(BaseModel):
@@ -63,6 +60,10 @@ class PredictPayload(BaseModel):
             "unique numbers per draw "
             "between 1 and 80"
         ),
+    )
+    include_stage_details: bool | None = Field(
+        default=None,
+        description="when true and cascade pipeline is active, include stage debug payload",
     )
 
 
@@ -229,6 +230,14 @@ def predict(payload: PredictPayload) -> dict:
         result = PREDICTOR.predict_from_draws(df, min_history=effective_min_history)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    include_stage_details = payload.include_stage_details
+    if include_stage_details is None:
+        include_stage_details = bool(
+            PREDICT_CFG.get("pipeline", {}).get("include_stage_details_default", False)
+        )
+    if not include_stage_details:
+        result.pop("cascade_debug", None)
 
     result["analysis_report"] = build_recent_report(payload.recent_draws)
     result["model_version"] = METADATA.get("model_type", "unknown")

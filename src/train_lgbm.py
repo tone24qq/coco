@@ -15,6 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from src.artifacts import save_cascade_artifacts  # noqa: E402
+from src.pipeline import CascadePipeline  # noqa: E402
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -30,6 +32,7 @@ from src.utils import (  # noqa: E402
     REPORTS_DIR,
     V3_CORE20_COLUMNS,
     load_yaml,
+    normalize_pipeline_version,
     precompute_issue_payloads,
     save_json,
     validate_feature_columns_contract,
@@ -45,6 +48,23 @@ METRIC_KEYS = [
 ]
 
 PREFERRED_STRATEGY_VERSION = "v3_rerank_k30_p300"
+
+
+def _fit_cascade_pipeline(
+    feat_df: pd.DataFrame,
+    indices: list[int],
+    params: dict,
+    stage1_keep: int,
+    stage2_keep: int,
+) -> CascadePipeline:
+    local_df = feat_df.iloc[indices].reset_index(drop=True)
+    pipeline, _ = CascadePipeline.train(
+        local_df,
+        stage1_keep=stage1_keep,
+        stage2_keep=stage2_keep,
+        catboost_params=params,
+    )
+    return pipeline
 
 
 def _expand_rows(
@@ -125,6 +145,15 @@ def _evaluate_strategies(
             x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
             model = CatBoostClassifier(**params)
             model.fit(x_train, y_train, verbose=False)
+            cascade_pipeline = None
+            if exp.stage_type == "cascade":
+                cascade_pipeline = _fit_cascade_pipeline(
+                    feat_df,
+                    list(tr_idx),
+                    params=params,
+                    stage1_keep=exp.stage1_keep,
+                    stage2_keep=exp.stage2_keep,
+                )
 
             def _score_issue(row_idx: int) -> tuple[dict, str]:
                 payload = issue_payloads[int(row_idx)]
@@ -134,7 +163,13 @@ def _evaluate_strategies(
                 if regime is None:
                     regime = derive_regime(feat_df.iloc[row_idx])
                     payload["regime"] = regime
-                final_scores = apply_strategy(base_scores, cand, exp, regime)
+                if exp.stage_type == "cascade":
+                    if cascade_pipeline is None:
+                        raise ValueError("cascade pipeline not available")
+                    cascade = cascade_pipeline.predict_issue(payload["issue_row"])
+                    final_scores = cascade["final_scores"]
+                else:
+                    final_scores = apply_strategy(base_scores, cand, exp, regime)
                 metric = issue_metrics(final_scores, payload["target"])
                 return metric, regime
 
@@ -215,8 +250,83 @@ def _select_formal_strategy(registry_df: pd.DataFrame) -> dict:
     )
 
 
+def _train_cascade_mode(
+    feature_df: pd.DataFrame,
+    feature_version: str,
+    params: dict,
+    pipeline_cfg: dict,
+) -> None:
+    stage1_keep = int(pipeline_cfg.get("stage1_keep", 30))
+    stage2_keep = int(pipeline_cfg.get("stage2_keep", 10))
+    print("[訓練開始] pipeline=cascade_v1 (stage-aware)")
+    pipeline, artifacts = CascadePipeline.train(
+        feature_df,
+        stage1_keep=stage1_keep,
+        stage2_keep=stage2_keep,
+        catboost_params=params,
+    )
+    _ = pipeline
+
+    artifact_dir_cfg = str(pipeline_cfg.get("artifact_dir", "models/cascade_v1"))
+    artifact_dir = PROJECT_ROOT / artifact_dir_cfg
+    artifact_meta = save_cascade_artifacts(
+        artifact_dir,
+        artifacts,
+        feature_version=feature_version,
+        train_issue_start=int(feature_df["issue"].min()),
+        train_issue_end=int(feature_df["target_issue"].max()),
+    )
+
+    selected_strategy = {
+        "version_id": "cascade_v1_flow",
+        "stage_type": "cascade",
+        "pipeline_version": "cascade_v1",
+        "model_artifact_dir": artifact_dir_cfg,
+        "stage1_keep": stage1_keep,
+        "stage2_keep": stage2_keep,
+        "candidate_pool": stage1_keep,
+        "prior_window": 300,
+        "rerank_weight": 0.0,
+        "penalty_weight": 0.0,
+        "trend_weight": 0.0,
+        "regime_aware": True,
+    }
+    save_json(
+        MODELS_DIR / "strategy_config.json",
+        {
+            "selected_strategy": selected_strategy,
+            "fallback_strategy": selected_strategy,
+        },
+    )
+
+    legacy_metadata = {}
+    metadata_path = MODELS_DIR / "metadata.json"
+    if metadata_path.exists():
+        legacy_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata = {
+        **legacy_metadata,
+        "model_type": "catboost_cascade",
+        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        "feature_rows": int(len(feature_df)),
+        "feature_version": feature_version,
+        "selected_strategy": selected_strategy,
+        "pipeline_artifacts": {
+            "cascade_v1": {
+                "artifact_dir": "models/cascade_v1",
+                **artifact_meta,
+            }
+        },
+    }
+    save_json(metadata_path, metadata)
+    print("[完成] cascade artifacts saved to models/cascade_v1")
+
+
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    pipeline_cfg = cfg.get("pipeline", {})
+    pipeline_version = normalize_pipeline_version(
+        pipeline_cfg.get("version", "baseline_flat_score")
+    )
     os.environ["STRICT_FEATURES"] = "1"
     feature_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
     max_draws = int(cfg.get("max_draws_for_training", len(feature_df)))
@@ -237,6 +347,15 @@ def main() -> None:
     params.setdefault("verbose", False)
     params.setdefault("random_seed", 42)
 
+    if pipeline_version.startswith("cascade"):
+        _train_cascade_mode(
+            feature_df=feature_df,
+            feature_version=feature_version,
+            params=params,
+            pipeline_cfg=pipeline_cfg,
+        )
+        return
+
     print("[訓練開始] 模型：CatBoost Binary")
     print(f"[訓練設定] max_draws_for_training={max_draws}")
     print(
@@ -248,6 +367,7 @@ def main() -> None:
         "v0_binary_baseline",
         "v3_rerank_k30_p300",
         "v4_two_stage_20_10_3",
+        "cascade_v1_flow",
     }
     fast_experiments = [
         exp for exp in all_experiments if exp.version_id in fast_version_ids
