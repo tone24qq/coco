@@ -68,6 +68,59 @@ V3_CORE20_COLUMNS = [
     "cand_weighted_distance_decay_recent_10",
     "cand_count_recent_within_1_10",
 ]
+
+CASCADE_V1_STAGE1_COLUMNS = [
+    "cand_freq_smooth_20",
+    "cand_freq_smooth_200",
+    "cand_freq_trend_20_200",
+    "cand_freq_ewma_hl50",
+    "cand_gap_log1p",
+    "cand_recent_hit_decay_hl5",
+    "cand_neighbor_pm1_decay_hl10",
+    "cand_neighbor_pm2_decay_hl10",
+    "cand_distance_kernel_last_draw_tau2",
+    "cand_pmi_last_draw_sum_200",
+    "cand_handoff_pm1_lift_200",
+]
+
+CASCADE_V1_STAGE2_COLUMNS = [
+    "issue_zone_entropy",
+    "issue_span_z50",
+    "issue_sum_z50",
+    "issue_consecutive_z50",
+    "num_zone",
+    "cand_repeat_last_draw",
+    "cand_pmi_last_draw_sum_200",
+    "cand_pmi_last_draw_max_200",
+    "cand_count_prev_within_1",
+    "cand_count_prev_within_2",
+    "cand_count_prev_within_3",
+    "cand_count_recent_within_1_10",
+]
+
+CASCADE_V1_STAGE3_COLUMNS = [
+    "number",
+    "zone_id",
+    "tail",
+    "stage2_score",
+    "stage2_rank",
+]
+
+PIPELINE_FEATURE_SCHEMAS = {
+    "baseline_flat_score": {
+        "flat": V3_CORE20_COLUMNS,
+    },
+    "cascade_v1": {
+        "stage1": CASCADE_V1_STAGE1_COLUMNS,
+        "stage2": CASCADE_V1_STAGE2_COLUMNS,
+        "stage3": CASCADE_V1_STAGE3_COLUMNS,
+    },
+    "cascade_v2": {
+        "stage1": CASCADE_V1_STAGE1_COLUMNS,
+        "stage2": CASCADE_V1_STAGE2_COLUMNS,
+        "stage3": CASCADE_V1_STAGE3_COLUMNS,
+    },
+}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -78,6 +131,35 @@ def normalize_feature_version(feature_version: str | None) -> str:
             f"unsupported feature_version: {v}; only v3_core20 is supported"
         )
     return v
+
+
+def normalize_pipeline_version(pipeline_version: str | None) -> str:
+    v = str(pipeline_version or "baseline_flat_score").strip()
+    if v not in PIPELINE_FEATURE_SCHEMAS:
+        raise ValueError(f"unsupported pipeline_version: {v}")
+    return v
+
+
+def get_pipeline_feature_schema(pipeline_version: str | None) -> dict[str, list[str]]:
+    v = normalize_pipeline_version(pipeline_version)
+    schema = PIPELINE_FEATURE_SCHEMAS[v]
+    return {k: list(cols) for k, cols in schema.items()}
+
+
+def validate_stage_feature_contract(
+    pipeline_version: str,
+    stage_name: str,
+    columns: Sequence[str],
+) -> None:
+    schema = get_pipeline_feature_schema(pipeline_version)
+    if stage_name not in schema:
+        raise ValueError(f"pipeline={pipeline_version} has no stage={stage_name}")
+    expected = list(schema[stage_name])
+    actual = list(columns)
+    if expected != actual:
+        raise ValueError(
+            f"pipeline={pipeline_version} stage={stage_name} schema mismatch"
+        )
 
 
 def min_required_history(
@@ -442,6 +524,81 @@ def build_candidate_matrix(
     return _build_candidate_matrix_v3(issue_row, feature_columns, strict_features)
 
 
+def build_stage1_candidate_matrix(
+    issue_row: pd.Series,
+    feature_columns: Sequence[str],
+    strict_features: bool | None = None,
+    pipeline_version: str = "cascade_v1",
+) -> pd.DataFrame:
+    validate_stage_feature_contract(pipeline_version, "stage1", feature_columns)
+    full = _build_candidate_matrix_v3(
+        issue_row,
+        V3_CORE20_COLUMNS,
+        strict_features=strict_features,
+    )
+    stage1 = full.reindex(columns=list(feature_columns)).copy()
+    stage1.insert(0, "number", np.arange(1, 81, dtype=int))
+    return stage1
+
+
+def build_stage2_candidate_matrix(
+    issue_row: pd.Series,
+    stage1_df: pd.DataFrame,
+    feature_columns: Sequence[str],
+    strict_features: bool | None = None,
+    pipeline_version: str = "cascade_v1",
+) -> pd.DataFrame:
+    validate_stage_feature_contract(pipeline_version, "stage2", feature_columns)
+    if "number" not in stage1_df.columns:
+        raise ValueError("stage1_df must include number column")
+    keep_df = stage1_df
+    if "stage1_keep_flag" in stage1_df.columns:
+        keep_df = stage1_df[stage1_df["stage1_keep_flag"] > 0]
+    keep_numbers = keep_df["number"].astype(int).tolist()
+    full = _build_candidate_matrix_v3(
+        issue_row,
+        V3_CORE20_COLUMNS,
+        strict_features=strict_features,
+    )
+    full.insert(0, "number", np.arange(1, 81, dtype=int))
+    stage2 = full[full["number"].isin(keep_numbers)].copy()
+    stage2 = stage2.reindex(columns=["number", *list(feature_columns)])
+    for col in ["stage1_score", "stage1_rank", "stage1_keep_flag"]:
+        if col in stage1_df.columns:
+            stage2 = stage2.merge(
+                stage1_df[["number", col]],
+                on="number",
+                how="left",
+            )
+    return stage2
+
+
+def build_stage3_selector_inputs(
+    issue_row: pd.Series,
+    stage2_df: pd.DataFrame,
+    top_k: int = 10,
+    pipeline_version: str = "cascade_v1",
+) -> pd.DataFrame:
+    _ = issue_row
+    if "number" not in stage2_df.columns:
+        raise ValueError("stage2_df must include number column")
+    work = stage2_df.copy()
+    if "stage2_keep_flag" in work.columns:
+        work = work[work["stage2_keep_flag"] > 0]
+    if "stage2_score" in work.columns:
+        work = work.sort_values("stage2_score", ascending=False)
+    work = work.head(int(top_k)).copy()
+    work["zone_id"] = ((work["number"].astype(int) - 1) // 20).astype(int)
+    work["tail"] = (work["number"].astype(int) % 10).astype(int)
+    if "stage2_score" not in work.columns:
+        work["stage2_score"] = 0.0
+    if "stage2_rank" not in work.columns:
+        work["stage2_rank"] = np.arange(1, len(work) + 1, dtype=int)
+    selector = work[["number", "zone_id", "tail", "stage2_score", "stage2_rank"]].copy()
+    validate_stage_feature_contract(pipeline_version, "stage3", selector.columns)
+    return selector
+
+
 def _build_indicator_matrix(draws: Sequence[Sequence[int]], window: int) -> np.ndarray:
     data = np.zeros((min(window, len(draws)), 80), dtype=float)
     for i, draw in enumerate(draws[-window:]):
@@ -693,6 +850,7 @@ def precompute_issue_payloads(
             "cand": cand,
             "target": set(json.loads(row["target_numbers"])),
             "regime": None,
+            "issue_row": row,
         }
     return payloads
 

@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from src.pipeline import CascadePipeline  # noqa: E402
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -32,6 +33,7 @@ from src.utils import (  # noqa: E402
     build_latest_issue_features_for_inference,
     load_processed,
     load_yaml,
+    normalize_pipeline_version,
     precompute_issue_payloads,
     save_json,
     validate_feature_columns_contract,
@@ -288,6 +290,23 @@ def _expand_rows(
     )
 
 
+def _fit_cascade_pipeline(
+    feat_df: pd.DataFrame,
+    indices: list[int],
+    params: dict,
+    stage1_keep: int,
+    stage2_keep: int,
+) -> CascadePipeline:
+    local_df = feat_df.iloc[indices].reset_index(drop=True)
+    pipeline, _ = CascadePipeline.train(
+        local_df,
+        stage1_keep=stage1_keep,
+        stage2_keep=stage2_keep,
+        catboost_params=params,
+    )
+    return pipeline
+
+
 def _run_experiments(
     feat_df: pd.DataFrame,
     splits: int,
@@ -304,9 +323,20 @@ def _run_experiments(
         print(f"[版本開始] {exp.version_id}")
         fold_train, fold_test, regime_rows = [], [], []
         for fold, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
-            x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
-            model = CatBoostClassifier(**params)
-            model.fit(x_train, y_train, verbose=False)
+            model = None
+            if exp.stage_type != "cascade":
+                x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
+                model = CatBoostClassifier(**params)
+                model.fit(x_train, y_train, verbose=False)
+            cascade_pipeline = None
+            if exp.stage_type == "cascade":
+                cascade_pipeline = _fit_cascade_pipeline(
+                    feat_df,
+                    list(tr_idx),
+                    params=params,
+                    stage1_keep=exp.stage1_keep,
+                    stage2_keep=exp.stage2_keep,
+                )
 
             for idx_set, pack in [
                 (tr_idx[-min(50, len(tr_idx)) :], fold_train),
@@ -316,20 +346,151 @@ def _run_experiments(
                 for row_idx in idx_set:
                     payload = issue_payloads[int(row_idx)]
                     cand = payload["cand"]
-                    base_scores = model.predict_proba(cand)[:, 1]
                     regime = payload["regime"]
                     if regime is None:
                         regime = derive_regime(feat_df.iloc[int(row_idx)])
                         payload["regime"] = regime
-                    scores = apply_strategy(base_scores, cand, exp, regime)
+                    stage_meta: dict[str, object] = {}
+                    if exp.stage_type == "cascade":
+                        if cascade_pipeline is None:
+                            raise ValueError("cascade pipeline not available")
+                        cascade = cascade_pipeline.predict_issue(payload["issue_row"])
+                        scores = cascade["final_scores"]
+                        target = set(payload["target"])
+                        stage1_df = cascade["stage1"]
+                        stage2_df = cascade["stage2"]
+                        stage1_pool = set(
+                            int(x)
+                            for x in stage1_df[stage1_df["stage1_keep_flag"] == 1][
+                                "number"
+                            ].tolist()
+                        )
+                        stage2_pool = set(
+                            int(x)
+                            for x in stage2_df[stage2_df["stage2_keep_flag"] == 1][
+                                "number"
+                            ].tolist()
+                        )
+                        no_selector_top3 = [int(x) for x in cascade["no_selector_top3"]]
+                        sel_top3 = [int(x) for x in cascade["final_top3"]]
+
+                        def _top3_diag(top3_vals: list[int]) -> dict[str, float]:
+                            min_d = [
+                                min(abs(n - a) for a in target) if target else 80.0
+                                for n in top3_vals
+                            ]
+                            return {
+                                "exact": float(
+                                    sum(1 for n in top3_vals if n in target) / 3.0
+                                ),
+                                "at_least_one": float(
+                                    any(n in target for n in top3_vals)
+                                ),
+                                "adj": float(
+                                    sum(
+                                        1
+                                        for n in top3_vals
+                                        if any(abs(n - a) <= 1 for a in target)
+                                    )
+                                    / 3.0
+                                ),
+                                "strict_adj_only": float(
+                                    sum(
+                                        1
+                                        for n in top3_vals
+                                        if n not in target
+                                        and any(abs(n - a) == 1 for a in target)
+                                    )
+                                    / 3.0
+                                ),
+                                "mean_min_distance": float(np.mean(min_d)),
+                            }
+
+                        sel_diag = _top3_diag(sel_top3)
+                        no_sel_diag = _top3_diag(no_selector_top3)
+                        rel10 = [
+                            1.0 if int(n) in target else 0.0
+                            for n in stage2_df.sort_values(
+                                "stage2_score", ascending=False
+                            )["number"]
+                            .head(10)
+                            .tolist()
+                        ]
+                        discounts = 1.0 / np.log2(np.arange(2, 12, dtype=float))
+                        dcg = float(np.sum(np.array(rel10, dtype=float) * discounts))
+                        ideal_rel = np.array(
+                            [1.0] * min(len(target), 10)
+                            + [0.0] * max(0, 10 - len(target))
+                        )
+                        idcg = float(np.sum(ideal_rel * discounts))
+                        stage_meta = {
+                            "stage1_recall_at_30": float(
+                                len(stage1_pool & target) / 20.0
+                            ),
+                            "stage1_retained_actual_count": int(
+                                len(stage1_pool & target)
+                            ),
+                            "stage2_top10_hit_rate": float(
+                                len(stage2_pool & target) / 10.0
+                            ),
+                            "stage2_ndcg_at_10": float(dcg / idcg) if idcg > 0 else 0.0,
+                            "stage3_selector_exact_hit_at_3": float(sel_diag["exact"]),
+                            "stage3_no_selector_exact_hit_at_3": float(
+                                no_sel_diag["exact"]
+                            ),
+                            "stage3_selector_top3_at_least_one": float(
+                                sel_diag["at_least_one"]
+                            ),
+                            "stage3_no_selector_top3_at_least_one": float(
+                                no_sel_diag["at_least_one"]
+                            ),
+                            "stage3_selector_adj_hit_pm1_at_3": float(sel_diag["adj"]),
+                            "stage3_no_selector_adj_hit_pm1_at_3": float(
+                                no_sel_diag["adj"]
+                            ),
+                            "stage3_selector_strict_adj_only_pm1_at_3": float(
+                                sel_diag["strict_adj_only"]
+                            ),
+                            "stage3_no_selector_strict_adj_only_pm1_at_3": float(
+                                no_sel_diag["strict_adj_only"]
+                            ),
+                            "stage3_selector_mean_min_distance_at_3": float(
+                                sel_diag["mean_min_distance"]
+                            ),
+                            "stage3_no_selector_mean_min_distance_at_3": float(
+                                no_sel_diag["mean_min_distance"]
+                            ),
+                            "selector_uplift_exact_hit_at_3": float(
+                                sel_diag["exact"] - no_sel_diag["exact"]
+                            ),
+                            "selector_uplift_adj_hit_pm1_at_3": float(
+                                sel_diag["adj"] - no_sel_diag["adj"]
+                            ),
+                            "selector_uplift_strict_adj_only_pm1_at_3": float(
+                                sel_diag["strict_adj_only"]
+                                - no_sel_diag["strict_adj_only"]
+                            ),
+                            "selector_uplift_mean_min_distance_at_3": float(
+                                sel_diag["mean_min_distance"]
+                                - no_sel_diag["mean_min_distance"]
+                            ),
+                        }
+                    else:
+                        if model is None:
+                            raise ValueError("legacy model not available")
+                        base_scores = model.predict_proba(cand)[:, 1]
+                        scores = apply_strategy(base_scores, cand, exp, regime)
                     m = _make_fold_issue_metrics(scores, payload["target"])
                     m["regime"] = regime
+                    m.update(stage_meta)
                     rows.append(m)
 
                     if list(idx_set) == list(te_idx):
                         pred_rank = np.argsort(scores)[::-1]
                         pred_top10 = [int(x + 1) for x in pred_rank[:10]]
                         pred_top3 = pred_top10[:3]
+                        if exp.stage_type == "cascade":
+                            pred_top3 = [int(x) for x in cascade["final_top3"]]
                         feat_row = feat_df.iloc[int(row_idx)]
                         actual = sorted(int(x) for x in payload["target"])
                         prev_numbers = sorted(
@@ -340,6 +501,7 @@ def _run_experiments(
                             {
                                 "version_id": exp.version_id,
                                 "fold": fold,
+                                "regime": regime,
                                 "issue": int(feat_row["issue"]),
                                 "history_length": int(
                                     len(
@@ -349,9 +511,15 @@ def _run_experiments(
                                     )
                                 ),
                                 "pred_top3": pred_top3,
+                                "pred_top3_no_selector": (
+                                    [int(x) for x in cascade["no_selector_top3"]]
+                                    if exp.stage_type == "cascade"
+                                    else pred_top3
+                                ),
                                 "pred_top10": pred_top10,
                                 "actual": actual,
                                 "prev_numbers": prev_numbers,
+                                **stage_meta,
                             }
                         )
 
@@ -472,8 +640,193 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
     return out.groupby("history_bucket")[metric_cols].mean().reset_index()
 
 
+def _build_stagewise_uplift_report(per_issue_df: pd.DataFrame) -> dict:
+    if per_issue_df.empty:
+        return {}
+    out: dict[str, object] = {}
+
+    def _window(df: pd.DataFrame, name: str) -> None:
+        if df.empty:
+            return
+        cols = [
+            "stage1_recall_at_30",
+            "stage1_retained_actual_count",
+            "stage2_top10_hit_rate",
+            "stage3_selector_exact_hit_at_3",
+            "stage3_no_selector_exact_hit_at_3",
+            "stage3_selector_adj_hit_pm1_at_3",
+            "stage3_no_selector_adj_hit_pm1_at_3",
+            "stage3_selector_strict_adj_only_pm1_at_3",
+            "stage3_no_selector_strict_adj_only_pm1_at_3",
+            "stage3_selector_mean_min_distance_at_3",
+            "stage3_no_selector_mean_min_distance_at_3",
+            "selector_uplift_exact_hit_at_3",
+            "selector_uplift_adj_hit_pm1_at_3",
+            "selector_uplift_strict_adj_only_pm1_at_3",
+            "selector_uplift_mean_min_distance_at_3",
+            "stage3_selector_top3_at_least_one",
+            "stage3_no_selector_top3_at_least_one",
+        ]
+        avail = [c for c in cols if c in df.columns]
+        out[name] = {c: float(df[c].mean()) for c in avail}
+
+    cascade_rows = per_issue_df[
+        per_issue_df["version_id"].astype(str).str.contains("cascade")
+    ]
+    _window(cascade_rows, "full_window")
+    _window(cascade_rows.tail(100), "recent_100")
+    _window(cascade_rows.tail(300), "recent_300")
+
+    if "regime" in cascade_rows.columns and not cascade_rows.empty:
+        regime_cols = [
+            c
+            for c in [
+                "stage1_recall_at_30",
+                "stage2_top10_hit_rate",
+                "stage3_selector_exact_hit_at_3",
+                "selector_uplift_exact_hit_at_3",
+            ]
+            if c in cascade_rows.columns
+        ]
+        out["regime_bucket"] = (
+            cascade_rows.groupby("regime")[regime_cols]
+            .mean()
+            .reset_index()
+            .to_dict(orient="records")
+            if regime_cols
+            else []
+        )
+
+    if "version_id" in per_issue_df.columns and "actual" in per_issue_df.columns:
+        version_rows = []
+        for ver, g in per_issue_df.groupby("version_id"):
+            exact3 = []
+            one3 = []
+            for _, row in g.iterrows():
+                actual = set(int(x) for x in row.get("actual", []))
+                top3 = [int(x) for x in row.get("pred_top3", [])]
+                if not top3:
+                    continue
+                exact3.append(sum(1 for n in top3 if n in actual) / 3.0)
+                one3.append(float(any(n in actual for n in top3)))
+            if exact3:
+                version_rows.append(
+                    {
+                        "version_id": str(ver),
+                        "exact_hit@3": float(np.mean(exact3)),
+                        "top3_at_least_one_exact": float(np.mean(one3)),
+                    }
+                )
+        out["version_compare"] = version_rows
+
+    if not cascade_rows.empty and "pred_top3_no_selector" in cascade_rows.columns:
+        exact_sel = []
+        exact_no_sel = []
+        adj_sel = []
+        adj_no_sel = []
+        strict_sel = []
+        strict_no_sel = []
+        dist_sel = []
+        dist_no_sel = []
+        for _, row in cascade_rows.iterrows():
+            actual = set(int(x) for x in row.get("actual", []))
+            top3_sel = [int(x) for x in row.get("pred_top3", [])]
+            top3_no_sel = [int(x) for x in row.get("pred_top3_no_selector", [])]
+            if len(top3_sel) == 3 and len(top3_no_sel) == 3:
+                exact_sel.append(sum(1 for n in top3_sel if n in actual) / 3.0)
+                exact_no_sel.append(sum(1 for n in top3_no_sel if n in actual) / 3.0)
+                adj_sel.append(
+                    sum(1 for n in top3_sel if any(abs(n - a) <= 1 for a in actual))
+                    / 3.0
+                )
+                adj_no_sel.append(
+                    sum(1 for n in top3_no_sel if any(abs(n - a) <= 1 for a in actual))
+                    / 3.0
+                )
+                strict_sel.append(
+                    sum(
+                        1
+                        for n in top3_sel
+                        if n not in actual and any(abs(n - a) == 1 for a in actual)
+                    )
+                    / 3.0
+                )
+                strict_no_sel.append(
+                    sum(
+                        1
+                        for n in top3_no_sel
+                        if n not in actual and any(abs(n - a) == 1 for a in actual)
+                    )
+                    / 3.0
+                )
+                dist_sel.append(
+                    float(np.mean([min(abs(n - a) for a in actual) for n in top3_sel]))
+                    if actual
+                    else 80.0
+                )
+                dist_no_sel.append(
+                    float(
+                        np.mean([min(abs(n - a) for a in actual) for n in top3_no_sel])
+                    )
+                    if actual
+                    else 80.0
+                )
+        if exact_sel and exact_no_sel:
+            out["cascade_selector_vs_no_selector"] = {
+                "cascade_v1_without_selector_exact_hit@3": float(np.mean(exact_no_sel)),
+                "cascade_v1_with_selector_exact_hit@3": float(np.mean(exact_sel)),
+                "uplift_exact_hit@3": float(np.mean(exact_sel) - np.mean(exact_no_sel)),
+                "cascade_v1_without_selector_adj_hit_pm1@3": float(np.mean(adj_no_sel)),
+                "cascade_v1_with_selector_adj_hit_pm1@3": float(np.mean(adj_sel)),
+                "uplift_adj_hit_pm1@3": float(np.mean(adj_sel) - np.mean(adj_no_sel)),
+                "cascade_v1_without_selector_strict_adj_only_pm1@3": float(
+                    np.mean(strict_no_sel)
+                ),
+                "cascade_v1_with_selector_strict_adj_only_pm1@3": float(
+                    np.mean(strict_sel)
+                ),
+                "uplift_strict_adj_only_pm1@3": float(
+                    np.mean(strict_sel) - np.mean(strict_no_sel)
+                ),
+                "cascade_v1_without_selector_mean_min_distance_at_3": float(
+                    np.mean(dist_no_sel)
+                ),
+                "cascade_v1_with_selector_mean_min_distance_at_3": float(
+                    np.mean(dist_sel)
+                ),
+                "uplift_mean_min_distance_at_3": float(
+                    np.mean(dist_sel) - np.mean(dist_no_sel)
+                ),
+            }
+
+    if "history_length" in cascade_rows.columns:
+        h = cascade_rows.copy()
+        h["history_bucket"] = h["history_length"].astype(int).map(_bucket_label)
+        cols = [
+            col
+            for col in [
+                "selector_uplift_exact_hit_at_3",
+                "selector_uplift_adj_hit_pm1_at_3",
+                "selector_uplift_strict_adj_only_pm1_at_3",
+                "selector_uplift_mean_min_distance_at_3",
+            ]
+            if col in h.columns
+        ]
+        if cols:
+            out["history_bucket_selector_uplift"] = (
+                h.groupby("history_bucket")[cols]
+                .mean()
+                .reset_index()
+                .to_dict(orient="records")
+            )
+
+    return out
+
+
 def main() -> None:
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    pipeline_cfg = cfg.get("pipeline", {})
+    normalize_pipeline_version(pipeline_cfg.get("version", "baseline_flat_score"))
     if str(cfg.get("feature_version", "v3_core20")) != "v3_core20":
         raise ValueError("only v3_core20 is supported")
     os.environ["STRICT_FEATURES"] = "1"
@@ -503,6 +856,7 @@ def main() -> None:
         "v0_binary_baseline",
         "v3_rerank_k30_p300",
         "v4_two_stage_20_10_3",
+        "cascade_v1_flow",
     }
     fast_experiments = [
         exp for exp in experiments if exp.version_id in fast_version_ids
@@ -620,6 +974,8 @@ def main() -> None:
         REPORTS_DIR / "history_bucket_report.json",
         {"rows": history_bucket_df.to_dict(orient="records")},
     )
+    stagewise_uplift = _build_stagewise_uplift_report(per_issue_df)
+    save_json(REPORTS_DIR / "cascade_stagewise_report.json", stagewise_uplift)
 
     save_json(
         REPORTS_DIR / "experiment_summary.json",

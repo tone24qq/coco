@@ -17,6 +17,10 @@ class StrategyConfig:
     penalty_weight: float
     trend_weight: float
     regime_aware: bool = True
+    pipeline_version: str = "baseline_flat_score"
+    model_artifact_dir: str = ""
+    stage1_keep: int = 30
+    stage2_keep: int = 10
 
 
 def default_experiments() -> list[StrategyConfig]:
@@ -27,6 +31,20 @@ def default_experiments() -> list[StrategyConfig]:
         StrategyConfig("v3_rerank_k40_p500", "rerank", 40, 500, 4.2, 0.12, 0.45, True),
         StrategyConfig(
             "v4_two_stage_20_10_3", "two_stage", 20, 300, 3.0, 0.11, 0.4, True
+        ),
+        StrategyConfig(
+            "cascade_v1_flow",
+            "cascade",
+            30,
+            300,
+            0.0,
+            0.0,
+            0.0,
+            True,
+            pipeline_version="cascade_v1",
+            model_artifact_dir="models/cascade_v1",
+            stage1_keep=30,
+            stage2_keep=10,
         ),
     ]
 
@@ -70,6 +88,11 @@ def apply_strategy(
     if cfg.stage_type == "rerank":
         return _rerank_once(scores, cand, cfg.candidate_pool, cfg, regime)
 
+    if cfg.stage_type == "cascade":
+        raise ValueError(
+            "cascade strategy must run through CascadePipeline, not apply_strategy"
+        )
+
     scores = _rerank_once(scores, cand, cfg.candidate_pool, cfg, regime)
     scores = _rerank_once(scores, cand, 10, cfg, regime, scale=0.9)
     scores = _rerank_once(scores, cand, 3, cfg, regime, scale=1.1)
@@ -108,6 +131,14 @@ def _rerank_once(
         out[idx] + scale * cfg.rerank_weight * 0.01 * regime_boost * bonus - penalty
     )
     return out
+
+
+def is_cascade_strategy(cfg: StrategyConfig) -> bool:
+    return cfg.stage_type == "cascade"
+
+
+def is_legacy_strategy(cfg: StrategyConfig) -> bool:
+    return cfg.stage_type in {"baseline", "rerank", "two_stage"}
 
 
 def top_hits(scores: np.ndarray, actual: set[int]) -> tuple[int, int, int]:
@@ -150,4 +181,8 @@ def strategy_to_dict(cfg: StrategyConfig) -> dict[str, Any]:
         "penalty_weight": cfg.penalty_weight,
         "trend_weight": cfg.trend_weight,
         "regime_aware": cfg.regime_aware,
+        "pipeline_version": cfg.pipeline_version,
+        "model_artifact_dir": cfg.model_artifact_dir,
+        "stage1_keep": cfg.stage1_keep,
+        "stage2_keep": cfg.stage2_keep,
     }

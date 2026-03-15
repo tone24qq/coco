@@ -1,4 +1,10 @@
 feature_version: v3_core20
+pipeline:
+  # local training default: always train latest cascade pipeline
+  version: cascade_v1
+  stage1_keep: 30
+  stage2_keep: 10
+  artifact_dir: models/cascade_v1
 max_draws_for_training: 3200
 feature_min_history: 22
 core_windows:

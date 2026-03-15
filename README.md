@@ -1,86 +1,120 @@
-# BingoBingo 訓練 / 推論分離專案
+# BingoBingo 訓練 / 推論（本機優先 SOP）
 
-本專案已整理成 **本地訓練、雲端只載模預測** 的流程。
+本專案目前的**正式預設流程**是 `cascade_v1`（Stage1→Stage2→Stage3 selector）。
 
-> 目前 repo 僅支援單一特徵版本：`v3_core20`。
+- 本機直接執行 `python src/train_lgbm.py`，預設會走 `configs/train.yaml` 的 `pipeline.version`。
+- 目前預設值已是 `cascade_v1`，因此你不需要額外切參數即可訓練最新版流程。
 
-## 專案結構
+---
 
-```text
-project/
-├─ data/
-│  ├─ raw/
-│  ├─ processed/
-│  └─ feature_store/
-├─ models/
-├─ reports/
-├─ src/
-│  ├─ prepare_data.py
-│  ├─ build_features.py
-│  ├─ train_lgbm.py
-│  ├─ backtest.py
-│  ├─ predict.py
-│  ├─ api.py
-│  └─ utils.py
-├─ configs/
-│  ├─ train.yaml
-│  └─ predict.yaml
-└─ README.md
-```
+## 0) Pipeline precedence（非常重要）
 
-## 1) 本地訓練指令
+### 訓練（`src/train_lgbm.py`）
+1. `configs/train.yaml -> pipeline.version`（唯一來源）
+2. 若為 `cascade_v1`：訓練 stage1/stage2 並輸出 `models/cascade_v1/*`
+3. 訓練完成會更新 `models/strategy_config.json`，使預測預設指向 `cascade_v1_flow`
+
+### 回測（`src/backtest.py`）
+1. 讀 `configs/train.yaml`（資料窗、fold、pipeline 相關設定）
+2. 讀 `configs/experiments.yaml`（實驗清單）
+3. `cascade_v1_flow` 會走 cascade pipeline + selector 指標報表
+
+### 預測（`src/predict.py` / `src/api.py`）
+1. 若 `configs/predict.yaml -> pipeline.version != auto`：**強制使用 config 指定 pipeline**
+2. 否則（`auto`）：使用 `models/strategy_config.json`（selected_strategy）
+3. 若 strategy config 不完整，再回退 `models/metadata.json`
+4. 若都缺，最後才用 defaults
+
+> 建議本機日常使用：`predict.yaml` 維持 `auto`，讓它直接跟隨你最後一次訓練產物。
+
+---
+
+## 1) 本機最新版訓練 SOP（直接照打）
 
 ```bash
 python src/prepare_data.py
 python src/build_features.py
 python src/train_lgbm.py
-python src/backtest.py
 ```
 
-### 流程說明
-- `prepare_data.py`：讀取 `賓果賓果_2023~2026.csv`，清洗為 `issue, draw_date, numbers`。
-- `build_features.py`：建立單期特徵（僅用當期以前資料），輸出特徵表與固定欄位清單。
-- `train_lgbm.py`：訓練 CatBoost，輸出模型、metadata、特徵重要度。
-- `backtest.py`：使用 `TimeSeriesSplit` 做 walk-forward 回測，輸出每折與總指標。
+### 預期（最新版 cascade_v1）訓練產物
 
-## 2) 上線預測指令
+- `models/cascade_v1/stage1_model.cbm`
+- `models/cascade_v1/stage1_feature_columns.json`
+- `models/cascade_v1/stage2_model.cbm`
+- `models/cascade_v1/stage2_feature_columns.json`
+- `models/cascade_v1/stage3_input_schema.json`
+- `models/cascade_v1/pipeline_metadata.json`
+- `models/strategy_config.json`（`selected_strategy.version_id` 應為 `cascade_v1_flow`）
+- `models/metadata.json`（含 `pipeline_artifacts.cascade_v1`）
 
+---
+
+## 2) 本機預測 SOP
+
+### CLI
+```bash
+python src/predict.py
+```
+
+### API
 ```bash
 uvicorn src.api:app --host 0.0.0.0 --port 10000
 ```
 
-API 端點：
-- `GET /health`
-- `GET /analysis`
-- `POST /predict`
+- `POST /predict` 可用 `include_stage_details=true` 查看 stage debug（selector reason / stage keep count）
+- `top3_numbers` = selector final top3
+- `top3_no_selector` = stage2 raw top3
+- `top10_numbers` = stage2 ranked top10
 
-`/predict` 的 `recent_draws` 輸入範圍為 `1~999` 期；若模型特徵窗長需求較高（例如 v3_core20 預設需至少 201 期），API 會以 required history gate 回傳 400。
+---
 
-> API **只載入已訓練模型**，不會重新訓練。
+## 3) 本機回測 SOP（含 stagewise / selector uplift）
 
-## 3) 訓練輸出物
+```bash
+python src/backtest.py
+```
 
-訓練後會產生：
-- `models/catboost_top20.cbm`（訓練產物，不納入 Git；部署時需由本地訓練產出或另行提供到 `models/` 目錄）
-- `models/feature_columns.json`
-- `models/metadata.json`
-- `reports/backtest_metrics.json`
-- `reports/feature_importance.csv`
-- `reports/walkforward_report.csv`
+### 重要報表
+- `reports/experiment_registry.csv`
+- `reports/experiment_per_fold_metrics.csv`
+- `reports/history_bucket_report.csv`
+- `reports/cascade_stagewise_report.json`
 
-## 4) 重訓與替換模型
+`cascade_stagewise_report.json` 會包含：
+- stage1 recall@30 / retained count
+- stage2 top10 / ndcg
+- stage3 selector vs no-selector（exact/adj/strict_adj/distance uplift）
+- history bucket selector uplift breakdown
 
-### 如何重訓
-1. 更新根目錄歷史資料 CSV（或 `data/raw`）。
-2. 重新執行四步訓練指令。
-3. 新模型會覆蓋 `models/` 舊檔。
+---
 
-### 如何替換上線模型
-- 將本地最新 `models/` 檔案部署到雲端相同路徑。
-- 重啟 FastAPI 服務即可生效。
+## 4) 本機訓練完成檢查清單（快速驗收）
 
-## 特徵一致性保證
+訓練後請逐條檢查：
 
-- 訓練與推論都透過 `src/utils.py::build_issue_features` 與 `build_candidate_matrix`。
-- 避免 train/inference feature mismatch。
-- 回測使用時間序列切分，避免未來資料洩漏。
+1. `configs/train.yaml` 的 `pipeline.version` 是 `cascade_v1`
+2. `models/cascade_v1/pipeline_metadata.json` 存在
+3. `models/strategy_config.json` 的 `selected_strategy.stage_type == "cascade"`
+4. `python src/predict.py` 輸出含 `strategy_version: cascade_v1_flow`
+5. `python src/backtest.py` 後有 `reports/cascade_stagewise_report.json`
+
+---
+
+## 5) 一鍵本機驗證指令（開發者）
+
+```bash
+black --check .
+isort --check-only .
+flake8 .
+flake8 agent.py
+python -m py_compile $(git ls-files '*.py')
+pytest -q
+```
+
+---
+
+## 6) 目前已知限制
+
+- Stage3 selector 為可解釋規則式組合打分（非學習式 selector）。
+- 若手動把 `predict.yaml.pipeline.version` 設成非 `auto`，會覆蓋 strategy config，請確認是你要的行為。
