@@ -1,82 +1,37 @@
 {
-  "model_type": "catboost",
-  "trained_at_utc": "2026-03-14T08:38:43.301141+00:00",
+  "model_type": "catboost_cascade",
+  "trained_at_utc": "2026-03-15T14:01:43.913099+00:00",
   "feature_rows": 3177,
-  "feature_count": 40,
-  "train_issue_start": 115003116,
-  "train_issue_end": 115006293,
-  "feature_columns_path": "models/feature_columns.json",
-  "model_path": "models/catboost_top20.cbm",
-  "params": {
-    "iterations": 300,
-    "learning_rate": 0.05,
-    "depth": 8,
-    "l2_leaf_reg": 3.0,
-    "loss_function": "Logloss",
-    "eval_metric": "Logloss",
-    "random_seed": 42,
-    "allow_writing_files": false,
-    "verbose": false
-  },
+  "feature_version": "v3_core20",
   "selected_strategy": {
-    "version_id": "v3_rerank_k30_p300",
-    "stage_type": "rerank",
+    "version_id": "cascade_v1_flow",
+    "stage_type": "cascade",
+    "pipeline_version": "cascade_v1",
+    "model_artifact_dir": "models/cascade_v1",
+    "stage1_keep": 30,
+    "stage2_keep": 10,
     "candidate_pool": 30,
     "prior_window": 300,
-    "rerank_weight": 3.2,
-    "penalty_weight": 0.1,
-    "trend_weight": 0.35,
-    "regime_aware": true,
-    "top20_hit_rate": 0.2515500945179584,
-    "top5_hit_rate": 0.2505103969754253,
-    "top10_hit_rate": 0.2537618147448015,
-    "top3_hit_rate": 0.25595463137996216,
-    "top3_at_least_one_hit_rate": 0.5894139886578451,
-    "ndcg_at_10": 0.2546210613510167,
-    "train_vs_oos_gap": 0.3333787019533712,
-    "fold_dispersion": 0.012420872920311186,
-    "regime_dispersion": 0.2521462945896999,
-    "is_overfit": true,
-    "is_better_than_baseline": true,
-    "keep_recommendation": false
-  },
-  "fallback_strategy": {
-    "version_id": "v0_binary_baseline",
-    "stage_type": "baseline",
-    "candidate_pool": 20,
-    "prior_window": 100,
     "rerank_weight": 0.0,
     "penalty_weight": 0.0,
     "trend_weight": 0.0,
-    "regime_aware": false,
-    "top20_hit_rate": 0.2505482041587902,
-    "top5_hit_rate": 0.2496030245746692,
-    "top10_hit_rate": 0.25024574669187144,
-    "top3_hit_rate": 0.25356017643352236,
-    "top3_at_least_one_hit_rate": 0.5792060491493384,
-    "ndcg_at_10": 0.2517570072514729,
-    "train_vs_oos_gap": 0.5744398235664777,
-    "fold_dispersion": 0.009427399727417794,
-    "regime_dispersion": 0.253479112290253,
-    "is_overfit": true,
-    "is_better_than_baseline": true,
-    "keep_recommendation": false
+    "regime_aware": true
   },
-  "feature_version": "v3_core20",
-  "runtime_config": {
-    "core_windows": {
-      "z_window": 50,
-      "freq_short": 20,
-      "freq_long": 200,
-      "pmi_window": 200,
-      "handoff_window": 200
-    },
-    "smoothing_alpha": 0.5,
-    "decay_half_lives": {
-      "ewma": 50,
-      "recent_hit": 5,
-      "neighbor": 10
-    },
-    "distance_kernel_tau": 2
+  "pipeline_artifacts": {
+    "cascade_v1": {
+      "artifact_dir": "models/cascade_v1",
+      "pipeline_version": "cascade_v1",
+      "trained_at_utc": "2026-03-15T14:01:43.908586+00:00",
+      "feature_version": "v3_core20",
+      "stage1_keep": 30,
+      "stage2_keep": 10,
+      "stage1_model_path": "stage1_model.cbm",
+      "stage2_model_path": "stage2_model.cbm",
+      "stage1_columns_path": "stage1_feature_columns.json",
+      "stage2_columns_path": "stage2_feature_columns.json",
+      "stage3_input_schema_path": "stage3_input_schema.json",
+      "train_issue_start": 115003116,
+      "train_issue_end": 115006293
+    }
   }
 }

@@ -1,0 +1,14 @@
+{
+  "pipeline_version": "cascade_v1",
+  "trained_at_utc": "2026-03-15T14:01:43.908586+00:00",
+  "feature_version": "v3_core20",
+  "stage1_keep": 30,
+  "stage2_keep": 10,
+  "stage1_model_path": "stage1_model.cbm",
+  "stage2_model_path": "stage2_model.cbm",
+  "stage1_columns_path": "stage1_feature_columns.json",
+  "stage2_columns_path": "stage2_feature_columns.json",
+  "stage3_input_schema_path": "stage3_input_schema.json",
+  "train_issue_start": 115003116,
+  "train_issue_end": 115006293
+}

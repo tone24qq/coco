@@ -1,0 +1,14 @@
+[
+  "issue_zone_entropy",
+  "issue_span_z50",
+  "issue_sum_z50",
+  "issue_consecutive_z50",
+  "num_zone",
+  "cand_repeat_last_draw",
+  "cand_pmi_last_draw_sum_200",
+  "cand_pmi_last_draw_max_200",
+  "cand_count_prev_within_1",
+  "cand_count_prev_within_2",
+  "cand_count_prev_within_3",
+  "cand_count_recent_within_1_10"
+]

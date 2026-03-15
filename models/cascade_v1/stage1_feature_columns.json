@@ -1,0 +1,13 @@
+[
+  "cand_freq_smooth_20",
+  "cand_freq_smooth_200",
+  "cand_freq_trend_20_200",
+  "cand_freq_ewma_hl50",
+  "cand_gap_log1p",
+  "cand_recent_hit_decay_hl5",
+  "cand_neighbor_pm1_decay_hl10",
+  "cand_neighbor_pm2_decay_hl10",
+  "cand_distance_kernel_last_draw_tau2",
+  "cand_pmi_last_draw_sum_200",
+  "cand_handoff_pm1_lift_200"
+]
