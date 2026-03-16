@@ -7,6 +7,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from catboost import CatBoostClassifier
 
@@ -14,6 +15,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from src.analysis.features import (  # noqa: E402
+    candidate_analysis_compatibility_score,
+    derive_analysis_target_profile,
+)
+from src.analysis.snapshots import load_history_snapshot_payload  # noqa: E402
 from src.artifacts import load_cascade_artifacts  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
 from src.strategy import (  # noqa: E402
@@ -26,6 +32,7 @@ from src.utils import (  # noqa: E402
     CONFIG_DIR,
     DATA_PROCESSED_DIR,
     MODELS_DIR,
+    V3_CORE20_COLUMNS,
     build_candidate_matrix,
     build_latest_issue_features_for_inference,
     classify_board,
@@ -40,6 +47,97 @@ from src.utils import (  # noqa: E402
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_series(values: pd.Series) -> pd.Series:
+    arr = values.astype(float)
+    denom = float(arr.std(ddof=0))
+    if denom <= 1e-9:
+        return pd.Series(np.zeros(len(arr)), index=arr.index)
+    return (arr - float(arr.mean())) / denom
+
+
+def _history_prior_from_snapshot(
+    score_table: pd.DataFrame, snapshot_payload: dict
+) -> pd.DataFrame:
+    out = score_table.copy()
+    priors = snapshot_payload.get("number_priors")
+    if priors is None or priors.empty:
+        out["history_prior_score"] = 0.0
+        return out
+
+    cols = [
+        "total_hits_all_time",
+        "hits_last_200",
+        "hits_last_500",
+        "hits_last_1000",
+        "today_hits",
+        "carryover_from_prev",
+        "pm1_neighbor_hits",
+        "pm2_neighbor_hits",
+        "current_gap_all",
+        "avg_gap_all",
+        "max_gap_all",
+    ]
+    priors_df = priors.reset_index(drop=True)
+    merged = out.merge(priors_df[["number", *cols]], on="number", how="left")
+    merged = merged.fillna(0.0)
+
+    positive = (
+        0.28 * _normalize_series(merged["total_hits_all_time"])
+        + 0.18 * _normalize_series(merged["hits_last_200"])
+        + 0.12 * _normalize_series(merged["hits_last_500"])
+        + 0.10 * _normalize_series(merged["hits_last_1000"])
+        + 0.07 * _normalize_series(merged["today_hits"])
+        + 0.08 * _normalize_series(merged["carryover_from_prev"])
+        + 0.09 * _normalize_series(merged["pm1_neighbor_hits"])
+        + 0.08 * _normalize_series(merged["pm2_neighbor_hits"])
+    )
+    penalty = (
+        0.30 * _normalize_series(merged["current_gap_all"])
+        + 0.10 * _normalize_series(merged["avg_gap_all"])
+        + 0.05 * _normalize_series(merged["max_gap_all"])
+    )
+    merged["history_prior_score"] = (positive - penalty).astype(float)
+    return merged
+
+
+def _analysis_rerank(
+    score_table: pd.DataFrame,
+    recent_draws: list[list[int]],
+    board_priors: dict,
+    top_k: int,
+    rerank_weight: float,
+) -> tuple[pd.DataFrame, dict]:
+    work = score_table.copy()
+    profile = derive_analysis_target_profile(recent_draws, board_priors=board_priors)
+    top_k = max(3, min(int(top_k), len(work)))
+
+    top = work.head(top_k).copy()
+    top["analysis_compatibility_score"] = top["number"].apply(
+        lambda n: candidate_analysis_compatibility_score(int(n), profile)
+    )
+    top["final_score"] = (
+        top["final_score"] + float(rerank_weight) * top["analysis_compatibility_score"]
+    )
+    top = top.sort_values("final_score", ascending=False)
+
+    tail = work.iloc[top_k:].copy()
+    reranked = pd.concat([top, tail], ignore_index=True)
+    reranked = reranked.sort_values("final_score", ascending=False).reset_index(
+        drop=True
+    )
+
+    summary = {
+        "enabled": True,
+        "top_k": int(top_k),
+        "weight": float(rerank_weight),
+        "target_profile": profile,
+        "top_k_preview": top.head(5)[
+            ["number", "analysis_compatibility_score", "final_score"]
+        ].to_dict(orient="records"),
+    }
+    return reranked, summary
 
 
 def _strategy_from_dict(raw: dict) -> StrategyConfig:
@@ -173,7 +271,9 @@ class Predictor:
                 "unsupported model metadata feature_version; only v3_core20 is supported"
             )
         if cols:
-            validate_feature_columns_contract(cols, metadata_feature_version)
+            validate_feature_columns_contract(
+                cols, metadata_feature_version, allow_legacy_subset=True
+            )
         yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
         yaml_feature_version = normalize_feature_version(
             yaml_cfg.get("feature_version", "v3_core20")
@@ -255,13 +355,20 @@ class Predictor:
             if issue_df.empty:
                 raise ValueError("not enough history for feature generation")
             row = issue_df.iloc[-1]
+            full_cand = build_candidate_matrix(
+                row,
+                V3_CORE20_COLUMNS,
+                strict_features=False,
+            )
+            full_cand = full_cand.reset_index(drop=True)
+            full_cand.insert(0, "number", np.arange(1, 81, dtype=int))
             x = None
             if not is_cascade_strategy(self.strategy):
-                x = build_candidate_matrix(
-                    row,
-                    self.feature_columns,
-                    strict_features=False,
-                ).reindex(columns=self.feature_columns)
+                x = (
+                    full_cand.reindex(columns=["number", *self.feature_columns])
+                    .drop(columns=["number"])
+                    .reindex(columns=self.feature_columns)
+                )
         finally:
             if prev_runtime is None:
                 os.environ.pop("FEATURE_RUNTIME_CONFIG_JSON", None)
@@ -313,9 +420,93 @@ class Predictor:
             base_scores = self.model.predict_proba(x)[:, 1]
             scores = apply_strategy(base_scores, x, self.strategy, regime)
 
-        score_table = pd.DataFrame(
-            {"number": list(range(1, 81)), "score": scores}
-        ).sort_values("score", ascending=False)
+        model_score_table = pd.DataFrame(
+            {"number": list(range(1, 81)), "model_score": scores}
+        ).sort_values("model_score", ascending=False)
+
+        runtime_history_cfg = self.runtime_config.get("history_prior", {})
+        runtime_rerank_cfg = self.runtime_config.get("analysis_rerank", {})
+
+        history_blend_enabled = bool(runtime_history_cfg.get("enabled", True))
+        model_weight = float(runtime_history_cfg.get("model_weight", 0.88))
+        history_weight = float(runtime_history_cfg.get("history_weight", 0.12))
+        long_feature_cfg = self.runtime_config.get("long_feature_injection", {})
+        long_feature_enabled = bool(long_feature_cfg.get("enabled", True))
+        long_feature_weight = float(long_feature_cfg.get("weight", 0.06))
+
+        snapshot_payload = load_history_snapshot_payload()
+        board_priors = snapshot_payload.get("meta", {}).get("board_priors", {})
+
+        score_table = _history_prior_from_snapshot(
+            model_score_table.rename(columns={"model_score": "score"}),
+            snapshot_payload,
+        )
+        if not history_blend_enabled:
+            score_table["history_prior_score"] = 0.0
+
+        long_cols = [
+            "cand_hits_last_200",
+            "cand_hits_last_500",
+            "cand_hits_last_1000",
+            "cand_total_hits_all_time",
+            "cand_current_gap_all",
+            "cand_avg_gap_all",
+            "cand_max_gap_all",
+            "cand_today_hits",
+            "cand_carryover_from_prev",
+            "cand_pm1_neighbor_hits",
+            "cand_pm2_neighbor_hits",
+        ]
+        long_df = full_cand[["number", *long_cols]].copy()
+        score_table = score_table.merge(long_df, on="number", how="left").fillna(0.0)
+        long_positive = (
+            0.30 * _normalize_series(score_table["cand_hits_last_200"])
+            + 0.20 * _normalize_series(score_table["cand_hits_last_500"])
+            + 0.15 * _normalize_series(score_table["cand_hits_last_1000"])
+            + 0.10 * _normalize_series(score_table["cand_total_hits_all_time"])
+            + 0.10 * _normalize_series(score_table["cand_today_hits"])
+            + 0.08 * _normalize_series(score_table["cand_carryover_from_prev"])
+            + 0.04 * _normalize_series(score_table["cand_pm1_neighbor_hits"])
+            + 0.03 * _normalize_series(score_table["cand_pm2_neighbor_hits"])
+        )
+        long_penalty = (
+            0.45 * _normalize_series(score_table["cand_current_gap_all"])
+            + 0.20 * _normalize_series(score_table["cand_avg_gap_all"])
+            + 0.10 * _normalize_series(score_table["cand_max_gap_all"])
+        )
+        score_table["long_feature_score"] = (long_positive - long_penalty).astype(float)
+        if not long_feature_enabled:
+            score_table["long_feature_score"] = 0.0
+
+        score_table["final_score"] = (
+            model_weight * score_table["score"]
+            + history_weight * score_table["history_prior_score"]
+            + long_feature_weight * score_table["long_feature_score"]
+        )
+
+        analysis_rerank_enabled = bool(runtime_rerank_cfg.get("enabled", True))
+        rerank_summary = {
+            "enabled": False,
+            "top_k": int(runtime_rerank_cfg.get("top_k", 30)),
+            "weight": float(runtime_rerank_cfg.get("weight", 0.08)),
+            "target_profile": {},
+            "top_k_preview": [],
+        }
+        if analysis_rerank_enabled:
+            score_table, rerank_summary = _analysis_rerank(
+                score_table,
+                recent_draws=[
+                    sorted(json.loads(v) if isinstance(v, str) else v)
+                    for v in draws_df["numbers"].tolist()
+                ],
+                board_priors=board_priors,
+                top_k=int(runtime_rerank_cfg.get("top_k", 30)),
+                rerank_weight=float(runtime_rerank_cfg.get("weight", 0.08)),
+            )
+
+        score_table = score_table.sort_values(
+            "final_score", ascending=False
+        ).reset_index(drop=True)
         top20 = score_table["number"].head(20).astype(int).tolist()
         compact10 = compact_10_from_top20(top20)
         top10 = top20[:10]
@@ -330,18 +521,39 @@ class Predictor:
         latest_issue = int(row["issue"])
         zc = {z: sum(1 for n in top20 if zone_of(n) == z) for z in ["A", "B", "C", "D"]}
         board_type = classify_board(zc)
-        raw_score_table = score_table.to_dict(orient="records")
+        raw_score_table = (
+            score_table[["number", "final_score"]]
+            .rename(columns={"final_score": "score"})
+            .to_dict(orient="records")
+        )
         top20_scores = {
             f"{int(rec['number']):02d}": float(rec["score"])
             for rec in raw_score_table[:20]
         }
         big_count = sum(1 for n in top20 if n >= 41)
         odd_count = sum(1 for n in top20 if n % 2 == 1)
+        model_rank_top20 = model_score_table["number"].head(20).astype(int).tolist()
+        history_prior_summary = {
+            "enabled": history_blend_enabled,
+            "model_weight": model_weight,
+            "history_weight": history_weight,
+            "long_feature_enabled": long_feature_enabled,
+            "long_feature_weight": long_feature_weight,
+            "snapshot_status": snapshot_payload.get("status", "unavailable"),
+            "snapshot_load_elapsed_ms": int(snapshot_payload.get("load_elapsed_ms", 0)),
+            "top5_history_prior": score_table[
+                ["number", "history_prior_score", "long_feature_score"]
+            ]
+            .head(5)
+            .to_dict(orient="records"),
+        }
+
         result = {
             "model": "catboost",
             "strategy_version": self.strategy.version_id,
             "target_issue": latest_issue + 1,
             "top20_numbers": top20,
+            "top20_numbers_model": model_rank_top20,
             "top10_numbers": top10,
             "top10_stage2_ranked": top10,
             "top3_numbers": top3,
@@ -360,6 +572,8 @@ class Predictor:
                 for x in raw_score_table
             ],
             "score_table": raw_score_table,
+            "history_prior_score_summary": history_prior_summary,
+            "analysis_rerank_summary": rerank_summary,
             "board_type_prediction": board_type,
             "big_count": big_count,
             "small_count": 20 - big_count,

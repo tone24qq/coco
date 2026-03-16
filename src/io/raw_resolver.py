@@ -102,16 +102,34 @@ def scan_local_raw_csvs(raw_dir: Path = DEFAULT_RAW_DIR) -> list[RawFileMeta]:
     )
 
 
+def _count_csv_rows(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            return max(sum(1 for _ in f) - 1, 0)
+    except OSError:
+        return 0
+
+
 def build_raw_manifest(raw_dir: Path = DEFAULT_RAW_DIR) -> dict:
     entries = scan_local_raw_csvs(raw_dir=raw_dir)
     years = set()
     for e in entries:
         years.update(range(e.year_start, e.year_end + 1))
     missing_years = [y for y in range(2008, 2027) if y not in years]
+    detailed_entries = []
+    total_rows = 0
+    for e in entries:
+        row_count = _count_csv_rows(Path(e.path))
+        total_rows += row_count
+        item = asdict(e)
+        item["row_count"] = int(row_count)
+        detailed_entries.append(item)
+
     payload = {
         "raw_dir": str(raw_dir),
         "file_count": len(entries),
-        "entries": [asdict(x) for x in entries],
+        "total_rows": int(total_rows),
+        "entries": detailed_entries,
         "coverage_year_start": min(years) if years else None,
         "coverage_year_end": max(years) if years else None,
         "missing_years": missing_years,
