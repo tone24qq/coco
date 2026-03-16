@@ -5,6 +5,8 @@ from pathlib import Path
 
 from agent import BingoAnalyzer
 
+LEGACY_NOTICE = "legacy script; official backtest entrypoint is src/backtest.py"
+
 
 def run_grid_search(
     analyzer: BingoAnalyzer,
@@ -73,6 +75,7 @@ def run_grid_search(
 
 
 if __name__ == "__main__":
+    print(LEGACY_NOTICE)
     analyzer = BingoAnalyzer()
     best = run_grid_search(analyzer)
     print(json.dumps(best, ensure_ascii=False, indent=2))

@@ -20,6 +20,13 @@ from src.fetchers.auzo_bingo import (  # noqa: E402
     FetchDrawsError,
     build_recent_draws,
 )
+from src.fetchers.source_consensus import build_fetch_health_report  # noqa: E402
+from src.io.canonical_dataset import (  # noqa: E402
+    CANONICAL_CSV,
+    build_canonical_dataset,
+    load_canonical_or_build,
+)
+from src.io.raw_resolver import load_or_build_manifest  # noqa: E402
 from src.predict import Predictor  # noqa: E402
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -140,6 +147,130 @@ def analysis() -> dict:
     }
 
 
+@app.post("/fetch/history-backfill")
+def fetch_history_backfill() -> dict:
+    df, audit = build_canonical_dataset()
+    need_official_repair = bool(
+        audit.get("missing_years") or audit.get("missing_issue_count", 0) > 0
+    )
+    return {
+        "status": "ok",
+        "canonical_rows": len(df),
+        "missing_years": audit.get("missing_years", []),
+        "missing_issue_count": audit.get("missing_issue_count", 0),
+        "official_repair_required": need_official_repair,
+    }
+
+
+@app.post("/fetch/latest")
+def fetch_latest() -> dict:
+    manifest = load_or_build_manifest()
+    canonical = load_canonical_or_build()
+    latest_before = int(canonical["issue"].max()) if not canonical.empty else None
+
+    fetcher = BingoDrawFetcher(
+        sources=FETCH_SOURCES,
+        timeout=FETCH_TIMEOUT,
+        retries=FETCH_RETRIES,
+        retry_backoff_seconds=FETCH_BACKOFF_SECONDS,
+    )
+    recent_draws, fetched_records, data_source, attempts = build_recent_draws(
+        fetcher=fetcher,
+        min_draws=MIN_RECENT_DRAWS,
+        max_draws=MAX_RECENT_DRAWS,
+    )
+    _ = recent_draws
+
+    incoming = pd.DataFrame(
+        [
+            {
+                "issue": int(r.issue),
+                "draw_date": str(r.draw_time or ""),
+                "numbers": json.dumps(sorted(r.numbers), ensure_ascii=False),
+                "numbers_draw_order": json.dumps(list(r.numbers), ensure_ascii=False),
+                "draw_time": r.draw_time,
+                "consecutive_count": r.streak_count,
+                "size": r.size_label or r.big_small,
+                "odd_even": r.odd_even_label or r.odd_even,
+                "source": data_source,
+                "source_priority": 4,
+            }
+            for r in fetched_records
+        ]
+    )
+    if incoming.empty:
+        return {
+            "status": "ok",
+            "incremental_rows_added": 0,
+            "latest_issue_before_fetch": latest_before,
+        }
+
+    if latest_before is not None:
+        incoming = incoming[incoming["issue"] > latest_before].copy()
+    merged = pd.concat([canonical, incoming], ignore_index=True)
+    merged = merged.drop_duplicates(subset=["issue"], keep="first").sort_values("issue")
+    merged.to_csv(CANONICAL_CSV, index=False)
+
+    health = build_fetch_health_report(
+        {
+            "canonical": canonical.to_dict(orient="records"),
+            data_source: incoming.to_dict(orient="records"),
+        }
+    )
+    return {
+        "status": "ok",
+        "latest_issue_before_fetch": latest_before,
+        "latest_issue_after_fetch": int(merged["issue"].max()),
+        "incremental_rows_added": int(len(incoming)),
+        "missing_years": manifest.get("missing_years", []),
+        "fetch_attempts": [
+            {"source": a.source, "ok": a.ok, "error": a.error} for a in attempts
+        ],
+        "source_consensus_status": health.get("source_consensus_status"),
+    }
+
+
+@app.post("/fetch/consensus-check")
+def fetch_consensus_check() -> dict:
+    canonical = load_canonical_or_build()
+    report = build_fetch_health_report(
+        {"canonical": canonical.to_dict(orient="records")}
+    )
+    return report
+
+
+@app.post("/features/rebuild")
+def features_rebuild() -> dict:
+    from src.build_features import main as build_main
+
+    build_main()
+    return {"status": "ok"}
+
+
+@app.post("/backtest/run")
+def backtest_run() -> dict:
+    from src.backtest import main as backtest_main
+
+    backtest_main()
+    return {"status": "ok"}
+
+
+@app.get("/reports/source-consensus")
+def report_source_consensus() -> dict:
+    path = PROJECT_ROOT / "reports" / "source_consensus_report.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="source consensus report not found")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/reports/history-ablation")
+def report_history_ablation() -> dict:
+    path = PROJECT_ROOT / "reports" / "history_ablation_summary.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="history ablation report not found")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 @app.post("/predict")
 def predict(payload: PredictPayload) -> dict:
     if PREDICTOR is None:
@@ -249,6 +380,54 @@ def predict(payload: PredictPayload) -> dict:
     }
     result["calibration_method"] = METADATA.get("calibration_method", "none")
     issues_used = [record["issue"] for record in records]
+    canonical = load_canonical_or_build()
+    manifest = load_or_build_manifest()
+    latest_before = int(canonical["issue"].max()) if not canonical.empty else None
+    latest_after = latest_before
+    incremental_rows_added = 0
+    source_consensus_status = "not_checked"
+
+    if auto_fetched and response_records:
+        incoming_df = pd.DataFrame(
+            {
+                "issue": [int(x["issue"]) for x in response_records],
+                "draw_date": [str(x.get("draw_date") or "") for x in response_records],
+                "numbers": [
+                    json.dumps(sorted(x["numbers"]), ensure_ascii=False)
+                    for x in response_records
+                ],
+                "numbers_draw_order": [
+                    json.dumps(x["numbers"], ensure_ascii=False)
+                    for x in response_records
+                ],
+                "draw_time": [x.get("draw_date") for x in response_records],
+                "consecutive_count": [x.get("streak_count") for x in response_records],
+                "size": [x.get("size_label") for x in response_records],
+                "odd_even": [x.get("odd_even_label") for x in response_records],
+                "source": [data_source for _ in response_records],
+                "source_priority": [4 for _ in response_records],
+            }
+        )
+        if latest_before is not None:
+            incoming_df = incoming_df[incoming_df["issue"] > latest_before].copy()
+        incremental_rows_added = int(len(incoming_df))
+        if incremental_rows_added > 0:
+            merged = pd.concat([canonical, incoming_df], ignore_index=True)
+            merged = merged.drop_duplicates(subset=["issue"], keep="first").sort_values(
+                "issue"
+            )
+            merged.to_csv(CANONICAL_CSV, index=False)
+            latest_after = int(merged["issue"].max())
+            health = build_fetch_health_report(
+                {
+                    "canonical": canonical.to_dict(orient="records"),
+                    data_source: incoming_df.to_dict(orient="records"),
+                }
+            )
+            source_consensus_status = str(
+                health.get("source_consensus_status", "unknown")
+            )
+
     result["data_source"] = data_source
     result["recent_draws_count"] = len(payload.recent_draws)
     result["first_issue_used"] = issues_used[0] if auto_fetched else None
@@ -259,4 +438,26 @@ def predict(payload: PredictPayload) -> dict:
     result["auto_fetched"] = auto_fetched
     result["fetch_attempts"] = fetch_attempts
     result["records"] = response_records if auto_fetched else []
+    result["fetch_summary"] = {
+        "local_history_used": True,
+        "canonical_rows": int(len(canonical)),
+        "latest_issue_before_fetch": latest_before,
+        "latest_issue_after_fetch": latest_after,
+        "incremental_rows_added": incremental_rows_added,
+        "missing_years": manifest.get("missing_years", []),
+        "missing_issues_detected": [],
+        "source_consensus_status": source_consensus_status,
+    }
+    result["source_consensus"] = {
+        "status": source_consensus_status,
+        "report_path": "reports/source_consensus_report.json",
+    }
+    strategy_obj = getattr(PREDICTOR, "strategy", None)
+    result["pipeline_version"] = getattr(strategy_obj, "pipeline_version", "unknown")
+    result["strategy_version"] = getattr(strategy_obj, "version_id", "unknown")
+    result["data_window_summary"] = {
+        "min_recent_draws": MIN_RECENT_DRAWS,
+        "max_recent_draws": MAX_RECENT_DRAWS,
+        "used_recent_draws": len(payload.recent_draws),
+    }
     return result

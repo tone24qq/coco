@@ -1,0 +1,322 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "BingoBingo Predictor",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/analysis": {
+      "get": {
+        "summary": "Analysis",
+        "operationId": "analysis_analysis_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Analysis Analysis Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fetch/history-backfill": {
+      "post": {
+        "summary": "Fetch History Backfill",
+        "operationId": "fetch_history_backfill_fetch_history_backfill_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Fetch History Backfill Fetch History Backfill Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fetch/latest": {
+      "post": {
+        "summary": "Fetch Latest",
+        "operationId": "fetch_latest_fetch_latest_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Fetch Latest Fetch Latest Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/fetch/consensus-check": {
+      "post": {
+        "summary": "Fetch Consensus Check",
+        "operationId": "fetch_consensus_check_fetch_consensus_check_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Fetch Consensus Check Fetch Consensus Check Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/features/rebuild": {
+      "post": {
+        "summary": "Features Rebuild",
+        "operationId": "features_rebuild_features_rebuild_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Features Rebuild Features Rebuild Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/backtest/run": {
+      "post": {
+        "summary": "Backtest Run",
+        "operationId": "backtest_run_backtest_run_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Backtest Run Backtest Run Post"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/source-consensus": {
+      "get": {
+        "summary": "Report Source Consensus",
+        "operationId": "report_source_consensus_reports_source_consensus_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Report Source Consensus Reports Source Consensus Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/history-ablation": {
+      "get": {
+        "summary": "Report History Ablation",
+        "operationId": "report_history_ablation_reports_history_ablation_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Report History Ablation Reports History Ablation Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/predict": {
+      "post": {
+        "summary": "Predict",
+        "operationId": "predict_predict_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PredictPayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Predict Predict Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "PredictPayload": {
+        "properties": {
+          "recent_draws": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recent Draws",
+            "description": "optional; when provided, must contain min~max draws with exactly 20 unique numbers per draw between 1 and 80"
+          },
+          "include_stage_details": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Include Stage Details",
+            "description": "when true and cascade pipeline is active, include stage debug payload"
+          }
+        },
+        "type": "object",
+        "title": "PredictPayload"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

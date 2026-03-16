@@ -154,11 +154,11 @@ class Predictor:
         model_path = MODELS_DIR / "catboost_top20.cbm"
         model = CatBoostClassifier()
         cols: list[str] = []
+        feature_cols_path = MODELS_DIR / "feature_columns.json"
+        if feature_cols_path.exists():
+            cols = json.loads(feature_cols_path.read_text(encoding="utf-8"))
         if model_path.exists():
             model.load_model(str(model_path))
-            cols = json.loads(
-                (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
-            )
         metadata_path = MODELS_DIR / "metadata.json"
         metadata = (
             json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -205,7 +205,11 @@ class Predictor:
             strategy.stage_type,
             strategy.pipeline_version,
         )
-        if (not model_path.exists()) and (not is_cascade_strategy(strategy)):
+        if (
+            (not model_path.exists())
+            and (not is_cascade_strategy(strategy))
+            and (not cols)
+        ):
             raise ValueError("legacy model artifact missing: models/catboost_top20.cbm")
         cascade_pipeline = None
         if is_cascade_strategy(strategy):

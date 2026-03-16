@@ -19,12 +19,7 @@ MODELS_DIR = ROOT / "models"
 REPORTS_DIR = ROOT / "reports"
 CONFIG_DIR = ROOT / "configs"
 
-RAW_FILES = [
-    "賓果賓果_2023.csv",
-    "賓果賓果_2024.csv",
-    "賓果賓果_2025.csv",
-    "賓果賓果_2026.csv",
-]
+RAW_FILES: list[str] = []
 ZONE_NAMES = ["A", "B", "C", "D"]
 V3_CORE20_COLUMNS = [
     "issue_zone_entropy",
@@ -873,6 +868,11 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 def load_processed() -> pd.DataFrame:
+    canonical_csv = DATA_PROCESSED_DIR / "bingo_draws_canonical.csv"
+    if canonical_csv.exists():
+        df = pd.read_csv(canonical_csv)
+        if "numbers" in df.columns:
+            return df
     return pd.read_csv(DATA_PROCESSED_DIR / "bingo_draws.csv")
 
 

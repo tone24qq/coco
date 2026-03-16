@@ -14,6 +14,8 @@ import pandas as pd
 from fastapi import Body, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from src.io.raw_resolver import resolve_raw_csv_paths
+
 BASE_DIR = Path(__file__).resolve().parent
 CSV_FILES = [
     "賓果賓果_2023.csv",
@@ -21,6 +23,7 @@ CSV_FILES = [
     "賓果賓果_2025.csv",
     "賓果賓果_2026.csv",
 ]
+LEGACY_NOTICE = "legacy entrypoint; official flow is src/api.py + src/backtest.py"
 DEFAULT_SEED = 42
 PREDICT_REQUIRED_MESSAGE = "請先提供最新至少 1 期資料（每期20顆），才可進行下一期預測。"
 HISTORY_MIN_THRESHOLD = 1
@@ -207,12 +210,10 @@ class BingoAnalyzer:
     def _resolve_csv_path(path: Path) -> Path:
         if path.exists():
             return path
-        data_candidate = BASE_DIR / "data" / path.name
-        if data_candidate.exists():
-            return data_candidate
-        base_candidate = BASE_DIR / path.name
-        if base_candidate.exists():
-            return base_candidate
+        candidates = resolve_raw_csv_paths()
+        by_name = {c.name: c for c in candidates}
+        if path.name in by_name:
+            return by_name[path.name]
         raise FileNotFoundError(f"CSV file not found: {path}")
 
     def _load_and_prepare_data(self) -> pd.DataFrame:

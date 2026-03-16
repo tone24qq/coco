@@ -118,3 +118,54 @@ pytest -q
 
 - Stage3 selector 為可解釋規則式組合打分（非學習式 selector）。
 - 若手動把 `predict.yaml.pipeline.version` 設成非 `auto`，會覆蓋 strategy config，請確認是你要的行為。
+
+
+---
+
+## Local-first 資料流程（新版）
+
+資料優先序：
+1. local CSV (`data/raw`) primary
+2. official result_download（補缺）
+3. official history_result（fallback）
+4. live current fetch（僅最新增量）
+5. hot/cold pages（輔助特徵/QA）
+
+### 建立 manifest 與 canonical dataset
+
+```bash
+python src/prepare_data.py
+```
+
+輸出：
+- `data/raw/raw_manifest.json`
+- `data/processed/bingo_draws_canonical.csv`
+- `data/processed/bingo_draws_canonical.parquet`
+- `reports/local_data_audit.json`
+
+### 歷史回補（本地優先）
+
+```bash
+python scripts/backfill_history.py
+```
+
+### OpenAPI 匯出
+
+```bash
+python scripts/export_openapi.py
+```
+
+### 新增 API 端點
+
+- `POST /fetch/history-backfill`
+- `POST /fetch/latest`
+- `POST /fetch/consensus-check`
+- `POST /features/rebuild`
+- `POST /backtest/run`
+- `GET /reports/source-consensus`
+- `GET /reports/history-ablation`
+
+### Render 部署
+
+- 使用 `render.yaml` 或 `Procfile`
+- 建議規格：>=4 vCPU / 8GB RAM
