@@ -16,18 +16,25 @@ import pandas as pd  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
+from src.analysis.engine import run_analysis_engine  # noqa: E402
+from src.analysis.snapshots import (  # noqa: E402
+    SNAPSHOT_CSV,
+    SNAPSHOT_META,
+    SNAPSHOT_PARQUET,
+)
 from src.fetchers.auzo_bingo import (  # noqa: E402
     BingoDrawFetcher,
     FetchDrawsError,
     build_recent_draws,
 )
 from src.fetchers.source_consensus import build_fetch_health_report  # noqa: E402
+from src.integrations.auzo import AuzoConfig, fetch_auzo_external_analysis  # noqa: E402
 from src.io.canonical_dataset import (  # noqa: E402
     CANONICAL_CSV,
     CANONICAL_PARQUET,
     load_canonical_with_diagnostics,
 )
-from src.io.raw_resolver import load_manifest_if_exists  # noqa: E402
+from src.io.raw_resolver import load_or_build_manifest  # noqa: E402
 from src.predict import Predictor  # noqa: E402
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -75,10 +82,26 @@ CANONICAL_SOURCE: str | None = None
 
 
 def _get_manifest_snapshot() -> dict:
-    manifest = load_manifest_if_exists()
+    manifest = load_or_build_manifest()
+    entries = manifest.get("entries", [])
+    detected_files = [
+        {
+            "file": str(
+                item.get("original_filename") or item.get("normalized_filename")
+            ),
+            "row_count": int(item.get("row_count", 0) or 0),
+            "year_start": item.get("year_start"),
+            "year_end": item.get("year_end"),
+        }
+        for item in entries
+    ]
     return {
         "missing_years": manifest.get("missing_years", []),
         "file_count": int(manifest.get("file_count", 0) or 0),
+        "total_rows": int(manifest.get("total_rows", 0) or 0),
+        "coverage_year_start": manifest.get("coverage_year_start"),
+        "coverage_year_end": manifest.get("coverage_year_end"),
+        "detected_files": detected_files,
     }
 
 
@@ -140,6 +163,10 @@ class PredictPayload(BaseModel):
     include_stage_details: bool | None = Field(
         default=None,
         description="when true and cascade pipeline is active, include stage debug payload",
+    )
+    include_external_analysis: bool = Field(
+        default=False,
+        description="when true, fetch auzo external analysis as auxiliary non-blocking payload",
     )
 
 
@@ -355,6 +382,21 @@ def report_history_ablation() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@app.post("/analysis/full")
+def analysis_full(payload: PredictPayload) -> dict:
+    if payload.recent_draws is None:
+        raise HTTPException(
+            status_code=400, detail="recent_draws is required for analysis/full"
+        )
+    _validate_recent_draws(payload.recent_draws)
+    return run_analysis_engine(payload.recent_draws)
+
+
+@app.get("/analysis/external/auzo")
+def analysis_external_auzo() -> dict:
+    return fetch_auzo_external_analysis(AuzoConfig(timeout_seconds=2.0, ttl_seconds=60))
+
+
 @app.post("/predict")
 def predict(payload: PredictPayload) -> dict:
     start = time.perf_counter()
@@ -457,6 +499,7 @@ def predict(payload: PredictPayload) -> dict:
         result.pop("cascade_debug", None)
 
     result["analysis_report"] = build_recent_report(payload.recent_draws)
+    result["analysis_engine"] = run_analysis_engine(payload.recent_draws)
     result["model_version"] = METADATA.get("model_type", "unknown")
     result["feature_version"] = "v3_core20"
     result["training_data_snapshot"] = {
@@ -503,6 +546,7 @@ def predict(payload: PredictPayload) -> dict:
                 "issue"
             )
             _persist_canonical_cache(merged)
+            canonical = merged
             latest_after = int(merged["issue"].max())
             health = build_fetch_health_report(
                 {
@@ -516,6 +560,17 @@ def predict(payload: PredictPayload) -> dict:
                 health.get("source_consensus_status", "unknown")
             )
 
+    canonical_issue_start = (
+        int(canonical["issue"].min())
+        if (not canonical.empty and "issue" in canonical)
+        else "unavailable"
+    )
+    canonical_issue_end = (
+        int(canonical["issue"].max())
+        if (not canonical.empty and "issue" in canonical)
+        else "unavailable"
+    )
+
     result["data_source"] = data_source
     result["recent_draws_count"] = len(payload.recent_draws)
     result["first_issue_used"] = issues_used[0] if auto_fetched else None
@@ -526,6 +581,41 @@ def predict(payload: PredictPayload) -> dict:
     result["auto_fetched"] = auto_fetched
     result["fetch_attempts"] = fetch_attempts
     result["records"] = response_records if auto_fetched else []
+    result["canonical_rows"] = int(len(canonical))
+    result["canonical_issue_start"] = canonical_issue_start
+    result["canonical_issue_end"] = canonical_issue_end
+    result["raw_manifest_file_count"] = manifest.get("file_count", 0)
+    result["raw_manifest_total_rows"] = manifest.get("total_rows", 0)
+    result["coverage_year_start"] = manifest.get("coverage_year_start", "unavailable")
+    result["coverage_year_end"] = manifest.get("coverage_year_end", "unavailable")
+    result["detected_files"] = manifest.get("detected_files", [])
+    result["training_window_used"] = {
+        "max_draws_for_training": load_yaml(CONFIG_DIR / "train.yaml").get(
+            "max_draws_for_training", "unavailable"
+        ),
+        "feature_rows": METADATA.get("feature_rows", "unavailable"),
+        "train_issue_start": METADATA.get("train_issue_start", "unavailable"),
+        "train_issue_end": METADATA.get("train_issue_end", "unavailable"),
+    }
+
+    snapshot_meta = (
+        json.loads(SNAPSHOT_META.read_text(encoding="utf-8"))
+        if SNAPSHOT_META.exists()
+        else {}
+    )
+    snapshot_path = (
+        snapshot_meta.get("paths", {}).get("history_snapshot")
+        if snapshot_meta
+        else None
+    )
+    snapshot_ready = bool(SNAPSHOT_PARQUET.exists() or SNAPSHOT_CSV.exists())
+    result["history_snapshot"] = {
+        "status": "ready" if snapshot_ready else "unavailable",
+        "path": snapshot_path
+        or (str(SNAPSHOT_PARQUET) if SNAPSHOT_PARQUET.exists() else str(SNAPSHOT_CSV)),
+        "meta": snapshot_meta,
+    }
+
     result["fetch_summary"] = {
         "local_history_used": True,
         "canonical_rows": int(len(canonical)),
@@ -548,6 +638,20 @@ def predict(payload: PredictPayload) -> dict:
         "max_recent_draws": MAX_RECENT_DRAWS,
         "used_recent_draws": len(payload.recent_draws),
     }
+
+    if payload.include_external_analysis:
+        external = fetch_auzo_external_analysis(
+            AuzoConfig(timeout_seconds=2.0, ttl_seconds=60)
+        )
+    else:
+        external = {
+            "external_status": "not_requested",
+            "provider": "auzo",
+            "external_analysis": {},
+            "cache_hit": False,
+        }
+    result.update(external)
+
     LOGGER.info(
         "predict_done elapsed_ms=%s canonical_rows=%s source_files=%s auto_fetched=%s",
         int((time.perf_counter() - start) * 1000),
