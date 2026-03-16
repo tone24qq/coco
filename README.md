@@ -126,10 +126,10 @@ pytest -q
 
 資料優先序：
 1. local CSV (`data/raw`) primary
-2. official result_download（補缺）
-3. official history_result（fallback）
-4. live current fetch（僅最新增量）
-5. hot/cold pages（輔助特徵/QA）
+2. live current fetch（僅最新 5 分鐘即時增量）
+3. hot/cold pages（冷熱、大小、單雙、跳號、分佈等技術面資料）
+
+> 歷史資料完全來自本地資料夾；API request 期間不再抓官方 historical CSV。
 
 ### 建立 manifest 與 canonical dataset
 
@@ -148,6 +148,8 @@ python src/prepare_data.py
 ```bash
 python scripts/backfill_history.py
 ```
+
+> `POST /fetch/history-backfill` 已停用，避免 API request 期間觸發高記憶體歷史重建。
 
 ### OpenAPI 匯出
 

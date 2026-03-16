@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import json
 import logging
+import time
 from typing import List
 
 import pandas as pd  # noqa: E402
@@ -23,10 +24,10 @@ from src.fetchers.auzo_bingo import (  # noqa: E402
 from src.fetchers.source_consensus import build_fetch_health_report  # noqa: E402
 from src.io.canonical_dataset import (  # noqa: E402
     CANONICAL_CSV,
-    build_canonical_dataset,
-    load_canonical_or_build,
+    CANONICAL_PARQUET,
+    load_canonical_with_diagnostics,
 )
-from src.io.raw_resolver import load_or_build_manifest  # noqa: E402
+from src.io.raw_resolver import load_manifest_if_exists  # noqa: E402
 from src.predict import Predictor  # noqa: E402
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -52,11 +53,79 @@ METADATA = (
     else {}
 )
 MODEL_LOAD_ERROR: str | None = None
+MODEL_LOAD_START = time.perf_counter()
+LOGGER.info("model_load_start")
 try:
     PREDICTOR = Predictor.load()
+    LOGGER.info(
+        "model_load_done elapsed_ms=%s",
+        int((time.perf_counter() - MODEL_LOAD_START) * 1000),
+    )
 except Exception as exc:  # noqa: BLE001
     PREDICTOR = None
     MODEL_LOAD_ERROR = str(exc)
+    LOGGER.exception(
+        "model_load_failed elapsed_ms=%s",
+        int((time.perf_counter() - MODEL_LOAD_START) * 1000),
+    )
+
+
+CANONICAL_CACHE: pd.DataFrame | None = None
+CANONICAL_SOURCE: str | None = None
+
+
+def _get_manifest_snapshot() -> dict:
+    manifest = load_manifest_if_exists()
+    return {
+        "missing_years": manifest.get("missing_years", []),
+        "file_count": int(manifest.get("file_count", 0) or 0),
+    }
+
+
+def _get_canonical_cached(required: bool = True) -> pd.DataFrame:
+    global CANONICAL_CACHE, CANONICAL_SOURCE
+    if CANONICAL_CACHE is None:
+        LOGGER.info("canonical_load_start")
+        try:
+            df, diag = load_canonical_with_diagnostics()
+        except FileNotFoundError:
+            if required:
+                raise
+            LOGGER.warning("canonical_missing_using_empty_cache")
+            CANONICAL_CACHE = pd.DataFrame()
+            return CANONICAL_CACHE.copy()
+        CANONICAL_CACHE = df
+        CANONICAL_SOURCE = str(diag["source"])
+        LOGGER.info(
+            "canonical_load_done rows=%s elapsed_ms=%s source=%s",
+            diag["rows"],
+            diag["elapsed_ms"],
+            diag["source"],
+        )
+    return CANONICAL_CACHE.copy()
+
+
+def _persist_canonical_cache(df: pd.DataFrame) -> None:
+    global CANONICAL_CACHE
+    CANONICAL_CACHE = df.copy()
+    if CANONICAL_PARQUET.exists():
+        df.to_parquet(CANONICAL_PARQUET, index=False)
+    else:
+        df.to_csv(CANONICAL_CSV, index=False)
+
+
+def _issue_records(df: pd.DataFrame, limit: int) -> list[dict]:
+    if "issue" not in df.columns:
+        return []
+    return [{"issue": int(x)} for x in df["issue"].tail(limit).tolist()]
+
+
+@app.on_event("startup")
+def preload_canonical() -> None:
+    try:
+        _get_canonical_cached(required=True)
+    except FileNotFoundError:
+        LOGGER.warning("canonical_preload_skipped_missing_dataset")
 
 
 class PredictPayload(BaseModel):
@@ -149,23 +218,21 @@ def analysis() -> dict:
 
 @app.post("/fetch/history-backfill")
 def fetch_history_backfill() -> dict:
-    df, audit = build_canonical_dataset()
-    need_official_repair = bool(
-        audit.get("missing_years") or audit.get("missing_issue_count", 0) > 0
-    )
     return {
-        "status": "ok",
-        "canonical_rows": len(df),
-        "missing_years": audit.get("missing_years", []),
-        "missing_issue_count": audit.get("missing_issue_count", 0),
-        "official_repair_required": need_official_repair,
+        "status": "disabled",
+        "message": (
+            "history backfill is disabled in API runtime; "
+            "run `python scripts/backfill_history.py` offline"
+        ),
     }
 
 
 @app.post("/fetch/latest")
 def fetch_latest() -> dict:
-    manifest = load_or_build_manifest()
-    canonical = load_canonical_or_build()
+    start = time.perf_counter()
+    LOGGER.info("fetch_latest_start")
+    manifest = _get_manifest_snapshot()
+    canonical = _get_canonical_cached(required=True)
     latest_before = int(canonical["issue"].max()) if not canonical.empty else None
 
     fetcher = BingoDrawFetcher(
@@ -199,6 +266,12 @@ def fetch_latest() -> dict:
         ]
     )
     if incoming.empty:
+        LOGGER.info(
+            "fetch_latest_done incremental_rows_added=0 elapsed_ms=%s canonical_rows=%s source_files=%s",
+            int((time.perf_counter() - start) * 1000),
+            int(len(canonical)),
+            manifest.get("file_count", 0),
+        )
         return {
             "status": "ok",
             "incremental_rows_added": 0,
@@ -209,13 +282,20 @@ def fetch_latest() -> dict:
         incoming = incoming[incoming["issue"] > latest_before].copy()
     merged = pd.concat([canonical, incoming], ignore_index=True)
     merged = merged.drop_duplicates(subset=["issue"], keep="first").sort_values("issue")
-    merged.to_csv(CANONICAL_CSV, index=False)
+    _persist_canonical_cache(merged)
 
     health = build_fetch_health_report(
         {
-            "canonical": canonical.to_dict(orient="records"),
-            data_source: incoming.to_dict(orient="records"),
+            "canonical": _issue_records(canonical, 500),
+            data_source: [{"issue": int(x)} for x in incoming["issue"].tolist()],
         }
+    )
+    LOGGER.info(
+        "fetch_latest_done incremental_rows_added=%s elapsed_ms=%s canonical_rows=%s source_files=%s",
+        int(len(incoming)),
+        int((time.perf_counter() - start) * 1000),
+        int(len(merged)),
+        manifest.get("file_count", 0),
     )
     return {
         "status": "ok",
@@ -232,9 +312,13 @@ def fetch_latest() -> dict:
 
 @app.post("/fetch/consensus-check")
 def fetch_consensus_check() -> dict:
-    canonical = load_canonical_or_build()
-    report = build_fetch_health_report(
-        {"canonical": canonical.to_dict(orient="records")}
+    start = time.perf_counter()
+    canonical = _get_canonical_cached(required=False)
+    report = build_fetch_health_report({"canonical": _issue_records(canonical, 2000)})
+    LOGGER.info(
+        "fetch_consensus_check_done elapsed_ms=%s canonical_rows=%s",
+        int((time.perf_counter() - start) * 1000),
+        int(len(canonical)),
     )
     return report
 
@@ -273,6 +357,8 @@ def report_history_ablation() -> dict:
 
 @app.post("/predict")
 def predict(payload: PredictPayload) -> dict:
+    start = time.perf_counter()
+    LOGGER.info("predict_start")
     if PREDICTOR is None:
         if MODEL_LOAD_ERROR:
             return {"error": f"model unavailable: {MODEL_LOAD_ERROR}"}
@@ -380,8 +466,8 @@ def predict(payload: PredictPayload) -> dict:
     }
     result["calibration_method"] = METADATA.get("calibration_method", "none")
     issues_used = [record["issue"] for record in records]
-    canonical = load_canonical_or_build()
-    manifest = load_or_build_manifest()
+    canonical = _get_canonical_cached(required=False)
+    manifest = _get_manifest_snapshot()
     latest_before = int(canonical["issue"].max()) if not canonical.empty else None
     latest_after = latest_before
     incremental_rows_added = 0
@@ -416,12 +502,14 @@ def predict(payload: PredictPayload) -> dict:
             merged = merged.drop_duplicates(subset=["issue"], keep="first").sort_values(
                 "issue"
             )
-            merged.to_csv(CANONICAL_CSV, index=False)
+            _persist_canonical_cache(merged)
             latest_after = int(merged["issue"].max())
             health = build_fetch_health_report(
                 {
-                    "canonical": canonical.to_dict(orient="records"),
-                    data_source: incoming_df.to_dict(orient="records"),
+                    "canonical": _issue_records(canonical, 500),
+                    data_source: [
+                        {"issue": int(x)} for x in incoming_df["issue"].tolist()
+                    ],
                 }
             )
             source_consensus_status = str(
@@ -460,4 +548,11 @@ def predict(payload: PredictPayload) -> dict:
         "max_recent_draws": MAX_RECENT_DRAWS,
         "used_recent_draws": len(payload.recent_draws),
     }
+    LOGGER.info(
+        "predict_done elapsed_ms=%s canonical_rows=%s source_files=%s auto_fetched=%s",
+        int((time.perf_counter() - start) * 1000),
+        int(len(canonical)),
+        manifest.get("file_count", 0),
+        auto_fetched,
+    )
     return result

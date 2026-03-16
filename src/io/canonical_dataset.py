@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -101,7 +102,30 @@ def build_canonical_dataset(
 
 
 def load_canonical_or_build() -> pd.DataFrame:
+    if CANONICAL_PARQUET.exists():
+        return pd.read_parquet(CANONICAL_PARQUET)
     if CANONICAL_CSV.exists():
         return pd.read_csv(CANONICAL_CSV)
-    df, _ = build_canonical_dataset()
-    return df
+    raise FileNotFoundError(
+        "canonical dataset not found; run `python src/prepare_data.py` first"
+    )
+
+
+def load_canonical_with_diagnostics() -> tuple[pd.DataFrame, dict]:
+    start = time.perf_counter()
+    if CANONICAL_PARQUET.exists():
+        df = pd.read_parquet(CANONICAL_PARQUET)
+        source = str(CANONICAL_PARQUET)
+    elif CANONICAL_CSV.exists():
+        df = pd.read_csv(CANONICAL_CSV)
+        source = str(CANONICAL_CSV)
+    else:
+        raise FileNotFoundError(
+            "canonical dataset not found; run `python src/prepare_data.py` first"
+        )
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    return df, {
+        "source": source,
+        "rows": int(len(df)),
+        "elapsed_ms": elapsed_ms,
+    }

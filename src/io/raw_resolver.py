@@ -129,6 +129,12 @@ def load_or_build_manifest(raw_dir: Path = DEFAULT_RAW_DIR) -> dict:
     return build_raw_manifest(raw_dir=raw_dir)
 
 
+def load_manifest_if_exists() -> dict:
+    if MANIFEST_PATH.exists():
+        return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    return {}
+
+
 def resolve_raw_csv_paths(
     years: Iterable[int] | None = None,
     raw_dir: Path = DEFAULT_RAW_DIR,
@@ -165,7 +171,32 @@ def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str:
 
 
 def read_raw_csv_to_standard_df(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path)
+    header_df = pd.read_csv(path, nrows=0, low_memory=False)
+    existing_cols = set(header_df.columns)
+    draw_number_candidates = [
+        *[f"獎號{i}" for i in range(1, 21)],
+        *[f"n{i}" for i in range(1, 21)],
+    ]
+    usecols = [
+        c
+        for c in [
+            "期別",
+            "issue",
+            "開獎日期",
+            "draw_date",
+            "連莊球",
+            "猜大小",
+            "猜單雙",
+        ]
+        + draw_number_candidates
+        if c in existing_cols
+    ]
+    dtype = {
+        col: "string"
+        for col in ["期別", "issue", "猜大小", "猜單雙", "開獎日期", "draw_date"]
+        if col in existing_cols
+    }
+    df = pd.read_csv(path, low_memory=False, usecols=usecols, dtype=dtype)
     issue_col = _pick_col(df, ["期別", "issue"])
     date_col = _pick_col(df, ["開獎日期", "draw_date"])
 
