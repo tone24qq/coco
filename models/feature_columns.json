@@ -38,5 +38,16 @@
   "cand_min_distance_to_recent_5",
   "cand_min_distance_to_recent_10",
   "cand_weighted_distance_decay_recent_10",
-  "cand_count_recent_within_1_10"
+  "cand_count_recent_within_1_10",
+  "cand_hits_last_200",
+  "cand_hits_last_500",
+  "cand_hits_last_1000",
+  "cand_total_hits_all_time",
+  "cand_current_gap_all",
+  "cand_avg_gap_all",
+  "cand_max_gap_all",
+  "cand_today_hits",
+  "cand_carryover_from_prev",
+  "cand_pm1_neighbor_hits",
+  "cand_pm2_neighbor_hits"
 ]
