@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -11,10 +12,23 @@ from src.io.canonical_dataset import build_canonical_dataset  # noqa: E402
 
 
 def main() -> None:
-    df, audit = build_canonical_dataset()
+    parser = argparse.ArgumentParser(
+        description="Build canonical dataset from local CSVs"
+    )
+    parser.add_argument(
+        "--artifact-mode",
+        choices=["runtime", "export"],
+        default="runtime",
+        help="runtime keeps single parquet; export may shard when size guard triggers",
+    )
+    args = parser.parse_args()
+
+    df, audit = build_canonical_dataset(artifact_mode=args.artifact_mode)
     print(
         "saved"
-        f" {len(df)} rows -> data/processed/bingo_draws_canonical.csv"
+        f" {len(df)} rows -> {audit.get('output_path')}"
+        f" | compression={audit.get('selected_compression')}"
+        f" | output_format={audit.get('output_format')}"
         f" | missing_years={audit.get('missing_years', [])}"
     )
 

@@ -110,6 +110,8 @@ flake8 .
 flake8 agent.py
 python -m py_compile $(git ls-files '*.py')
 pytest -q
+python scripts/normalize_gitignore.py
+python scripts/pre_pr_checks.py
 ```
 
 ---
@@ -171,3 +173,57 @@ python scripts/export_openapi.py
 
 - 使用 `render.yaml` 或 `Procfile`
 - 建議規格：>=4 vCPU / 8GB RAM
+
+
+## 7) 產出物（Generated Artifacts）與 Git 策略
+
+為避免 GitHub 單檔上限（100 MiB）與 repo 汙染，本專案將可重建產出物視為 generated artifacts。
+
+### 不進 Git 的產出物
+
+- `data/feature_store/`
+- `data/processed/bingo_draws_canonical.csv`（已停用為預設輸出）
+- `data/processed/bingo_draws_canonical.parquet`
+- `data/processed/history_snapshot.parquet`
+- `data/processed/history_snapshot_meta.json`
+- `data/raw/raw_manifest.json`
+
+### canonical 輸出策略
+
+- 預設主格式：`parquet`
+- 預設模式：`runtime`
+  - 產出單一高效 parquet（執行期優先）
+- 匯出模式：`export`
+  - 若檔案超過 size guard（95 MiB），改為 deterministic sharded parquet dataset + `manifest.json`
+
+### 指令
+
+建立 canonical（執行期）
+
+```bash
+python src/prepare_data.py --artifact-mode runtime
+```
+
+建立 canonical（匯出/分享）
+
+```bash
+python src/prepare_data.py --artifact-mode export
+```
+
+建立 snapshot（執行期）
+
+```bash
+python scripts/build_history_snapshot.py --artifact-mode runtime
+```
+
+建立 snapshot（匯出/分享）
+
+```bash
+python scripts/build_history_snapshot.py --artifact-mode export
+```
+
+增量更新 canonical + snapshot
+
+```bash
+python scripts/update_history_snapshot.py --artifact-mode runtime
+```

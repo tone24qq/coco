@@ -62,7 +62,20 @@ V3_CORE20_COLUMNS = [
     "cand_min_distance_to_recent_10",
     "cand_weighted_distance_decay_recent_10",
     "cand_count_recent_within_1_10",
+    "cand_hits_last_200",
+    "cand_hits_last_500",
+    "cand_hits_last_1000",
+    "cand_total_hits_all_time",
+    "cand_current_gap_all",
+    "cand_avg_gap_all",
+    "cand_max_gap_all",
+    "cand_today_hits",
+    "cand_carryover_from_prev",
+    "cand_pm1_neighbor_hits",
+    "cand_pm2_neighbor_hits",
 ]
+
+LEGACY_V3_COLUMNS = V3_CORE20_COLUMNS[:40]
 
 CASCADE_V1_STAGE1_COLUMNS = [
     "cand_freq_smooth_20",
@@ -379,16 +392,26 @@ def _feature_version() -> str:
 
 
 def validate_feature_columns_contract(
-    feature_columns: Sequence[str], feature_version: str
+    feature_columns: Sequence[str],
+    feature_version: str,
+    allow_legacy_subset: bool = False,
 ) -> None:
     normalize_feature_version(feature_version)
     cols = list(feature_columns)
+    if cols == V3_CORE20_COLUMNS:
+        return
+    if allow_legacy_subset and cols == LEGACY_V3_COLUMNS:
+        LOGGER.warning(
+            "using legacy feature columns subset (len=%s < latest=%s)",
+            len(cols),
+            len(V3_CORE20_COLUMNS),
+        )
+        return
     if len(cols) != len(V3_CORE20_COLUMNS):
         raise ValueError(
             f"v3_core20 feature columns must be {len(V3_CORE20_COLUMNS)}, got {len(cols)}"
         )
-    if cols != V3_CORE20_COLUMNS:
-        raise ValueError("v3_core20 feature columns must match fixed core20 order")
+    raise ValueError("v3_core20 feature columns must match fixed core20 order")
 
 
 def _build_issue_features_v3(
@@ -708,6 +731,8 @@ def _build_candidate_matrix_v3(
     prev_size = str(base.get("size_label", "小"))
     prev_oe = str(base.get("odd_even_label", "雙"))
 
+    approx_draws_per_day = int(cfg.get("approx_draws_per_day", 78))
+
     rows = []
     for idx, num in enumerate(range(1, 81)):
         occurrences = [i for i, draw in enumerate(history) if num in draw]
@@ -776,6 +801,41 @@ def _build_candidate_matrix_v3(
             "ctx_odd_ratio_w20": _window_ratio(odd_even_series, "單", 20),
             "ctx_size_switches_w20": _window_switches(size_series, 20),
             "ctx_odd_even_switches_w20": _window_switches(odd_even_series, 20),
+            "cand_hits_last_200": float(
+                sum(1 for draw in history[-min(200, len(history)) :] if num in draw)
+            ),
+            "cand_hits_last_500": float(
+                sum(1 for draw in history[-min(500, len(history)) :] if num in draw)
+            ),
+            "cand_hits_last_1000": float(
+                sum(1 for draw in history[-min(1000, len(history)) :] if num in draw)
+            ),
+            "cand_total_hits_all_time": float(len(occurrences)),
+            "cand_current_gap_all": float(gap),
+            "cand_avg_gap_all": float(
+                np.mean(gaps) if len(occurrences) >= 2 else len(history)
+            ),
+            "cand_max_gap_all": float(
+                max(gaps) if len(occurrences) >= 2 else len(history)
+            ),
+            "cand_today_hits": float(
+                sum(
+                    1
+                    for draw in history[-min(approx_draws_per_day, len(history)) :]
+                    if num in draw
+                )
+            ),
+            "cand_carryover_from_prev": float(
+                num in last_draw_set and num in set(history[-2])
+                if len(history) >= 2
+                else 0.0
+            ),
+            "cand_pm1_neighbor_hits": float(
+                sum(1 for n in last_draw_set if abs(num - n) == 1)
+            ),
+            "cand_pm2_neighbor_hits": float(
+                sum(1 for n in last_draw_set if abs(num - n) == 2)
+            ),
         }
 
         prev_distances = [abs(num - n) for n in last_draw] if last_draw else [80.0]
@@ -868,11 +928,18 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 def load_processed() -> pd.DataFrame:
+    canonical_parquet = DATA_PROCESSED_DIR / "bingo_draws_canonical.parquet"
+    if canonical_parquet.exists():
+        df = pd.read_parquet(canonical_parquet)
+        if "numbers" in df.columns:
+            return df
+
     canonical_csv = DATA_PROCESSED_DIR / "bingo_draws_canonical.csv"
     if canonical_csv.exists():
         df = pd.read_csv(canonical_csv)
         if "numbers" in df.columns:
             return df
+
     return pd.read_csv(DATA_PROCESSED_DIR / "bingo_draws.csv")
 
 
