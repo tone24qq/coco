@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import argparse
+import faulthandler
 import json
 import os
 import sys
+import threading
+import time
+import traceback
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from src.artifacts import CascadeArtifacts  # noqa: E402
 from src.artifacts import save_cascade_artifacts  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
 from src.strategy import (  # noqa: E402
@@ -26,11 +33,16 @@ from src.strategy import (  # noqa: E402
     strategy_to_dict,
 )
 from src.utils import (  # noqa: E402
+    CASCADE_V1_STAGE1_COLUMNS,
+    CASCADE_V1_STAGE2_COLUMNS,
+    CASCADE_V1_STAGE3_COLUMNS,
     CONFIG_DIR,
     FEATURE_STORE_DIR,
     MODELS_DIR,
     REPORTS_DIR,
     V3_CORE20_COLUMNS,
+    build_stage1_candidate_matrix,
+    build_stage2_candidate_matrix,
     load_yaml,
     normalize_pipeline_version,
     precompute_issue_payloads,
@@ -48,6 +60,160 @@ METRIC_KEYS = [
 ]
 
 PREFERRED_STRATEGY_VERSION = "v3_rerank_k30_p300"
+
+
+class PhaseMonitor:
+    def __init__(
+        self,
+        heartbeat_seconds: int = 30,
+        stalled_seconds: int = 600,
+        watchdog_seconds: int = 900,
+    ) -> None:
+        self.heartbeat_seconds = heartbeat_seconds
+        self.stalled_seconds = stalled_seconds
+        self.watchdog_seconds = watchdog_seconds
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._phase_name = ""
+        self._phase_start = 0.0
+        self._last_heartbeat = 0.0
+        self._last_progress = 0.0
+        self._last_warn = 0.0
+        self._last_dump = 0.0
+        self._fold_index: int | None = None
+        self._stage_index: int | None = None
+        self._shape: tuple[int, int] | None = None
+
+    def update_progress(
+        self,
+        *,
+        fold_index: int | None = None,
+        stage_index: int | None = None,
+        shape: tuple[int, int] | None = None,
+    ) -> None:
+        with self._lock:
+            self._last_progress = time.monotonic()
+            if fold_index is not None:
+                self._fold_index = int(fold_index)
+            if stage_index is not None:
+                self._stage_index = int(stage_index)
+            if shape is not None:
+                self._shape = shape
+
+    @contextmanager
+    def phase(self, name: str):
+        now = time.monotonic()
+        with self._lock:
+            self._phase_name = name
+            self._phase_start = now
+            self._last_progress = now
+            self._last_heartbeat = 0.0
+            self._last_warn = 0.0
+            self._last_dump = 0.0
+            self._fold_index = None
+            self._stage_index = None
+            self._shape = None
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._watch_loop, daemon=True)
+        self._thread.start()
+        print(f"[phase:start] {name}")
+        try:
+            yield
+        finally:
+            elapsed = time.monotonic() - self._phase_start
+            self._stop_event.set()
+            if self._thread is not None:
+                self._thread.join(timeout=1)
+            print(f"[phase:end] {name} elapsed={elapsed:.2f}s")
+
+    def _watch_loop(self) -> None:
+        while not self._stop_event.wait(1):
+            now = time.monotonic()
+            with self._lock:
+                if now - self._last_heartbeat >= self.heartbeat_seconds:
+                    print(
+                        f"[phase:heartbeat] {self._phase_name} "
+                        f"elapsed={now - self._phase_start:.2f}s"
+                    )
+                    self._last_heartbeat = now
+                stalled_for = now - self._last_progress
+                if stalled_for >= self.stalled_seconds and (
+                    self._last_warn == 0.0
+                    or now - self._last_warn >= self.stalled_seconds
+                ):
+                    print(
+                        "[phase:stalled] "
+                        f"phase={self._phase_name}, "
+                        f"fold_index={self._fold_index}, "
+                        f"stage_index={self._stage_index}, "
+                        f"shape={self._shape}, "
+                        f"stalled_for={stalled_for:.2f}s"
+                    )
+                    self._last_warn = now
+                if (
+                    self.watchdog_seconds > 0
+                    and stalled_for >= self.watchdog_seconds
+                    and (
+                        self._last_dump == 0.0
+                        or now - self._last_dump >= self.watchdog_seconds
+                    )
+                ):
+                    print(
+                        f"[watchdog] phase={self._phase_name} stalled_for={stalled_for:.2f}s; dumping traceback"
+                    )
+                    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                    print(
+                        "[watchdog:stack]" + "".join(traceback.format_stack(limit=12))
+                    )
+                    self._last_dump = now
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train CatBoost / cascade pipeline")
+    parser.add_argument("--debug", action="store_true", help="Run with small slices")
+    parser.add_argument("--max-issues", type=int, default=None)
+    parser.add_argument("--iterations", type=int, default=None)
+    parser.add_argument("--thread-count", type=int, default=None)
+    parser.add_argument("--watchdog-seconds", type=int, default=900)
+    return parser.parse_args()
+
+
+def _shape_of(x: object) -> tuple[int, int] | None:
+    if hasattr(x, "shape"):
+        shape = getattr(x, "shape")
+        if len(shape) == 2:
+            return int(shape[0]), int(shape[1])
+    return None
+
+
+def _build_catboost_params(cfg: dict, args: argparse.Namespace) -> dict:
+    params = dict(cfg.get("catboost_params", {}))
+    params.setdefault("loss_function", "Logloss")
+    params.setdefault("verbose", False)
+    params.setdefault("random_seed", 42)
+    params.setdefault("thread_count", min(8, os.cpu_count() or 4))
+    params.setdefault("logging_level", "Info")
+    params.setdefault("metric_period", 50)
+    params.setdefault("train_dir", str(MODELS_DIR / "catboost_train_logs"))
+    params.setdefault("save_snapshot", True)
+    params.setdefault("snapshot_file", str(MODELS_DIR / "catboost_snapshot.bin"))
+    if args.thread_count is not None:
+        params["thread_count"] = int(args.thread_count)
+    if args.iterations is not None:
+        params["iterations"] = int(args.iterations)
+    if args.debug and args.iterations is None:
+        params["iterations"] = 100
+    print(
+        "[catboost] "
+        f"thread_count={params.get('thread_count')}, "
+        f"logging_level={params.get('logging_level')}, "
+        f"metric_period={params.get('metric_period')}, "
+        f"train_dir={params.get('train_dir')}, "
+        f"save_snapshot={params.get('save_snapshot')}, "
+        f"snapshot_file={params.get('snapshot_file')}"
+    )
+    return params
 
 
 def _fit_cascade_pipeline(
@@ -250,80 +416,210 @@ def _select_formal_strategy(registry_df: pd.DataFrame) -> dict:
     )
 
 
+def build_training_frame(
+    *,
+    cfg: dict,
+    args: argparse.Namespace,
+    monitor: PhaseMonitor,
+) -> tuple[pd.DataFrame, list[str], str]:
+    with monitor.phase("load canonical / feature store"):
+        feature_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
+        monitor.update_progress(shape=_shape_of(feature_df))
+        feature_columns = json.loads(
+            (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
+        )
+        feature_version = str(cfg.get("feature_version", "v3_core20"))
+        if feature_version != "v3_core20":
+            raise ValueError("only v3_core20 is supported")
+        validate_feature_columns_contract(feature_columns, feature_version)
+
+    with monitor.phase("dataset filter"):
+        max_draws = int(cfg.get("max_draws_for_training", len(feature_df)))
+        if args.max_issues is not None:
+            max_draws = min(max_draws, int(args.max_issues))
+        if args.debug and args.max_issues is None:
+            max_draws = min(max_draws, 300)
+        feature_df = feature_df.tail(max_draws).reset_index(drop=True)
+        monitor.update_progress(shape=_shape_of(feature_df))
+        print(
+            f"[dataset] rows={len(feature_df)}, cols={feature_df.shape[1]}, max_draws_for_training={max_draws}"
+        )
+    return feature_df, feature_columns, feature_version
+
+
+def train_stage1_model(
+    feature_df: pd.DataFrame,
+    params: dict,
+    monitor: PhaseMonitor,
+) -> tuple[CatBoostClassifier, pd.DataFrame]:
+    with monitor.phase("cascade stage1 train"):
+        stage1_blocks: list[pd.DataFrame] = []
+        stage1_labels: list[pd.Series] = []
+        for idx, issue_row in enumerate(feature_df.itertuples(index=False), start=1):
+            issue_series = pd.Series(issue_row._asdict())
+            cand = build_stage1_candidate_matrix(
+                issue_series, CASCADE_V1_STAGE1_COLUMNS
+            )
+            target = set(json.loads(str(issue_series["target_numbers"])))
+            y = cand["number"].astype(int).isin(target).astype(int)
+            stage1_blocks.append(cand[CASCADE_V1_STAGE1_COLUMNS])
+            stage1_labels.append(y)
+            if idx % 25 == 0 or idx == len(feature_df):
+                monitor.update_progress(stage_index=1, shape=_shape_of(cand))
+                print(f"[progress] stage1 expand issue={idx}/{len(feature_df)}")
+
+        stage1_x = pd.concat(stage1_blocks, ignore_index=True)
+        stage1_y = pd.concat(stage1_labels, ignore_index=True)
+        monitor.update_progress(stage_index=1, shape=_shape_of(stage1_x))
+        print(f"[stage1] train shape={stage1_x.shape}")
+        model = CatBoostClassifier(**params)
+        model.fit(stage1_x, stage1_y, verbose=False)
+        monitor.update_progress(stage_index=1, shape=_shape_of(stage1_x))
+    return model, stage1_x
+
+
+def train_stage2_model(
+    feature_df: pd.DataFrame,
+    stage1_model: CatBoostClassifier,
+    params: dict,
+    stage1_keep: int,
+    monitor: PhaseMonitor,
+) -> tuple[CatBoostClassifier, pd.DataFrame]:
+    with monitor.phase("cascade stage2 train"):
+        stage2_blocks: list[pd.DataFrame] = []
+        stage2_labels: list[pd.Series] = []
+        stage1_gate = CascadePipeline.from_artifacts(
+            CascadeArtifacts(
+                pipeline_version="cascade_v1",
+                stage1_model=stage1_model,
+                stage2_model=CatBoostClassifier(),
+                stage1_feature_columns=list(CASCADE_V1_STAGE1_COLUMNS),
+                stage2_feature_columns=list(CASCADE_V1_STAGE2_COLUMNS),
+                stage3_input_schema=list(CASCADE_V1_STAGE3_COLUMNS),
+                stage1_keep=int(stage1_keep),
+                stage2_keep=10,
+            )
+        ).stage1
+        for idx, issue_row in enumerate(feature_df.itertuples(index=False), start=1):
+            issue_series = pd.Series(issue_row._asdict())
+            stage1_df = stage1_gate.predict(issue_series)
+            cand = build_stage2_candidate_matrix(
+                issue_series, stage1_df, CASCADE_V1_STAGE2_COLUMNS
+            )
+            target = set(json.loads(str(issue_series["target_numbers"])))
+            y = cand["number"].astype(int).isin(target).astype(int)
+            stage2_blocks.append(cand[CASCADE_V1_STAGE2_COLUMNS])
+            stage2_labels.append(y)
+            if idx % 25 == 0 or idx == len(feature_df):
+                monitor.update_progress(stage_index=2, shape=_shape_of(cand))
+                print(f"[progress] stage2 expand issue={idx}/{len(feature_df)}")
+
+        stage2_x = pd.concat(stage2_blocks, ignore_index=True)
+        stage2_y = pd.concat(stage2_labels, ignore_index=True)
+        monitor.update_progress(stage_index=2, shape=_shape_of(stage2_x))
+        print(f"[stage2] train shape={stage2_x.shape}")
+        model = CatBoostClassifier(**params)
+        model.fit(stage2_x, stage2_y, verbose=False)
+        monitor.update_progress(stage_index=2, shape=_shape_of(stage2_x))
+    return model, stage2_x
+
+
+def train_selector(monitor: PhaseMonitor, feature_df: pd.DataFrame) -> list[str]:
+    with monitor.phase("selector/rerank train"):
+        monitor.update_progress(stage_index=3, shape=_shape_of(feature_df))
+        print("[selector] rule-based selector uses stage3 schema; no model fit needed")
+        return list(CASCADE_V1_STAGE3_COLUMNS)
+
+
 def _train_cascade_mode(
     feature_df: pd.DataFrame,
     feature_version: str,
     params: dict,
     pipeline_cfg: dict,
+    monitor: PhaseMonitor,
 ) -> None:
     stage1_keep = int(pipeline_cfg.get("stage1_keep", 30))
     stage2_keep = int(pipeline_cfg.get("stage2_keep", 10))
     print("[訓練開始] pipeline=cascade_v1 (stage-aware)")
-    pipeline, artifacts = CascadePipeline.train(
-        feature_df,
+
+    stage1_model, _ = train_stage1_model(feature_df, params, monitor)
+    stage2_model, _ = train_stage2_model(
+        feature_df, stage1_model, params, stage1_keep, monitor
+    )
+    selector_schema = train_selector(monitor, feature_df)
+
+    artifacts = CascadeArtifacts(
+        pipeline_version="cascade_v1",
+        stage1_model=stage1_model,
+        stage2_model=stage2_model,
+        stage1_feature_columns=list(CASCADE_V1_STAGE1_COLUMNS),
+        stage2_feature_columns=list(CASCADE_V1_STAGE2_COLUMNS),
+        stage3_input_schema=selector_schema,
         stage1_keep=stage1_keep,
         stage2_keep=stage2_keep,
-        catboost_params=params,
     )
-    _ = pipeline
+    with monitor.phase("save model / metadata"):
+        artifact_dir_cfg = str(pipeline_cfg.get("artifact_dir", "models/cascade_v1"))
+        artifact_dir = PROJECT_ROOT / artifact_dir_cfg
+        artifact_meta = save_cascade_artifacts(
+            artifact_dir,
+            artifacts,
+            feature_version=feature_version,
+            train_issue_start=int(feature_df["issue"].min()),
+            train_issue_end=int(feature_df["target_issue"].max()),
+        )
 
-    artifact_dir_cfg = str(pipeline_cfg.get("artifact_dir", "models/cascade_v1"))
-    artifact_dir = PROJECT_ROOT / artifact_dir_cfg
-    artifact_meta = save_cascade_artifacts(
-        artifact_dir,
-        artifacts,
-        feature_version=feature_version,
-        train_issue_start=int(feature_df["issue"].min()),
-        train_issue_end=int(feature_df["target_issue"].max()),
-    )
+        selected_strategy = {
+            "version_id": "cascade_v1_flow",
+            "stage_type": "cascade",
+            "pipeline_version": "cascade_v1",
+            "model_artifact_dir": artifact_dir_cfg,
+            "stage1_keep": stage1_keep,
+            "stage2_keep": stage2_keep,
+            "candidate_pool": stage1_keep,
+            "prior_window": 300,
+            "rerank_weight": 0.0,
+            "penalty_weight": 0.0,
+            "trend_weight": 0.0,
+            "regime_aware": True,
+        }
+        save_json(
+            MODELS_DIR / "strategy_config.json",
+            {
+                "selected_strategy": selected_strategy,
+                "fallback_strategy": selected_strategy,
+            },
+        )
 
-    selected_strategy = {
-        "version_id": "cascade_v1_flow",
-        "stage_type": "cascade",
-        "pipeline_version": "cascade_v1",
-        "model_artifact_dir": artifact_dir_cfg,
-        "stage1_keep": stage1_keep,
-        "stage2_keep": stage2_keep,
-        "candidate_pool": stage1_keep,
-        "prior_window": 300,
-        "rerank_weight": 0.0,
-        "penalty_weight": 0.0,
-        "trend_weight": 0.0,
-        "regime_aware": True,
-    }
-    save_json(
-        MODELS_DIR / "strategy_config.json",
-        {
+        legacy_metadata = {}
+        metadata_path = MODELS_DIR / "metadata.json"
+        if metadata_path.exists():
+            legacy_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata = {
+            **legacy_metadata,
+            "model_type": "catboost_cascade",
+            "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+            "feature_rows": int(len(feature_df)),
+            "feature_version": feature_version,
             "selected_strategy": selected_strategy,
-            "fallback_strategy": selected_strategy,
-        },
-    )
-
-    legacy_metadata = {}
-    metadata_path = MODELS_DIR / "metadata.json"
-    if metadata_path.exists():
-        legacy_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata = {
-        **legacy_metadata,
-        "model_type": "catboost_cascade",
-        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
-        "feature_rows": int(len(feature_df)),
-        "feature_version": feature_version,
-        "selected_strategy": selected_strategy,
-        "pipeline_artifacts": {
-            "cascade_v1": {
-                "artifact_dir": "models/cascade_v1",
-                **artifact_meta,
-            }
-        },
-    }
-    save_json(metadata_path, metadata)
-    print("[完成] cascade artifacts saved to models/cascade_v1")
+            "pipeline_artifacts": {
+                "cascade_v1": {
+                    "artifact_dir": "models/cascade_v1",
+                    **artifact_meta,
+                }
+            },
+        }
+        save_json(metadata_path, metadata)
+        monitor.update_progress(shape=_shape_of(feature_df))
+        print("[完成] cascade artifacts saved to models/cascade_v1")
 
 
 def main() -> None:
+    faulthandler.enable(all_threads=True)
+    args = _parse_args()
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
     pipeline_cfg = cfg.get("pipeline", {})
+    monitor = PhaseMonitor(watchdog_seconds=int(args.watchdog_seconds))
     pipeline_version = normalize_pipeline_version(
         pipeline_cfg.get("version", "baseline_flat_score")
     )
@@ -333,31 +629,31 @@ def main() -> None:
         f"stage2_keep={int(pipeline_cfg.get('stage2_keep', 10))}"
     )
     os.environ["STRICT_FEATURES"] = "1"
-    feature_df = pd.read_csv(FEATURE_STORE_DIR / "issue_features.csv")
-    max_draws = int(cfg.get("max_draws_for_training", len(feature_df)))
-    feature_df = feature_df.tail(max_draws).reset_index(drop=True)
-    feature_columns = json.loads(
-        (MODELS_DIR / "feature_columns.json").read_text(encoding="utf-8")
+    feature_df, feature_columns, feature_version = build_training_frame(
+        cfg=cfg,
+        args=args,
+        monitor=monitor,
     )
-    feature_version = str(cfg.get("feature_version", "v3_core20"))
-    if feature_version != "v3_core20":
-        raise ValueError("only v3_core20 is supported")
-    validate_feature_columns_contract(feature_columns, feature_version)
+    max_draws = len(feature_df)
 
-    if len(feature_df) < 3000:
+    if len(feature_df) < 3000 and not args.debug:
         raise ValueError("訓練資料不足 3000 期，請先更新資料。")
 
-    params = cfg.get("catboost_params", {})
-    params.setdefault("loss_function", "Logloss")
-    params.setdefault("verbose", False)
-    params.setdefault("random_seed", 42)
+    params = _build_catboost_params(cfg, args)
 
     if pipeline_version.startswith("cascade"):
+        with monitor.phase("label/candidate expand"):
+            monitor.update_progress(shape=_shape_of(feature_df), stage_index=0)
+            print("[info] cascade mode expands candidates inside stage training")
+        with monitor.phase("fold build"):
+            monitor.update_progress(shape=_shape_of(feature_df), fold_index=0)
+            print("[info] cascade mode uses full frame training (no CV folds)")
         _train_cascade_mode(
             feature_df=feature_df,
             feature_version=feature_version,
             params=params,
             pipeline_cfg=pipeline_cfg,
+            monitor=monitor,
         )
         return
 
@@ -377,11 +673,22 @@ def main() -> None:
     fast_experiments = [
         exp for exp in all_experiments if exp.version_id in fast_version_ids
     ]
-    issue_payloads = precompute_issue_payloads(
-        feature_df,
-        feature_columns,
-        strict_features=True,
-    )
+    with monitor.phase("label/candidate expand"):
+        issue_payloads = precompute_issue_payloads(
+            feature_df,
+            feature_columns,
+            strict_features=True,
+        )
+        monitor.update_progress(shape=(len(issue_payloads), len(feature_columns)))
+    with monitor.phase("fold build"):
+        monitor.update_progress(
+            shape=(len(feature_df), len(feature_columns)),
+            fold_index=int(cfg.get("backtest_splits", 5)),
+        )
+        print(
+            f"[folds] research_splits={int(cfg.get('research_backtest_splits', 3))}, "
+            f"final_splits={int(cfg.get('backtest_splits', 5))}"
+        )
 
     print("[研究流程] 快速階段：3個版本、3 folds、較低 iterations")
     fast_params = dict(params)
