@@ -1,6 +1,6 @@
 feature_min_history: 22
 pipeline:
-  version: auto
+  version: baseline_flat_score
   artifact_dir: models/cascade_v1
   stage1_keep: 30
   stage2_keep: 10
@@ -32,3 +32,11 @@ soft_label_training:
 proximity_model:
   enabled: false
   pm1_weight: 0.12
+
+ranking_experiment:
+  enabled: true
+  objective: QuerySoftMax
+
+formal_strategy:
+  model_family: ranker_main
+  fail_fast_ranker_artifact: true

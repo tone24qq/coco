@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier, CatBoostRegressor
+from catboost import CatBoostClassifier, CatBoostRanker, Pool
 from sklearn.model_selection import TimeSeriesSplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +24,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.artifacts import CascadeArtifacts  # noqa: E402
 from src.artifacts import save_cascade_artifacts  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
+from src.ranking_dataset import (  # noqa: E402
+    build_ranker_training_rows,
+    split_ranker_training_frame,
+)
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -190,14 +194,16 @@ def _shape_of(x: object) -> tuple[int, int] | None:
 def _build_catboost_params(cfg: dict, args: argparse.Namespace) -> dict:
     params = dict(cfg.get("catboost_params", {}))
     params.setdefault("loss_function", "Logloss")
-    params.setdefault("verbose", False)
     params.setdefault("random_seed", 42)
     params.setdefault("thread_count", min(8, os.cpu_count() or 4))
-    params.setdefault("logging_level", "Info")
+    params.setdefault("logging_level", "Silent")
+    params.pop("verbose", None)
     params.setdefault("metric_period", 50)
     params.setdefault("train_dir", str(MODELS_DIR / "catboost_train_logs"))
     params.setdefault("save_snapshot", True)
     params.setdefault("snapshot_file", str(MODELS_DIR / "catboost_snapshot.bin"))
+    if not bool(params.get("allow_writing_files", True)):
+        params["save_snapshot"] = False
     if args.thread_count is not None:
         params["thread_count"] = int(args.thread_count)
     if args.iterations is not None:
@@ -344,9 +350,39 @@ def _evaluate_strategies(
         print(f"[版本開始] {exp.version_id}")
         fold_train, fold_test, regime_rows = [], [], []
         for fold_id, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
-            x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
-            model = CatBoostClassifier(**params)
-            model.fit(x_train, y_train, verbose=False)
+            model = None
+            ranker_model = None
+            if exp.stage_type == "ranker_main":
+                feature_cols = list(issue_payloads[int(tr_idx[0])]["cand"].columns)
+                rank_rows = build_ranker_training_rows(
+                    issue_payloads,
+                    list(tr_idx),
+                    feature_columns=feature_cols,
+                )
+                rank_x, rank_y, rank_gid = split_ranker_training_frame(
+                    rank_rows,
+                    feature_columns=feature_cols,
+                )
+                ranker_params = dict(params)
+                ranker_params.pop("verbose", None)
+                ranker_params["loss_function"] = "QuerySoftMax"
+                ranker_params["eval_metric"] = "NDCG:top=10"
+                ranker_params["custom_metric"] = [
+                    "NDCG:top=3",
+                    "NDCG:top=10",
+                    "PrecisionAt:top=3",
+                    "PrecisionAt:top=10",
+                    "RecallAt:top=3",
+                    "RecallAt:top=10",
+                ]
+                ranker_model = CatBoostRanker(**ranker_params)
+                ranker_model.fit(
+                    Pool(rank_x, label=rank_y, group_id=rank_gid), verbose=False
+                )
+            else:
+                x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
+                model = CatBoostClassifier(**params)
+                model.fit(x_train, y_train)
             cascade_pipeline = None
             if exp.stage_type == "cascade":
                 cascade_pipeline = _fit_cascade_pipeline(
@@ -360,7 +396,6 @@ def _evaluate_strategies(
             def _score_issue(row_idx: int) -> tuple[dict, str]:
                 payload = issue_payloads[int(row_idx)]
                 cand = payload["cand"]
-                base_scores = model.predict_proba(cand)[:, 1]
                 regime = payload["regime"]
                 if regime is None:
                     regime = derive_regime(feat_df.iloc[row_idx])
@@ -370,7 +405,14 @@ def _evaluate_strategies(
                         raise ValueError("cascade pipeline not available")
                     cascade = cascade_pipeline.predict_issue(payload["issue_row"])
                     final_scores = cascade["final_scores"]
+                elif exp.stage_type == "ranker_main":
+                    if ranker_model is None:
+                        raise ValueError("ranker model not available")
+                    final_scores = ranker_model.predict(cand)
                 else:
+                    if model is None:
+                        raise ValueError("classifier model not available")
+                    base_scores = model.predict_proba(cand)[:, 1]
                     final_scores = apply_strategy(base_scores, cand, exp, regime)
                 metric = issue_metrics(final_scores, payload["target"])
                 return metric, regime
@@ -509,7 +551,7 @@ def train_stage1_model(
         monitor.update_progress(stage_index=1, shape=_shape_of(stage1_x))
         print(f"[stage1] train shape={stage1_x.shape}")
         model = CatBoostClassifier(**params)
-        model.fit(stage1_x, stage1_y, verbose=False)
+        model.fit(stage1_x, stage1_y)
         monitor.update_progress(stage_index=1, shape=_shape_of(stage1_x))
     return model, stage1_x
 
@@ -555,7 +597,7 @@ def train_stage2_model(
         monitor.update_progress(stage_index=2, shape=_shape_of(stage2_x))
         print(f"[stage2] train shape={stage2_x.shape}")
         model = CatBoostClassifier(**params)
-        model.fit(stage2_x, stage2_y, verbose=False)
+        model.fit(stage2_x, stage2_y)
         monitor.update_progress(stage_index=2, shape=_shape_of(stage2_x))
     return model, stage2_x
 
@@ -650,13 +692,34 @@ def _train_cascade_mode(
         print("[完成] cascade artifacts saved to models/cascade_v1")
 
 
+def _cleanup_legacy_artifacts(cfg: dict) -> None:
+    legacy_paths = [
+        MODELS_DIR / "catboost_top20.cbm",
+        MODELS_DIR / "catboost_soft_label.cbm",
+    ]
+    if not bool(cfg.get("soft_label_training", {}).get("enabled", False)):
+        legacy_paths.append(MODELS_DIR / "catboost_soft_ce.cbm")
+    if not bool(cfg.get("proximity_model", {}).get("enabled", False)):
+        legacy_paths.append(MODELS_DIR / "catboost_pm1_proximity.cbm")
+    legacy_paths.extend(
+        [
+            MODELS_DIR / "strategy_config.json",
+            REPORTS_DIR / "experiment_registry.csv",
+        ]
+    )
+    for path in legacy_paths:
+        if path.exists():
+            path.unlink()
+
+
 def main() -> None:
     faulthandler.enable(all_threads=True)
     args = _parse_args()
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
-    if bool(cfg.get("ranking_experiment", {}).get("enabled", False)):
+    ranking_pairwise_cfg = cfg.get("ranking_pairwise_experiment", {})
+    if bool(ranking_pairwise_cfg.get("enabled", False)):
         raise NotImplementedError(
-            "ranking_experiment.enabled=true is not formally supported yet"
+            "ranking_pairwise_experiment.enabled=true requires a pairs pipeline and is not implemented"
         )
     pipeline_cfg = cfg.get("pipeline", {})
     monitor = PhaseMonitor(watchdog_seconds=int(args.watchdog_seconds))
@@ -681,13 +744,14 @@ def main() -> None:
 
     params = _build_catboost_params(cfg, args)
 
+    if (
+        pipeline_version.startswith("cascade")
+        and os.getenv("ALLOW_LEGACY_CASCADE", "0") != "1"
+    ):
+        raise ValueError(
+            "cascade pipeline is legacy-only; set ALLOW_LEGACY_CASCADE=1 for offline development"
+        )
     if pipeline_version.startswith("cascade"):
-        with monitor.phase("label/candidate expand"):
-            monitor.update_progress(shape=_shape_of(feature_df), stage_index=0)
-            print("[info] cascade mode expands candidates inside stage training")
-        with monitor.phase("fold build"):
-            monitor.update_progress(shape=_shape_of(feature_df), fold_index=0)
-            print("[info] cascade mode uses full frame training (no CV folds)")
         _train_cascade_mode(
             feature_df=feature_df,
             feature_version=feature_version,
@@ -697,18 +761,20 @@ def main() -> None:
         )
         return
 
-    print("[訓練開始] 模型：CatBoost Binary")
+    print("[訓練開始] 模型：CatBoost Binary/Ranker")
     print(f"[訓練設定] max_draws_for_training={max_draws}")
     print(
         f"[資料摘要] 訓練期數：{len(feature_df)}，特徵數：{len(feature_columns)}，模型類型：catboost"
     )
 
+    training_mode = str(cfg.get("training_mode", "ranker_main"))
+    if training_mode != "ranker_main":
+        raise ValueError("formal training_mode must be ranker_main")
+    _cleanup_legacy_artifacts(cfg)
     all_experiments = _load_experiments()
     fast_version_ids = {
         "v0_binary_baseline",
-        "v3_rerank_k30_p300",
-        "v4_two_stage_20_10_3",
-        "cascade_v1_flow",
+        "ranker_main_qsm",
     }
     fast_experiments = [
         exp for exp in all_experiments if exp.version_id in fast_version_ids
@@ -724,10 +790,6 @@ def main() -> None:
         monitor.update_progress(
             shape=(len(feature_df), len(feature_columns)),
             fold_index=int(cfg.get("backtest_splits", 5)),
-        )
-        print(
-            f"[folds] research_splits={int(cfg.get('research_backtest_splits', 3))}, "
-            f"final_splits={int(cfg.get('backtest_splits', 5))}"
         )
 
     print("[研究流程] 快速階段：3個版本、3 folds、較低 iterations")
@@ -755,16 +817,18 @@ def main() -> None:
     ]
     if not selected_final_ids:
         selected_final_ids = [fast_best["version_id"]]
+    selected_final_ids = [
+        x for x in selected_final_ids if x in {"v0_binary_baseline", "ranker_main_qsm"}
+    ]
     if "v0_binary_baseline" not in selected_final_ids:
         selected_final_ids = ["v0_binary_baseline", *selected_final_ids]
+    if "ranker_main_qsm" not in selected_final_ids:
+        selected_final_ids.append("ranker_main_qsm")
     final_experiments = [
         exp for exp in all_experiments if exp.version_id in set(selected_final_ids)
     ]
 
-    print(
-        f"[研究流程] 正式階段：版本={selected_final_ids}、{int(cfg.get('backtest_splits', 5))} folds"
-    )
-    registry_df, best, baseline = _evaluate_strategies(
+    registry_df, _best, baseline = _evaluate_strategies(
         feature_df,
         issue_payloads,
         params=params,
@@ -772,15 +836,64 @@ def main() -> None:
         experiments=final_experiments,
         overfit_th=cfg.get("overfit_thresholds", {}),
     )
-    selected_strategy = _select_formal_strategy(registry_df)
+    ranker_rows = registry_df[registry_df["version_id"] == "ranker_main_qsm"]
+    selected_strategy = (
+        ranker_rows.iloc[0].to_dict()
+        if not ranker_rows.empty
+        else _select_formal_strategy(registry_df)
+    )
 
     x_train, y_train = _expand_rows(issue_payloads, list(range(len(feature_df))))
-    final_model = CatBoostClassifier(**params)
-    final_model.fit(x_train, y_train, verbose=False)
-    final_model.save_model(str(MODELS_DIR / "catboost_top20.cbm"))
+
+    ranker_group_count = 0
+    ranking_cfg = cfg.get("ranking_experiment", {})
+    if True:
+        rank_frame = build_ranker_training_rows(
+            issue_payloads,
+            list(range(len(feature_df))),
+            feature_columns,
+        )
+        rank_x, rank_y, rank_group_id = split_ranker_training_frame(
+            rank_frame,
+            feature_columns,
+        )
+        if int(len(rank_frame)) % 80 != 0:
+            raise ValueError(
+                "ranker dataset rows should be aligned to 80-candidate blocks"
+            )
+        ranker_params = dict(params)
+        ranker_params["loss_function"] = str(
+            ranking_cfg.get("objective", "QuerySoftMax")
+        )
+        ranker_params["eval_metric"] = str(
+            ranking_cfg.get("eval_metric", "NDCG:top=10")
+        )
+        ranker_params["custom_metric"] = list(
+            ranking_cfg.get(
+                "custom_metrics",
+                [
+                    "NDCG:top=3",
+                    "NDCG:top=10",
+                    "PrecisionAt:top=3",
+                    "PrecisionAt:top=10",
+                    "RecallAt:top=3",
+                    "RecallAt:top=10",
+                ],
+            )
+        )
+        ranker = CatBoostRanker(**ranker_params)
+        pool = Pool(
+            rank_x,
+            label=rank_y,
+            group_id=rank_group_id,
+        )
+        ranker.fit(pool)
+        ranker.save_model(str(MODELS_DIR / "catboost_ranker_top80.cbm"))
+        ranker_group_count = int(pd.Series(rank_group_id).nunique())
 
     x_soft = pd.DataFrame()
     x_pm1 = pd.DataFrame()
+    soft_model_path = ""
     soft_cfg = cfg.get("soft_label_training", {})
     if bool(soft_cfg.get("enabled", False)):
         x_soft, y_soft, _ = _expand_rows_with_soft_labels(
@@ -790,11 +903,12 @@ def main() -> None:
             pm2_weight=float(soft_cfg.get("pm2_weight", 0.15)),
         )
         soft_params = dict(params)
-        soft_params["loss_function"] = "RMSE"
-        soft_params["eval_metric"] = "RMSE"
-        soft_model = CatBoostRegressor(**soft_params)
-        soft_model.fit(x_soft, y_soft, verbose=False)
-        soft_model.save_model(str(MODELS_DIR / "catboost_soft_label.cbm"))
+        soft_params["loss_function"] = "CrossEntropy"
+        soft_params["eval_metric"] = "CrossEntropy"
+        soft_model = CatBoostClassifier(**soft_params)
+        soft_model.fit(x_soft, y_soft.astype(float))
+        soft_model_path = "models/catboost_soft_ce.cbm"
+        soft_model.save_model(str(MODELS_DIR / "catboost_soft_ce.cbm"))
 
     proximity_cfg = cfg.get("proximity_model", {})
     if bool(proximity_cfg.get("enabled", False)):
@@ -805,10 +919,16 @@ def main() -> None:
             pm2_weight=float(soft_cfg.get("pm2_weight", 0.15)),
         )
         pm1_model = CatBoostClassifier(**params)
-        pm1_model.fit(x_pm1, y_pm1, verbose=False)
+        pm1_model.fit(x_pm1, y_pm1)
         pm1_model.save_model(str(MODELS_DIR / "catboost_pm1_proximity.cbm"))
 
-    importances = final_model.get_feature_importance()
+    try:
+        importances = ranker.get_feature_importance(
+            pool,
+            type="PredictionValuesChange",
+        )
+    except TypeError:
+        importances = ranker.get_feature_importance()
     fi_df = pd.DataFrame(
         {
             "feature": feature_columns,
@@ -829,43 +949,26 @@ def main() -> None:
         },
     )
 
-    print(
-        "[整體結果] "
-        f"top20_hit_rate={selected_strategy['top20_hit_rate']:.4f}, "
-        f"top10_hit_rate={selected_strategy['top10_hit_rate']:.4f}, "
-        f"top3_hit_rate={selected_strategy['top3_hit_rate']:.4f}, "
-        "top3_at_least_one_hit_rate="
-        f"{selected_strategy['top3_at_least_one_hit_rate']:.4f}"
-    )
-    print(
-        "[過擬合檢查] "
-        f"gap={selected_strategy['train_vs_oos_gap']:.4f}, "
-        f"fold_dispersion={selected_strategy['fold_dispersion']:.4f}, "
-        f"regime_dispersion={selected_strategy['regime_dispersion']:.4f}, "
-        f"overfit={bool(selected_strategy['is_overfit'])}"
-    )
-    print(f"[最佳版本] {selected_strategy['version_id']}")
-    print(f"[正式預測版本] {selected_strategy['version_id']}")
-
-    strategy_payload = {
-        "selected_strategy": selected_strategy,
-        "fallback_strategy": baseline,
-    }
-    save_json(MODELS_DIR / "strategy_config.json", strategy_payload)
-
+    model_type = "catboost_ranker"
+    model_path = "models/catboost_ranker_top80.cbm"
     metadata = {
-        "model_type": "catboost",
+        "model_type": model_type,
+        "training_mode": training_mode,
         "trained_at_utc": datetime.now(timezone.utc).isoformat(),
         "feature_rows": int(len(feature_df)),
         "feature_count": len(feature_columns),
         "train_issue_start": int(feature_df["issue"].min()),
         "train_issue_end": int(feature_df["target_issue"].max()),
         "feature_columns_path": "models/feature_columns.json",
-        "model_path": "models/catboost_top20.cbm",
+        "model_path": model_path,
+        "classifier_model_path": "",
+        "ranker_model_path": "models/catboost_ranker_top80.cbm",
         "params": params,
         "selected_strategy": selected_strategy,
-        "fallback_strategy": baseline,
+        "fallback_strategy": {},
         "feature_version": feature_version,
+        "ranking_objective": str(ranking_cfg.get("objective", "QuerySoftMax")),
+        "ranking_eval_metric": str(ranking_cfg.get("eval_metric", "NDCG:top=10")),
         "runtime_config": {
             "core_windows": cfg.get("core_windows", {}),
             "smoothing_alpha": cfg.get("smoothing_alpha", 0.5),
@@ -874,11 +977,7 @@ def main() -> None:
             "soft_label_training": cfg.get("soft_label_training", {}),
             "proximity_model": cfg.get("proximity_model", {}),
         },
-        "soft_label_model_path": (
-            "models/catboost_soft_label.cbm"
-            if bool(soft_cfg.get("enabled", False))
-            else ""
-        ),
+        "soft_label_model_path": soft_model_path,
         "pm1_model_path": (
             "models/catboost_pm1_proximity.cbm"
             if bool(proximity_cfg.get("enabled", False))
@@ -889,8 +988,11 @@ def main() -> None:
         "soft_label_normalization_method": str(
             soft_cfg.get("normalization", "rank_pct")
         ),
+        "group_count": ranker_group_count,
+        "feature_importance_source": "catboost_ranker",
         "train_rows_used": {
             "exact": int(len(y_train)),
+            "ranker": int(len(feature_df) * 80),
             "soft": int(len(x_soft)) if bool(soft_cfg.get("enabled", False)) else 0,
             "proximity": (
                 int(len(x_pm1)) if bool(proximity_cfg.get("enabled", False)) else 0
