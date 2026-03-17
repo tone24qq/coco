@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier, CatBoostRegressor
+from catboost import CatBoostClassifier, CatBoostRanker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -22,7 +22,10 @@ from src.analysis.features import (  # noqa: E402
 from src.analysis.snapshots import load_history_snapshot_payload  # noqa: E402
 from src.artifacts import load_cascade_artifacts  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
-from src.runtime_scoring import score_candidates_runtime  # noqa: E402
+from src.runtime_scoring import (  # noqa: E402
+    RUNTIME_SCORE_REQUIRED_COLUMNS,
+    score_candidates_runtime,
+)
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -263,8 +266,10 @@ def resolve_runtime_strategy(
 @dataclass
 class Predictor:
     model: CatBoostClassifier | None
-    soft_model: CatBoostRegressor | None
+    ranker_model: CatBoostRanker | None
+    soft_model: CatBoostClassifier | None
     pm1_model: CatBoostClassifier | None
+    use_ranker_main: bool
     feature_columns: list[str]
     strategy: StrategyConfig
     feature_version: str
@@ -274,40 +279,73 @@ class Predictor:
     @classmethod
     def load(cls) -> "Predictor":
         predict_cfg = load_yaml(CONFIG_DIR / "predict.yaml")
-        model_path = MODELS_DIR / "catboost_top20.cbm"
-        model = CatBoostClassifier()
-        soft_model = CatBoostRegressor()
-        pm1_model = CatBoostClassifier()
-        cols: list[str] = []
-        feature_cols_path = MODELS_DIR / "feature_columns.json"
-        if feature_cols_path.exists():
-            cols = json.loads(feature_cols_path.read_text(encoding="utf-8"))
-        if model_path.exists():
-            model.load_model(str(model_path))
-        soft_model_path = MODELS_DIR / "catboost_soft_label.cbm"
-        pm1_model_path = MODELS_DIR / "catboost_pm1_proximity.cbm"
-        if soft_model_path.exists():
-            try:
-                soft_model.load_model(str(soft_model_path))
-            except Exception as exc:
-                LOGGER.warning("failed to load soft model: %s", exc)
-                soft_model = None
-        else:
-            soft_model = None
-        if pm1_model_path.exists():
-            try:
-                pm1_model.load_model(str(pm1_model_path))
-            except Exception as exc:
-                LOGGER.warning("failed to load pm1 proximity model: %s", exc)
-                pm1_model = None
-        else:
-            pm1_model = None
+        yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
         metadata_path = MODELS_DIR / "metadata.json"
         metadata = (
             json.loads(metadata_path.read_text(encoding="utf-8"))
             if metadata_path.exists()
             else {"feature_version": "v3_core20"}
         )
+
+        prefer_ranker = (
+            str(metadata.get("model_type", "")) == "catboost_ranker"
+            or str(yaml_cfg.get("training_mode", "classifier_baseline"))
+            == "ranker_main"
+        )
+        model: CatBoostClassifier | None = None
+        ranker_model: CatBoostRanker | None = None
+        use_ranker_main = False
+        ranker_path = MODELS_DIR / "catboost_ranker_top80.cbm"
+        baseline_path = MODELS_DIR / "catboost_top20.cbm"
+        if prefer_ranker and ranker_path.exists():
+            try:
+                ranker_model = CatBoostRanker()
+                ranker_model.load_model(str(ranker_path))
+                use_ranker_main = True
+            except Exception as exc:
+                LOGGER.warning(
+                    "failed to load ranker model, fallback to classifier: %s", exc
+                )
+                ranker_model = None
+                use_ranker_main = False
+        elif prefer_ranker:
+            LOGGER.warning(
+                "ranker mode requested but artifact missing: %s", ranker_path
+            )
+
+        if baseline_path.exists():
+            try:
+                clf_model = CatBoostClassifier()
+                clf_model.load_model(str(baseline_path))
+                model = clf_model
+            except Exception as exc:
+                LOGGER.warning("failed to load classifier baseline: %s", exc)
+                model = None
+
+        cols: list[str] = []
+        feature_cols_path = MODELS_DIR / "feature_columns.json"
+        if feature_cols_path.exists():
+            cols = json.loads(feature_cols_path.read_text(encoding="utf-8"))
+
+        soft_model = None
+        pm1_model = None
+        soft_model_path = MODELS_DIR / "catboost_soft_ce.cbm"
+        pm1_model_path = MODELS_DIR / "catboost_pm1_proximity.cbm"
+        if soft_model_path.exists():
+            try:
+                soft_model = CatBoostClassifier()
+                soft_model.load_model(str(soft_model_path))
+            except Exception as exc:
+                LOGGER.warning("failed to load soft model: %s", exc)
+                soft_model = None
+        if pm1_model_path.exists():
+            try:
+                pm1_model = CatBoostClassifier()
+                pm1_model.load_model(str(pm1_model_path))
+            except Exception as exc:
+                LOGGER.warning("failed to load pm1 proximity model: %s", exc)
+                pm1_model = None
+
         metadata_feature_version = normalize_feature_version(
             metadata.get("feature_version", "v3_core20")
         )
@@ -319,7 +357,6 @@ class Predictor:
             validate_feature_columns_contract(
                 cols, metadata_feature_version, allow_legacy_subset=True
             )
-        yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
         yaml_feature_version = normalize_feature_version(
             yaml_cfg.get("feature_version", "v3_core20")
         )
@@ -342,6 +379,7 @@ class Predictor:
             if key in predict_cfg:
                 runtime_cfg[key] = predict_cfg.get(key, {})
         runtime_cfg.setdefault("feature_version", metadata_feature_version)
+
         strategy_cfg_path = MODELS_DIR / "strategy_config.json"
         strategy_cfg = (
             json.loads(strategy_cfg_path.read_text(encoding="utf-8"))
@@ -361,12 +399,11 @@ class Predictor:
             strategy.stage_type,
             strategy.pipeline_version,
         )
-        if (
-            (not model_path.exists())
-            and (not is_cascade_strategy(strategy))
-            and (not cols)
+        if (model is None and ranker_model is None) and (
+            not is_cascade_strategy(strategy)
         ):
-            raise ValueError("legacy model artifact missing: models/catboost_top20.cbm")
+            raise ValueError("legacy/ranker model artifact missing")
+
         cascade_pipeline = None
         if is_cascade_strategy(strategy):
             artifact_dir = (
@@ -381,8 +418,10 @@ class Predictor:
 
         return cls(
             model=model,
+            ranker_model=ranker_model,
             soft_model=soft_model,
             pm1_model=pm1_model,
+            use_ranker_main=use_ranker_main,
             feature_columns=cols,
             strategy=strategy,
             feature_version=metadata_feature_version,
@@ -473,15 +512,20 @@ class Predictor:
                 },
             }
         else:
-            if self.model is None or x is None:
-                raise ValueError("legacy model not loaded")
-            base_scores = self.model.predict_proba(x)[:, 1]
-            scores = apply_strategy(base_scores, x, self.strategy, regime)
+            if x is None:
+                raise ValueError("candidate feature matrix is missing")
+            if self.use_ranker_main and self.ranker_model is not None:
+                scores = self.ranker_model.predict(x)
+            else:
+                if self.model is None:
+                    raise ValueError("classifier model not loaded")
+                base_scores = self.model.predict_proba(x)[:, 1]
+                scores = apply_strategy(base_scores, x, self.strategy, regime)
 
         soft_raw = None
         pm1_raw = None
         if x is not None and self.soft_model is not None:
-            soft_raw = self.soft_model.predict(x)
+            soft_raw = self.soft_model.predict_proba(x)[:, 1]
         if x is not None and self.pm1_model is not None:
             pm1_raw = self.pm1_model.predict_proba(x)[:, 1]
 
@@ -526,41 +570,13 @@ class Predictor:
         latest_issue = int(row["issue"])
         zc = {z: sum(1 for n in top20 if zone_of(n) == z) for z in ["A", "B", "C", "D"]}
         board_type = classify_board(zc)
-        candidate_cols = [
-            "number",
-            "model_score",
-            "history_prior_score",
-            "long_feature_score",
-            "soft_label_score",
-            "pm1_proximity_score",
-            "score_before_analysis_rerank",
-            "analysis_compatibility_score",
-            "analysis_rerank_score",
-            "score_after_analysis_rerank",
-            "raw_score",
-            "local_peak_score",
-            "score_after_local_peak",
-            "final_score",
-            "cand_current_gap_all",
-            "rank_model_only",
-            "rank_final",
-        ]
+        candidate_cols = list(RUNTIME_SCORE_REQUIRED_COLUMNS)
         score_table["score"] = score_table["final_score"].astype(float)
         raw_score_table = score_table[["score", *candidate_cols]].to_dict(
             orient="records"
         )
-        score_table_compact = (
-            score_table[
-                [
-                    "number",
-                    "final_score",
-                    "rank_final",
-                    "model_score",
-                    "score_after_local_peak",
-                ]
-            ]
-            .rename(columns={"final_score": "score"})
-            .to_dict(orient="records")
+        score_table_compact = score_table[RUNTIME_SCORE_REQUIRED_COLUMNS].to_dict(
+            orient="records"
         )
         top20_scores = {
             f"{int(rec['number']):02d}": float(rec["final_score"])
@@ -604,7 +620,11 @@ class Predictor:
         }
 
         result = {
-            "model": "catboost",
+            "model": (
+                "catboost_ranker"
+                if self.use_ranker_main and self.ranker_model is not None
+                else "catboost"
+            ),
             "strategy_version": self.strategy.version_id,
             "target_issue": latest_issue + 1,
             "top20_numbers": top20,

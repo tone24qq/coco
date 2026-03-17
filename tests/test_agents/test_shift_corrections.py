@@ -24,17 +24,18 @@ class _DummyClassifier:
         return np.vstack([1.0 - vals, vals]).T
 
 
-class _DummyRegressor:
+class _DummySoftClassifier:
     def __init__(self, *args, **kwargs):
         self.loaded = False
 
     def load_model(self, _path: str) -> None:
         self.loaded = True
 
-    def predict(self, x):
+    def predict_proba(self, x):
         import numpy as np
 
-        return np.linspace(0.1, 0.9, len(x), dtype=float)
+        vals = np.linspace(0.1, 0.9, len(x), dtype=float)
+        return np.vstack([1.0 - vals, vals]).T
 
 
 def _make_draw_df(n: int = 260) -> pd.DataFrame:
@@ -51,19 +52,18 @@ def _make_draw_df(n: int = 260) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_soft_label_uses_regressor(monkeypatch) -> None:
+def test_soft_label_uses_classifier_ce(monkeypatch) -> None:
     (MODELS_DIR / "feature_columns.json").write_text(
         json.dumps(V3_CORE20_COLUMNS), encoding="utf-8"
     )
     (MODELS_DIR / "metadata.json").write_text(
         json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
     )
-    (MODELS_DIR / "catboost_soft_label.cbm").write_text("x", encoding="utf-8")
+    (MODELS_DIR / "catboost_soft_ce.cbm").write_text("x", encoding="utf-8")
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr("src.predict.CatBoostRegressor", _DummyRegressor)
 
     predictor = Predictor.load()
-    assert isinstance(predictor.soft_model, _DummyRegressor)
+    assert isinstance(predictor.soft_model, _DummyClassifier)
 
 
 def test_pm1_proximity_uses_classifier(monkeypatch) -> None:
@@ -75,7 +75,6 @@ def test_pm1_proximity_uses_classifier(monkeypatch) -> None:
     )
     (MODELS_DIR / "catboost_pm1_proximity.cbm").write_text("x", encoding="utf-8")
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr("src.predict.CatBoostRegressor", _DummyRegressor)
 
     predictor = Predictor.load()
     assert isinstance(predictor.pm1_model, _DummyClassifier)
@@ -196,7 +195,6 @@ def test_predict_output_contains_full_breakdown(monkeypatch) -> None:
         json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
     )
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr("src.predict.CatBoostRegressor", _DummyRegressor)
     monkeypatch.setattr(
         "src.predict.load_history_snapshot_payload",
         lambda: {

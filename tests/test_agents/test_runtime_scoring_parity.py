@@ -38,6 +38,11 @@ class _DummyClassifier:
         return [1.0 for _ in range(len(V3_CORE20_COLUMNS))]
 
 
+class _DummyRanker(_DummyClassifier):
+    def predict(self, x):
+        return np.linspace(0.2, 0.8, len(x), dtype=float)
+
+
 class _DummyRegressor:
     def __init__(self, *args, **kwargs):
         self.loaded = False
@@ -79,7 +84,6 @@ def test_backtest_runtime_chain_matches_predict_when_soft_pm1_disabled(
         json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
     )
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr("src.predict.CatBoostRegressor", _DummyRegressor)
     monkeypatch.setattr(
         "src.predict.load_history_snapshot_payload",
         lambda: {
@@ -226,7 +230,7 @@ def test_training_metadata_consistency_for_soft_pm1(monkeypatch) -> None:
                 "cand": pd.DataFrame({c: [0.0] * 80 for c in V3_CORE20_COLUMNS}),
                 "target": {1, 2, 3},
                 "regime": "balanced",
-                "issue_row": pd.Series({"history_numbers": "[]"}),
+                "issue_row": pd.Series({"issue": 1, "history_numbers": "[]"}),
             }
         },
     )
@@ -239,11 +243,18 @@ def test_training_metadata_consistency_for_soft_pm1(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(train_lgbm, "CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr(train_lgbm, "CatBoostRegressor", _DummyRegressor)
+    monkeypatch.setattr(train_lgbm, "CatBoostRanker", _DummyRanker)
 
     def _fake_yaml(_p):
         return {
             "pipeline": {"version": "baseline_flat_score"},
+            "training_mode": "ranker_main",
+            "ranking_experiment": {
+                "enabled": True,
+                "objective": "QuerySoftMax",
+                "eval_metric": "NDCG:top=10",
+                "custom_metrics": ["NDCG:top=3", "NDCG:top=10"],
+            },
             "catboost_params": {"iterations": 1, "verbose": False},
             "soft_label_training": {
                 "enabled": True,
@@ -278,5 +289,9 @@ def test_training_metadata_consistency_for_soft_pm1(monkeypatch) -> None:
         "proximity_model",
         "soft_label_normalization_method",
         "train_rows_used",
+        "ranking_objective",
+        "ranking_eval_metric",
+        "group_count",
     ]:
         assert key in meta
+    assert "ranker" in meta["train_rows_used"]

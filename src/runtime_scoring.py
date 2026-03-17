@@ -11,6 +11,26 @@ from src.analysis.features import (
 )
 from src.utils import apply_local_peak_correction, apply_topk_group_dedup
 
+RUNTIME_SCORE_REQUIRED_COLUMNS = [
+    "number",
+    "model_score",
+    "history_prior_score",
+    "long_feature_score",
+    "soft_label_score",
+    "pm1_proximity_score",
+    "score_before_analysis_rerank",
+    "analysis_compatibility_score",
+    "analysis_rerank_score",
+    "score_after_analysis_rerank",
+    "raw_score",
+    "local_peak_score",
+    "score_after_local_peak",
+    "final_score",
+    "cand_current_gap_all",
+    "rank_model_only",
+    "rank_final",
+]
+
 
 @dataclass
 class RuntimeScoringOutputs:
@@ -276,11 +296,21 @@ def score_candidates_runtime(
     score_table = score_table.sort_values("final_score", ascending=False).reset_index(
         drop=True
     )
+    score_table["number"] = score_table["number"].astype(int)
+    score_table["raw_score"] = score_table["score_before_analysis_rerank"].astype(float)
     score_table["rank_final"] = np.arange(1, len(score_table) + 1, dtype=int)
     score_table["rank_model_only"] = (
         score_table["model_score"].rank(method="min", ascending=False).astype(int)
     )
     score_table["score"] = score_table["final_score"].astype(float)
+    for col in RUNTIME_SCORE_REQUIRED_COLUMNS:
+        if col not in score_table.columns:
+            score_table[col] = 0.0
+    score_table = score_table.reindex(
+        columns=[
+            *dict.fromkeys([*RUNTIME_SCORE_REQUIRED_COLUMNS, *score_table.columns])
+        ]
+    )
 
     return RuntimeScoringOutputs(
         score_table=score_table,

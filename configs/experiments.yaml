@@ -66,3 +66,15 @@ experiments:
     penalty_weight: 0.0
     trend_weight: 0.0
     regime_aware: true
+
+  - version_id: ranker_main_qsm
+    stage_type: ranker_main
+    pipeline_version: baseline_flat_score
+    stage1_keep: 30
+    stage2_keep: 10
+    candidate_pool: 20
+    prior_window: 100
+    rerank_weight: 0.0
+    penalty_weight: 0.0
+    trend_weight: 0.0
+    regime_aware: false

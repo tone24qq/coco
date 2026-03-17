@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier, CatBoostRegressor
+from catboost import CatBoostClassifier, CatBoostRanker, Pool
 from scipy.stats import t
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -18,7 +18,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.analysis.snapshots import load_history_snapshot_payload  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
-from src.runtime_scoring import score_candidates_runtime  # noqa: E402
+from src.ranking_dataset import (  # noqa: E402
+    build_ranker_training_rows,
+    split_ranker_training_frame,
+)
+from src.runtime_scoring import (  # noqa: E402
+    RUNTIME_SCORE_REQUIRED_COLUMNS,
+    score_candidates_runtime,
+)
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -274,9 +281,27 @@ def _build_feature_version_comparison(
 def _load_experiments() -> list[StrategyConfig]:
     exp_cfg_path = CONFIG_DIR / "experiments.yaml"
     if not exp_cfg_path.exists():
-        return default_experiments()
-    payload = load_yaml(exp_cfg_path)
-    return [StrategyConfig(**row) for row in payload.get("experiments", [])]
+        experiments = default_experiments()
+    else:
+        payload = load_yaml(exp_cfg_path)
+        experiments = [StrategyConfig(**row) for row in payload.get("experiments", [])]
+    if not any(exp.version_id == "ranker_main_qsm" for exp in experiments):
+        experiments.append(
+            StrategyConfig(
+                version_id="ranker_main_qsm",
+                stage_type="ranker_main",
+                pipeline_version="baseline_flat_score",
+                stage1_keep=30,
+                stage2_keep=10,
+                candidate_pool=20,
+                prior_window=100,
+                rerank_weight=0.0,
+                penalty_weight=0.0,
+                trend_weight=0.0,
+                regime_aware=False,
+            )
+        )
+    return experiments
 
 
 def _expand_rows(
@@ -334,11 +359,11 @@ def _load_runtime_scoring_bundle() -> dict:
 
     soft_model = None
     pm1_model = None
-    soft_path = PROJECT_ROOT / "models" / "catboost_soft_label.cbm"
+    soft_path = PROJECT_ROOT / "models" / "catboost_soft_ce.cbm"
     pm1_path = PROJECT_ROOT / "models" / "catboost_pm1_proximity.cbm"
     if soft_path.exists():
         try:
-            soft_model = CatBoostRegressor()
+            soft_model = CatBoostClassifier()
             soft_model.load_model(str(soft_path))
         except Exception:
             soft_model = None
@@ -373,7 +398,7 @@ def _score_issue_with_runtime_pipeline(
         sorted(x) for x in json.loads(str(issue_row.get("history_numbers", "[]")))
     ]
     soft_raw = (
-        runtime_bundle["soft_model"].predict(cand_for_runtime)
+        runtime_bundle["soft_model"].predict_proba(cand_for_runtime)[:, 1]
         if runtime_bundle.get("soft_model") is not None
         else None
     )
@@ -382,7 +407,7 @@ def _score_issue_with_runtime_pipeline(
         if runtime_bundle.get("pm1_model") is not None
         else None
     )
-    return score_candidates_runtime(
+    outputs = score_candidates_runtime(
         base_scores=np.array(scores, dtype=float),
         candidate_df=cand_for_runtime,
         recent_draws=recent_draws,
@@ -392,6 +417,10 @@ def _score_issue_with_runtime_pipeline(
         soft_label_raw=soft_raw,
         pm1_proximity_raw=pm1_raw,
     )
+    for col in RUNTIME_SCORE_REQUIRED_COLUMNS:
+        if col not in outputs.score_table.columns:
+            outputs.score_table[col] = 0.0
+    return outputs
 
 
 def _run_experiments(
@@ -412,7 +441,41 @@ def _run_experiments(
         fold_train, fold_test, regime_rows = [], [], []
         for fold, (tr_idx, te_idx) in enumerate(tss.split(feat_df), start=1):
             model = None
-            if exp.stage_type != "cascade":
+            ranker_model = None
+            if exp.stage_type == "ranker_main":
+                rank_rows = build_ranker_training_rows(
+                    issue_payloads,
+                    list(tr_idx),
+                    [
+                        c
+                        for c in issue_payloads[int(tr_idx[0])]["cand"].columns
+                        if c != "number"
+                    ],
+                )
+                rank_feature_cols = [
+                    c
+                    for c in rank_rows.columns
+                    if c not in {"issue", "number", "label", "group_id"}
+                ]
+                rank_x, rank_y, rank_gid = split_ranker_training_frame(
+                    rank_rows, rank_feature_cols
+                )
+                ranker_params = dict(params)
+                ranker_params["loss_function"] = "QuerySoftMax"
+                ranker_params["eval_metric"] = "NDCG:top=10"
+                ranker_params["custom_metric"] = [
+                    "NDCG:top=3",
+                    "NDCG:top=10",
+                    "PrecisionAt:top=3",
+                    "PrecisionAt:top=10",
+                    "RecallAt:top=3",
+                    "RecallAt:top=10",
+                ]
+                ranker_model = CatBoostRanker(**ranker_params)
+                ranker_model.fit(
+                    Pool(rank_x, label=rank_y, group_id=rank_gid), verbose=False
+                )
+            elif exp.stage_type != "cascade":
                 x_train, y_train = _expand_rows(issue_payloads, list(tr_idx))
                 model = CatBoostClassifier(**params)
                 model.fit(x_train, y_train, verbose=False)
@@ -564,16 +627,24 @@ def _run_experiments(
                             ),
                         }
                     else:
-                        if model is None:
-                            raise ValueError("legacy model not available")
-                        base_scores = model.predict_proba(cand)[:, 1]
-                        scores = apply_strategy(base_scores, cand, exp, regime)
+                        if exp.stage_type == "ranker_main":
+                            if ranker_model is None:
+                                raise ValueError("ranker model not available")
+                            scores = ranker_model.predict(cand)
+                        else:
+                            if model is None:
+                                raise ValueError("legacy model not available")
+                            base_scores = model.predict_proba(cand)[:, 1]
+                            scores = apply_strategy(base_scores, cand, exp, regime)
                     runtime_outputs = _score_issue_with_runtime_pipeline(
                         payload=payload,
                         scores=np.array(scores, dtype=float),
                         runtime_bundle=runtime_bundle,
                     )
-                    runtime_table = runtime_outputs.score_table
+                    runtime_table = runtime_outputs.score_table.copy()
+                    for col in RUNTIME_SCORE_REQUIRED_COLUMNS:
+                        if col not in runtime_table.columns:
+                            runtime_table[col] = 0.0
                     final_scores_arr = np.zeros(80, dtype=float)
                     for rec in runtime_table[["number", "final_score"]].to_dict(
                         orient="records"
@@ -1356,6 +1427,7 @@ def main() -> None:
         "v3_rerank_k30_p300",
         "v4_two_stage_20_10_3",
         "cascade_v1_flow",
+        "ranker_main_qsm",
     }
     fast_experiments = [
         exp for exp in experiments if exp.version_id in fast_version_ids
@@ -1385,6 +1457,11 @@ def main() -> None:
         selected_final_ids = ["v0_binary_baseline"]
     if "v0_binary_baseline" not in selected_final_ids:
         selected_final_ids = ["v0_binary_baseline", *selected_final_ids]
+    if (
+        "ranker_main_qsm" in fast_df["version_id"].tolist()
+        and "ranker_main_qsm" not in selected_final_ids
+    ):
+        selected_final_ids.append("ranker_main_qsm")
     final_experiments = [
         exp for exp in experiments if exp.version_id in set(selected_final_ids)
     ]
@@ -1488,12 +1565,33 @@ def main() -> None:
         REPORTS_DIR / "runtime_ablation_summary.csv", index=False
     )
 
+    classifier_rows = registry_df[registry_df["version_id"] == "v0_binary_baseline"]
+    classifier_baseline_summary = (
+        classifier_rows.iloc[0].to_dict() if not classifier_rows.empty else baseline_row
+    )
+    ranker_rows = registry_df[registry_df["stage_type"] == "ranker_main"]
+    ranker_main_summary = (
+        ranker_rows.sort_values(
+            ["top3_at_least_one_hit_rate", "top3_hit_rate"], ascending=False
+        )
+        .iloc[0]
+        .to_dict()
+        if not ranker_rows.empty
+        else {}
+    )
     save_json(
         REPORTS_DIR / "experiment_summary.json",
         {
             "feature_version": feature_version,
             "baseline": baseline_row,
             "best_version": best,
+            "model_family_best": str(best.get("stage_type", "baseline")),
+            "classifier_baseline_summary": classifier_baseline_summary,
+            "ranker_main_summary": ranker_main_summary,
+            "selected_formal_strategy": str(
+                best.get("version_id", "v0_binary_baseline")
+            ),
+            "selected_formal_model_family": str(best.get("stage_type", "baseline")),
             "top5_hit_rate": float(best.get("top5_hit_rate", 0.0)),
             "ndcg_at_10": float(best.get("ndcg_at_10", 0.0)),
             "comparison": comparison,
