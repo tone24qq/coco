@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier, CatBoostRegressor
+from catboost import CatBoostClassifier, CatBoostRanker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -20,14 +20,12 @@ from src.analysis.features import (  # noqa: E402
     derive_analysis_target_profile,
 )
 from src.analysis.snapshots import load_history_snapshot_payload  # noqa: E402
-from src.artifacts import load_cascade_artifacts  # noqa: E402
-from src.pipeline import CascadePipeline  # noqa: E402
-from src.runtime_scoring import score_candidates_runtime  # noqa: E402
+from src.runtime_scoring import (  # noqa: E402
+    RUNTIME_SCORE_REQUIRED_COLUMNS,
+    score_candidates_runtime,
+)
 from src.strategy import (  # noqa: E402
     StrategyConfig,
-    apply_strategy,
-    derive_regime,
-    is_cascade_strategy,
 )
 from src.utils import (  # noqa: E402
     CONFIG_DIR,
@@ -262,73 +260,54 @@ def resolve_runtime_strategy(
 
 @dataclass
 class Predictor:
-    model: CatBoostClassifier | None
-    soft_model: CatBoostRegressor | None
+    model: None
+    ranker_model: CatBoostRanker
+    soft_model: CatBoostClassifier | None
     pm1_model: CatBoostClassifier | None
     feature_columns: list[str]
     strategy: StrategyConfig
     feature_version: str
     runtime_config: dict
-    cascade_pipeline: CascadePipeline | None = None
+    use_ranker_main: bool
 
     @classmethod
     def load(cls) -> "Predictor":
         predict_cfg = load_yaml(CONFIG_DIR / "predict.yaml")
-        model_path = MODELS_DIR / "catboost_top20.cbm"
-        model = CatBoostClassifier()
-        soft_model = CatBoostRegressor()
-        pm1_model = CatBoostClassifier()
+        yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
+        metadata_path = MODELS_DIR / "metadata.json"
+        if not metadata_path.exists():
+            raise ValueError(
+                "metadata.json missing; ranker formal artifacts are required"
+            )
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if str(metadata.get("model_type", "")) != "catboost_ranker":
+            raise ValueError("formal predict requires model_type=catboost_ranker")
+        if str(yaml_cfg.get("training_mode", "ranker_main")) != "ranker_main":
+            raise ValueError("formal predict requires training_mode=ranker_main")
+
+        ranker_path = MODELS_DIR / "catboost_ranker_top80.cbm"
+        if not ranker_path.exists():
+            raise ValueError(
+                "ranker artifact missing: models/catboost_ranker_top80.cbm"
+            )
+        ranker_model = CatBoostRanker()
+        try:
+            ranker_model.load_model(str(ranker_path))
+        except Exception as exc:
+            raise ValueError(f"failed to load ranker artifact: {exc}") from exc
+
         cols: list[str] = []
         feature_cols_path = MODELS_DIR / "feature_columns.json"
         if feature_cols_path.exists():
             cols = json.loads(feature_cols_path.read_text(encoding="utf-8"))
-        if model_path.exists():
-            model.load_model(str(model_path))
-        soft_model_path = MODELS_DIR / "catboost_soft_label.cbm"
-        pm1_model_path = MODELS_DIR / "catboost_pm1_proximity.cbm"
-        if soft_model_path.exists():
-            try:
-                soft_model.load_model(str(soft_model_path))
-            except Exception as exc:
-                LOGGER.warning("failed to load soft model: %s", exc)
-                soft_model = None
-        else:
-            soft_model = None
-        if pm1_model_path.exists():
-            try:
-                pm1_model.load_model(str(pm1_model_path))
-            except Exception as exc:
-                LOGGER.warning("failed to load pm1 proximity model: %s", exc)
-                pm1_model = None
-        else:
-            pm1_model = None
-        metadata_path = MODELS_DIR / "metadata.json"
-        metadata = (
-            json.loads(metadata_path.read_text(encoding="utf-8"))
-            if metadata_path.exists()
-            else {"feature_version": "v3_core20"}
-        )
         metadata_feature_version = normalize_feature_version(
             metadata.get("feature_version", "v3_core20")
         )
-        if metadata_feature_version != "v3_core20":
-            raise ValueError(
-                "unsupported model metadata feature_version; only v3_core20 is supported"
-            )
         if cols:
             validate_feature_columns_contract(
                 cols, metadata_feature_version, allow_legacy_subset=True
             )
-        yaml_cfg = load_yaml(CONFIG_DIR / "train.yaml")
-        yaml_feature_version = normalize_feature_version(
-            yaml_cfg.get("feature_version", "v3_core20")
-        )
-        if yaml_feature_version != metadata_feature_version:
-            LOGGER.warning(
-                "predict runtime feature_version mismatch: metadata=%s yaml=%s, using metadata",
-                metadata_feature_version,
-                yaml_feature_version,
-            )
+
         runtime_cfg = dict(metadata.get("runtime_config", {}))
         for key in [
             "history_prior",
@@ -341,53 +320,40 @@ class Predictor:
         ]:
             if key in predict_cfg:
                 runtime_cfg[key] = predict_cfg.get(key, {})
-        runtime_cfg.setdefault("feature_version", metadata_feature_version)
-        strategy_cfg_path = MODELS_DIR / "strategy_config.json"
-        strategy_cfg = (
-            json.loads(strategy_cfg_path.read_text(encoding="utf-8"))
-            if strategy_cfg_path.exists()
-            else {}
+
+        soft_model = None
+        pm1_model = None
+        soft_model_path = MODELS_DIR / "catboost_soft_ce.cbm"
+        pm1_model_path = MODELS_DIR / "catboost_pm1_proximity.cbm"
+        if soft_model_path.exists():
+            soft_model = CatBoostClassifier()
+            soft_model.load_model(str(soft_model_path))
+        if pm1_model_path.exists():
+            pm1_model = CatBoostClassifier()
+            pm1_model.load_model(str(pm1_model_path))
+
+        strategy = StrategyConfig(
+            version_id="ranker_main_qsm",
+            stage_type="ranker_main",
+            candidate_pool=20,
+            prior_window=100,
+            rerank_weight=0.0,
+            penalty_weight=0.0,
+            trend_weight=0.0,
+            regime_aware=False,
+            pipeline_version="baseline_flat_score",
         )
-        strategy, source = resolve_runtime_strategy(
-            predict_cfg,
-            strategy_cfg,
-            metadata,
-            train_cfg=yaml_cfg,
-        )
-        LOGGER.info(
-            "predict strategy resolved from %s: version=%s stage=%s pipeline=%s",
-            source,
-            strategy.version_id,
-            strategy.stage_type,
-            strategy.pipeline_version,
-        )
-        if (
-            (not model_path.exists())
-            and (not is_cascade_strategy(strategy))
-            and (not cols)
-        ):
-            raise ValueError("legacy model artifact missing: models/catboost_top20.cbm")
-        cascade_pipeline = None
-        if is_cascade_strategy(strategy):
-            artifact_dir = (
-                PROJECT_ROOT / strategy.model_artifact_dir
-                if strategy.model_artifact_dir
-                else MODELS_DIR / strategy.pipeline_version
-            )
-            if not artifact_dir.exists():
-                raise ValueError(f"cascade artifacts missing: {artifact_dir}")
-            cascade_artifacts = load_cascade_artifacts(artifact_dir)
-            cascade_pipeline = CascadePipeline.from_artifacts(cascade_artifacts)
 
         return cls(
-            model=model,
+            model=None,
+            ranker_model=ranker_model,
             soft_model=soft_model,
             pm1_model=pm1_model,
             feature_columns=cols,
             strategy=strategy,
             feature_version=metadata_feature_version,
             runtime_config=runtime_cfg,
-            cascade_pipeline=cascade_pipeline,
+            use_ranker_main=True,
         )
 
     def predict_from_draws(self, draws_df: pd.DataFrame, min_history: int) -> dict:
@@ -420,13 +386,11 @@ class Predictor:
             )
             full_cand = full_cand.reset_index(drop=True)
             full_cand.insert(0, "number", np.arange(1, 81, dtype=int))
-            x = None
-            if not is_cascade_strategy(self.strategy):
-                x = (
-                    full_cand.reindex(columns=["number", *self.feature_columns])
-                    .drop(columns=["number"])
-                    .reindex(columns=self.feature_columns)
-                )
+            x = (
+                full_cand.reindex(columns=["number", *self.feature_columns])
+                .drop(columns=["number"])
+                .reindex(columns=self.feature_columns)
+            )
         finally:
             if prev_runtime is None:
                 os.environ.pop("FEATURE_RUNTIME_CONFIG_JSON", None)
@@ -436,52 +400,16 @@ class Predictor:
                 os.environ.pop("FEATURE_VERSION_OVERRIDE", None)
             else:
                 os.environ["FEATURE_VERSION_OVERRIDE"] = prev_version
-        regime = derive_regime(row)
-        stage_debug = None
-        if is_cascade_strategy(self.strategy):
-            if self.cascade_pipeline is None:
-                raise ValueError("cascade pipeline is not loaded")
-            cascade = self.cascade_pipeline.predict_issue(row)
-            scores = cascade["final_scores"]
-            stage1_df = cascade["stage1"]
-            stage2_df = cascade["stage2"]
-            stage3_inputs = cascade["stage3_inputs"]
-            stage2_top10 = (
-                stage2_df.sort_values("stage2_score", ascending=False)["number"]
-                .head(10)
-                .astype(int)
-                .tolist()
+        if x is None:
+            raise ValueError(
+                "candidate feature matrix x is required for ranker prediction"
             )
-            stage_debug = {
-                "stage1_top5": stage1_df[["number", "stage1_score"]]
-                .head(5)
-                .to_dict(orient="records"),
-                "stage1_keep_count": int(stage1_df["stage1_keep_flag"].sum()),
-                "stage2_top5": stage2_df[["number", "stage2_score"]]
-                .head(5)
-                .to_dict(orient="records"),
-                "stage2_keep_count": int(stage2_df["stage2_keep_flag"].sum()),
-                "stage3_inputs_preview": stage3_inputs.head(5).to_dict(
-                    orient="records"
-                ),
-                "selector": {
-                    "final_top3": cascade.get("final_top3", []),
-                    "no_selector_top3": cascade.get("no_selector_top3", []),
-                    "selector_score": float(cascade.get("selector_score", 0.0)),
-                    "selector_reason": cascade.get("selector_reason", ""),
-                    "regime": cascade.get("selector_regime", "unknown"),
-                },
-            }
-        else:
-            if self.model is None or x is None:
-                raise ValueError("legacy model not loaded")
-            base_scores = self.model.predict_proba(x)[:, 1]
-            scores = apply_strategy(base_scores, x, self.strategy, regime)
+        scores = self.ranker_model.predict(x)
 
         soft_raw = None
         pm1_raw = None
         if x is not None and self.soft_model is not None:
-            soft_raw = self.soft_model.predict(x)
+            soft_raw = self.soft_model.predict_proba(x)[:, 1]
         if x is not None and self.pm1_model is not None:
             pm1_raw = self.pm1_model.predict_proba(x)[:, 1]
 
@@ -510,57 +438,16 @@ class Predictor:
         compact10 = compact_10_from_top20(top20)
         top10 = top20[:10]
         top3 = dedup_summary.get("top3_after_group_dedup", top20[:3])
-        if is_cascade_strategy(self.strategy) and stage_debug is not None:
-            sel = stage_debug.get("selector", {})
-            picked = list(sel.get("final_top3", []))
-            if len(picked) == 3:
-                top3 = [int(x) for x in picked]
-            if "stage2_top5" in stage_debug:
-                top10 = stage2_top10
-                if not bool(
-                    self.runtime_config.get("topk_group_dedup", {}).get(
-                        "enabled", False
-                    )
-                ):
-                    top3 = top10[:3]
         latest_issue = int(row["issue"])
         zc = {z: sum(1 for n in top20 if zone_of(n) == z) for z in ["A", "B", "C", "D"]}
         board_type = classify_board(zc)
-        candidate_cols = [
-            "number",
-            "model_score",
-            "history_prior_score",
-            "long_feature_score",
-            "soft_label_score",
-            "pm1_proximity_score",
-            "score_before_analysis_rerank",
-            "analysis_compatibility_score",
-            "analysis_rerank_score",
-            "score_after_analysis_rerank",
-            "raw_score",
-            "local_peak_score",
-            "score_after_local_peak",
-            "final_score",
-            "cand_current_gap_all",
-            "rank_model_only",
-            "rank_final",
-        ]
+        candidate_cols = list(RUNTIME_SCORE_REQUIRED_COLUMNS)
         score_table["score"] = score_table["final_score"].astype(float)
         raw_score_table = score_table[["score", *candidate_cols]].to_dict(
             orient="records"
         )
-        score_table_compact = (
-            score_table[
-                [
-                    "number",
-                    "final_score",
-                    "rank_final",
-                    "model_score",
-                    "score_after_local_peak",
-                ]
-            ]
-            .rename(columns={"final_score": "score"})
-            .to_dict(orient="records")
+        score_table_compact = score_table[RUNTIME_SCORE_REQUIRED_COLUMNS].to_dict(
+            orient="records"
         )
         top20_scores = {
             f"{int(rec['number']):02d}": float(rec["final_score"])
@@ -604,7 +491,7 @@ class Predictor:
         }
 
         result = {
-            "model": "catboost",
+            "model": "catboost_ranker",
             "strategy_version": self.strategy.version_id,
             "target_issue": latest_issue + 1,
             "top20_numbers": top20,
@@ -612,18 +499,14 @@ class Predictor:
             "top10_numbers": top10,
             "top10_stage2_ranked": top10,
             "top3_numbers": top3,
-            "top3_no_selector": (
-                stage_debug.get("selector", {}).get("no_selector_top3", top3)
-                if stage_debug
-                else top3
-            ),
+            "top3_no_selector": top3,
             "top3_selector_final": top3,
             "top20_scores": top20_scores,
             "compact10_numbers": compact10,
             "top3_core_group": top3,
             "raw_score_table": raw_score_table,
-            "calibrated_probability_table": [
-                {"number": x["number"], "probability": x["final_score"]}
+            "ranking_score_table": [
+                {"number": int(x["number"]), "score": float(x["final_score"])}
                 for x in raw_score_table
             ],
             "score_table": score_table_compact,
@@ -721,8 +604,6 @@ class Predictor:
             "degraded_features": degraded_features,
             "effective_windows": effective_windows,
         }
-        if stage_debug is not None:
-            result["cascade_debug"] = stage_debug
         return result
 
 

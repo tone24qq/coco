@@ -31,8 +31,8 @@ class _StubPredictor:
             "compact10_numbers": list(range(1, 11)),
             "top3_core_group": [1, 2, 3],
             "raw_score_table": [{"number": i, "score": 1.0 / i} for i in range(1, 81)],
-            "calibrated_probability_table": [
-                {"number": i, "probability": 1.0 / i} for i in range(1, 81)
+            "ranking_score_table": [
+                {"number": i, "score": 1.0 / i} for i in range(1, 81)
             ],
             "score_table": [{"number": i, "score": 1.0 / i} for i in range(1, 81)],
             "board_type_prediction": "balanced",
