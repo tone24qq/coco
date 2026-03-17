@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, CatBoostRegressor
 from sklearn.model_selection import TimeSeriesSplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -247,6 +247,42 @@ def _expand_rows(
         y_blocks.append(labels)
     return pd.concat(x_blocks, ignore_index=True), pd.concat(
         y_blocks, ignore_index=True
+    )
+
+
+def _expand_rows_with_soft_labels(
+    issue_payloads: dict[int, dict[str, object]],
+    indices: list[int],
+    pm1_weight: float,
+    pm2_weight: float,
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    x_blocks, soft_blocks, pm1_blocks = [], [], []
+    for idx in indices:
+        payload = issue_payloads[int(idx)]
+        cand = payload["cand"]
+        target = set(int(x) for x in payload["target"])
+        soft = []
+        pm1 = []
+        for n in range(1, 81):
+            if n in target:
+                soft.append(1.0)
+                pm1.append(1)
+            elif any(abs(n - a) == 1 for a in target):
+                soft.append(float(pm1_weight))
+                pm1.append(1)
+            elif any(abs(n - a) == 2 for a in target):
+                soft.append(float(pm2_weight))
+                pm1.append(0)
+            else:
+                soft.append(0.0)
+                pm1.append(0)
+        x_blocks.append(cand)
+        soft_blocks.append(pd.Series(soft))
+        pm1_blocks.append(pd.Series(pm1))
+    return (
+        pd.concat(x_blocks, ignore_index=True),
+        pd.concat(soft_blocks, ignore_index=True),
+        pd.concat(pm1_blocks, ignore_index=True),
     )
 
 
@@ -618,6 +654,10 @@ def main() -> None:
     faulthandler.enable(all_threads=True)
     args = _parse_args()
     cfg = load_yaml(CONFIG_DIR / "train.yaml")
+    if bool(cfg.get("ranking_experiment", {}).get("enabled", False)):
+        raise NotImplementedError(
+            "ranking_experiment.enabled=true is not formally supported yet"
+        )
     pipeline_cfg = cfg.get("pipeline", {})
     monitor = PhaseMonitor(watchdog_seconds=int(args.watchdog_seconds))
     pipeline_version = normalize_pipeline_version(
@@ -739,6 +779,35 @@ def main() -> None:
     final_model.fit(x_train, y_train, verbose=False)
     final_model.save_model(str(MODELS_DIR / "catboost_top20.cbm"))
 
+    x_soft = pd.DataFrame()
+    x_pm1 = pd.DataFrame()
+    soft_cfg = cfg.get("soft_label_training", {})
+    if bool(soft_cfg.get("enabled", False)):
+        x_soft, y_soft, _ = _expand_rows_with_soft_labels(
+            issue_payloads,
+            list(range(len(feature_df))),
+            pm1_weight=float(soft_cfg.get("pm1_weight", 0.35)),
+            pm2_weight=float(soft_cfg.get("pm2_weight", 0.15)),
+        )
+        soft_params = dict(params)
+        soft_params["loss_function"] = "RMSE"
+        soft_params["eval_metric"] = "RMSE"
+        soft_model = CatBoostRegressor(**soft_params)
+        soft_model.fit(x_soft, y_soft, verbose=False)
+        soft_model.save_model(str(MODELS_DIR / "catboost_soft_label.cbm"))
+
+    proximity_cfg = cfg.get("proximity_model", {})
+    if bool(proximity_cfg.get("enabled", False)):
+        x_pm1, _, y_pm1 = _expand_rows_with_soft_labels(
+            issue_payloads,
+            list(range(len(feature_df))),
+            pm1_weight=float(soft_cfg.get("pm1_weight", 0.35)),
+            pm2_weight=float(soft_cfg.get("pm2_weight", 0.15)),
+        )
+        pm1_model = CatBoostClassifier(**params)
+        pm1_model.fit(x_pm1, y_pm1, verbose=False)
+        pm1_model.save_model(str(MODELS_DIR / "catboost_pm1_proximity.cbm"))
+
     importances = final_model.get_feature_importance()
     fi_df = pd.DataFrame(
         {
@@ -802,6 +871,30 @@ def main() -> None:
             "smoothing_alpha": cfg.get("smoothing_alpha", 0.5),
             "decay_half_lives": cfg.get("decay_half_lives", {}),
             "distance_kernel_tau": cfg.get("distance_kernel_tau", 2),
+            "soft_label_training": cfg.get("soft_label_training", {}),
+            "proximity_model": cfg.get("proximity_model", {}),
+        },
+        "soft_label_model_path": (
+            "models/catboost_soft_label.cbm"
+            if bool(soft_cfg.get("enabled", False))
+            else ""
+        ),
+        "pm1_model_path": (
+            "models/catboost_pm1_proximity.cbm"
+            if bool(proximity_cfg.get("enabled", False))
+            else ""
+        ),
+        "soft_label_training": cfg.get("soft_label_training", {}),
+        "proximity_model": cfg.get("proximity_model", {}),
+        "soft_label_normalization_method": str(
+            soft_cfg.get("normalization", "rank_pct")
+        ),
+        "train_rows_used": {
+            "exact": int(len(y_train)),
+            "soft": int(len(x_soft)) if bool(soft_cfg.get("enabled", False)) else 0,
+            "proximity": (
+                int(len(x_pm1)) if bool(proximity_cfg.get("enabled", False)) else 0
+            ),
         },
     }
     if len(feature_columns) != len(V3_CORE20_COLUMNS):

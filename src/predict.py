@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, CatBoostRegressor
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -22,6 +22,7 @@ from src.analysis.features import (  # noqa: E402
 from src.analysis.snapshots import load_history_snapshot_payload  # noqa: E402
 from src.artifacts import load_cascade_artifacts  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
+from src.runtime_scoring import score_candidates_runtime  # noqa: E402
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -55,6 +56,14 @@ def _normalize_series(values: pd.Series) -> pd.Series:
     if denom <= 1e-9:
         return pd.Series(np.zeros(len(arr)), index=arr.index)
     return (arr - float(arr.mean())) / denom
+
+
+def _normalize_rank_pct(values: pd.Series) -> pd.Series:
+    arr = values.astype(float)
+    if len(arr) == 0:
+        return arr
+    ranked = arr.rank(method="average", pct=True)
+    return ranked.astype(float)
 
 
 def _history_prior_from_snapshot(
@@ -110,6 +119,10 @@ def _analysis_rerank(
     rerank_weight: float,
 ) -> tuple[pd.DataFrame, dict]:
     work = score_table.copy()
+    work["analysis_compatibility_score"] = 0.0
+    work["analysis_rerank_score"] = 0.0
+    work["score_before_analysis_rerank"] = work["final_score"].astype(float)
+
     profile = derive_analysis_target_profile(recent_draws, board_priors=board_priors)
     top_k = max(3, min(int(top_k), len(work)))
 
@@ -117,13 +130,17 @@ def _analysis_rerank(
     top["analysis_compatibility_score"] = top["number"].apply(
         lambda n: candidate_analysis_compatibility_score(int(n), profile)
     )
+    top["analysis_rerank_score"] = float(rerank_weight) * top[
+        "analysis_compatibility_score"
+    ].astype(float)
     top["final_score"] = (
-        top["final_score"] + float(rerank_weight) * top["analysis_compatibility_score"]
+        top["score_before_analysis_rerank"] + top["analysis_rerank_score"]
     )
     top = top.sort_values("final_score", ascending=False)
 
     tail = work.iloc[top_k:].copy()
     reranked = pd.concat([top, tail], ignore_index=True)
+    reranked["score_after_analysis_rerank"] = reranked["final_score"].astype(float)
     reranked = reranked.sort_values("final_score", ascending=False).reset_index(
         drop=True
     )
@@ -133,8 +150,14 @@ def _analysis_rerank(
         "top_k": int(top_k),
         "weight": float(rerank_weight),
         "target_profile": profile,
-        "top_k_preview": top.head(5)[
-            ["number", "analysis_compatibility_score", "final_score"]
+        "top_k_preview": reranked.head(5)[
+            [
+                "number",
+                "score_before_analysis_rerank",
+                "analysis_compatibility_score",
+                "analysis_rerank_score",
+                "score_after_analysis_rerank",
+            ]
         ].to_dict(orient="records"),
     }
     return reranked, summary
@@ -240,6 +263,8 @@ def resolve_runtime_strategy(
 @dataclass
 class Predictor:
     model: CatBoostClassifier | None
+    soft_model: CatBoostRegressor | None
+    pm1_model: CatBoostClassifier | None
     feature_columns: list[str]
     strategy: StrategyConfig
     feature_version: str
@@ -251,12 +276,32 @@ class Predictor:
         predict_cfg = load_yaml(CONFIG_DIR / "predict.yaml")
         model_path = MODELS_DIR / "catboost_top20.cbm"
         model = CatBoostClassifier()
+        soft_model = CatBoostRegressor()
+        pm1_model = CatBoostClassifier()
         cols: list[str] = []
         feature_cols_path = MODELS_DIR / "feature_columns.json"
         if feature_cols_path.exists():
             cols = json.loads(feature_cols_path.read_text(encoding="utf-8"))
         if model_path.exists():
             model.load_model(str(model_path))
+        soft_model_path = MODELS_DIR / "catboost_soft_label.cbm"
+        pm1_model_path = MODELS_DIR / "catboost_pm1_proximity.cbm"
+        if soft_model_path.exists():
+            try:
+                soft_model.load_model(str(soft_model_path))
+            except Exception as exc:
+                LOGGER.warning("failed to load soft model: %s", exc)
+                soft_model = None
+        else:
+            soft_model = None
+        if pm1_model_path.exists():
+            try:
+                pm1_model.load_model(str(pm1_model_path))
+            except Exception as exc:
+                LOGGER.warning("failed to load pm1 proximity model: %s", exc)
+                pm1_model = None
+        else:
+            pm1_model = None
         metadata_path = MODELS_DIR / "metadata.json"
         metadata = (
             json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -285,6 +330,17 @@ class Predictor:
                 yaml_feature_version,
             )
         runtime_cfg = dict(metadata.get("runtime_config", {}))
+        for key in [
+            "history_prior",
+            "analysis_rerank",
+            "long_feature_injection",
+            "neighbor_peak_correction",
+            "topk_group_dedup",
+            "soft_label_training",
+            "proximity_model",
+        ]:
+            if key in predict_cfg:
+                runtime_cfg[key] = predict_cfg.get(key, {})
         runtime_cfg.setdefault("feature_version", metadata_feature_version)
         strategy_cfg_path = MODELS_DIR / "strategy_config.json"
         strategy_cfg = (
@@ -325,6 +381,8 @@ class Predictor:
 
         return cls(
             model=model,
+            soft_model=soft_model,
+            pm1_model=pm1_model,
             feature_columns=cols,
             strategy=strategy,
             feature_version=metadata_feature_version,
@@ -420,97 +478,38 @@ class Predictor:
             base_scores = self.model.predict_proba(x)[:, 1]
             scores = apply_strategy(base_scores, x, self.strategy, regime)
 
-        model_score_table = pd.DataFrame(
-            {"number": list(range(1, 81)), "model_score": scores}
-        ).sort_values("model_score", ascending=False)
-
-        runtime_history_cfg = self.runtime_config.get("history_prior", {})
-        runtime_rerank_cfg = self.runtime_config.get("analysis_rerank", {})
-
-        history_blend_enabled = bool(runtime_history_cfg.get("enabled", True))
-        model_weight = float(runtime_history_cfg.get("model_weight", 0.88))
-        history_weight = float(runtime_history_cfg.get("history_weight", 0.12))
-        long_feature_cfg = self.runtime_config.get("long_feature_injection", {})
-        long_feature_enabled = bool(long_feature_cfg.get("enabled", True))
-        long_feature_weight = float(long_feature_cfg.get("weight", 0.06))
+        soft_raw = None
+        pm1_raw = None
+        if x is not None and self.soft_model is not None:
+            soft_raw = self.soft_model.predict(x)
+        if x is not None and self.pm1_model is not None:
+            pm1_raw = self.pm1_model.predict_proba(x)[:, 1]
 
         snapshot_payload = load_history_snapshot_payload()
         board_priors = snapshot_payload.get("meta", {}).get("board_priors", {})
 
-        score_table = _history_prior_from_snapshot(
-            model_score_table.rename(columns={"model_score": "score"}),
-            snapshot_payload,
+        runtime_outputs = score_candidates_runtime(
+            base_scores=np.array(scores, dtype=float),
+            candidate_df=full_cand,
+            recent_draws=[
+                sorted(json.loads(v) if isinstance(v, str) else v)
+                for v in draws_df["numbers"].tolist()
+            ],
+            runtime_config=self.runtime_config,
+            snapshot_payload=snapshot_payload,
+            board_priors=board_priors,
+            soft_label_raw=soft_raw,
+            pm1_proximity_raw=pm1_raw,
         )
-        if not history_blend_enabled:
-            score_table["history_prior_score"] = 0.0
+        score_table = runtime_outputs.score_table
+        rerank_summary = runtime_outputs.rerank_summary
+        local_peak_summary = runtime_outputs.local_peak_summary
+        dedup_summary = runtime_outputs.dedup_summary
 
-        long_cols = [
-            "cand_hits_last_200",
-            "cand_hits_last_500",
-            "cand_hits_last_1000",
-            "cand_total_hits_all_time",
-            "cand_current_gap_all",
-            "cand_avg_gap_all",
-            "cand_max_gap_all",
-            "cand_today_hits",
-            "cand_carryover_from_prev",
-            "cand_pm1_neighbor_hits",
-            "cand_pm2_neighbor_hits",
-        ]
-        long_df = full_cand[["number", *long_cols]].copy()
-        score_table = score_table.merge(long_df, on="number", how="left").fillna(0.0)
-        long_positive = (
-            0.30 * _normalize_series(score_table["cand_hits_last_200"])
-            + 0.20 * _normalize_series(score_table["cand_hits_last_500"])
-            + 0.15 * _normalize_series(score_table["cand_hits_last_1000"])
-            + 0.10 * _normalize_series(score_table["cand_total_hits_all_time"])
-            + 0.10 * _normalize_series(score_table["cand_today_hits"])
-            + 0.08 * _normalize_series(score_table["cand_carryover_from_prev"])
-            + 0.04 * _normalize_series(score_table["cand_pm1_neighbor_hits"])
-            + 0.03 * _normalize_series(score_table["cand_pm2_neighbor_hits"])
-        )
-        long_penalty = (
-            0.45 * _normalize_series(score_table["cand_current_gap_all"])
-            + 0.20 * _normalize_series(score_table["cand_avg_gap_all"])
-            + 0.10 * _normalize_series(score_table["cand_max_gap_all"])
-        )
-        score_table["long_feature_score"] = (long_positive - long_penalty).astype(float)
-        if not long_feature_enabled:
-            score_table["long_feature_score"] = 0.0
-
-        score_table["final_score"] = (
-            model_weight * score_table["score"]
-            + history_weight * score_table["history_prior_score"]
-            + long_feature_weight * score_table["long_feature_score"]
-        )
-
-        analysis_rerank_enabled = bool(runtime_rerank_cfg.get("enabled", True))
-        rerank_summary = {
-            "enabled": False,
-            "top_k": int(runtime_rerank_cfg.get("top_k", 30)),
-            "weight": float(runtime_rerank_cfg.get("weight", 0.08)),
-            "target_profile": {},
-            "top_k_preview": [],
-        }
-        if analysis_rerank_enabled:
-            score_table, rerank_summary = _analysis_rerank(
-                score_table,
-                recent_draws=[
-                    sorted(json.loads(v) if isinstance(v, str) else v)
-                    for v in draws_df["numbers"].tolist()
-                ],
-                board_priors=board_priors,
-                top_k=int(runtime_rerank_cfg.get("top_k", 30)),
-                rerank_weight=float(runtime_rerank_cfg.get("weight", 0.08)),
-            )
-
-        score_table = score_table.sort_values(
-            "final_score", ascending=False
-        ).reset_index(drop=True)
         top20 = score_table["number"].head(20).astype(int).tolist()
         compact10 = compact_10_from_top20(top20)
         top10 = top20[:10]
-        top3 = top20[:3]
+        top3 = dedup_summary.get("top3_after_group_dedup", top20[:3])
         if is_cascade_strategy(self.strategy) and stage_debug is not None:
             sel = stage_debug.get("selector", {})
             picked = list(sel.get("final_top3", []))
@@ -518,27 +517,83 @@ class Predictor:
                 top3 = [int(x) for x in picked]
             if "stage2_top5" in stage_debug:
                 top10 = stage2_top10
+                if not bool(
+                    self.runtime_config.get("topk_group_dedup", {}).get(
+                        "enabled", False
+                    )
+                ):
+                    top3 = top10[:3]
         latest_issue = int(row["issue"])
         zc = {z: sum(1 for n in top20 if zone_of(n) == z) for z in ["A", "B", "C", "D"]}
         board_type = classify_board(zc)
-        raw_score_table = (
-            score_table[["number", "final_score"]]
+        candidate_cols = [
+            "number",
+            "model_score",
+            "history_prior_score",
+            "long_feature_score",
+            "soft_label_score",
+            "pm1_proximity_score",
+            "score_before_analysis_rerank",
+            "analysis_compatibility_score",
+            "analysis_rerank_score",
+            "score_after_analysis_rerank",
+            "raw_score",
+            "local_peak_score",
+            "score_after_local_peak",
+            "final_score",
+            "cand_current_gap_all",
+            "rank_model_only",
+            "rank_final",
+        ]
+        score_table["score"] = score_table["final_score"].astype(float)
+        raw_score_table = score_table[["score", *candidate_cols]].to_dict(
+            orient="records"
+        )
+        score_table_compact = (
+            score_table[
+                [
+                    "number",
+                    "final_score",
+                    "rank_final",
+                    "model_score",
+                    "score_after_local_peak",
+                ]
+            ]
             .rename(columns={"final_score": "score"})
             .to_dict(orient="records")
         )
         top20_scores = {
-            f"{int(rec['number']):02d}": float(rec["score"])
+            f"{int(rec['number']):02d}": float(rec["final_score"])
             for rec in raw_score_table[:20]
         }
         big_count = sum(1 for n in top20 if n >= 41)
         odd_count = sum(1 for n in top20 if n % 2 == 1)
-        model_rank_top20 = model_score_table["number"].head(20).astype(int).tolist()
+        model_rank_top20 = (
+            score_table.sort_values("rank_model_only", ascending=True)["number"]
+            .head(20)
+            .astype(int)
+            .tolist()
+        )
         history_prior_summary = {
-            "enabled": history_blend_enabled,
-            "model_weight": model_weight,
-            "history_weight": history_weight,
-            "long_feature_enabled": long_feature_enabled,
-            "long_feature_weight": long_feature_weight,
+            "enabled": bool(
+                self.runtime_config.get("history_prior", {}).get("enabled", True)
+            ),
+            "model_weight": float(
+                self.runtime_config.get("history_prior", {}).get("model_weight", 0.88)
+            ),
+            "history_weight": float(
+                self.runtime_config.get("history_prior", {}).get("history_weight", 0.12)
+            ),
+            "long_feature_enabled": bool(
+                self.runtime_config.get("long_feature_injection", {}).get(
+                    "enabled", True
+                )
+            ),
+            "long_feature_weight": float(
+                self.runtime_config.get("long_feature_injection", {}).get(
+                    "weight", 0.06
+                )
+            ),
             "snapshot_status": snapshot_payload.get("status", "unavailable"),
             "snapshot_load_elapsed_ms": int(snapshot_payload.get("load_elapsed_ms", 0)),
             "top5_history_prior": score_table[
@@ -568,12 +623,92 @@ class Predictor:
             "top3_core_group": top3,
             "raw_score_table": raw_score_table,
             "calibrated_probability_table": [
-                {"number": x["number"], "probability": x["score"]}
+                {"number": x["number"], "probability": x["final_score"]}
                 for x in raw_score_table
             ],
-            "score_table": raw_score_table,
+            "score_table": score_table_compact,
             "history_prior_score_summary": history_prior_summary,
             "analysis_rerank_summary": rerank_summary,
+            "local_peak_summary": local_peak_summary,
+            "grouped_candidates_preview": dedup_summary["grouped_candidates_preview"],
+            "top3_before_group_dedup": dedup_summary["top3_before_group_dedup"],
+            "top3_after_group_dedup": dedup_summary["top3_after_group_dedup"],
+            "dedup_applied_scope": dedup_summary.get(
+                "dedup_applied_scope", "top3_only"
+            ),
+            "final_score_breakdown": {
+                "model_weight": float(
+                    self.runtime_config.get("history_prior", {}).get(
+                        "model_weight", 0.88
+                    )
+                ),
+                "history_weight": float(
+                    self.runtime_config.get("history_prior", {}).get(
+                        "history_weight", 0.12
+                    )
+                ),
+                "long_feature_weight": float(
+                    self.runtime_config.get("long_feature_injection", {}).get(
+                        "weight", 0.06
+                    )
+                ),
+                "soft_label_weight": (
+                    float(
+                        self.runtime_config.get("soft_label_training", {}).get(
+                            "blend_weight", 0.15
+                        )
+                    )
+                    if bool(
+                        self.runtime_config.get("soft_label_training", {}).get(
+                            "enabled", False
+                        )
+                    )
+                    and self.soft_model is not None
+                    else 0.0
+                ),
+                "pm1_weight": (
+                    float(
+                        self.runtime_config.get("proximity_model", {}).get(
+                            "pm1_weight", 0.12
+                        )
+                    )
+                    if bool(
+                        self.runtime_config.get("proximity_model", {}).get(
+                            "enabled", False
+                        )
+                    )
+                    and self.pm1_model is not None
+                    else 0.0
+                ),
+                "analysis_rerank_weight": (
+                    float(
+                        self.runtime_config.get("analysis_rerank", {}).get(
+                            "weight", 0.08
+                        )
+                    )
+                    if bool(
+                        self.runtime_config.get("analysis_rerank", {}).get(
+                            "enabled", True
+                        )
+                    )
+                    else 0.0
+                ),
+                "soft_label_normalization_method": str(
+                    self.runtime_config.get("soft_label_training", {}).get(
+                        "normalization", "rank_pct"
+                    )
+                ),
+                "local_peak_enabled": bool(
+                    self.runtime_config.get("neighbor_peak_correction", {}).get(
+                        "enabled", False
+                    )
+                ),
+                "group_dedup_enabled": bool(
+                    self.runtime_config.get("topk_group_dedup", {}).get(
+                        "enabled", False
+                    )
+                ),
+            },
             "board_type_prediction": board_type,
             "big_count": big_count,
             "small_count": 20 - big_count,

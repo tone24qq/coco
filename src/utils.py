@@ -1059,3 +1059,193 @@ def build_recent_report(recent_draws: Sequence[Sequence[int]]) -> dict:
             "overlap_with_prev_plus2": overlap_prev_p2,
         },
     }
+
+
+def apply_local_peak_correction(
+    score_table: pd.DataFrame,
+    cfg: dict | None = None,
+    input_score_column: str = "score_after_analysis_rerank",
+    output_score_column: str = "score_after_local_peak",
+) -> tuple[pd.DataFrame, dict]:
+    local_cfg = cfg or {}
+    enabled = bool(local_cfg.get("enabled", False))
+    alpha_pm1 = float(local_cfg.get("alpha_pm1", 0.20))
+    alpha_pm2 = float(local_cfg.get("alpha_pm2", 0.08))
+
+    out = score_table.copy()
+    if input_score_column not in out.columns:
+        raise ValueError(f"missing input_score_column={input_score_column}")
+
+    out["raw_score"] = out[input_score_column].astype(float)
+    score_by_number = {
+        int(rec["number"]): float(rec["raw_score"])
+        for rec in out[["number", "raw_score"]].to_dict(orient="records")
+    }
+
+    local_scores: list[float] = []
+    for num in out["number"].astype(int).tolist():
+        pm1 = score_by_number.get(num - 1, 0.0) + score_by_number.get(num + 1, 0.0)
+        pm2 = score_by_number.get(num - 2, 0.0) + score_by_number.get(num + 2, 0.0)
+        local_scores.append(
+            float(score_by_number.get(num, 0.0) + alpha_pm1 * pm1 + alpha_pm2 * pm2)
+        )
+    out["local_peak_score"] = pd.Series(local_scores, index=out.index).astype(float)
+
+    if enabled:
+        out[output_score_column] = out["local_peak_score"].astype(float)
+    else:
+        out[output_score_column] = out["raw_score"].astype(float)
+
+    summary = {
+        "enabled": enabled,
+        "alpha_pm1": alpha_pm1,
+        "alpha_pm2": alpha_pm2,
+        "input_score_column": input_score_column,
+        "output_score_column": output_score_column,
+        "top5_preview": out.sort_values(output_score_column, ascending=False)
+        .head(5)[["number", "raw_score", "local_peak_score", output_score_column]]
+        .to_dict(orient="records"),
+    }
+    return out, summary
+
+
+def build_group_dedup_priority(
+    score_table: pd.DataFrame,
+    cfg: dict | None = None,
+) -> pd.Series:
+    dedup_cfg = cfg or {}
+    final_weight = float(dedup_cfg.get("final_score_weight", 0.50))
+    local_peak_weight = float(dedup_cfg.get("local_peak_weight", 0.25))
+    history_weight = float(dedup_cfg.get("history_prior_weight", 0.15))
+    gap_penalty_weight = float(dedup_cfg.get("gap_penalty_weight", 0.10))
+    local_col = (
+        "local_peak_score"
+        if "local_peak_score" in score_table.columns
+        else "score_after_local_peak"
+    )
+    return (
+        final_weight * score_table["final_score"].astype(float)
+        + local_peak_weight * score_table.get(local_col, 0.0).astype(float)
+        + history_weight * score_table.get("history_prior_score", 0.0).astype(float)
+        - gap_penalty_weight
+        * score_table.get("cand_current_gap_all", 0.0).astype(float)
+    )
+
+
+def apply_topk_group_dedup(
+    score_table: pd.DataFrame,
+    cfg: dict | None = None,
+    top_k: int = 3,
+) -> tuple[pd.DataFrame, dict]:
+    dedup_cfg = cfg or {}
+    enabled = bool(dedup_cfg.get("enabled", False))
+    group_distance = max(0, int(dedup_cfg.get("group_distance", 1)))
+    apply_to_top3_only = bool(dedup_cfg.get("apply_to_top3_only", True))
+    candidate_pool_for_grouping = max(
+        int(top_k), int(dedup_cfg.get("candidate_pool_for_grouping", 20))
+    )
+
+    ranked = score_table.sort_values("final_score", ascending=False).reset_index(
+        drop=True
+    )
+    top3_before = ranked["number"].head(top_k).astype(int).tolist()
+    if (not enabled) or group_distance <= 0:
+        summary = {
+            "enabled": enabled,
+            "group_distance": group_distance,
+            "apply_to_top3_only": apply_to_top3_only,
+            "candidate_pool_for_grouping": candidate_pool_for_grouping,
+            "grouped_candidates_preview": [],
+            "top3_before_group_dedup": top3_before,
+            "top3_after_group_dedup": top3_before,
+            "dedup_applied_scope": "top3_only" if apply_to_top3_only else "ranking",
+        }
+        return ranked, summary
+
+    work = ranked.copy()
+    work["group_dedup_priority"] = build_group_dedup_priority(work, cfg=dedup_cfg)
+
+    pool = work.head(candidate_pool_for_grouping).copy()
+    groups: list[list[dict]] = []
+    for rec in pool.to_dict(orient="records"):
+        num = int(rec["number"])
+        placed = False
+        for grp in groups:
+            if any(abs(num - int(x["number"])) <= group_distance for x in grp):
+                grp.append(rec)
+                placed = True
+                break
+        if not placed:
+            groups.append([rec])
+
+    representatives: list[dict] = []
+    grouped_preview: list[dict] = []
+    for grp in groups:
+        grp_sorted = sorted(
+            grp,
+            key=lambda x: float(x.get("group_dedup_priority", 0.0)),
+            reverse=True,
+        )
+        rep = grp_sorted[0]
+        representatives.append(rep)
+        grouped_preview.append(
+            {
+                "members": [int(x["number"]) for x in grp_sorted],
+                "representative": int(rep["number"]),
+                "representative_reason": {
+                    "group_dedup_priority": float(rep.get("group_dedup_priority", 0.0)),
+                    "final_score": float(rep.get("final_score", 0.0)),
+                    "local_peak_score": float(rep.get("local_peak_score", 0.0)),
+                    "history_prior_score": float(rep.get("history_prior_score", 0.0)),
+                    "cand_current_gap_all": float(rep.get("cand_current_gap_all", 0.0)),
+                },
+            }
+        )
+
+    rep_numbers = [int(x["number"]) for x in representatives]
+    if apply_to_top3_only:
+        top3_after: list[int] = []
+        for num in rep_numbers:
+            if len(top3_after) >= top_k:
+                break
+            top3_after.append(int(num))
+        for num in top3_before:
+            if len(top3_after) >= top_k:
+                break
+            if num not in top3_after:
+                top3_after.append(num)
+        summary = {
+            "enabled": enabled,
+            "group_distance": group_distance,
+            "apply_to_top3_only": apply_to_top3_only,
+            "candidate_pool_for_grouping": candidate_pool_for_grouping,
+            "grouped_candidates_preview": grouped_preview[:8],
+            "top3_before_group_dedup": top3_before,
+            "top3_after_group_dedup": top3_after,
+            "dedup_applied_scope": "top3_only",
+        }
+        return ranked, summary
+
+    dedup_order = rep_numbers[:]
+    for num in ranked["number"].astype(int).tolist():
+        if num not in dedup_order:
+            dedup_order.append(num)
+    order_map = {n: i for i, n in enumerate(dedup_order)}
+    reranked = (
+        ranked.assign(_dedup_order=ranked["number"].astype(int).map(order_map))
+        .sort_values("_dedup_order", ascending=True)
+        .drop(columns=["_dedup_order"])
+        .reset_index(drop=True)
+    )
+    top3_after = reranked["number"].head(top_k).astype(int).tolist()
+    summary = {
+        "enabled": enabled,
+        "group_distance": group_distance,
+        "apply_to_top3_only": apply_to_top3_only,
+        "candidate_pool_for_grouping": candidate_pool_for_grouping,
+        "grouped_candidates_preview": grouped_preview[:8],
+        "top3_before_group_dedup": top3_before,
+        "top3_after_group_dedup": top3_after,
+        "dedup_applied_scope": "ranking",
+    }
+    return reranked, summary

@@ -22,6 +22,13 @@ def test_history_bucket_report_uses_prediction_rows_not_prev_copy() -> None:
     row = report.iloc[0].to_dict()
     assert row["mean_min_distance_at_3"] == 1.0
     assert row["top3_prev_draw_mean_min_distance"] > 0.0
+    assert "adj_hit_pm1@10" in row
+    assert "adj_hit_pm2@3" in row
+    assert "over_shoot_rate_at_3" in row
+    assert "under_shoot_rate_at_3" in row
+    assert "strict_pm1_error_rate_at_3" in row
+    assert "strict_pm2_error_rate_at_3" in row
+    assert "exact_or_pm1_rate_at_3" in row
 
 
 def test_history_bucket_distance_metrics_change_with_predictions() -> None:

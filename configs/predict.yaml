@@ -1,9 +1,5 @@
 feature_min_history: 22
 pipeline:
-  # precedence:
-  # 1) pipeline.version != auto => force pipeline by config
-  # 2) else use models/strategy_config.json selected_strategy
-  # 3) fallback to models/metadata.json selected/fallback strategy
   version: auto
   artifact_dir: models/cascade_v1
   stage1_keep: 30
@@ -15,6 +11,24 @@ fetch_timeout_seconds: 8
 fetch_retries: 2
 fetch_retry_backoff_seconds: 0.5
 auto_fetch_sources:
-  - https://winwin.tw/Bingo
-  - https://www.pilio.idv.tw/bingo/list.asp
-  - https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
+- https://winwin.tw/Bingo
+- https://www.pilio.idv.tw/bingo/list.asp
+- https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
+neighbor_peak_correction:
+  enabled: true
+  alpha_pm1: 0.2
+  alpha_pm2: 0.08
+topk_group_dedup:
+  enabled: true
+  group_distance: 1
+  apply_to_top3_only: true
+  candidate_pool_for_grouping: 20
+soft_label_training:
+  enabled: false
+  pm1_weight: 0.35
+  pm2_weight: 0.15
+  blend_weight: 0.15
+  normalization: rank_pct
+proximity_model:
+  enabled: false
+  pm1_weight: 0.12

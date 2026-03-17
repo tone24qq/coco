@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from catboost import CatBoostClassifier
+from catboost import CatBoostClassifier, CatBoostRegressor
 from scipy.stats import t
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -16,7 +16,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
+from src.analysis.snapshots import load_history_snapshot_payload  # noqa: E402
 from src.pipeline import CascadePipeline  # noqa: E402
+from src.runtime_scoring import score_candidates_runtime  # noqa: E402
 from src.strategy import (  # noqa: E402
     StrategyConfig,
     apply_strategy,
@@ -29,6 +31,8 @@ from src.utils import (  # noqa: E402
     CONFIG_DIR,
     FEATURE_STORE_DIR,
     REPORTS_DIR,
+    apply_local_peak_correction,
+    apply_topk_group_dedup,
     build_issue_features,
     build_latest_issue_features_for_inference,
     load_processed,
@@ -307,12 +311,96 @@ def _fit_cascade_pipeline(
     return pipeline
 
 
+def _load_runtime_scoring_bundle() -> dict:
+    predict_cfg = load_yaml(CONFIG_DIR / "predict.yaml")
+    metadata_path = PROJECT_ROOT / "models" / "metadata.json"
+    metadata = (
+        json.loads(metadata_path.read_text(encoding="utf-8"))
+        if metadata_path.exists()
+        else {}
+    )
+    runtime_cfg = dict(metadata.get("runtime_config", {}))
+    for key in [
+        "history_prior",
+        "analysis_rerank",
+        "long_feature_injection",
+        "neighbor_peak_correction",
+        "topk_group_dedup",
+        "soft_label_training",
+        "proximity_model",
+    ]:
+        if key in predict_cfg:
+            runtime_cfg[key] = predict_cfg.get(key, {})
+
+    soft_model = None
+    pm1_model = None
+    soft_path = PROJECT_ROOT / "models" / "catboost_soft_label.cbm"
+    pm1_path = PROJECT_ROOT / "models" / "catboost_pm1_proximity.cbm"
+    if soft_path.exists():
+        try:
+            soft_model = CatBoostRegressor()
+            soft_model.load_model(str(soft_path))
+        except Exception:
+            soft_model = None
+    if pm1_path.exists():
+        try:
+            pm1_model = CatBoostClassifier()
+            pm1_model.load_model(str(pm1_path))
+        except Exception:
+            pm1_model = None
+
+    snapshot_payload = load_history_snapshot_payload()
+    board_priors = snapshot_payload.get("meta", {}).get("board_priors", {})
+    return {
+        "runtime_config": runtime_cfg,
+        "snapshot_payload": snapshot_payload,
+        "board_priors": board_priors,
+        "soft_model": soft_model,
+        "pm1_model": pm1_model,
+    }
+
+
+def _score_issue_with_runtime_pipeline(
+    payload: dict[str, object],
+    scores: np.ndarray,
+    runtime_bundle: dict,
+):
+    cand_for_runtime = payload["cand"].copy().reset_index(drop=True)
+    if "number" not in cand_for_runtime.columns:
+        cand_for_runtime.insert(0, "number", np.arange(1, 81, dtype=int))
+    issue_row = payload["issue_row"]
+    recent_draws = [
+        sorted(x) for x in json.loads(str(issue_row.get("history_numbers", "[]")))
+    ]
+    soft_raw = (
+        runtime_bundle["soft_model"].predict(cand_for_runtime)
+        if runtime_bundle.get("soft_model") is not None
+        else None
+    )
+    pm1_raw = (
+        runtime_bundle["pm1_model"].predict_proba(cand_for_runtime)[:, 1]
+        if runtime_bundle.get("pm1_model") is not None
+        else None
+    )
+    return score_candidates_runtime(
+        base_scores=np.array(scores, dtype=float),
+        candidate_df=cand_for_runtime,
+        recent_draws=recent_draws,
+        runtime_config=runtime_bundle["runtime_config"],
+        snapshot_payload=runtime_bundle["snapshot_payload"],
+        board_priors=runtime_bundle["board_priors"],
+        soft_label_raw=soft_raw,
+        pm1_proximity_raw=pm1_raw,
+    )
+
+
 def _run_experiments(
     feat_df: pd.DataFrame,
     splits: int,
     experiments: list[StrategyConfig],
     params: dict,
     issue_payloads: dict[int, dict[str, object]],
+    runtime_bundle: dict,
 ) -> tuple[list[dict], list[dict], list[dict], list[float], list[dict]]:
     tss = TimeSeriesSplit(n_splits=splits)
     registry, per_fold, per_regime, per_issue = [], [], [], []
@@ -480,15 +568,32 @@ def _run_experiments(
                             raise ValueError("legacy model not available")
                         base_scores = model.predict_proba(cand)[:, 1]
                         scores = apply_strategy(base_scores, cand, exp, regime)
-                    m = _make_fold_issue_metrics(scores, payload["target"])
+                    runtime_outputs = _score_issue_with_runtime_pipeline(
+                        payload=payload,
+                        scores=np.array(scores, dtype=float),
+                        runtime_bundle=runtime_bundle,
+                    )
+                    runtime_table = runtime_outputs.score_table
+                    final_scores_arr = np.zeros(80, dtype=float)
+                    for rec in runtime_table[["number", "final_score"]].to_dict(
+                        orient="records"
+                    ):
+                        final_scores_arr[int(rec["number"]) - 1] = float(
+                            rec["final_score"]
+                        )
+
+                    m = _make_fold_issue_metrics(final_scores_arr, payload["target"])
                     m["regime"] = regime
                     m.update(stage_meta)
                     rows.append(m)
 
                     if list(idx_set) == list(te_idx):
-                        pred_rank = np.argsort(scores)[::-1]
-                        pred_top10 = [int(x + 1) for x in pred_rank[:10]]
-                        pred_top3 = pred_top10[:3]
+                        pred_top10 = (
+                            runtime_table["number"].head(10).astype(int).tolist()
+                        )
+                        pred_top3 = runtime_outputs.dedup_summary.get(
+                            "top3_after_group_dedup", pred_top10[:3]
+                        )
                         if exp.stage_type == "cascade":
                             pred_top3 = [int(x) for x in cascade["final_top3"]]
                         feat_row = feat_df.iloc[int(row_idx)]
@@ -519,6 +624,8 @@ def _run_experiments(
                                 "pred_top10": pred_top10,
                                 "actual": actual,
                                 "prev_numbers": prev_numbers,
+                                "score_table": runtime_table.to_dict(orient="records"),
+                                "runtime_dedup_summary": runtime_outputs.dedup_summary,
                                 **stage_meta,
                             }
                         )
@@ -621,6 +728,14 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
                     sum(1 for n in pred_top3 if any(abs(n - a) <= 1 for a in actual))
                     / 3.0
                 ),
+                "adj_hit_pm1@10": float(
+                    sum(1 for n in pred_top10 if any(abs(n - a) <= 1 for a in actual))
+                    / max(1.0, float(len(pred_top10)))
+                ),
+                "adj_hit_pm2@3": float(
+                    sum(1 for n in pred_top3 if any(abs(n - a) <= 2 for a in actual))
+                    / 3.0
+                ),
                 "strict_adj_only_pm1@3": float(
                     sum(
                         1
@@ -629,7 +744,47 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
                     )
                     / 3.0
                 ),
+                "strict_pm1_error_rate_at_3": float(
+                    sum(1 for n in pred_top3 if any(abs(n - a) == 1 for a in actual))
+                    / 3.0
+                ),
+                "strict_pm2_error_rate_at_3": float(
+                    sum(1 for n in pred_top3 if any(abs(n - a) == 2 for a in actual))
+                    / 3.0
+                ),
+                "exact_or_pm1_rate_at_3": float(
+                    sum(1 for n in pred_top3 if any(abs(n - a) <= 1 for a in actual))
+                    / 3.0
+                ),
                 "mean_min_distance_at_3": float(np.mean(min_dist_to_actual)),
+                "over_shoot_rate_at_3": float(
+                    np.mean(
+                        [
+                            (
+                                1.0
+                                if (
+                                    actual and min(actual, key=lambda a: abs(a - n)) < n
+                                )
+                                else 0.0
+                            )
+                            for n in pred_top3
+                        ]
+                    )
+                ),
+                "under_shoot_rate_at_3": float(
+                    np.mean(
+                        [
+                            (
+                                1.0
+                                if (
+                                    actual and min(actual, key=lambda a: abs(a - n)) > n
+                                )
+                                else 0.0
+                            )
+                            for n in pred_top3
+                        ]
+                    )
+                ),
                 "top3_prev_draw_mean_min_distance": float(np.mean(min_dist_to_prev)),
             }
         )
@@ -638,6 +793,350 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
         return out
     metric_cols = [c for c in out.columns if c != "history_bucket"]
     return out.groupby("history_bucket")[metric_cols].mean().reset_index()
+
+
+def _build_error_shift_report(issue_rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    if issue_rows.empty:
+        return pd.DataFrame(), {"rows": []}
+    plus1: dict[str, int] = {}
+    minus1: dict[str, int] = {}
+    zone_rows: list[dict] = []
+    feature_hits = {
+        "history_length_gt_100_ratio": 0,
+        "prev_draw_overlap_ge_1_ratio": 0,
+    }
+    total_cases = 0
+
+    for _, row in issue_rows.iterrows():
+        pred_top3 = [int(x) for x in row.get("pred_top3", [])]
+        actual = [int(x) for x in row.get("actual", [])]
+        if not pred_top3 or not actual:
+            continue
+        total_cases += 1
+        prev = set(int(x) for x in row.get("prev_numbers", []))
+
+        if int(row.get("history_length", 0)) > 100:
+            feature_hits["history_length_gt_100_ratio"] += 1
+        if any(n in prev for n in pred_top3):
+            feature_hits["prev_draw_overlap_ge_1_ratio"] += 1
+
+        for n in pred_top3:
+            nearest = min(actual, key=lambda a: abs(a - n))
+            diff = int(n - nearest)
+            if diff == 1:
+                plus1[str(nearest)] = plus1.get(str(nearest), 0) + 1
+            if diff == -1:
+                minus1[str(nearest)] = minus1.get(str(nearest), 0) + 1
+            zone_rows.append(
+                {
+                    "zone": (
+                        "A" if n <= 20 else "B" if n <= 40 else "C" if n <= 60 else "D"
+                    ),
+                    "pm1_proximity": float(abs(diff) <= 1),
+                    "strict_pm1_error": float(abs(diff) == 1),
+                }
+            )
+
+    zone_df = pd.DataFrame(zone_rows)
+    zone_pm1_prox = []
+    zone_strict_pm1 = []
+    if not zone_df.empty:
+        zone_pm1_prox = (
+            zone_df.groupby("zone")["pm1_proximity"]
+            .mean()
+            .reset_index()
+            .to_dict(orient="records")
+        )
+        zone_strict_pm1 = (
+            zone_df.groupby("zone")["strict_pm1_error"]
+            .mean()
+            .reset_index()
+            .to_dict(orient="records")
+        )
+
+    summary = {
+        "most_predicted_as_n_plus_1": sorted(
+            plus1.items(), key=lambda x: x[1], reverse=True
+        )[:20],
+        "most_predicted_as_n_minus_1": sorted(
+            minus1.items(), key=lambda x: x[1], reverse=True
+        )[:20],
+        "zone_pm1_proximity_rate": zone_pm1_prox,
+        "zone_strict_pm1_error_rate": zone_strict_pm1,
+        "history_length_gt_100_ratio": float(
+            feature_hits["history_length_gt_100_ratio"] / max(1, total_cases)
+        ),
+        "prev_draw_overlap_ge_1_ratio": float(
+            feature_hits["prev_draw_overlap_ge_1_ratio"] / max(1, total_cases)
+        ),
+    }
+
+    rows: list[dict] = []
+    for num, cnt in summary["most_predicted_as_n_plus_1"]:
+        rows.append(
+            {"pattern": "n_plus_1", "actual_number": int(num), "count": int(cnt)}
+        )
+    for num, cnt in summary["most_predicted_as_n_minus_1"]:
+        rows.append(
+            {"pattern": "n_minus_1", "actual_number": int(num), "count": int(cnt)}
+        )
+    for rec in zone_pm1_prox:
+        rows.append(
+            {
+                "pattern": "zone_pm1_proximity_rate",
+                "zone": rec["zone"],
+                "rate": float(rec["pm1_proximity"]),
+            }
+        )
+    for rec in zone_strict_pm1:
+        rows.append(
+            {
+                "pattern": "zone_strict_pm1_error_rate",
+                "zone": rec["zone"],
+                "rate": float(rec["strict_pm1_error"]),
+            }
+        )
+
+    return pd.DataFrame(rows), summary
+
+
+def _ablation_report_from_issue_rows(issue_rows: pd.DataFrame) -> dict:
+    if issue_rows.empty:
+        return {"experiments": [], "comparisons": []}
+
+    predict_cfg = load_yaml(CONFIG_DIR / "predict.yaml")
+    local_cfg = dict(predict_cfg.get("neighbor_peak_correction", {}))
+    dedup_cfg = dict(predict_cfg.get("topk_group_dedup", {}))
+    soft_cfg = dict(predict_cfg.get("soft_label_training", {}))
+    pm1_cfg = dict(predict_cfg.get("proximity_model", {}))
+
+    def _metrics(top3: list[int], top10: list[int], actual: list[int]) -> dict:
+        a = set(int(x) for x in actual)
+        min_dist = [min(abs(n - x) for x in a) if a else 80.0 for n in top3]
+        return {
+            "exact_hit@3": float(sum(1 for n in top3 if n in a) / 3.0),
+            "exact_hit@10": float(
+                sum(1 for n in top10 if n in a) / max(1.0, float(len(top10)))
+            ),
+            "top3_at_least_one_exact": float(any(n in a for n in top3)),
+            "adj_hit_pm1@3": float(
+                sum(1 for n in top3 if any(abs(n - x) <= 1 for x in a)) / 3.0
+            ),
+            "adj_hit_pm1@10": float(
+                sum(1 for n in top10 if any(abs(n - x) <= 1 for x in a))
+                / max(1.0, float(len(top10)))
+            ),
+            "adj_hit_pm2@3": float(
+                sum(1 for n in top3 if any(abs(n - x) <= 2 for x in a)) / 3.0
+            ),
+            "mean_min_distance_at_3": float(np.mean(min_dist)),
+            "strict_pm1_error_rate_at_3": float(
+                sum(1 for n in top3 if any(abs(n - x) == 1 for x in a)) / 3.0
+            ),
+        }
+
+    experiments: dict[str, list[dict]] = {
+        "exact_only": [],
+        "exact_plus_local_peak": [],
+        "exact_plus_group_dedup": [],
+        "exact_plus_local_peak_plus_group_dedup": [],
+        "exact_plus_soft_label": [],
+        "exact_plus_pm1_proximity": [],
+        "exact_plus_soft_label_plus_pm1_proximity": [],
+        "full_runtime_chain": [],
+    }
+    skipped_reasons: dict[str, str] = {}
+
+    for _, row in issue_rows.iterrows():
+        raw_table = row.get("score_table", [])
+        actual = [int(x) for x in row.get("actual", [])]
+        if not raw_table or not actual:
+            continue
+        df = pd.DataFrame(raw_table)
+        if df.empty or "number" not in df.columns:
+            continue
+
+        base = df.copy()
+        if "model_score" not in base.columns:
+            base["model_score"] = base.get("final_score", 0.0).astype(float)
+        if "soft_label_score" not in base.columns:
+            base["soft_label_score"] = 0.0
+        if "pm1_proximity_score" not in base.columns:
+            base["pm1_proximity_score"] = 0.0
+        base["final_score"] = base["model_score"].astype(float)
+        base_rank = base.sort_values("final_score", ascending=False).reset_index(
+            drop=True
+        )
+        exact_top10 = base_rank["number"].head(10).astype(int).tolist()
+        exact_top3 = base_rank["number"].head(3).astype(int).tolist()
+        experiments["exact_only"].append(_metrics(exact_top3, exact_top10, actual))
+
+        lp_df, _ = apply_local_peak_correction(
+            base_rank,
+            cfg={**local_cfg, "enabled": True},
+            input_score_column="final_score",
+            output_score_column="score_after_local_peak",
+        )
+        lp_df["final_score"] = lp_df["score_after_local_peak"].astype(float)
+        lp_rank = lp_df.sort_values("final_score", ascending=False).reset_index(
+            drop=True
+        )
+        lp_top10 = lp_rank["number"].head(10).astype(int).tolist()
+        lp_top3 = lp_rank["number"].head(3).astype(int).tolist()
+        experiments["exact_plus_local_peak"].append(_metrics(lp_top3, lp_top10, actual))
+
+        gd_rank, gd_summary = apply_topk_group_dedup(
+            base_rank,
+            cfg={**dedup_cfg, "enabled": True, "apply_to_top3_only": False},
+            top_k=3,
+        )
+        gd_top10 = gd_rank["number"].head(10).astype(int).tolist()
+        gd_top3 = gd_summary["top3_after_group_dedup"]
+        experiments["exact_plus_group_dedup"].append(
+            _metrics(gd_top3, gd_top10, actual)
+        )
+
+        lpgd_rank, lpgd_summary = apply_topk_group_dedup(
+            lp_rank,
+            cfg={**dedup_cfg, "enabled": True, "apply_to_top3_only": False},
+            top_k=3,
+        )
+        lpgd_top10 = lpgd_rank["number"].head(10).astype(int).tolist()
+        lpgd_top3 = lpgd_summary["top3_after_group_dedup"]
+        experiments["exact_plus_local_peak_plus_group_dedup"].append(
+            _metrics(lpgd_top3, lpgd_top10, actual)
+        )
+
+        soft_weight = float(soft_cfg.get("blend_weight", 0.15))
+        soft_enabled = (
+            bool(soft_cfg.get("enabled", False))
+            and float(df["soft_label_score"].abs().sum()) > 0.0
+        )
+        if soft_enabled:
+            soft_df = df.copy()
+            soft_df["final_score"] = soft_df["model_score"].astype(
+                float
+            ) + soft_weight * soft_df["soft_label_score"].astype(float)
+            soft_rank = soft_df.sort_values("final_score", ascending=False).reset_index(
+                drop=True
+            )
+            experiments["exact_plus_soft_label"].append(
+                _metrics(
+                    soft_rank["number"].head(3).astype(int).tolist(),
+                    soft_rank["number"].head(10).astype(int).tolist(),
+                    actual,
+                )
+            )
+        else:
+            skipped_reasons.setdefault(
+                "exact_plus_soft_label", "soft_label disabled or artifact missing"
+            )
+
+        pm1_weight = float(pm1_cfg.get("pm1_weight", 0.12))
+        pm1_enabled = (
+            bool(pm1_cfg.get("enabled", False))
+            and float(df["pm1_proximity_score"].abs().sum()) > 0.0
+        )
+        if pm1_enabled:
+            pm1_df = df.copy()
+            pm1_df["final_score"] = pm1_df["model_score"].astype(
+                float
+            ) + pm1_weight * pm1_df["pm1_proximity_score"].astype(float)
+            pm1_rank = pm1_df.sort_values("final_score", ascending=False).reset_index(
+                drop=True
+            )
+            experiments["exact_plus_pm1_proximity"].append(
+                _metrics(
+                    pm1_rank["number"].head(3).astype(int).tolist(),
+                    pm1_rank["number"].head(10).astype(int).tolist(),
+                    actual,
+                )
+            )
+        else:
+            skipped_reasons.setdefault(
+                "exact_plus_pm1_proximity", "pm1 proximity disabled or artifact missing"
+            )
+
+        if soft_enabled and pm1_enabled:
+            sp_df = df.copy()
+            sp_df["final_score"] = (
+                sp_df["model_score"].astype(float)
+                + soft_weight * sp_df["soft_label_score"].astype(float)
+                + pm1_weight * sp_df["pm1_proximity_score"].astype(float)
+            )
+            sp_rank = sp_df.sort_values("final_score", ascending=False).reset_index(
+                drop=True
+            )
+            experiments["exact_plus_soft_label_plus_pm1_proximity"].append(
+                _metrics(
+                    sp_rank["number"].head(3).astype(int).tolist(),
+                    sp_rank["number"].head(10).astype(int).tolist(),
+                    actual,
+                )
+            )
+        else:
+            skipped_reasons.setdefault(
+                "exact_plus_soft_label_plus_pm1_proximity",
+                "soft_label or pm1 proximity disabled/missing",
+            )
+
+        full_rank = df.sort_values("final_score", ascending=False).reset_index(
+            drop=True
+        )
+        full_top3 = (
+            row.get("pred_top3") or full_rank["number"].head(3).astype(int).tolist()
+        )
+        full_top10 = (
+            row.get("pred_top10") or full_rank["number"].head(10).astype(int).tolist()
+        )
+        experiments["full_runtime_chain"].append(
+            _metrics(
+                [int(x) for x in full_top3], [int(x) for x in full_top10][:10], actual
+            )
+        )
+
+    rows = []
+    for name, vals in experiments.items():
+        if vals:
+            rows.append(
+                {
+                    "name": name,
+                    "skipped_reason": "",
+                    **pd.DataFrame(vals).mean().to_dict(),
+                }
+            )
+        else:
+            rows.append(
+                {"name": name, "skipped_reason": skipped_reasons.get(name, "no_data")}
+            )
+
+    by_name = {r["name"]: r for r in rows}
+    baseline = by_name.get("exact_only", {})
+    comparisons = []
+    for name in [
+        "exact_plus_local_peak",
+        "exact_plus_group_dedup",
+        "exact_plus_soft_label",
+        "exact_plus_pm1_proximity",
+        "full_runtime_chain",
+    ]:
+        cur = by_name.get(name, {})
+        if baseline.get("exact_hit@3") is None or cur.get("exact_hit@3") is None:
+            continue
+        comparisons.append(
+            {
+                "compare": f"exact_only vs {name}",
+                "delta_exact_hit@3": float(
+                    cur.get("exact_hit@3", 0.0) - baseline.get("exact_hit@3", 0.0)
+                ),
+                "delta_mean_min_distance_at_3": float(
+                    cur.get("mean_min_distance_at_3", 0.0)
+                    - baseline.get("mean_min_distance_at_3", 0.0)
+                ),
+            }
+        )
+
+    return {"experiments": rows, "comparisons": comparisons}
 
 
 def _build_stagewise_uplift_report(per_issue_df: pd.DataFrame) -> dict:
@@ -864,12 +1363,14 @@ def main() -> None:
     print("[研究流程] backtest 快速階段：3個版本、3 folds、較低 iterations")
     fast_params = dict(params)
     fast_params["iterations"] = int(cfg.get("research_iterations", 140))
+    runtime_bundle = _load_runtime_scoring_bundle()
     fast_registry, _, _, _, _ = _run_experiments(
         feat_df=feat_df,
         splits=int(cfg.get("research_backtest_splits", 3)),
         experiments=fast_experiments,
         params=fast_params,
         issue_payloads=issue_payloads,
+        runtime_bundle=runtime_bundle,
     )
     fast_df = pd.DataFrame(fast_registry)
     selected_final_ids = (
@@ -894,6 +1395,7 @@ def main() -> None:
         experiments=final_experiments,
         params=params,
         issue_payloads=issue_payloads,
+        runtime_bundle=runtime_bundle,
     )
 
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -976,6 +1478,15 @@ def main() -> None:
     )
     stagewise_uplift = _build_stagewise_uplift_report(per_issue_df)
     save_json(REPORTS_DIR / "cascade_stagewise_report.json", stagewise_uplift)
+    error_shift_csv, error_shift_json = _build_error_shift_report(selected_issue_df)
+    error_shift_csv.to_csv(REPORTS_DIR / "error_shift_analysis.csv", index=False)
+    save_json(REPORTS_DIR / "error_shift_analysis.json", error_shift_json)
+    ablation_summary = _ablation_report_from_issue_rows(selected_issue_df)
+    save_json(REPORTS_DIR / "ablation_shift_analysis.json", ablation_summary)
+    save_json(REPORTS_DIR / "runtime_ablation_summary.json", ablation_summary)
+    pd.DataFrame(ablation_summary.get("experiments", [])).to_csv(
+        REPORTS_DIR / "runtime_ablation_summary.csv", index=False
+    )
 
     save_json(
         REPORTS_DIR / "experiment_summary.json",

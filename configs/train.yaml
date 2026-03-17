@@ -1,6 +1,5 @@
 feature_version: v3_core20
 pipeline:
-  # local training default: always train latest cascade pipeline
   version: cascade_v1
   stage1_keep: 30
   stage2_keep: 10
@@ -41,3 +40,15 @@ overfit_thresholds:
 acceptance_thresholds:
   non_degradation_tol: 0.01
   stability_improvement_min: 0.0
+soft_label_training:
+  enabled: false
+  pm1_weight: 0.35
+  pm2_weight: 0.15
+  blend_weight: 0.15
+  normalization: rank_pct
+proximity_model:
+  enabled: false
+  pm1_weight: 0.12
+ranking_experiment:
+  enabled: false
+  objective: pairwise

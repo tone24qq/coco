@@ -97,3 +97,8 @@ def test_predictor_outputs_history_prior_and_rerank_summary(monkeypatch) -> None
     assert "analysis_rerank_summary" in out
     assert "top20_numbers_model" in out
     assert len(out["top20_numbers"]) == 20
+    assert "local_peak_summary" in out
+    assert "grouped_candidates_preview" in out
+    assert "top3_before_group_dedup" in out
+    assert "top3_after_group_dedup" in out
+    assert "final_score_breakdown" in out
