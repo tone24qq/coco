@@ -1,6 +1,7 @@
 feature_version: v3_core20
+training_mode: ranker_main
 pipeline:
-  version: cascade_v1
+  version: baseline_flat_score
   stage1_keep: 30
   stage2_keep: 10
   artifact_dir: models/cascade_v1
@@ -50,5 +51,20 @@ proximity_model:
   enabled: false
   pm1_weight: 0.12
 ranking_experiment:
+  enabled: true
+  objective: QuerySoftMax
+  eval_metric: NDCG:top=10
+  custom_metrics:
+    - NDCG:top=3
+    - NDCG:top=10
+    - PrecisionAt:top=3
+    - PrecisionAt:top=10
+    - RecallAt:top=3
+    - RecallAt:top=10
+ranking_pairwise_experiment:
   enabled: false
-  objective: pairwise
+  objective: PairLogitPairwise
+
+formal_strategy:
+  model_family: ranker_main
+  fail_fast_ranker_artifact: true

@@ -34,25 +34,11 @@ class _DummyClassifier:
         vals = np.linspace(0.2, 0.8, len(x), dtype=float)
         return np.vstack([1.0 - vals, vals]).T
 
+    def predict(self, x):
+        return np.linspace(0.2, 0.8, len(x), dtype=float)
+
     def get_feature_importance(self):
         return [1.0 for _ in range(len(V3_CORE20_COLUMNS))]
-
-
-class _DummyRegressor:
-    def __init__(self, *args, **kwargs):
-        self.loaded = False
-
-    def load_model(self, _path: str) -> None:
-        self.loaded = True
-
-    def fit(self, *_args, **_kwargs):
-        return None
-
-    def save_model(self, _path: str) -> None:
-        return None
-
-    def predict(self, x):
-        return np.linspace(0.1, 0.9, len(x), dtype=float)
 
 
 def _make_draw_df(n: int = 260) -> pd.DataFrame:
@@ -76,10 +62,18 @@ def test_backtest_runtime_chain_matches_predict_when_soft_pm1_disabled(
         json.dumps(V3_CORE20_COLUMNS), encoding="utf-8"
     )
     (MODELS_DIR / "metadata.json").write_text(
-        json.dumps({"feature_version": "v3_core20"}), encoding="utf-8"
+        json.dumps(
+            {
+                "feature_version": "v3_core20",
+                "model_type": "catboost_ranker",
+                "runtime_config": {},
+            }
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr("src.predict.CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr("src.predict.CatBoostRegressor", _DummyRegressor)
+    monkeypatch.setattr("src.predict.CatBoostRanker", _DummyClassifier)
+    (MODELS_DIR / "catboost_ranker_top80.cbm").write_text("x", encoding="utf-8")
     monkeypatch.setattr(
         "src.predict.load_history_snapshot_payload",
         lambda: {
@@ -239,11 +233,18 @@ def test_training_metadata_consistency_for_soft_pm1(monkeypatch) -> None:
         ),
     )
     monkeypatch.setattr(train_lgbm, "CatBoostClassifier", _DummyClassifier)
-    monkeypatch.setattr(train_lgbm, "CatBoostRegressor", _DummyRegressor)
+    monkeypatch.setattr(train_lgbm, "CatBoostRanker", _DummyClassifier)
 
     def _fake_yaml(_p):
         return {
             "pipeline": {"version": "baseline_flat_score"},
+            "training_mode": "ranker_main",
+            "ranking_experiment": {
+                "enabled": True,
+                "objective": "QuerySoftMax",
+                "eval_metric": "NDCG:top=10",
+                "custom_metrics": ["NDCG:top=3"],
+            },
             "catboost_params": {"iterations": 1, "verbose": False},
             "soft_label_training": {
                 "enabled": True,
@@ -278,5 +279,9 @@ def test_training_metadata_consistency_for_soft_pm1(monkeypatch) -> None:
         "proximity_model",
         "soft_label_normalization_method",
         "train_rows_used",
+        "ranking_objective",
+        "ranking_eval_metric",
+        "group_count",
     ]:
         assert key in meta
+    assert "ranker" in meta["train_rows_used"]
