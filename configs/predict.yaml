@@ -1,0 +1,20 @@
+models:
+  dir: models
+auto_fetch:
+  enabled: true
+  source: https://winwin.tw/Bingo
+  sources:
+    - https://winwin.tw/Bingo
+history:
+  lookback_n: 150
+  processed_path: data/processed/history_processed.csv
+retrieval:
+  top_k: 20
+runtime_scoring:
+  weights:
+    ranker: 0.55
+    logistic: 0.20
+    retrieval: 0.15
+    history_prior: 0.08
+    analysis: 0.01
+    local_peak: 0.01
