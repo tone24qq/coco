@@ -22,3 +22,7 @@ scipy
 
 fastapi>=0.115
 uvicorn>=0.30
+
+lightgbm>=4.0
+scikit-learn>=1.4
+joblib>=1.3

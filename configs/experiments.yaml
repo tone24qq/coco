@@ -1,0 +1,12 @@
+experiments:
+  - name: baseline_frequency
+  - name: ranker_main_qsm
+  - name: ablation_no_retrieval
+  - name: ablation_no_logistic
+reports:
+  registry: reports/experiment_registry.csv
+  metrics_by_fold: reports/experiment_per_fold_metrics.csv
+  metrics_by_regime: reports/experiment_per_regime_metrics.csv
+  runtime_ablation: reports/runtime_ablation_summary.csv
+  summary: reports/experiment_summary.json
+  alignment_audit: reports/alignment_audit.json

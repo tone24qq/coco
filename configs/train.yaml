@@ -1,0 +1,17 @@
+data:
+  ranking_dataset_path: data/feature_store/ranking_dataset.csv
+validation:
+  n_splits: 3
+  min_train_issues: 30
+runtime_scoring:
+  weights:
+    ranker: 0.55
+    logistic: 0.20
+    retrieval: 0.15
+    history_prior: 0.08
+    analysis: 0.01
+    local_peak: 0.01
+leakage_guard:
+  enforce_past_only: true
+  split_mode: time_series
+experiments_config: configs/experiments.yaml
