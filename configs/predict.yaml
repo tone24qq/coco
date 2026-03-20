@@ -5,6 +5,7 @@ auto_fetch:
   enabled: true
   sources:
     - https://winwin.tw/Bingo
+    - https://lotto.auzo.tw/RK.php
 
 history:
   dynamic_context: true

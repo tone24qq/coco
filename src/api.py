@@ -26,7 +26,7 @@ class PredictPayload(BaseModel):
 
 
 class RankingScoreRow(BaseModel):
-    number: int
+    candidate_number: int
     rank_final: int
     final_score: float
     ranker_score: float

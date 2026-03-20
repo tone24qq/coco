@@ -7,9 +7,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+import pandas as pd
+
 
 class DataContractError(ValueError):
     """Raised when data violates project schema."""
+
+
+MAX_OUTPUT_FILE_BYTES = 100 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -89,3 +94,64 @@ def write_processed(path: Path, records: list[DrawRecord]) -> None:
 def rolling_hit_count(history: list[DrawRecord], number: int, window: int) -> int:
     span = history[-window:] if window > 0 else history
     return sum(1 for row in span if number in row.numbers)
+
+
+def log_progress(step: int, total: int, stage: str, detail: str = "") -> None:
+    total_safe = max(1, total)
+    pct = min(100.0, max(0.0, step / total_safe * 100.0))
+    suffix = f" | {detail}" if detail else ""
+    print(f"[進度] {step}/{total_safe} ({pct:.1f}%) {stage}{suffix}")
+
+
+def enforce_file_size(path: Path, max_bytes: int = MAX_OUTPUT_FILE_BYTES) -> None:
+    if path.exists() and path.stat().st_size > max_bytes:
+        raise DataContractError(f"file too large (>100MB): {path}")
+
+
+def enforce_dir_file_sizes(dirs: list[Path], max_bytes: int = MAX_OUTPUT_FILE_BYTES) -> None:
+    for d in dirs:
+        if not d.exists():
+            continue
+        for p in d.rglob("*"):
+            if p.is_file():
+                enforce_file_size(p, max_bytes=max_bytes)
+
+
+def _shard_path(path: Path, part_idx: int) -> Path:
+    return path.with_name(f"{path.stem}.part{part_idx:04d}{path.suffix}")
+
+
+def shard_csv_if_needed(path: Path, max_bytes: int = MAX_OUTPUT_FILE_BYTES) -> list[Path]:
+    if not path.exists():
+        return []
+    if path.stat().st_size <= max_bytes:
+        return [path]
+    df = pd.read_csv(path)
+    if df.empty:
+        return [path]
+    part_count = max(2, int(path.stat().st_size / max_bytes) + 1)
+    rows_per_part = max(1, len(df) // part_count)
+    parts: list[Path] = []
+    start = 0
+    part_idx = 1
+    while start < len(df):
+        chunk = df.iloc[start : start + rows_per_part]
+        p = _shard_path(path, part_idx)
+        chunk.to_csv(p, index=False)
+        enforce_file_size(p, max_bytes=max_bytes)
+        parts.append(p)
+        part_idx += 1
+        start += rows_per_part
+    path.unlink()
+    return parts
+
+
+def read_csv_maybe_sharded(path: Path) -> pd.DataFrame:
+    if path.exists():
+        return pd.read_csv(path)
+    pattern = f"{path.stem}.part*{path.suffix}"
+    parts = sorted(path.parent.glob(pattern))
+    if not parts:
+        raise DataContractError(f"csv not found: {path}")
+    frames = [pd.read_csv(p) for p in parts]
+    return pd.concat(frames, ignore_index=True)
