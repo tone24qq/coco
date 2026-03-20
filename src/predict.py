@@ -73,6 +73,8 @@ def _load_recent_draws(
                 Path(config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json")),
                 mismatch_policy=mismatch_policy,
             )
+            report.setdefault("failover_reason", None)
+            report.setdefault("successful_sources", [])
             latest_day = max(r.draw_date for r in rows)
             today_rows = sorted([r for r in rows if r.draw_date == latest_day], key=lambda r: r.issue)
             if not today_rows:
