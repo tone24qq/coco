@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from src.retrieval import RetrievalWeights, SimilarWindowRetriever, retrieval_features
-from src.utils import DataContractError, DrawRecord, read_processed
+from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, enforce_file_size, log_progress, read_processed, shard_csv_if_needed
 
 WINDOWS = [20, 50, 100, 200, 500]
 
@@ -197,15 +197,27 @@ def build_feature_rows(
         max_dynamic_n = min(max_dynamic_n, int(retrieval_window))
 
     rows: list[dict[str, float | int | str]] = []
+    total_steps = max(1, len(records) - min_history)
+    last_logged = -1
     for idx in range(min_history, len(records)):
-        target = records[idx]
+        target_next = records[idx]
         history = records[:idx]
+        context_issue = history[-1]
+        progress = int((idx - min_history + 1) / total_steps * 100)
+        if progress // 10 != last_logged:
+            last_logged = progress // 10
+            log_progress(
+                idx - min_history + 1,
+                total_steps,
+                "建立候選特徵",
+                f"issue_t={context_issue.issue} -> issue_t+1={target_next.issue}",
+            )
         try:
             built, _ = build_candidate_rows(
                 history=history,
-                issue=target.issue,
-                draw_date=target.draw_date.isoformat(),
-                label_numbers=set(target.numbers),
+                issue=context_issue.issue,
+                draw_date=context_issue.draw_date.isoformat(),
+                label_numbers=set(target_next.numbers),
                 min_dynamic_n=min_dynamic_n,
                 max_dynamic_n=max_dynamic_n,
                 top_k=top_k,
@@ -226,6 +238,9 @@ def write_feature_store(path: Path, rows: list[dict[str, float | int | str]]) ->
         writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+    shard_csv_if_needed(path)
+    if path.exists():
+        enforce_file_size(path)
 
 
 def main() -> None:
@@ -238,9 +253,13 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=50)
     args = parser.parse_args()
 
+    log_progress(1, 3, "讀取 processed 歷史", f"輸入={args.input}")
     records = read_processed(Path(args.input))
+    log_progress(2, 3, "開始建立 ranking features", f"歷史筆數={len(records)}")
     rows = build_feature_rows(records, args.min_history, args.min_dynamic_n, args.max_dynamic_n, args.top_k)
     write_feature_store(Path(args.output), rows)
+    enforce_dir_file_sizes([Path("data/feature_store"), Path("reports"), Path("models")])
+    log_progress(3, 3, "feature store 輸出完成", f"輸出={args.output}")
 
 
 if __name__ == "__main__":
