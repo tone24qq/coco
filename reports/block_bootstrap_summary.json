@@ -1,0 +1,7 @@
+{
+  "metric": "mainline_minus_baseline_top3",
+  "mean": -0.0027027636773829665,
+  "std": 0.008022682760171974,
+  "iterations": 300,
+  "block_size": 5
+}

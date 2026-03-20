@@ -81,7 +81,10 @@ def main() -> None:
     rows = merge_histories([Path(p) for p in args.inputs])
     log_progress(2, 3, "合併與排序歷史資料", f"總筆數={len(rows)}")
     write_processed(Path(args.output), rows)
-    enforce_file_size(Path(args.output))
+    log_progress(1, 3, "讀取歷史 CSV", f"檔案數={len(args.inputs)}")
+    rows = merge_histories([Path(p) for p in args.inputs])
+    log_progress(2, 3, "合併與排序歷史資料", f"總筆數={len(rows)}")
+    write_processed(Path(args.output), rows)
     log_progress(3, 3, "輸出 processed 歷史完成", f"輸出={args.output}")
 
 
