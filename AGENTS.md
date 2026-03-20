@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## 目的
-本專案禁止表面實作、空殼模組、未接線 helper、假報表、假 schema 完成。
+本專案禁止表面實作、空殼模組、未接線 helper、假報表、假 schema 完成。  
 任何功能若未真正接入主線資料流 / 訓練流 / 回測流 / 預測流 / API 流，一律不得宣稱完成。
 
 ---
@@ -15,9 +15,7 @@
 
 ---
 
-## Mainline Implementation Rules
-
-### 主線入口 / 主線共用核心
+## 主線入口 / 主線共用核心
 以下檔案視為主線入口或主線核心：
 
 - `src/train.py`
@@ -29,7 +27,9 @@
 - `src/runtime_scoring.py`
 - `src/modeling.py`
 
-### Definition of Done
+---
+
+## Definition of Done
 只有同時滿足以下條件，才可宣稱完成：
 
 1. **必須修改至少一個主線入口或主線共用核心**
@@ -41,9 +41,9 @@
    - 不接受只有檔案存在、只有函式存在、只有 schema 存在。
 
 3. **主線行為必須真的改變**
-   - 至少要有一個可觀察差異：
+   - 至少要有一個可觀察差異，例如：
      - 輸出 JSON 有新增且真正來自主流程的欄位
-     - 排序結果 / final_score / top3 / metadata / artifacts / reports 有真實差異
+     - 排序結果 / `final_score` / `top3` / metadata / artifacts / reports 有真實差異
      - feature contract / artifact contract / fail-fast 行為有真實差異
 
 4. **不得只做表面層修改**
@@ -86,6 +86,8 @@
 - 只做假 fail-fast
 - 只改字串或欄位名稱讓表面看起來像有做
 - 只在回覆裡聲稱已接入，但沒有程式證據
+- 只建立空殼檔案或 placeholder 函式
+- 只把結果寫進 json/csv，但訓練、預測、回測主路徑沒用到
 
 ---
 
@@ -125,17 +127,23 @@
 
 ---
 
-## 🧪 測試要求（Testing Standards）
+## 測試要求（Testing Standards）
 
-每個 Agent 在提交前必須通過以下驗證：
+每個 Agent / Codex 任務在宣稱完成前，必須先完成「主線接入驗證 + 測試驗證 + 證據輸出」。  
+沒有實際命令、沒有實際輸出、沒有實際測試結果，一律不得宣稱完成。
 
-### ✅ 程式碼靜態檢查
+### 基本靜態檢查
+至少必須通過：
 - `flake8 agent.py`
 
-若本次修改涉及 `src/`，還必須通過：
+若本次修改涉及 `src/` 或 `tests/`，還必須通過：
 - `flake8 src tests`
 
-### ✅ 單元測試
+若專案有額外檢查工具，也必須一併執行：
+- `python -m py_compile $(git ls-files '*.py')`
+- `pytest -q`
+
+### 單元測試
 測試檔案命名範例：
 - `tests/test_agents/test_<agent_name>.py`
 
@@ -154,14 +162,14 @@
 4. **端到端測試**
    - 驗證從資料 -> feature -> ranking dataset -> train / predict 的主線可執行
 
-### ✅ 必跑測試命令
+### 必跑測試命令
 - `pytest -q`
 
 若本次修改涉及主線，還必須至少能指出本次直接相關、實際跑過的測試檔，例如：
 - `pytest -q tests/test_agents/test_phase1_predict_schema.py`
 - `pytest -q tests/test_agents/test_phase2_api_and_pipeline.py`
 
-### ✅ 無證據不得宣稱完成
+### 無證據不得宣稱完成
 - 沒有實際執行命令輸出，不得寫「已測試通過」
 - 沒有實際產物，不得寫「已接入完成」
 - 沒有實際差異，不得寫「已實作」
@@ -172,6 +180,7 @@
 
 ### Gate 1：主線必改
 若需求屬於以下任一情況，**必須改主線檔案**：
+
 - 接主線
 - 接 train
 - 接 predict
@@ -192,6 +201,7 @@
 
 ### Gate 4：必須可觀察
 至少要有一個可觀察成果：
+
 - 測試通過
 - 產物生成
 - API 響應改變
@@ -206,6 +216,104 @@
 - 風險 / 缺口
 
 不得用模糊字眼混過。
+
+---
+
+## Mandatory Verification Gate
+
+### 強制驗收腳本
+每次新增功能、修改主線、補接線後，必須新增或更新一個可執行驗收腳本：
+
+- `scripts/verify_mainline.sh`
+
+若專案原本已有同類腳本，可沿用，但必須真的更新內容，不可只保留空殼。
+
+### 驗收腳本用途
+`verify_mainline.sh` 是完成宣稱前的強制門檻。  
+沒有執行 `verify_mainline.sh`，一律不得宣稱完成。
+
+### Hard Rule
+只要本次新增了任何功能，但沒有同步更新 `scripts/verify_mainline.sh` 來驗證該功能，一律視為未完成，不得提交，不得宣稱完成。
+
+### 驗收腳本最低要求
+`verify_mainline.sh` 必須至少做到以下事情：
+
+1. 啟用 fail-fast：
+   - `set -euo pipefail`
+
+2. 明確執行：
+   - 靜態檢查
+   - 單元測試
+   - 至少一組主線流程驗證
+
+3. 主線流程驗證至少覆蓋對應路徑：
+   - 訓練改動：驗證 train 主線真的吃到新功能
+   - 預測改動：驗證 predict 主線真的吃到新功能
+   - 回測改動：驗證 backtest 主線真的吃到新功能
+   - API 改動：驗證 `/health` 或 `/predict` 真實反映新功能
+   - runtime scoring 改動：驗證分數鏈真的變動，而不是只新增欄位
+
+4. 對每個新功能都必須有對應檢查：
+   - 不是只看檔案存在
+   - 不是只看 metadata 有欄位
+   - 必須檢查主流程輸出、日誌、模型輸出、API 回傳、報表內容中至少一項真的改變
+
+5. 驗收失敗時必須 exit non-zero，不可吞錯，不可繼續假裝完成。
+
+---
+
+## Feature-specific Verification Rules
+每新增一種功能，都必須補一條「功能級驗收」，加進：
+- `scripts/verify_mainline.sh`
+- 對應的 `tests/test_agents/test_*.py`
+
+沒有功能級驗收，視為未完成。
+
+### 1. 若新增 retrieval / similarity window / retrieval feature
+必須驗證：
+- `predict.py` 或 `build_features.py` 主流程真的呼叫到 retrieval
+- 輸出中真的有 retrieval 產生的分數或排序影響
+- 不是只多一個 metadata 欄位
+
+至少要有一個驗收檢查像這樣：
+- 檢查 `ranking_score_table` 中 `retrieval_score` 非全 0
+- 或檢查 `final_score` 真的受 `retrieval_score` 影響
+- 或檢查 `retrieval_top_matches` 非空，且不是假資料
+
+### 2. 若新增 consensus
+必須驗證：
+- 不是只產生 `source_consensus_report.json`
+- 主流程對 mismatch / all failed / partial 有實際行為
+- 若規格要求 fail-fast，就必須真的 fail-fast
+
+至少要驗收：
+- ok 情況
+- mismatch 情況
+- all failed 情況
+
+### 3. 若新增 explain
+必須驗證：
+- explain 不是固定字串或純欄位搬運
+- explain 內容至少引用真實預測輸出的一部分
+- 若規格要求對 score chain 解釋，則輸出需含實際 score chain
+
+### 4. 若新增 backtest 額外報表
+必須驗證：
+- 不是只生成空 json/csv
+- 報表內容來自實際 backtest 計算
+- 欄位值不是寫死常數或 placeholder
+
+### 5. 若新增 train metadata / snapshot / provenance
+必須驗證：
+- 主流程真的在 train 或 predict 中讀寫
+- 不接受只有檔案存在
+- 要檢查 metadata / snapshot 的內容與實際資料一致
+
+### 6. 若修改 runtime scoring
+必須驗證：
+- 新分數欄位進入 `final_score`
+- 排序結果真的可能改變
+- 不是只增加欄位但 `final_score` 未使用
 
 ---
 
@@ -231,39 +339,135 @@
 
 ---
 
-## Required Final Report
-最後回覆必須固定包含以下 7 項，缺一不可：
+## Required Tests
+測試檔案命名範例：
+- `tests/test_agents/test_<agent_name>.py`
 
-1. **本次判定的主線入口檔案**
-2. **真正修改的核心檔案**
-3. **每個核心檔案的實際接入內容**
-4. **尚未完成項目**
-5. **實際執行命令**
-6. **實際通過的測試**
-7. **可驗證輸出檔案或日誌**
+但只寫測試不算完成。  
+測試必須對應主線行為，不接受只有 helper test。
+
+每次新增功能至少要補：
+1. 一個 fail-fast / contract test
+2. 一個主流程接入 test
+3. 一個輸出驗證 test
+
+### 必備測試類型
+至少覆蓋以下三類中的對應項：
+
+#### A. Contract / Fail-fast
+例如：
+- 缺 artifact 時應 fail-fast
+- feature columns mismatch 應 fail-fast
+- consensus all failed 應 fail-fast
+- group ranking contract 錯誤應 fail-fast
+
+#### B. Mainline Integration
+例如：
+- `train.py` 跑過後產物真的包含新功能結果
+- `predict.py` 跑過後輸出真的包含主流程使用結果
+- `backtest.py` 跑過後 summary 真來自計算
+- `api.py` 回應真反映主線狀態
+
+#### C. Output Reality Check
+例如：
+- 分數不是全 0
+- 報表不是空殼
+- explain 不是固定模板
+- consensus 對不同輸入有不同結果
+- runtime scoring 真的改變排序
 
 ---
 
-## Final Report Format
+## Required verify_mainline.sh Contents
+`scripts/verify_mainline.sh` 至少要包含下列結構，且需依本次任務擴充：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[1/6] lint"
+flake8 agent.py
+flake8 src tests
+
+echo "[2/6] compile"
+python -m py_compile $(git ls-files '*.py')
+
+echo "[3/6] unit tests"
+pytest -q
+
+echo "[4/6] targeted tests"
+# 依本次任務新增，例如：
+# pytest -q tests/test_agents/test_phase1_fail_fast.py
+# pytest -q tests/test_agents/test_phase1_predict_schema.py
+# pytest -q tests/test_agents/test_phase3_provenance_and_consensus.py
+
+echo "[5/6] mainline execution"
+# 依本次任務執行最小主線驗證，例如：
+# python -m src.train --config configs/train.yaml --input data/feature_store/ranking_dataset.csv
+# python -m src.backtest --config configs/train.yaml --input data/feature_store/ranking_dataset.csv
+# python -m src.predict --config configs/predict.yaml --output reports/latest_prediction.json
+
+echo "[6/6] output assertions"
+# 不可只檢查檔案存在，必須檢查內容真的有效
+# 例如：
+# python - <<'PY'
+# import json
+# from pathlib import Path
+# p = Path("reports/latest_prediction.json")
+# assert p.exists(), "missing prediction output"
+# data = json.loads(p.read_text(encoding="utf-8"))
+# assert len(data["ranking_score_table"]) == 80
+# assert any(row["retrieval_score"] != 0 for row in data["ranking_score_table"])
+# assert len(data["top20_numbers"]) == 20
+# PY
+
+echo "verify_mainline.sh PASSED"
+重要限制
+	•	不可把 verify_mainline.sh 做成只檢查檔名存在
+	•	不可只 echo success
+	•	不可只跑 pytest -q 就算驗收完成
+	•	不可省略內容檢查
+
+⸻
+
+Required Final Report
+
+最後回覆必須固定包含以下 7 項，缺一不可：
+	1.	本次判定的主線入口檔案
+	2.	真正修改的核心檔案
+	3.	每個核心檔案的實際接入內容
+	4.	尚未完成項目
+	5.	實際執行命令
+	6.	實際通過的測試
+	7.	可驗證輸出檔案或日誌
+
+⸻
+
+Final Report Format
+
 請嚴格使用以下格式：
 
-### 1. 主線入口
-- `...`
+1. 主線入口
+	•	...
 
-### 2. 核心修改檔案
-- `...`
+2. 核心修改檔案
+	•	...
 
-### 3. 實際接入內容
-- `檔案 -> 接了什麼主流程`
+3. 實際接入內容
+	•	檔案 -> 接了什麼主流程
 
-### 4. 尚未完成
-- `...`
+4. 尚未完成
+	•	...
 
-### 5. 實際執行命令
-```bash
-...
+5. 實際執行命令
 6. 實際通過的測試
+	•	...
+
 7. 可驗證輸出
+	•	...
+
+⸻
+
 回覆禁語
 
 若沒有證據，禁止使用以下說法：
