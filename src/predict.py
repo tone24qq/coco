@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -26,6 +27,34 @@ from src.runtime_history import (
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
 from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date, read_processed
+
+
+def _resolve_config_path(base_dir: Path, raw: str) -> str:
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str((base_dir / p).resolve())
+
+
+def normalize_predict_config_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    resolved = copy.deepcopy(config)
+    history = resolved.setdefault("history", {})
+    history["processed_path"] = _resolve_config_path(base_dir, str(history.get("processed_path", "data/processed/history_processed.csv")))
+    history["runtime_artifact_dir"] = _resolve_config_path(base_dir, str(history.get("runtime_artifact_dir", "data/runtime_history")))
+
+    models = resolved.setdefault("models", {})
+    models["dir"] = _resolve_config_path(base_dir, str(models.get("dir", "models")))
+
+    snapshot = resolved.setdefault("snapshot", {})
+    snapshot["path"] = _resolve_config_path(base_dir, str(snapshot.get("path", "reports/history_snapshot.json")))
+
+    provenance = resolved.setdefault("provenance", {})
+    provenance["audit_path"] = _resolve_config_path(base_dir, str(provenance.get("audit_path", "reports/local_data_audit.json")))
+    provenance["consensus_report_path"] = _resolve_config_path(
+        base_dir,
+        str(provenance.get("consensus_report_path", "reports/source_consensus_report.json")),
+    )
+    return resolved
 
 
 def _next_issue(issue: str) -> str:
@@ -357,7 +386,10 @@ def main() -> None:
     parser.add_argument("--recent-json", default="")
     args = parser.parse_args()
 
-    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    config_path = Path(args.config).resolve()
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    base_dir = config_path.parent.parent if config_path.parent.name == "configs" else config_path.parent
+    config = normalize_predict_config_paths(config, base_dir=base_dir)
     artifacts = load_artifacts(Path(config.get("models", {}).get("dir", "models")))
 
     recent_draws = None
