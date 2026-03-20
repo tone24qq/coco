@@ -20,6 +20,7 @@ pytest -q tests/test_agents/test_phase4_ranking_mainline_contracts.py
 pytest -q tests/test_agents/test_phase5_failover_size_and_logs.py
 pytest -q tests/test_agents/test_phase5_dynamic_weighting.py
 pytest -q tests/test_agents/test_phase6_runtime_history.py
+pytest -q tests/test_agents/test_phase6_runtime_history.py -k "processed_history_exists or processed_shards_exist or no_compact_or_processed or deploy_and_local_consistent"
 
 echo "[5/7] prepare minimal ranking dataset"
 python - <<'PY'

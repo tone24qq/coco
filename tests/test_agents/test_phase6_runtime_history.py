@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.predict import _clear_runtime_history_cache, run_prediction
+from src.predict import _clear_runtime_history_cache, normalize_predict_config_paths, run_prediction
 from src.utils import DataContractError
 
 
@@ -127,3 +127,54 @@ def test_fail_fast_when_no_compact_or_processed(ranking_dataset_path: Path, synt
     _clear_runtime_history_cache()
     with pytest.raises(DataContractError, match="processed history missing; build processed history before deploy"):
         run_prediction(load_artifacts(models_dir), cfg, recent)
+
+
+def test_runtime_loads_when_processed_history_exists(ranking_dataset_path: Path, synthetic_records, tmp_path: Path) -> None:
+    from src.artifacts import load_artifacts
+
+    models_dir = _train_artifacts(ranking_dataset_path, tmp_path)
+    processed = tmp_path / "history_processed.csv"
+    _write_processed(processed, synthetic_records[:-2])
+    cfg = _config(tmp_path, processed)
+    recent = [r.to_dict() for r in synthetic_records[-30:]]
+
+    _clear_runtime_history_cache()
+    out = run_prediction(load_artifacts(models_dir), cfg, recent)
+    assert out["metadata"]["runtime_history_rows"] >= len(synthetic_records[:-2])
+
+
+def test_runtime_loads_when_only_processed_shards_exist(ranking_dataset_path: Path, synthetic_records, tmp_path: Path) -> None:
+    from src.artifacts import load_artifacts
+
+    models_dir = _train_artifacts(ranking_dataset_path, tmp_path)
+    processed_base = tmp_path / "history_processed.csv"
+    _write_processed(tmp_path / "history_processed.part0001.csv", synthetic_records[:120])
+    _write_processed(tmp_path / "history_processed.part0002.csv", synthetic_records[120:-2])
+    cfg = _config(tmp_path, processed_base)
+    recent = [r.to_dict() for r in synthetic_records[-30:]]
+
+    _clear_runtime_history_cache()
+    out = run_prediction(load_artifacts(models_dir), cfg, recent)
+    assert out["metadata"]["runtime_history_rows"] >= len(synthetic_records[:-2])
+
+
+def test_normalize_predict_config_paths_keeps_deploy_and_local_consistent(tmp_path: Path, monkeypatch) -> None:
+    deploy_root = tmp_path / "deploy_pkg"
+    (deploy_root / "data/processed").mkdir(parents=True)
+    (deploy_root / "data/runtime_history").mkdir(parents=True)
+    (deploy_root / "reports").mkdir(parents=True)
+    (deploy_root / "models").mkdir(parents=True)
+
+    cfg = {
+        "history": {"processed_path": "data/processed/history_processed.csv", "runtime_artifact_dir": "data/runtime_history"},
+        "models": {"dir": "models"},
+        "snapshot": {"path": "reports/history_snapshot.json"},
+        "provenance": {"audit_path": "reports/local_data_audit.json", "consensus_report_path": "reports/source_consensus_report.json"},
+    }
+
+    monkeypatch.chdir(tmp_path)
+    normalized = normalize_predict_config_paths(cfg, base_dir=deploy_root)
+
+    assert normalized["history"]["processed_path"] == str((deploy_root / "data/processed/history_processed.csv").resolve())
+    assert normalized["history"]["runtime_artifact_dir"] == str((deploy_root / "data/runtime_history").resolve())
+    assert normalized["models"]["dir"] == str((deploy_root / "models").resolve())
