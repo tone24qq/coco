@@ -12,12 +12,14 @@ echo "[3/7] unit tests"
 pytest -q
 
 echo "[4/7] targeted tests"
+pytest -q tests/test_agents/test_phase1_fetch.py
 pytest -q tests/test_agents/test_phase3_provenance_and_consensus.py
 pytest -q tests/test_agents/test_phase3_snapshot_predict_backtest.py
 pytest -q tests/test_agents/test_phase1_backtest_runtime_parity.py
 pytest -q tests/test_agents/test_phase4_ranking_mainline_contracts.py
 pytest -q tests/test_agents/test_phase5_failover_size_and_logs.py
 pytest -q tests/test_agents/test_phase5_dynamic_weighting.py
+pytest -q tests/test_agents/test_phase6_runtime_history.py
 
 echo "[5/7] prepare minimal ranking dataset"
 python - <<'PY'

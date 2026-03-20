@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from src.analysis.snapshots import read_history_snapshot
 from src.artifacts import ModelArtifacts, load_artifacts
 from src.predict import run_prediction
+from src.runtime_history import runtime_history_ready
 from src.utils import DataContractError
 
 
@@ -25,38 +26,16 @@ class PredictPayload(BaseModel):
     recent_draws: list[RecentDraw] | None = None
 
 
-class RankingScoreRow(BaseModel):
-    candidate_number: int
-    rank_final: int
-    final_score: float
-    ranker_score: float
-    logistic_score: float
-    retrieval_score: float
-    history_prior_score: float
-    analysis_rerank_score: float
-    local_peak_score: float
-
-
-class RetrievalTopMatch(BaseModel):
-    end_issue: str
-    similarity: float
-    exact_draw_match_count: int
-    same_day_progress: bool
-    next_draw_numbers: list[int]
-
-
 class PredictResponse(BaseModel):
-    issue: str
-    source: str
-    dynamic_context_n: int
+    latest_fetched_issue: str
+    target_issue: str
     top20_numbers: list[int]
-    top10_numbers: list[int]
-    top3_numbers: list[int]
-    top3_before_group_dedup: list[int]
-    top3_after_group_dedup: list[int]
-    retrieval_top_matches: list[RetrievalTopMatch]
-    ranking_score_table: list[RankingScoreRow]
-    metadata: dict[str, Any]
+    big_count: int
+    small_count: int
+    odd_count: int
+    even_count: int
+    size_summary: str
+    odd_even_summary: str
 
 
 class HealthResponse(BaseModel):
@@ -68,6 +47,8 @@ class HealthResponse(BaseModel):
     source: str
     coverage_year_start: int | None = None
     coverage_year_end: int | None = None
+    processed_history_exists: bool
+    compact_history_ready: bool
 
 
 app = FastAPI(title="BingoBingo Ranking API", version="1.2.0")
@@ -88,6 +69,9 @@ def get_runtime() -> tuple[ModelArtifacts | None, dict[str, Any], str | None]:
 def health() -> HealthResponse:
     artifacts, config, err = get_runtime()
     snap = read_history_snapshot(Path(config.get("snapshot", {}).get("path", "reports/history_snapshot.json")))
+    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
+    has_processed = processed_path.exists() or bool(sorted(processed_path.parent.glob(f"{processed_path.stem}.part*{processed_path.suffix}")))
+    runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
     return HealthResponse(
         status="ok" if artifacts else f"degraded: {err}",
         model_loaded=artifacts is not None,
@@ -97,7 +81,29 @@ def health() -> HealthResponse:
         source=str(config.get("auto_fetch", {}).get("sources", [config.get("auto_fetch", {}).get("source", "winwin")])[0]),
         coverage_year_start=snap.get("coverage_year_start"),
         coverage_year_end=snap.get("coverage_year_end"),
+        processed_history_exists=has_processed,
+        compact_history_ready=runtime_history_ready(runtime_dir),
     )
+
+
+def _minimal_response(result: dict[str, Any]) -> dict[str, Any]:
+    top20 = [int(x) for x in result["top20_numbers"]]
+    big = sum(1 for n in top20 if n >= 41)
+    small = sum(1 for n in top20 if n <= 40)
+    odd = sum(1 for n in top20 if n % 2 == 1)
+    even = 20 - odd
+    latest_issue = str((result.get("metadata") or {}).get("runtime_history_issue_range", [None, None])[-1] or "unknown")
+    return {
+        "latest_fetched_issue": latest_issue,
+        "target_issue": str(result["issue"]),
+        "top20_numbers": top20,
+        "big_count": big,
+        "small_count": small,
+        "odd_count": odd,
+        "even_count": even,
+        "size_summary": f"大{big} / 小{small}",
+        "odd_even_summary": f"單{odd} / 雙{even}",
+    }
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -108,6 +114,6 @@ def predict(payload: PredictPayload) -> PredictResponse:
     try:
         recent = [r.model_dump() for r in payload.recent_draws] if payload.recent_draws else None
         result = run_prediction(artifacts, config, recent)
-        return PredictResponse(**result)
+        return PredictResponse(**_minimal_response(result))
     except DataContractError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
