@@ -91,6 +91,20 @@ def test_runtime_does_not_use_pandas_concat_or_raw_rebuild(monkeypatch, ranking_
     assert len(out["top20_numbers"]) == 20
 
 
+def test_runtime_works_with_single_processed_csv(ranking_dataset_path: Path, synthetic_records, tmp_path: Path) -> None:
+    from src.artifacts import load_artifacts
+
+    models_dir = _train_artifacts(ranking_dataset_path, tmp_path)
+    processed = tmp_path / "history_processed.csv"
+    _write_processed(processed, synthetic_records[:-2])
+    cfg = _config(tmp_path, processed)
+    recent = [r.to_dict() for r in synthetic_records[-30:]]
+
+    _clear_runtime_history_cache()
+    out = run_prediction(load_artifacts(models_dir), cfg, recent)
+    assert out["metadata"]["runtime_history_rows"] >= len(synthetic_records[:-2])
+
+
 def test_runtime_history_cache_reused(monkeypatch, ranking_dataset_path: Path, synthetic_records, tmp_path: Path) -> None:
     from src.artifacts import load_artifacts
 
@@ -127,3 +141,32 @@ def test_fail_fast_when_no_compact_or_processed(ranking_dataset_path: Path, synt
     _clear_runtime_history_cache()
     with pytest.raises(DataContractError, match="processed history missing; build processed history before deploy"):
         run_prediction(load_artifacts(models_dir), cfg, recent)
+
+
+def test_deploy_runtime_artifact_works_without_processed_source(
+    ranking_dataset_path: Path, synthetic_records, tmp_path: Path
+) -> None:
+    from shutil import copy2
+
+    from src.artifacts import load_artifacts
+    from src.runtime_history import build_runtime_history_artifact
+
+    models_dir = _train_artifacts(ranking_dataset_path, tmp_path)
+    local_processed = tmp_path / "local_build" / "history_processed.csv"
+    local_processed.parent.mkdir(parents=True, exist_ok=True)
+    _write_processed(local_processed, synthetic_records[:-2])
+    local_runtime = tmp_path / "local_build" / "runtime_history"
+    build_runtime_history_artifact(local_processed, local_runtime)
+
+    deploy_runtime = tmp_path / "deploy_runtime"
+    deploy_runtime.mkdir(parents=True, exist_ok=True)
+    for name in ["meta.json", "numbers.npy", "issue.npy", "draw_date_ordinal.npy", "day_issue_index.npy"]:
+        copy2(local_runtime / name, deploy_runtime / name)
+
+    cfg = _config(tmp_path, tmp_path / "deploy" / "data" / "processed" / "history_processed.csv")
+    cfg["history"]["runtime_artifact_dir"] = str(deploy_runtime)
+    recent = [r.to_dict() for r in synthetic_records[-30:]]
+
+    _clear_runtime_history_cache()
+    out = run_prediction(load_artifacts(models_dir), cfg, recent)
+    assert len(out["top20_numbers"]) == 20

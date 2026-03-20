@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import date
@@ -71,10 +72,26 @@ def build_runtime_history_artifact(processed_csv_or_shards: Path, output_dir: Pa
         "row_count": row_count,
         "issue_dtype": f"<U{issue_width}",
         "source_files": [str(p) for p in source_files],
+        "source_manifest": [_build_source_signature(p) for p in source_files],
         "schema_version": 1,
     }
     (output_dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     return output_dir
+
+
+def _build_source_signature(path: Path) -> dict[str, str | int]:
+    sha = hashlib.sha256()
+    with path.open("rb") as fh:
+        while True:
+            chunk = fh.read(1024 * 1024)
+            if not chunk:
+                break
+            sha.update(chunk)
+    return {
+        "name": path.name,
+        "size": path.stat().st_size,
+        "sha256": sha.hexdigest(),
+    }
 
 
 @dataclass(frozen=True)
@@ -143,9 +160,32 @@ def artifact_matches_source(output_dir: Path, source_files: list[Path]) -> bool:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return False
+    manifest = meta.get("source_manifest")
+    if isinstance(manifest, list) and manifest:
+        expected_manifest = [_build_source_signature(p) for p in source_files]
+        return manifest == expected_manifest
     got = [str(Path(p)) for p in meta.get("source_files", [])]
     expected = [str(p) for p in source_files]
     return got == expected
+
+
+def artifact_can_serve_missing_source(output_dir: Path, expected_source_path: Path) -> bool:
+    meta_path = output_dir / "meta.json"
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+
+    names: list[str] = []
+    manifest = meta.get("source_manifest")
+    if isinstance(manifest, list):
+        names.extend(str(item.get("name")) for item in manifest if isinstance(item, dict) and item.get("name"))
+    names.extend(Path(str(p)).name for p in meta.get("source_files", []))
+    expected_name = expected_source_path.name
+    part_prefix = f"{expected_source_path.stem}.part"
+    return any(name == expected_name or (name.startswith(part_prefix) and name.endswith(expected_source_path.suffix)) for name in names)
 
 
 def main() -> None:
