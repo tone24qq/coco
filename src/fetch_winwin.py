@@ -11,6 +11,7 @@ import httpx
 from src.utils import DataContractError, DrawRecord, ensure_numbers, parse_date, write_processed
 
 WINWIN_URL = "https://winwin.tw/Bingo"
+AUZO_URL = "https://lotto.auzo.tw/RK.php"
 ISSUE_PATTERN = re.compile(r'"issue"\s*:\s*"?(\d+)"?')
 DATE_PATTERN = re.compile(r'"draw_date"\s*:\s*"([0-9\-/]+)"')
 NUMBERS_PATTERN = re.compile(r'"numbers"\s*:\s*\[(.*?)\]')
@@ -22,6 +23,7 @@ class FetchResult:
     source_url: str
     fetched_at: str
     attempts: int
+    failover_reason: str | None = None
 
 
 def _write_debug_snapshot(html: str, source: str, reason: str) -> None:
@@ -129,8 +131,9 @@ def parse_winwin_html(html: str) -> list[DrawRecord]:
 
 
 def fetch_latest(sources: list[str] | None = None, timeout_s: float = 10.0) -> FetchResult:
-    srcs = sources or [WINWIN_URL]
+    srcs = sources or [WINWIN_URL, AUZO_URL]
     last_err = ""
+    failover_reason: str | None = None
     for idx, source in enumerate(srcs, 1):
         try:
             response = httpx.get(source, timeout=timeout_s)
@@ -138,15 +141,21 @@ def fetch_latest(sources: list[str] | None = None, timeout_s: float = 10.0) -> F
             rows = parse_winwin_html(response.text)
             if not rows:
                 raise DataContractError("latest-day rows empty")
-            return FetchResult(rows, source, datetime.now(timezone.utc).isoformat(timespec="seconds"), idx)
+            if idx > 1 and failover_reason is None:
+                failover_reason = "primary_source_failed_then_switched"
+            return FetchResult(rows, source, datetime.now(timezone.utc).isoformat(timespec="seconds"), idx, failover_reason=failover_reason)
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             last_err = f"transport error @ {source}: {exc}"
             _write_debug_snapshot("", source, last_err)
+            if idx == 1 and len(srcs) > 1:
+                failover_reason = last_err
             continue
         except Exception as exc:  # noqa: BLE001
             last_err = f"parse error @ {source}: {exc}"
             if "response" in locals():
                 _write_debug_snapshot(response.text, source, last_err)
+            if idx == 1 and len(srcs) > 1:
+                failover_reason = last_err
             continue
     raise DataContractError(f"fetch failed for all sources: {last_err}")
 

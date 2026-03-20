@@ -5,7 +5,7 @@ import csv
 import json
 from pathlib import Path
 
-from src.utils import DataContractError, DrawRecord, ensure_numbers, parse_date, write_processed
+from src.utils import DataContractError, DrawRecord, enforce_file_size, log_progress, ensure_numbers, parse_date, write_processed
 
 
 def _parse_numbers_row(row: dict[str, str]) -> tuple[int, ...]:
@@ -77,8 +77,15 @@ def main() -> None:
     parser.add_argument("--output", default="data/processed/history_processed.csv")
     args = parser.parse_args()
 
+    log_progress(1, 3, "讀取歷史 CSV", f"檔案數={len(args.inputs)}")
     rows = merge_histories([Path(p) for p in args.inputs])
+    log_progress(2, 3, "合併與排序歷史資料", f"總筆數={len(rows)}")
     write_processed(Path(args.output), rows)
+    log_progress(1, 3, "讀取歷史 CSV", f"檔案數={len(args.inputs)}")
+    rows = merge_histories([Path(p) for p in args.inputs])
+    log_progress(2, 3, "合併與排序歷史資料", f"總筆數={len(rows)}")
+    write_processed(Path(args.output), rows)
+    log_progress(3, 3, "輸出 processed 歷史完成", f"輸出={args.output}")
 
 
 if __name__ == "__main__":

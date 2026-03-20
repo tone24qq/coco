@@ -44,3 +44,14 @@ runtime_scoring:
     history_prior: 0.10
     analysis: 0.03
     local_peak: 0.02
+  dynamic:
+    enabled: true
+    mode: heuristic_retrieval_gate_v1
+    min_weights:
+      ranker: 0.35
+      logistic: 0.08
+      retrieval: 0.10
+    fixed_weights:
+      history_prior: 0.10
+      analysis: 0.03
+      local_peak: 0.02

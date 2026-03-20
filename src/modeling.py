@@ -13,9 +13,9 @@ from lightgbm import LGBMRanker
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import ndcg_score
 
-from src.runtime_scoring import RuntimeWeights, score_candidates
+from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
-from src.utils import DataContractError
+from src.utils import DataContractError, read_csv_maybe_sharded
 
 REQUIRED_COLUMNS = {"issue", "candidate_number", "label", "group_id"}
 NON_FEATURE_COLUMNS = {
@@ -40,9 +40,7 @@ class FoldResult:
 
 
 def load_ranking_dataset(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        raise DataContractError(f"ranking dataset not found: {path}")
-    df = pd.read_csv(path)
+    df = read_csv_maybe_sharded(path)
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise DataContractError(f"ranking dataset missing required columns: {sorted(missing)}")
@@ -133,13 +131,14 @@ def score_with_models(
     ranker: LGBMRanker,
     logistic: LogisticRegression,
     weights: RuntimeWeights,
+    dynamic_cfg: DynamicWeightConfig | None = None,
 ) -> pd.DataFrame:
     x = df[feature_cols].fillna(0.0)
     ranker_score = ranker.predict(x)
     lr_x = x.copy()
     lr_x["ranker_score"] = ranker_score
     logistic_score = logistic.predict_proba(lr_x)[:, 1]
-    table = score_candidates(df, ranker_score, logistic_score, weights)
+    table = score_candidates(df, ranker_score, logistic_score, weights, dynamic_cfg=dynamic_cfg)
     return table
 
 
@@ -147,6 +146,7 @@ def run_cv(
     df: pd.DataFrame,
     feature_cols: list[str],
     weights: RuntimeWeights,
+    dynamic_cfg: DynamicWeightConfig | None = None,
     n_splits: int = 3,
     min_train_issues: int = 30,
 ) -> list[FoldResult]:
@@ -159,8 +159,8 @@ def run_cv(
         out.append(
             FoldResult(
                 fold_id=i,
-                train_scored=score_with_models(train_df, feature_cols, ranker, logistic, weights),
-                val_scored=score_with_models(val_df, feature_cols, ranker, logistic, weights),
+                train_scored=score_with_models(train_df, feature_cols, ranker, logistic, weights, dynamic_cfg=dynamic_cfg),
+                val_scored=score_with_models(val_df, feature_cols, ranker, logistic, weights, dynamic_cfg=dynamic_cfg),
                 train_issues=train_issues,
                 val_issues=val_issues,
             )
@@ -196,6 +196,7 @@ def compute_metrics(scored: pd.DataFrame, score_col: str = "final_score") -> dic
                 "top5_hit_rate": hits(top5) / 5.0,
                 "top3_hit_rate": hits(top3) / 3.0,
                 "top3_at_least_one_hit_rate": 1.0 if hits(top3) >= 1 else 0.0,
+                "top3_at_least_one_hit": 1.0 if hits(top3) >= 1 else 0.0,
                 "ndcg@10": float(ndcg_score(y_true, y_score, k=10)),
                 "exact_hit@3": 1.0 if hits(top3) == 3 else 0.0,
                 "exact_hit@10": 1.0 if hits(top10) == 10 else 0.0,
