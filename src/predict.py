@@ -17,6 +17,7 @@ from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest
 from src.fetchers.source_consensus import run_source_consensus
 from src.io.canonical_dataset import read_audit_summary
 from src.runtime_history import (
+    artifact_can_serve_missing_source,
     artifact_matches_source,
     build_runtime_history_artifact,
     load_runtime_history_store,
@@ -129,8 +130,14 @@ def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
 def _cached_runtime_history_store(processed_path: str, runtime_dir: str):
     source = Path(processed_path)
     artifact_dir = Path(runtime_dir)
-    source_files = resolve_processed_source_files(source)
-    if not runtime_history_ready(artifact_dir) or not artifact_matches_source(artifact_dir, source_files):
+    artifact_ready = runtime_history_ready(artifact_dir)
+    try:
+        source_files = resolve_processed_source_files(source)
+    except DataContractError:
+        if artifact_ready and artifact_can_serve_missing_source(artifact_dir, source):
+            return load_runtime_history_store(artifact_dir)
+        raise
+    if not artifact_ready or not artifact_matches_source(artifact_dir, source_files):
         build_runtime_history_artifact(source, artifact_dir)
     return load_runtime_history_store(artifact_dir)
 
