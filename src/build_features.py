@@ -198,14 +198,15 @@ def build_feature_rows(
 
     rows: list[dict[str, float | int | str]] = []
     for idx in range(min_history, len(records)):
-        target = records[idx]
+        target_next = records[idx]
         history = records[:idx]
+        context_issue = history[-1]
         try:
             built, _ = build_candidate_rows(
                 history=history,
-                issue=target.issue,
-                draw_date=target.draw_date.isoformat(),
-                label_numbers=set(target.numbers),
+                issue=context_issue.issue,
+                draw_date=context_issue.draw_date.isoformat(),
+                label_numbers=set(target_next.numbers),
                 min_dynamic_n=min_dynamic_n,
                 max_dynamic_n=max_dynamic_n,
                 top_k=top_k,
