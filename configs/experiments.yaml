@@ -1,0 +1,13 @@
+experiments:
+  - name: baseline_frequency
+  - name: ranker_main_qsm
+  - name: ablation_no_retrieval
+  - name: ablation_no_logistic
+reports:
+  train_registry: reports/train_experiment_registry.csv
+  train_fold: reports/train_experiment_per_fold_metrics.csv
+  backtest_fold: reports/backtest_experiment_per_fold_metrics.csv
+  backtest_regime: reports/backtest_experiment_per_regime_metrics.csv
+  backtest_ablation: reports/backtest_runtime_ablation_summary.csv
+  backtest_summary: reports/backtest_experiment_summary.json
+  backtest_alignment_audit: reports/backtest_alignment_audit.json
