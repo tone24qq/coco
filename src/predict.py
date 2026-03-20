@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 import yaml
@@ -14,7 +15,14 @@ from src.artifacts import ModelArtifacts, load_artifacts
 from src.build_features import build_candidate_rows, resolve_dynamic_context
 from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest
 from src.fetchers.source_consensus import run_source_consensus
-from src.io.canonical_dataset import build_canonical_audit, read_audit_summary
+from src.io.canonical_dataset import read_audit_summary
+from src.runtime_history import (
+    artifact_matches_source,
+    build_runtime_history_artifact,
+    load_runtime_history_store,
+    resolve_processed_source_files,
+    runtime_history_ready,
+)
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
 from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date, read_processed
@@ -73,6 +81,8 @@ def _load_recent_draws(
                 Path(config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json")),
                 mismatch_policy=mismatch_policy,
             )
+            report.setdefault("failover_reason", None)
+            report.setdefault("successful_sources", [])
             latest_day = max(r.draw_date for r in rows)
             today_rows = sorted([r for r in rows if r.draw_date == latest_day], key=lambda r: r.issue)
             if not today_rows:
@@ -100,31 +110,64 @@ def _load_recent_draws(
     return today_rows, "processed_history", {"consensus_status": "processed_history", "fetch_attempts": 0, "actual_source_used": str(processed)}
 
 
+def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
+    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
+    runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
+    try:
+        store = _cached_runtime_history_store(str(processed_path), str(runtime_dir))
+    except DataContractError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise DataContractError("processed history missing; build processed history before deploy") from exc
+
+    if len(store) == 0:
+        raise DataContractError("processed history missing; build processed history before deploy")
+    return store
+
+
+@lru_cache(maxsize=1)
+def _cached_runtime_history_store(processed_path: str, runtime_dir: str):
+    source = Path(processed_path)
+    artifact_dir = Path(runtime_dir)
+    source_files = resolve_processed_source_files(source)
+    if not runtime_history_ready(artifact_dir) or not artifact_matches_source(artifact_dir, source_files):
+        build_runtime_history_artifact(source, artifact_dir)
+    return load_runtime_history_store(artifact_dir)
+
+
+def _clear_runtime_history_cache() -> None:
+    _cached_runtime_history_store.cache_clear()
+
+
 def _merge_history_with_context(
-    processed_history: list[DrawRecord], recent_context_rows: list[DrawRecord]
-) -> list[DrawRecord]:
+    processed_history: Sequence[DrawRecord], recent_context_rows: list[DrawRecord]
+) -> Sequence[DrawRecord]:
     if not processed_history:
         raise DataContractError("processed history is empty")
     if not recent_context_rows:
         raise DataContractError("recent context is empty")
 
-    processed_by_issue = {r.issue: r for r in processed_history}
-    for row in recent_context_rows:
-        if row.issue in processed_by_issue:
-            base = processed_by_issue[row.issue]
-            if base.draw_date != row.draw_date or base.numbers != row.numbers or base.day_issue_index != row.day_issue_index:
-                raise DataContractError(f"history/recent merge mismatch on issue={row.issue}")
+    recent_by_issue = {r.issue: r for r in recent_context_rows}
+    matched_recent: set[str] = set()
+    latest_processed_day = processed_history[-1].draw_date
 
-    latest_processed_day = max(r.draw_date for r in processed_history)
+    for base in processed_history:
+        row = recent_by_issue.get(base.issue)
+        if row is None:
+            continue
+        if base.draw_date != row.draw_date or base.numbers != row.numbers or base.day_issue_index != row.day_issue_index:
+            raise DataContractError(f"history/recent merge mismatch on issue={row.issue}")
+        matched_recent.add(base.issue)
+
     latest_recent_day = max(r.draw_date for r in recent_context_rows)
     if latest_recent_day < latest_processed_day:
         raise DataContractError("recent context date is older than processed history latest date")
 
-    merged_by_issue = {r.issue: r for r in processed_history}
-    for row in recent_context_rows:
-        merged_by_issue[row.issue] = row
+    missing_rows = [r for r in recent_context_rows if r.issue not in matched_recent]
+    if not missing_rows:
+        return processed_history
 
-    merged = sorted(merged_by_issue.values(), key=lambda r: r.issue)
+    merged = list(processed_history) + sorted(missing_rows, key=lambda r: r.issue)
     if len({r.issue for r in merged}) != len(merged):
         raise DataContractError("merged history has duplicated issues")
     return merged
@@ -150,8 +193,7 @@ def run_prediction(
 ) -> dict[str, Any]:
     recent_context, source, fetch_meta = _load_recent_draws(config, recent_draws)
     log_progress(1, 5, "載入最近開獎上下文", f"來源={source}")
-    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
-    processed_history = read_processed(processed_path)
+    processed_history = _load_runtime_history(config)
     history = _merge_history_with_context(processed_history, recent_context)
     log_progress(2, 5, "合併 processed + recent 歷史", f"rows={len(history)}")
 
@@ -232,10 +274,6 @@ def run_prediction(
     prov_cfg = config.get("provenance", {})
     audit_path = Path(prov_cfg.get("audit_path", "reports/local_data_audit.json"))
     audit = read_audit_summary(audit_path)
-    if not audit:
-        raw_dirs = [Path(x) for x in prov_cfg.get("raw_dirs", ["data/raw", "raw"])]
-        manifest_path = Path(prov_cfg.get("manifest_path", "reports/raw_manifest.json"))
-        audit, _ = build_canonical_audit(raw_dirs=raw_dirs, audit_output_path=audit_path, manifest_output_path=manifest_path)
     snapshot_path = Path(config.get("snapshot", {}).get("path", "reports/history_snapshot.json"))
     snapshot = read_history_snapshot(snapshot_path)
     if not snapshot and history:
