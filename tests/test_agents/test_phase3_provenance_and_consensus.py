@@ -68,8 +68,13 @@ def test_source_consensus_ok_and_mismatch(monkeypatch, synthetic_records) -> Non
     _, report_ok = run_source_consensus(["s1", "s2"], report_path=Path("reports/test_consensus_ok.json"))
     assert report_ok["consensus_status"] in {"ok", "partial"}
 
-    _, report_bad = run_source_consensus(["s1", "s3"], report_path=Path("reports/test_consensus_bad.json"))
-    assert report_bad["consensus_status"] in {"mismatch", "partial"}
+    with pytest.raises(DataContractError):
+        run_source_consensus(["s1", "s3"], report_path=Path("reports/test_consensus_bad.json"), mismatch_policy="fail_fast")
+    _, report_bad = run_source_consensus(
+        ["s1", "s3"], report_path=Path("reports/test_consensus_bad_majority.json"), mismatch_policy="majority_merge"
+    )
+    assert report_bad["consensus_status"] == "mismatch"
+    assert report_bad["merge_strategy"] == "majority_merge"
 
 
 def test_all_sources_fail_fast(monkeypatch) -> None:
