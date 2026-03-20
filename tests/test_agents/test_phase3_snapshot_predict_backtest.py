@@ -13,6 +13,14 @@ from src.predict import run_prediction
 from src.utils import DataContractError
 
 
+def _write_raw_history_csv(path: Path, rows) -> None:
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write("issue,draw_date,numbers\n")
+        for r in rows:
+            payload = json.dumps(list(r.numbers), ensure_ascii=False)
+            fh.write(f'{r.issue},{r.draw_date.isoformat()},"{payload}"\n')
+
+
 def test_snapshot_output(synthetic_records, tmp_path: Path) -> None:
     out = tmp_path / "history_snapshot.json"
     snap = build_history_snapshot(synthetic_records, output_path=out)
@@ -142,3 +150,68 @@ def test_backtest_extra_reports_exist(ranking_dataset_path, tmp_path: Path, monk
     assert summary["train_vs_backtest_gap_top3"] != "unavailable"
     bootstrap = json.loads(Path("reports/block_bootstrap_summary.json").read_text(encoding="utf-8"))
     assert bootstrap["metric"] == "mainline_minus_baseline_top3"
+
+
+def test_predict_fallback_to_raw_when_processed_missing(ranking_dataset_path, synthetic_records, tmp_path: Path) -> None:
+    import joblib
+
+    from src.artifacts import load_artifacts
+    from src.modeling import fit_models, load_ranking_dataset, resolve_feature_columns
+
+    df = load_ranking_dataset(ranking_dataset_path)
+    cols = resolve_feature_columns(df)
+    ranker, logistic = fit_models(df, cols)
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    ranker.booster_.save_model(str(models_dir / "lightgbm_ranker.txt"))
+    joblib.dump(logistic, models_dir / "logistic_regression.pkl")
+    (models_dir / "feature_columns.json").write_text(json.dumps(cols), encoding="utf-8")
+    (models_dir / "metadata.json").write_text(json.dumps({"model_family": "test", "created_at": "2026"}), encoding="utf-8")
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _write_raw_history_csv(raw_dir / "history.csv", synthetic_records[:-2])
+
+    cfg = yaml.safe_load(Path("configs/predict.yaml").read_text(encoding="utf-8"))
+    cfg["auto_fetch"]["enabled"] = False
+    cfg["history"]["processed_path"] = str(tmp_path / "missing_processed.csv")
+    cfg["provenance"] = {
+        "raw_dirs": [str(raw_dir)],
+        "audit_path": str(tmp_path / "local_data_audit.json"),
+        "manifest_path": str(tmp_path / "raw_manifest.json"),
+        "consensus_report_path": str(tmp_path / "source_consensus_report.json"),
+    }
+    cfg["snapshot"] = {"path": str(tmp_path / "history_snapshot.json")}
+
+    out = run_prediction(load_artifacts(models_dir), cfg, [r.to_dict() for r in synthetic_records[-30:]])
+    assert out["metadata"]["runtime_history_rows"] >= len(synthetic_records[:-2])
+
+
+def test_predict_fail_fast_when_processed_and_raw_missing(ranking_dataset_path, synthetic_records, tmp_path: Path) -> None:
+    import joblib
+
+    from src.artifacts import load_artifacts
+    from src.modeling import fit_models, load_ranking_dataset, resolve_feature_columns
+
+    df = load_ranking_dataset(ranking_dataset_path)
+    cols = resolve_feature_columns(df)
+    ranker, logistic = fit_models(df, cols)
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    ranker.booster_.save_model(str(models_dir / "lightgbm_ranker.txt"))
+    joblib.dump(logistic, models_dir / "logistic_regression.pkl")
+    (models_dir / "feature_columns.json").write_text(json.dumps(cols), encoding="utf-8")
+    (models_dir / "metadata.json").write_text(json.dumps({"model_family": "test", "created_at": "2026"}), encoding="utf-8")
+
+    cfg = yaml.safe_load(Path("configs/predict.yaml").read_text(encoding="utf-8"))
+    cfg["auto_fetch"]["enabled"] = False
+    cfg["history"]["processed_path"] = str(tmp_path / "missing_processed.csv")
+    cfg["provenance"] = {
+        "raw_dirs": [str(tmp_path / "missing_raw")],
+        "audit_path": str(tmp_path / "local_data_audit.json"),
+        "manifest_path": str(tmp_path / "raw_manifest.json"),
+        "consensus_report_path": str(tmp_path / "source_consensus_report.json"),
+    }
+
+    with pytest.raises(DataContractError, match="processed missing.*raw unavailable/empty"):
+        run_prediction(load_artifacts(models_dir), cfg, [r.to_dict() for r in synthetic_records[-30:]])

@@ -5,7 +5,7 @@ import csv
 import json
 from pathlib import Path
 
-from src.utils import DataContractError, DrawRecord, enforce_file_size, log_progress, ensure_numbers, parse_date, write_processed
+from src.utils import DataContractError, DrawRecord, ensure_numbers, log_progress, parse_date, write_processed
 
 
 def _parse_numbers_row(row: dict[str, str]) -> tuple[int, ...]:

@@ -59,7 +59,7 @@ def test_source_consensus_ok_and_mismatch(monkeypatch, synthetic_records) -> Non
     def fake_fetch_latest(sources=None, timeout_s=10.0):
         src = sources[0]
         if src == "s1":
-            return FetchResult(recs_a, src, "t", 1)
+            return FetchResult(recs_a, src, "t", 1, failover_reason="primary_down")
         if src == "s2":
             return FetchResult(recs_b, src, "t", 1)
         return FetchResult(recs_c, src, "t", 1)
@@ -67,6 +67,8 @@ def test_source_consensus_ok_and_mismatch(monkeypatch, synthetic_records) -> Non
     monkeypatch.setattr("src.fetchers.source_consensus.fetch_latest", fake_fetch_latest)
     _, report_ok = run_source_consensus(["s1", "s2"], report_path=Path("reports/test_consensus_ok.json"))
     assert report_ok["consensus_status"] in {"ok", "partial"}
+    assert report_ok["successful_sources"] == ["s1", "s2"]
+    assert report_ok["failover_reason"] == "primary_down"
 
     with pytest.raises(DataContractError):
         run_source_consensus(["s1", "s3"], report_path=Path("reports/test_consensus_bad.json"), mismatch_policy="fail_fast")
