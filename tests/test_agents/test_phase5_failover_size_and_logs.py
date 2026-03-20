@@ -1,4 +1,3 @@
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +11,7 @@ from src.ranking_dataset import load_feature_rows
 from src.utils import DataContractError, enforce_file_size
 
 
-def test_fetch_latest_failover_to_auzo(monkeypatch, synthetic_records) -> None:
+def test_fetch_latest_failover_to_auzo(monkeypatch) -> None:
     class DummyResponse:
         def __init__(self, text: str, ok: bool = True):
             self.text = text
@@ -24,25 +23,60 @@ def test_fetch_latest_failover_to_auzo(monkeypatch, synthetic_records) -> None:
 
     calls = []
 
-    def fake_get(url, timeout=10.0):
-        calls.append(url)
+    def fake_get(url, timeout=10.0, params=None):
+        calls.append((url, params))
         if url == WINWIN_URL:
             raise RuntimeError("primary down")
-        payload = [
-            {"issue": r.issue, "draw_date": r.draw_date.isoformat(), "numbers": list(r.numbers)}
-            for r in synthetic_records[-5:]
-        ]
-        return DummyResponse(json.dumps(payload, ensure_ascii=False))
+        html = "<table><tr><td>20260320011</td><td>2026/03/20 10:10:00</td>" + "".join([f"<td>{i}</td>" for i in range(1, 21)]) + "</tr></table>"
+        return DummyResponse(html)
 
     monkeypatch.setattr("src.fetch_winwin.httpx.get", fake_get)
     out = fetch_latest([WINWIN_URL, AUZO_URL])
     assert out.source_url == AUZO_URL
     assert out.failover_reason is not None
-    assert calls[0] == WINWIN_URL and calls[1] == AUZO_URL
+    assert calls[0][0] == WINWIN_URL and calls[1][0] == AUZO_URL
+
+
+def test_fetch_latest_winwin_dynamic_fallback(monkeypatch) -> None:
+    class DummyResponse:
+        def __init__(self, text: str = "", payload=None):
+            self.text = text
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=10.0, params=None):
+        if url == WINWIN_URL:
+            html = '<html><div id="bingoTable"></div><script>loadBingoData("2026-03-20")</script></html>'
+            return DummyResponse(text=html)
+        assert url.endswith('/Bingo/GetBingoData')
+        assert params is not None and 'date' in params
+        payload = {
+            "Data": [
+                {
+                    "No": "20260320001",
+                    "OpenDate": "2026-03-20 09:05:00",
+                    "BigShowOrder": "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20",
+                    "HighLowTop": "10:10",
+                    "OddEvenTop": "10:10",
+                }
+            ]
+        }
+        return DummyResponse(payload=payload)
+
+    monkeypatch.setattr("src.fetch_winwin.httpx.get", fake_get)
+    out = fetch_latest([WINWIN_URL])
+    assert out.source_url == WINWIN_URL
+    assert out.records[0].issue == "20260320001"
+    assert out.records[0].day_issue_index == 1
 
 
 def test_fetch_latest_all_sources_fail_fast(monkeypatch) -> None:
-    def bad_get(url, timeout=10.0):
+    def bad_get(url, timeout=10.0, params=None):
         raise RuntimeError("network down")
 
     monkeypatch.setattr("src.fetch_winwin.httpx.get", bad_get)
