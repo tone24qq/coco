@@ -26,6 +26,13 @@ def _next_issue(issue: str) -> str:
     return f"{issue}_next"
 
 
+def _issue_range(records: list[DrawRecord]) -> list[str]:
+    if not records:
+        return []
+    issues = [r.issue for r in records]
+    return [issues[0], issues[-1]]
+
+
 def _records_from_payload(recent_draws: list[dict[str, Any]]) -> list[DrawRecord]:
     records = []
     for row in recent_draws:
@@ -59,15 +66,21 @@ def _load_recent_draws(
         if not sources:
             raise DataContractError("auto_fetch enabled but sources is empty")
         if len(sources) >= 2:
-            rows, report = run_source_consensus(sources, Path(config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json")))
+            consensus_cfg = config.get("auto_fetch", {}).get("consensus", {})
+            mismatch_policy = str(consensus_cfg.get("on_mismatch", "fail_fast"))
+            rows, report = run_source_consensus(
+                sources,
+                Path(config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json")),
+                mismatch_policy=mismatch_policy,
+            )
             latest_day = max(r.draw_date for r in rows)
-            today_rows = [r for r in rows if r.draw_date == latest_day]
+            today_rows = sorted([r for r in rows if r.draw_date == latest_day], key=lambda r: r.issue)
             if not today_rows:
                 raise DataContractError("auto_fetch consensus failed: no same-day rows found")
             return today_rows, "winwin_auto_fetch", report
         fetched = fetch_latest(sources=sources)
         latest_day = max(r.draw_date for r in fetched.records)
-        today_rows = [r for r in fetched.records if r.draw_date == latest_day]
+        today_rows = sorted([r for r in fetched.records if r.draw_date == latest_day], key=lambda r: r.issue)
         if not today_rows:
             raise DataContractError("auto_fetch failed: no same-day rows found")
         return today_rows, "winwin_auto_fetch", {
@@ -80,10 +93,40 @@ def _load_recent_draws(
     processed = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
     records = read_processed(processed)
     latest_day = max(r.draw_date for r in records)
-    today_rows = [r for r in records if r.draw_date == latest_day]
+    today_rows = sorted([r for r in records if r.draw_date == latest_day], key=lambda r: r.issue)
     if not today_rows:
         raise DataContractError("processed_history failed: no latest-day rows found")
     return today_rows, "processed_history", {"consensus_status": "processed_history", "fetch_attempts": 0, "actual_source_used": str(processed)}
+
+
+def _merge_history_with_context(
+    processed_history: list[DrawRecord], recent_context_rows: list[DrawRecord]
+) -> list[DrawRecord]:
+    if not processed_history:
+        raise DataContractError("processed history is empty")
+    if not recent_context_rows:
+        raise DataContractError("recent context is empty")
+
+    processed_by_issue = {r.issue: r for r in processed_history}
+    for row in recent_context_rows:
+        if row.issue in processed_by_issue:
+            base = processed_by_issue[row.issue]
+            if base.draw_date != row.draw_date or base.numbers != row.numbers or base.day_issue_index != row.day_issue_index:
+                raise DataContractError(f"history/recent merge mismatch on issue={row.issue}")
+
+    latest_processed_day = max(r.draw_date for r in processed_history)
+    latest_recent_day = max(r.draw_date for r in recent_context_rows)
+    if latest_recent_day < latest_processed_day:
+        raise DataContractError("recent context date is older than processed history latest date")
+
+    merged_by_issue = {r.issue: r for r in processed_history}
+    for row in recent_context_rows:
+        merged_by_issue[row.issue] = row
+
+    merged = sorted(merged_by_issue.values(), key=lambda r: r.issue)
+    if len({r.issue for r in merged}) != len(merged):
+        raise DataContractError("merged history has duplicated issues")
+    return merged
 
 
 def _validate_feature_contract(feature_df: pd.DataFrame, artifacts: ModelArtifacts) -> None:
@@ -104,7 +147,10 @@ def run_prediction(
     config: dict[str, Any],
     recent_draws: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    history, source, fetch_meta = _load_recent_draws(config, recent_draws)
+    recent_context, source, fetch_meta = _load_recent_draws(config, recent_draws)
+    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
+    processed_history = read_processed(processed_path)
+    history = _merge_history_with_context(processed_history, recent_context)
 
     history_cfg = config.get("history", {})
     min_dynamic_n = int(history_cfg.get("min_dynamic_n", 20))
@@ -158,7 +204,7 @@ def run_prediction(
             "analysis_rerank_score",
             "local_peak_score",
         ]
-    ].rename(columns={"candidate_number": "number"})
+    ]
 
     retrieval_top_matches = [
         {
@@ -193,8 +239,11 @@ def run_prediction(
         "auxiliary_score": "logistic_score",
         "data_source": source,
         "recent_draws_count": len(history),
+        "runtime_history_rows": len(history),
+        "runtime_recent_context_rows": len(recent_context),
         "dynamic_context_n": dynamic_n,
         "training_window_used": f"dynamic_n={dynamic_n}",
+        "runtime_history_issue_range": _issue_range(history),
         "history_snapshot_summary": {
             "total_history_rows": snapshot.get("total_history_rows"),
             "issue_range": snapshot.get("issue_range"),
@@ -209,6 +258,7 @@ def run_prediction(
         "source_consensus_report_path": config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json"),
         "fetch_attempts": fetch_meta.get("fetch_attempts", 0),
         "actual_source_used": fetch_meta.get("actual_source_used", source),
+        "target_next_issue_contract": "passed",
         "predict_explain": explain,
     }
 

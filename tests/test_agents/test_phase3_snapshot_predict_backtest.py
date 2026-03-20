@@ -5,10 +5,12 @@ from types import SimpleNamespace
 
 import pandas as pd
 import yaml
+import pytest
 
 from src.analysis.snapshots import build_history_snapshot
 from src.backtest import main as backtest_main
 from src.predict import run_prediction
+from src.utils import DataContractError
 
 
 def test_snapshot_output(synthetic_records, tmp_path: Path) -> None:
@@ -37,6 +39,12 @@ def test_predict_metadata_extended(ranking_dataset_path, synthetic_records, tmp_
 
     cfg = yaml.safe_load(Path("configs/predict.yaml").read_text(encoding="utf-8"))
     cfg["auto_fetch"]["enabled"] = False
+    processed_path = tmp_path / "history_processed.csv"
+    with processed_path.open("w", encoding="utf-8") as fh:
+        fh.write("issue,draw_date,numbers,day_issue_index\n")
+        for r in synthetic_records[:-2]:
+            fh.write(f"{r.issue},{r.draw_date.isoformat()},\"{json.dumps(list(r.numbers), ensure_ascii=False)}\",{r.day_issue_index}\n")
+    cfg["history"]["processed_path"] = str(processed_path)
     cfg["provenance"] = {
         "audit_path": str(tmp_path / "local_data_audit.json"),
         "consensus_report_path": str(tmp_path / "source_consensus_report.json"),
@@ -49,6 +57,43 @@ def test_predict_metadata_extended(ranking_dataset_path, synthetic_records, tmp_
     assert out["metadata"]["auxiliary_score"] == "logistic_score"
     assert "history_snapshot" in out["metadata"]
     assert "source_consensus_status" in out["metadata"]
+    assert out["metadata"]["runtime_history_rows"] > out["metadata"]["runtime_recent_context_rows"]
+
+
+def test_predict_fail_fast_on_history_recent_contract_mismatch(ranking_dataset_path, synthetic_records, tmp_path: Path) -> None:
+    import joblib
+
+    from src.artifacts import load_artifacts
+    from src.modeling import fit_models, load_ranking_dataset, resolve_feature_columns
+
+    df = load_ranking_dataset(ranking_dataset_path)
+    cols = resolve_feature_columns(df)
+    ranker, logistic = fit_models(df, cols)
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    ranker.booster_.save_model(str(models_dir / "lightgbm_ranker.txt"))
+    joblib.dump(logistic, models_dir / "logistic_regression.pkl")
+    (models_dir / "feature_columns.json").write_text(json.dumps(cols), encoding="utf-8")
+    (models_dir / "metadata.json").write_text(json.dumps({"model_family": "test", "created_at": "2026"}), encoding="utf-8")
+
+    cfg = yaml.safe_load(Path("configs/predict.yaml").read_text(encoding="utf-8"))
+    cfg["auto_fetch"]["enabled"] = False
+    processed_path = tmp_path / "history_processed.csv"
+    with processed_path.open("w", encoding="utf-8") as fh:
+        fh.write("issue,draw_date,numbers,day_issue_index\n")
+        for r in synthetic_records[:-1]:
+            fh.write(f"{r.issue},{r.draw_date.isoformat()},\"{json.dumps(list(r.numbers), ensure_ascii=False)}\",{r.day_issue_index}\n")
+    cfg["history"]["processed_path"] = str(processed_path)
+    cfg["provenance"] = {
+        "audit_path": str(tmp_path / "local_data_audit.json"),
+        "consensus_report_path": str(tmp_path / "source_consensus_report.json"),
+    }
+    (tmp_path / "local_data_audit.json").write_text(json.dumps({"detected_files": ["x.csv"], "canonical_rows": 100}), encoding="utf-8")
+
+    bad_recent = [r.to_dict() for r in synthetic_records[-3:]]
+    bad_recent[0]["numbers"] = list(range(1, 21))
+    with pytest.raises(DataContractError):
+        run_prediction(load_artifacts(models_dir), cfg, bad_recent)
 
 
 def test_backtest_extra_reports_exist(ranking_dataset_path, tmp_path: Path, monkeypatch) -> None:
@@ -78,14 +123,22 @@ def test_backtest_extra_reports_exist(ranking_dataset_path, tmp_path: Path, monk
         }
     )
 
+    fake_train = fake_val.copy()
+
     def fake_run_cv(*args, **kwargs):
-        return [SimpleNamespace(fold_id=1, val_scored=fake_val.copy())]
+        return [SimpleNamespace(fold_id=1, val_scored=fake_val.copy(), train_scored=fake_train.copy(), train_issues=["I0"], val_issues=["I1", "I2"])]
 
     monkeypatch.setattr("src.backtest.run_cv", fake_run_cv)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(sys, "argv", ["backtest", "--config", str(cfg_path), "--input", str(ranking_dataset_path)])
+    exp_path = tmp_path / "experiments.yaml"
+    exp_path.write_text(yaml.safe_dump({"experiments": [{"name": "baseline_frequency"}, {"name": "dynamic_n_fusion_main"}]}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["backtest", "--config", str(cfg_path), "--experiments", str(exp_path), "--input", str(ranking_dataset_path)])
     backtest_main()
     assert Path("reports/predictability_test.json").exists()
     assert Path("reports/permutation_distribution.csv").exists()
     assert Path("reports/block_bootstrap_summary.json").exists()
     assert Path("reports/alignment_audit.json").exists()
+    summary = json.loads(Path("reports/backtest_experiment_summary.json").read_text(encoding="utf-8"))
+    assert summary["train_vs_backtest_gap_top3"] != "unavailable"
+    bootstrap = json.loads(Path("reports/block_bootstrap_summary.json").read_text(encoding="utf-8"))
+    assert bootstrap["metric"] == "mainline_minus_baseline_top3"

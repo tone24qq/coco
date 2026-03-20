@@ -196,6 +196,7 @@ def compute_metrics(scored: pd.DataFrame, score_col: str = "final_score") -> dic
                 "top5_hit_rate": hits(top5) / 5.0,
                 "top3_hit_rate": hits(top3) / 3.0,
                 "top3_at_least_one_hit_rate": 1.0 if hits(top3) >= 1 else 0.0,
+                "top3_at_least_one_hit": 1.0 if hits(top3) >= 1 else 0.0,
                 "ndcg@10": float(ndcg_score(y_true, y_score, k=10)),
                 "exact_hit@3": 1.0 if hits(top3) == 3 else 0.0,
                 "exact_hit@10": 1.0 if hits(top10) == 10 else 0.0,
