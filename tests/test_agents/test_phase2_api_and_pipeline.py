@@ -22,7 +22,7 @@ def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_re
             "retrieval_top_matches": [],
             "ranking_score_table": [
                 {
-                    "number": i,
+                    "candidate_number": i,
                     "rank_final": i,
                     "final_score": 1.0 / i,
                     "ranker_score": 1.0 / i,
