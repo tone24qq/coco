@@ -73,6 +73,8 @@ def _load_recent_draws(
                 Path(config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json")),
                 mismatch_policy=mismatch_policy,
             )
+            report.setdefault("failover_reason", None)
+            report.setdefault("successful_sources", [])
             latest_day = max(r.draw_date for r in rows)
             today_rows = sorted([r for r in rows if r.draw_date == latest_day], key=lambda r: r.issue)
             if not today_rows:
@@ -98,6 +100,31 @@ def _load_recent_draws(
     if not today_rows:
         raise DataContractError("processed_history failed: no latest-day rows found")
     return today_rows, "processed_history", {"consensus_status": "processed_history", "fetch_attempts": 0, "actual_source_used": str(processed)}
+
+
+def _load_runtime_history(config: dict[str, Any]) -> list[DrawRecord]:
+    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
+    if processed_path.exists():
+        rows = read_processed(processed_path)
+        if not rows:
+            raise DataContractError(f"runtime history unavailable: processed empty at {processed_path}")
+        return rows
+
+    provenance_cfg = config.get("provenance", {})
+    raw_dirs = [Path(x) for x in provenance_cfg.get("raw_dirs", ["data/raw", "raw"])]
+    audit_path = Path(provenance_cfg.get("audit_path", "reports/local_data_audit.json"))
+    manifest_path = Path(provenance_cfg.get("manifest_path", "reports/raw_manifest.json"))
+    try:
+        _, canonical_rows = build_canonical_audit(raw_dirs=raw_dirs, audit_output_path=audit_path, manifest_output_path=manifest_path)
+    except Exception as exc:  # noqa: BLE001
+        raise DataContractError(
+            f"runtime history unavailable: processed missing at {processed_path}; raw unavailable/empty from {raw_dirs}: {exc}"
+        ) from exc
+    if not canonical_rows:
+        raise DataContractError(
+            f"runtime history unavailable: processed missing at {processed_path}; raw unavailable/empty from {raw_dirs}"
+        )
+    return canonical_rows
 
 
 def _merge_history_with_context(
@@ -150,8 +177,7 @@ def run_prediction(
 ) -> dict[str, Any]:
     recent_context, source, fetch_meta = _load_recent_draws(config, recent_draws)
     log_progress(1, 5, "載入最近開獎上下文", f"來源={source}")
-    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
-    processed_history = read_processed(processed_path)
+    processed_history = _load_runtime_history(config)
     history = _merge_history_with_context(processed_history, recent_context)
     log_progress(2, 5, "合併 processed + recent 歷史", f"rows={len(history)}")
 
