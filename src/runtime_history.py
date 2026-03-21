@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Sequence
 
 import numpy as np
 
+from src.io_utils import list_shards, safe_read_table
 from src.utils import DataContractError, DrawRecord, ensure_numbers, parse_date
 
 
@@ -18,33 +18,28 @@ _REQUIRED_COLUMNS = {"issue", "draw_date", "numbers", "day_issue_index"}
 
 def resolve_processed_source_files(input_path: Path) -> list[Path]:
     if input_path.exists():
+        if input_path.is_dir() or input_path.name == "manifest.json":
+            return list_shards(input_path)
         return [input_path]
     parts = sorted(input_path.parent.glob(f"{input_path.stem}.part*{input_path.suffix}"))
     if parts:
         return parts
+    dataset_dir = input_path.with_suffix(".dataset")
+    if dataset_dir.exists():
+        return list_shards(dataset_dir)
     raise DataContractError("processed history missing; build processed history before deploy")
-
-
-def _iter_processed_rows(paths: list[Path]) -> Iterator[dict[str, str]]:
-    for path in paths:
-        with path.open("r", encoding="utf-8") as fh:
-            reader = csv.DictReader(fh)
-            cols = set(reader.fieldnames or [])
-            if not _REQUIRED_COLUMNS.issubset(cols):
-                raise DataContractError(f"processed CSV missing columns: {_REQUIRED_COLUMNS}")
-            for row in reader:
-                yield row
 
 
 def build_runtime_history_artifact(processed_csv_or_shards: Path, output_dir: Path) -> Path:
     source_files = resolve_processed_source_files(processed_csv_or_shards)
+    frame = safe_read_table(processed_csv_or_shards)
+    required = {"issue", "draw_date", "numbers", "day_issue_index"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise DataContractError(f"processed history missing columns: {sorted(missing)}")
 
-    row_count = 0
-    issue_width = 16
-    for row in _iter_processed_rows(source_files):
-        row_count += 1
-        issue_width = max(issue_width, len(str(row["issue"])))
-
+    row_count = len(frame)
+    issue_width = max(16, max(len(str(x)) for x in frame["issue"].astype(str).tolist()))
     if row_count == 0:
         raise DataContractError("processed history exists but contains no rows")
 
@@ -59,13 +54,11 @@ def build_runtime_history_artifact(processed_csv_or_shards: Path, output_dir: Pa
     draw_ord = np.lib.format.open_memmap(draw_date_path, mode="w+", dtype=np.int32, shape=(row_count,))
     day_idx = np.lib.format.open_memmap(day_idx_path, mode="w+", dtype=np.uint16, shape=(row_count,))
 
-    i = 0
-    for row in _iter_processed_rows(source_files):
-        issues[i] = str(row["issue"])
-        draw_ord[i] = parse_date(str(row["draw_date"])).toordinal()
-        numbers[i] = np.array(ensure_numbers(json.loads(str(row["numbers"]))), dtype=np.uint8)
-        day_idx[i] = int(row["day_issue_index"])
-        i += 1
+    for i, row in enumerate(frame.itertuples(index=False)):
+        issues[i] = str(row.issue)
+        draw_ord[i] = parse_date(str(row.draw_date)).toordinal()
+        numbers[i] = np.array(ensure_numbers(json.loads(str(row.numbers))), dtype=np.uint8)
+        day_idx[i] = int(row.day_issue_index)
 
     meta = {
         "row_count": row_count,

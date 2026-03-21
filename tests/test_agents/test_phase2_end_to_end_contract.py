@@ -1,6 +1,5 @@
-from pathlib import Path
-
 from src.build_features import build_feature_rows, write_feature_store
+from src.io_utils import safe_read_table
 from src.prepare_data import merge_histories
 from src.ranking_dataset import attach_group_ids, validate_group_contract, write_rows
 
@@ -22,11 +21,10 @@ def test_fetch_prepare_feature_dataset_contract(tmp_path, synthetic_records) -> 
     fp = tmp_path / "features.csv"
     write_feature_store(fp, features)
 
-    import pandas as pd
-
-    rows = pd.read_csv(fp).to_dict(orient="records")
+    rows = safe_read_table(fp).to_dict(orient="records")
     rows_g = attach_group_ids(rows)
     validate_group_contract(rows_g)
     rp = tmp_path / "ranking.csv"
-    write_rows(rp, rows_g)
-    assert Path(rp).exists()
+    out = write_rows(rp, rows_g)
+    loaded = safe_read_table(out)
+    assert len(loaded) == len(rows_g)

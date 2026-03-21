@@ -13,9 +13,10 @@ from lightgbm import LGBMRanker
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import ndcg_score
 
+from src.io_utils import safe_read_table
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
-from src.utils import DataContractError, read_csv_maybe_sharded
+from src.utils import DataContractError
 
 REQUIRED_COLUMNS = {"issue", "candidate_number", "label", "group_id"}
 NON_FEATURE_COLUMNS = {
@@ -40,7 +41,7 @@ class FoldResult:
 
 
 def load_ranking_dataset(path: Path) -> pd.DataFrame:
-    df = read_csv_maybe_sharded(path)
+    df = safe_read_table(path)
     missing = REQUIRED_COLUMNS - set(df.columns)
     if missing:
         raise DataContractError(f"ranking dataset missing required columns: {sorted(missing)}")

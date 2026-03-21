@@ -5,7 +5,10 @@ import csv
 import json
 from pathlib import Path
 
-from src.utils import DataContractError, DrawRecord, ensure_numbers, log_progress, parse_date, write_processed
+import pandas as pd
+
+from src.io_utils import safe_write_table
+from src.utils import DataContractError, DrawRecord, ensure_numbers, log_progress, parse_date
 
 
 def _parse_numbers_row(row: dict[str, str]) -> tuple[int, ...]:
@@ -71,6 +74,20 @@ def merge_histories(paths: list[Path]) -> list[DrawRecord]:
     return assign_day_issue_index(list(merged.values()))
 
 
+def _records_to_frame(records: list[DrawRecord]) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "issue": r.issue,
+                "draw_date": r.draw_date.isoformat(),
+                "numbers": json.dumps(list(r.numbers), ensure_ascii=False),
+                "day_issue_index": r.day_issue_index,
+            }
+            for r in records
+        ]
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--inputs", nargs="+", required=True)
@@ -80,12 +97,14 @@ def main() -> None:
     log_progress(1, 3, "讀取歷史 CSV", f"檔案數={len(args.inputs)}")
     rows = merge_histories([Path(p) for p in args.inputs])
     log_progress(2, 3, "合併與排序歷史資料", f"總筆數={len(rows)}")
-    write_processed(Path(args.output), rows)
-    log_progress(1, 3, "讀取歷史 CSV", f"檔案數={len(args.inputs)}")
-    rows = merge_histories([Path(p) for p in args.inputs])
-    log_progress(2, 3, "合併與排序歷史資料", f"總筆數={len(rows)}")
-    write_processed(Path(args.output), rows)
-    log_progress(3, 3, "輸出 processed 歷史完成", f"輸出={args.output}")
+    out = safe_write_table(
+        _records_to_frame(rows),
+        Path(args.output),
+        max_file_mb=95,
+        preferred_format="parquet",
+        producer_script="src.prepare_data",
+    )
+    log_progress(3, 3, "輸出 processed 歷史完成", f"輸出={out}")
 
 
 if __name__ == "__main__":

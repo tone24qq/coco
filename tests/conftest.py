@@ -1,10 +1,10 @@
 from datetime import date, timedelta
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from src.build_features import build_feature_rows, write_feature_store
+from src.io_utils import safe_read_table
 from src.ranking_dataset import attach_group_ids, write_rows
 from src.utils import DrawRecord
 
@@ -30,9 +30,9 @@ def synthetic_records() -> list[DrawRecord]:
 def ranking_dataset_path(tmp_path: Path, synthetic_records: list[DrawRecord]) -> Path:
     features = build_feature_rows(synthetic_records, min_history=100, retrieval_window=40, top_k=8)
     feature_path = tmp_path / "ranking_features.csv"
-    write_feature_store(feature_path, features)
+    out = write_feature_store(feature_path, features)
 
-    rows = pd.read_csv(feature_path).to_dict(orient="records")
+    rows = safe_read_table(out).to_dict(orient="records")
     rows_with_group = attach_group_ids(rows)
     dataset_path = tmp_path / "ranking_dataset.csv"
     write_rows(dataset_path, rows_with_group)

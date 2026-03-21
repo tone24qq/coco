@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 
-from src.utils import DataContractError, enforce_dir_file_sizes, enforce_file_size, log_progress, read_csv_maybe_sharded, shard_csv_if_needed
+import pandas as pd
+
+from src.io_utils import safe_read_table, safe_write_table
+from src.utils import DataContractError, enforce_dir_file_sizes, log_progress
 
 
 def attach_group_ids(feature_rows: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -21,7 +23,7 @@ def attach_group_ids(feature_rows: list[dict[str, str]]) -> list[dict[str, str]]
 
 
 def load_feature_rows(path: Path) -> list[dict[str, str]]:
-    frame = read_csv_maybe_sharded(path)
+    frame = safe_read_table(path)
     rows = frame.to_dict(orient="records")
     if not rows:
         raise DataContractError("feature store is empty")
@@ -37,15 +39,15 @@ def validate_group_contract(rows: list[dict[str, str]]) -> None:
         raise DataContractError(f"each issue must have 80 candidates: {wrong[:3]}")
 
 
-def write_rows(path: Path, rows: list[dict[str, str]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-    shard_csv_if_needed(path)
-    if path.exists():
-        enforce_file_size(path)
+def write_rows(path: Path, rows: list[dict[str, str]]) -> Path:
+    frame = pd.DataFrame(rows)
+    return safe_write_table(
+        frame,
+        path,
+        max_file_mb=95,
+        preferred_format="parquet",
+        producer_script="src.ranking_dataset",
+    )
 
 
 def main() -> None:
@@ -60,9 +62,9 @@ def main() -> None:
     validate_group_contract(rows)
     log_progress(3, 4, "附加 group_id", "開始")
     with_group = attach_group_ids(rows)
-    write_rows(Path(args.output), with_group)
+    out = write_rows(Path(args.output), with_group)
     enforce_dir_file_sizes([Path("data/feature_store"), Path("reports"), Path("models")])
-    log_progress(4, 4, "ranking_dataset 輸出完成", f"輸出={args.output}")
+    log_progress(4, 4, "ranking_dataset 輸出完成", f"輸出={out}")
 
 
 if __name__ == "__main__":

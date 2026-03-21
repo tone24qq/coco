@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 from collections import Counter
 from pathlib import Path
 
+import pandas as pd
+
+from src.io_utils import safe_read_table, safe_write_table
 from src.retrieval import RetrievalWeights, SimilarWindowRetriever, retrieval_features
-from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, enforce_file_size, log_progress, read_processed, shard_csv_if_needed
+from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date
 
 WINDOWS = [20, 50, 100, 200, 500]
 
@@ -230,17 +232,17 @@ def build_feature_rows(
     return rows
 
 
-def write_feature_store(path: Path, rows: list[dict[str, float | int | str]]) -> None:
+def write_feature_store(path: Path, rows: list[dict[str, float | int | str]]) -> Path:
     if not rows:
         raise DataContractError("feature row output is empty")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-    shard_csv_if_needed(path)
-    if path.exists():
-        enforce_file_size(path)
+    frame = pd.DataFrame(rows)
+    return safe_write_table(
+        frame,
+        path,
+        max_file_mb=95,
+        preferred_format="parquet",
+        producer_script="src.build_features",
+    )
 
 
 def main() -> None:
@@ -254,12 +256,25 @@ def main() -> None:
     args = parser.parse_args()
 
     log_progress(1, 3, "讀取 processed 歷史", f"輸入={args.input}")
-    records = read_processed(Path(args.input))
+    history_df = safe_read_table(Path(args.input))
+    required = {"issue", "draw_date", "numbers", "day_issue_index"}
+    missing = required - set(history_df.columns)
+    if missing:
+        raise DataContractError(f"processed history missing columns: {sorted(missing)}")
+    records = [
+        DrawRecord(
+            issue=str(row.issue),
+            draw_date=parse_date(str(row.draw_date)),
+            numbers=ensure_numbers(json.loads(str(row.numbers))),
+            day_issue_index=int(row.day_issue_index),
+        )
+        for row in history_df.itertuples(index=False)
+    ]
     log_progress(2, 3, "開始建立 ranking features", f"歷史筆數={len(records)}")
     rows = build_feature_rows(records, args.min_history, args.min_dynamic_n, args.max_dynamic_n, args.top_k)
-    write_feature_store(Path(args.output), rows)
+    out = write_feature_store(Path(args.output), rows)
     enforce_dir_file_sizes([Path("data/feature_store"), Path("reports"), Path("models")])
-    log_progress(3, 3, "feature store 輸出完成", f"輸出={args.output}")
+    log_progress(3, 3, "feature store 輸出完成", f"輸出={out}")
 
 
 if __name__ == "__main__":
