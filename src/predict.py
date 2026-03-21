@@ -17,7 +17,6 @@ from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest
 from src.fetchers.source_consensus import run_source_consensus
 from src.io.canonical_dataset import read_audit_summary
 from src.runtime_history import (
-    artifact_matches_source,
     build_runtime_history_artifact,
     load_runtime_history_store,
     resolve_processed_source_files,
@@ -112,7 +111,7 @@ def _load_recent_draws(
 
 def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
     processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
-    runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
+    runtime_dir = _resolve_runtime_artifact_dir(config)
     try:
         store = _cached_runtime_history_store(str(processed_path), str(runtime_dir))
     except DataContractError:
@@ -125,12 +124,28 @@ def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
     return store
 
 
+def _resolve_runtime_artifact_dir(config: dict[str, Any]) -> Path:
+    history_cfg = config.get("history", {})
+    explicit = history_cfg.get("runtime_artifact_dir")
+    if explicit:
+        return Path(explicit)
+    processed_path = Path(history_cfg.get("processed_path", "data/processed/history_processed.csv"))
+    if processed_path.parent.name == "processed":
+        return processed_path.parent.parent / "runtime_history"
+    return processed_path.parent / "runtime_history"
+
+
 @lru_cache(maxsize=1)
 def _cached_runtime_history_store(processed_path: str, runtime_dir: str):
-    source = Path(processed_path)
     artifact_dir = Path(runtime_dir)
-    source_files = resolve_processed_source_files(source)
-    if not runtime_history_ready(artifact_dir) or not artifact_matches_source(artifact_dir, source_files):
+    if runtime_history_ready(artifact_dir):
+        return load_runtime_history_store(artifact_dir)
+
+    source = Path(processed_path)
+    if not source.exists() and not sorted(source.parent.glob(f"{source.stem}.part*{source.suffix}")):
+        raise DataContractError("runtime history artifact missing and processed history missing; cannot rebuild")
+    resolve_processed_source_files(source)
+    if not runtime_history_ready(artifact_dir):
         build_runtime_history_artifact(source, artifact_dir)
     return load_runtime_history_store(artifact_dir)
 
