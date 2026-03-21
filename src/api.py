@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from src.analysis.snapshots import read_history_snapshot
 from src.artifacts import ModelArtifacts, load_artifacts
-from src.predict import run_prediction
+from src.predict import _resolve_runtime_artifact_dir, run_prediction
 from src.runtime_history import runtime_history_ready
 from src.utils import DataContractError
 
@@ -71,7 +71,7 @@ def health() -> HealthResponse:
     snap = read_history_snapshot(Path(config.get("snapshot", {}).get("path", "reports/history_snapshot.json")))
     processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
     has_processed = processed_path.exists() or bool(sorted(processed_path.parent.glob(f"{processed_path.stem}.part*{processed_path.suffix}")))
-    runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
+    runtime_dir = _resolve_runtime_artifact_dir(config)
     return HealthResponse(
         status="ok" if artifacts else f"degraded: {err}",
         model_loaded=artifacts is not None,
