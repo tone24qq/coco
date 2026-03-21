@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from src.predict import _clear_runtime_history_cache, run_prediction
+from src.predict import _clear_runtime_history_cache, _normalize_predict_config_paths, run_prediction
 from src.utils import DataContractError
 
 
@@ -45,8 +45,11 @@ def _write_processed(path: Path, rows) -> None:
             fh.write(f"{r.issue},{r.draw_date.isoformat()},\"{json.dumps(list(r.numbers), ensure_ascii=False)}\",{r.day_issue_index}\n")
 
 
-def test_exact_regression_fields_unchanged(monkeypatch, ranking_dataset_path: Path, synthetic_records, tmp_path: Path) -> None:
+def test_runtime_artifact_is_deploy_input_and_matches_old_processed_loader(
+    monkeypatch, ranking_dataset_path: Path, synthetic_records, tmp_path: Path
+) -> None:
     from src.artifacts import load_artifacts
+    from src.runtime_history import build_runtime_history_artifact
 
     models_dir = _train_artifacts(ranking_dataset_path, tmp_path)
     processed = tmp_path / "history_processed.csv"
@@ -64,6 +67,13 @@ def test_exact_regression_fields_unchanged(monkeypatch, ranking_dataset_path: Pa
 
     _clear_runtime_history_cache()
     monkeypatch.undo()
+    build_runtime_history_artifact(processed, Path(cfg["history"]["runtime_artifact_dir"]))
+    processed.unlink()
+
+    monkeypatch.setattr(
+        "src.predict.build_runtime_history_artifact",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("rebuild must not be called when artifact is ready")),
+    )
     current = run_prediction(load_artifacts(models_dir), cfg, recent)
 
     for key in ["top20_numbers", "top10_numbers", "top3_numbers", "ranking_score_table", "retrieval_top_matches"]:
@@ -125,5 +135,21 @@ def test_fail_fast_when_no_compact_or_processed(ranking_dataset_path: Path, synt
     recent = [r.to_dict() for r in synthetic_records[-30:]]
 
     _clear_runtime_history_cache()
-    with pytest.raises(DataContractError, match="processed history missing; build processed history before deploy"):
+    with pytest.raises(DataContractError, match="runtime history artifact missing and processed history missing; cannot rebuild"):
         run_prediction(load_artifacts(models_dir), cfg, recent)
+
+
+def test_predict_config_paths_are_normalized_to_absolute(tmp_path: Path) -> None:
+    cfg = {
+        "models": {"dir": "models"},
+        "history": {"processed_path": "data/processed/history_processed.csv", "runtime_artifact_dir": "data/runtime_history"},
+        "provenance": {"audit_path": "reports/local_data_audit.json", "consensus_report_path": "reports/source_consensus_report.json"},
+        "snapshot": {"path": "reports/history_snapshot.json"},
+    }
+    out = _normalize_predict_config_paths(cfg, tmp_path)
+    assert Path(out["models"]["dir"]).is_absolute()
+    assert Path(out["history"]["processed_path"]).is_absolute()
+    assert Path(out["history"]["runtime_artifact_dir"]).is_absolute()
+    assert Path(out["provenance"]["audit_path"]).is_absolute()
+    assert Path(out["provenance"]["consensus_report_path"]).is_absolute()
+    assert Path(out["snapshot"]["path"]).is_absolute()
