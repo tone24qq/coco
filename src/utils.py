@@ -99,11 +99,18 @@ def rolling_hit_count(history: list[DrawRecord], number: int, window: int) -> in
     return sum(1 for row in span if number in row.numbers)
 
 
-def log_progress(step: int, total: int, stage: str, detail: str = "") -> None:
+def log_progress(
+    step: int,
+    total: int,
+    stage: str,
+    detail: str = "",
+    request_id: str | None = None,
+) -> None:
     total_safe = max(1, total)
     pct = min(100.0, max(0.0, step / total_safe * 100.0))
     suffix = f" | {detail}" if detail else ""
-    print(f"[進度] {step}/{total_safe} ({pct:.1f}%) {stage}{suffix}")
+    prefix = f"[req={request_id}] " if request_id else ""
+    print(f"{prefix}[進度] {step}/{total_safe} ({pct:.1f}%) {stage}{suffix}", flush=True)
 
 
 def enforce_file_size(path: Path, max_bytes: int = MAX_OUTPUT_FILE_BYTES) -> None:
