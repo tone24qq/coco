@@ -116,7 +116,11 @@ for i in range(600):
 recent = [r.to_dict() for r in records[-30:]]
 Path("/tmp/verify_recent.json").write_text(json.dumps(recent, ensure_ascii=False), encoding="utf-8")
 PY
+rm -rf data/runtime_history
 python -m src.predict --config configs/predict.yaml --output reports/latest_prediction.json --recent-json /tmp/verify_recent.json > reports/logs/predict.log 2>&1
+python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history
+rm -f data/processed/history_processed.csv
+python -m src.predict --config configs/predict.yaml --output reports/latest_prediction_artifact_only.json --recent-json /tmp/verify_recent.json > reports/logs/predict_artifact_only.log 2>&1
 
 echo "[10/10] output assertions"
 python - <<'PY'
@@ -133,9 +137,23 @@ bootstrap = Path('reports/block_bootstrap_summary.json')
 predictability = Path('reports/predictability_test.json')
 perm = Path('reports/permutation_distribution.csv')
 latest_pred = Path('reports/latest_prediction.json')
-logs = [Path("reports/logs/build_features.log"), Path("reports/logs/train.log"), Path("reports/logs/backtest.log"), Path("reports/logs/predict.log")]
+artifact_only_pred = Path("reports/latest_prediction_artifact_only.json")
+runtime_history_files = [
+    Path("data/runtime_history/meta.json"),
+    Path("data/runtime_history/numbers.npy"),
+    Path("data/runtime_history/issue.npy"),
+    Path("data/runtime_history/draw_date_ordinal.npy"),
+    Path("data/runtime_history/day_issue_index.npy"),
+]
+logs = [
+    Path("reports/logs/build_features.log"),
+    Path("reports/logs/train.log"),
+    Path("reports/logs/backtest.log"),
+    Path("reports/logs/predict.log"),
+    Path("reports/logs/predict_artifact_only.log"),
+]
 
-for p in [train_reg, train_fold, backtest_fold, backtest_summary, alignment, bootstrap, predictability, perm, latest_pred, *logs]:
+for p in [train_reg, train_fold, backtest_fold, backtest_summary, alignment, bootstrap, predictability, perm, latest_pred, artifact_only_pred, *runtime_history_files, *logs]:
     assert p.exists(), f'missing output: {p}'
 
 reg_df = pd.read_csv(train_reg)
@@ -163,6 +181,7 @@ perm_df = pd.read_csv(perm)
 assert not perm_df.empty
 
 pred = json.loads(latest_pred.read_text(encoding='utf-8'))
+pred_artifact_only = json.loads(artifact_only_pred.read_text(encoding="utf-8"))
 assert len(pred["ranking_score_table"]) == 80
 assert len(pred["top20_numbers"]) == 20
 assert pred["metadata"]["score_type"] == "ranking_score"
@@ -170,8 +189,10 @@ assert pred["metadata"]["target_next_issue_contract"] == "passed"
 assert "dynamic_weighting" in pred["metadata"]
 assert "effective_runtime_weights" in pred["metadata"]
 assert abs(sum(pred["metadata"]["effective_runtime_weights"].values()) - 1.0) <= 1e-6
+for key in ["top20_numbers", "top10_numbers", "top3_numbers", "ranking_score_table", "retrieval_top_matches"]:
+    assert pred_artifact_only[key] == pred[key], f"artifact-only prediction drift on {key}"
 
-for p in [train_reg, train_fold, backtest_fold, backtest_summary, alignment, bootstrap, predictability, perm, latest_pred]:
+for p in [train_reg, train_fold, backtest_fold, backtest_summary, alignment, bootstrap, predictability, perm, latest_pred, artifact_only_pred]:
     assert p.stat().st_size <= 100 * 1024 * 1024, f"file exceeds 100MB: {p}"
 
 for p in logs:

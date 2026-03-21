@@ -9,7 +9,7 @@ import pytest
 
 from src.analysis.snapshots import build_history_snapshot
 from src.backtest import main as backtest_main
-from src.predict import run_prediction
+from src.predict import _clear_runtime_history_cache, run_prediction
 from src.utils import DataContractError
 
 
@@ -211,6 +211,7 @@ def test_predict_fail_fast_when_processed_and_raw_missing(ranking_dataset_path, 
     cfg = yaml.safe_load(Path("configs/predict.yaml").read_text(encoding="utf-8"))
     cfg["auto_fetch"]["enabled"] = False
     cfg["history"]["processed_path"] = str(tmp_path / "missing_processed.csv")
+    cfg["history"]["runtime_artifact_dir"] = str(tmp_path / "missing_runtime_history")
     cfg["provenance"] = {
         "raw_dirs": [str(tmp_path / "raw")],
         "audit_path": str(tmp_path / "local_data_audit.json"),
@@ -218,5 +219,6 @@ def test_predict_fail_fast_when_processed_and_raw_missing(ranking_dataset_path, 
         "consensus_report_path": str(tmp_path / "source_consensus_report.json"),
     }
 
-    with pytest.raises(DataContractError, match="processed history missing; build processed history before deploy"):
+    _clear_runtime_history_cache()
+    with pytest.raises(DataContractError, match="runtime history artifact missing and processed history missing; cannot rebuild"):
         run_prediction(load_artifacts(models_dir), cfg, [r.to_dict() for r in synthetic_records[-30:]])
