@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+import threading
 from typing import Any
+import uuid
 
 import yaml
 from fastapi import FastAPI, HTTPException
@@ -52,6 +54,7 @@ class HealthResponse(BaseModel):
 
 
 app = FastAPI(title="BingoBingo Ranking API", version="1.2.0")
+_PREDICT_SINGLEFLIGHT_LOCK = threading.Lock()
 
 
 @lru_cache(maxsize=1)
@@ -109,12 +112,27 @@ def _minimal_response(result: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(payload: PredictPayload) -> PredictResponse:
+    request_id = uuid.uuid4().hex[:8]
     artifacts, config, err = get_runtime()
     if artifacts is None:
         raise HTTPException(status_code=503, detail=f"artifacts unavailable: {err}")
+    acquired = _PREDICT_SINGLEFLIGHT_LOCK.acquire(blocking=False)
+    if not acquired:
+        print(f"[req={request_id}] /predict rejected: prediction already running", flush=True)
+        raise HTTPException(status_code=429, detail="prediction already running")
     try:
+        print(f"[req={request_id}] /predict start", flush=True)
         recent = [r.model_dump() for r in payload.recent_draws] if payload.recent_draws else None
-        result = run_prediction(artifacts, config, recent)
-        return PredictResponse(**_minimal_response(result))
+        result = run_prediction(artifacts, config, recent, request_id=request_id)
+        response = PredictResponse(**_minimal_response(result))
+        print(f"[req={request_id}] /predict done", flush=True)
+        return response
     except DataContractError as exc:
+        print(f"[req={request_id}] /predict error: {exc}", flush=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        print(f"[req={request_id}] /predict error: {exc}", flush=True)
+        raise
+    finally:
+        if acquired:
+            _PREDICT_SINGLEFLIGHT_LOCK.release()
