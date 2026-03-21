@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from src.analysis.snapshots import read_history_snapshot
 from src.artifacts import ModelArtifacts, load_artifacts
-from src.predict import run_prediction
+from src.predict import _DEFAULT_PREDICT_CONFIG, _resolve_runtime_artifact_dir, normalize_predict_config_paths, run_prediction
 from src.runtime_history import runtime_history_ready
 from src.utils import DataContractError
 
@@ -56,7 +56,8 @@ app = FastAPI(title="BingoBingo Ranking API", version="1.2.0")
 
 @lru_cache(maxsize=1)
 def get_runtime() -> tuple[ModelArtifacts | None, dict[str, Any], str | None]:
-    config = yaml.safe_load(Path("configs/predict.yaml").read_text(encoding="utf-8"))
+    config_path = _DEFAULT_PREDICT_CONFIG
+    config = normalize_predict_config_paths(yaml.safe_load(config_path.read_text(encoding="utf-8")), base_dir=config_path.parent.parent)
     models_dir = Path(config.get("models", {}).get("dir", "models"))
     try:
         artifacts = load_artifacts(models_dir)
@@ -71,7 +72,7 @@ def health() -> HealthResponse:
     snap = read_history_snapshot(Path(config.get("snapshot", {}).get("path", "reports/history_snapshot.json")))
     processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
     has_processed = processed_path.exists() or bool(sorted(processed_path.parent.glob(f"{processed_path.stem}.part*{processed_path.suffix}")))
-    runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
+    runtime_dir = _resolve_runtime_artifact_dir(config)
     return HealthResponse(
         status="ok" if artifacts else f"degraded: {err}",
         model_loaded=artifacts is not None,

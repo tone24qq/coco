@@ -21,6 +21,20 @@
 8. API
    - `uvicorn src.api:app --host 0.0.0.0 --port 8000`
 
+## Deploy 必要步驟（runtime history）
+
+部署打包前必須先產出 runtime history artifact（deploy 正式輸入）：
+
+- `python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history`
+
+部署成品必須明確包含下列檔案（不可只靠 git，因 `/data` 已被忽略）：
+
+- `data/runtime_history/meta.json`
+- `data/runtime_history/numbers.npy`
+- `data/runtime_history/issue.npy`
+- `data/runtime_history/draw_date_ordinal.npy`
+- `data/runtime_history/day_issue_index.npy`
+
 ## Dynamic N Retrieval Contract
 
 - 預測 context：
