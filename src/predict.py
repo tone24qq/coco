@@ -111,6 +111,7 @@ def _load_recent_draws(
         return rows, "manual", {"consensus_status": "manual", "fetch_attempts": 0, "actual_source_used": "manual"}
 
     if config.get("auto_fetch", {}).get("enabled", True):
+        timeout_s = float(config.get("auto_fetch", {}).get("fetch_timeout_seconds", 10.0))
         sources = list(config.get("auto_fetch", {}).get("sources") or [WINWIN_URL, AUZO_URL])
         if not sources:
             raise DataContractError("auto_fetch enabled but sources is empty")
@@ -121,6 +122,7 @@ def _load_recent_draws(
                 sources,
                 Path(config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json")),
                 mismatch_policy=mismatch_policy,
+                timeout_s=timeout_s,
             )
             report.setdefault("failover_reason", None)
             report.setdefault("successful_sources", [])
@@ -129,7 +131,7 @@ def _load_recent_draws(
             if not today_rows:
                 raise DataContractError("auto_fetch consensus failed: no same-day rows found")
             return today_rows, "winwin_auto_fetch", report
-        fetched = fetch_latest(sources=sources)
+        fetched = fetch_latest(sources=sources, timeout_s=timeout_s)
         latest_day = max(r.draw_date for r in fetched.records)
         today_rows = sorted([r for r in fetched.records if r.draw_date == latest_day], key=lambda r: r.issue)
         if not today_rows:
@@ -247,12 +249,15 @@ def run_prediction(
     artifacts: ModelArtifacts,
     config: dict[str, Any],
     recent_draws: list[dict[str, Any]] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
+    log_progress(0, 6, "收到預測請求，開始載入 recent_draws / auto_fetch", request_id=request_id)
     recent_context, source, fetch_meta = _load_recent_draws(config, recent_draws)
-    log_progress(1, 5, "載入最近開獎上下文", f"來源={source}")
+    log_progress(1, 6, "載入最近開獎上下文", f"來源={source}", request_id=request_id)
+    log_progress(2, 6, "開始載入 runtime history", request_id=request_id)
     processed_history = _load_runtime_history(config)
     history = _merge_history_with_context(processed_history, recent_context)
-    log_progress(2, 5, "合併 processed + recent 歷史", f"rows={len(history)}")
+    log_progress(3, 6, "合併 processed + recent 歷史", f"rows={len(history)}", request_id=request_id)
 
     history_cfg = config.get("history", {})
     min_dynamic_n = int(history_cfg.get("min_dynamic_n", 20))
@@ -273,12 +278,14 @@ def run_prediction(
         top_k=int(config.get("retrieval", {}).get("top_k", 50)),
         retrieval_weights=config.get("retrieval", {}).get("weights", {}),
         prefer_same_day_progress=prefer_same_day_progress,
+        progress_logging=True,
     )
     feat_df = pd.DataFrame(rows)
     if len(feat_df) != 80:
         raise DataContractError("prediction contract violated: expected 80 candidates")
 
     _validate_feature_contract(feat_df, artifacts)
+    log_progress(4, 6, "feature contract passed", f"columns={len(artifacts.feature_columns)}", request_id=request_id)
 
     x = feat_df[artifacts.feature_columns].fillna(0.0)
     ranker_score = artifacts.ranker.predict(x)
@@ -296,7 +303,7 @@ def run_prediction(
         dynamic_cfg=dynamic_cfg,
         return_diagnostics=True,
     )
-    log_progress(3, 5, "完成 ranking score chain", f"target_issue={target_issue}")
+    log_progress(4, 6, "完成 ranking score chain", f"target_issue={target_issue}", request_id=request_id)
 
     top20 = scored.head(20)["candidate_number"].astype(int).tolist()
     top10 = top20[:10]
@@ -388,7 +395,7 @@ def run_prediction(
     }
     if dynamic_cfg.enabled and "effective_runtime_weights" not in metadata:
         raise DataContractError("dynamic enabled but effective_runtime_weights missing in metadata")
-    log_progress(4, 5, "組裝預測輸出", f"top3={top3_after}")
+    log_progress(5, 6, "組裝預測輸出", f"top3={top3_after}", request_id=request_id)
 
     out = {
         "issue": target_issue,
@@ -403,7 +410,7 @@ def run_prediction(
         "ranking_score_table": table.to_dict(orient="records"),
         "metadata": metadata,
     }
-    log_progress(5, 5, "預測主線完成", f"issue={target_issue}")
+    log_progress(6, 6, "預測主線完成", f"issue={target_issue}", request_id=request_id)
     return out
 
 
