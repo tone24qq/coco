@@ -65,7 +65,8 @@ def resolve_feature_columns(df: pd.DataFrame) -> list[str]:
 
 
 def _groups(df: pd.DataFrame) -> list[int]:
-    return [len(g) for _, g in df.groupby("issue", sort=False)]
+    _, counts = np.unique(df["issue"].to_numpy(), return_counts=True)
+    return counts.astype(int).tolist()
 
 
 def make_time_series_splits(issues: list[str], n_splits: int = 3, min_train_issues: int = 30) -> list[tuple[list[str], list[str]]]:
@@ -94,16 +95,23 @@ def _oof_ranker_scores(train_df: pd.DataFrame, feature_cols: list[str]) -> pd.Se
     issues = list(dict.fromkeys(train_df["issue"].tolist()))
     step = max(10, len(issues) // 5)
     oof = pd.Series(np.nan, index=train_df.index, dtype=float)
+    x_all = train_df[feature_cols].fillna(0.0).to_numpy(dtype=np.float64)
+    y_all = train_df["label"].to_numpy(dtype=np.float64)
+    issue_arr = train_df["issue"].to_numpy()
+    issue_to_rows = {issue: np.flatnonzero(issue_arr == issue) for issue in issues}
     for end in range(step, len(issues), step):
         tr_issues = issues[:end]
         va_issues = issues[end : min(end + step, len(issues))]
         if not va_issues:
             continue
-        tr = train_df[train_df["issue"].isin(tr_issues)]
-        va = train_df[train_df["issue"].isin(va_issues)]
+        tr_idx = np.concatenate([issue_to_rows[i] for i in tr_issues]) if tr_issues else np.array([], dtype=np.int64)
+        va_idx = np.concatenate([issue_to_rows[i] for i in va_issues]) if va_issues else np.array([], dtype=np.int64)
+        if len(tr_idx) == 0 or len(va_idx) == 0:
+            continue
         ranker = _new_ranker()
-        ranker.fit(tr[feature_cols].fillna(0.0), tr["label"], group=_groups(tr))
-        oof.loc[va.index] = ranker.predict(va[feature_cols].fillna(0.0))
+        ranker.fit(x_all[tr_idx], y_all[tr_idx], group=[len(issue_to_rows[i]) for i in tr_issues])
+        preds = ranker.predict(x_all[va_idx])
+        oof.iloc[va_idx] = preds
     return oof
 
 
@@ -152,10 +160,15 @@ def run_cv(
     min_train_issues: int = 30,
 ) -> list[FoldResult]:
     splits = make_time_series_splits(df["issue"].tolist(), n_splits=n_splits, min_train_issues=min_train_issues)
+    issue_arr = df["issue"].to_numpy()
+    unique_issue = list(dict.fromkeys(issue_arr.tolist()))
+    issue_to_rows = {issue: np.flatnonzero(issue_arr == issue) for issue in unique_issue}
     out: list[FoldResult] = []
     for i, (train_issues, val_issues) in enumerate(splits, 1):
-        train_df = df[df["issue"].isin(train_issues)].copy()
-        val_df = df[df["issue"].isin(val_issues)].copy()
+        train_idx = np.concatenate([issue_to_rows[x] for x in train_issues]) if train_issues else np.array([], dtype=np.int64)
+        val_idx = np.concatenate([issue_to_rows[x] for x in val_issues]) if val_issues else np.array([], dtype=np.int64)
+        train_df = df.iloc[train_idx].copy()
+        val_df = df.iloc[val_idx].copy()
         ranker, logistic = fit_models(train_df, feature_cols)
         out.append(
             FoldResult(
@@ -169,7 +182,7 @@ def run_cv(
     return out
 
 
-def compute_metrics(scored: pd.DataFrame, score_col: str = "final_score") -> dict[str, float]:
+def _compute_metrics_legacy(scored: pd.DataFrame, score_col: str = "final_score") -> dict[str, float]:
     per_issue: list[dict[str, float]] = []
     for _, g in scored.groupby("issue"):
         g2 = g.sort_values(score_col, ascending=False)
@@ -210,6 +223,60 @@ def compute_metrics(scored: pd.DataFrame, score_col: str = "final_score") -> dic
     frame = pd.DataFrame(per_issue)
     if frame.empty:
         raise DataContractError("cannot compute metrics for empty scored frame")
+    return {k: float(v) for k, v in frame.mean(numeric_only=True).to_dict().items()}
+
+
+def compute_metrics(scored: pd.DataFrame, score_col: str = "final_score") -> dict[str, float]:
+    if scored.empty:
+        raise DataContractError("cannot compute metrics for empty scored frame")
+    ordered = scored.sort_values(["issue", score_col], ascending=[True, False])
+    by_num = scored.sort_values(["issue", "candidate_number"], ascending=[True, True])
+    issues = ordered["issue"].to_numpy()
+    labels = ordered["label"].to_numpy(dtype=np.float64)
+    cand = ordered["candidate_number"].to_numpy(dtype=np.int64)
+    uniq, starts, counts = np.unique(issues, return_index=True, return_counts=True)
+    y_true_by_issue = {
+        issue: grp["label"].to_numpy(dtype=np.float64)
+        for issue, grp in by_num.groupby("issue", sort=False)
+    }
+    y_score_by_issue = {
+        issue: grp[score_col].to_numpy(dtype=np.float64)
+        for issue, grp in by_num.groupby("issue", sort=False)
+    }
+
+    metrics_rows: list[dict[str, float]] = []
+    for issue, st, cnt in zip(uniq.tolist(), starts.tolist(), counts.tolist()):
+        ed = st + cnt
+        label_slice = labels[st:ed]
+        c = cand[st:ed]
+        top20 = float(np.sum(label_slice[:20]) / 20.0)
+        top10_hits = float(np.sum(label_slice[:10]))
+        top5 = float(np.sum(label_slice[:5]) / 5.0)
+        top3_hits = float(np.sum(label_slice[:3]))
+        top3 = top3_hits / 3.0
+        positives = set(c[label_slice == 1.0].tolist())
+        t3_nums = c[:3].tolist()
+        min_dists = [min(abs(int(n) - int(p)) for p in positives) for n in t3_nums] if positives else [79, 79, 79]
+        pre_dedup = t3_nums
+        post_dedup = apply_top3_group_dedup(c[:10].astype(int).tolist())
+        metrics_rows.append(
+            {
+                "top20_hit_rate": top20,
+                "top10_hit_rate": top10_hits / 10.0,
+                "top5_hit_rate": top5,
+                "top3_hit_rate": top3,
+                "top3_at_least_one_hit_rate": 1.0 if top3_hits >= 1 else 0.0,
+                "top3_at_least_one_hit": 1.0 if top3_hits >= 1 else 0.0,
+                "ndcg@10": float(ndcg_score([y_true_by_issue[issue]], [y_score_by_issue[issue]], k=10)),
+                "exact_hit@3": 1.0 if top3_hits == 3 else 0.0,
+                "exact_hit@10": 1.0 if top10_hits == 10 else 0.0,
+                "adj_hit_pm1@3": float(np.mean([1.0 if d <= 1 else 0.0 for d in min_dists])),
+                "strict_adj_only_pm1@3": 1.0 if all(d == 1 for d in min_dists) else 0.0,
+                "mean_min_distance_at_3": float(np.mean(min_dists)),
+                "top3_dedup_changed": 1.0 if pre_dedup != post_dedup[:3] else 0.0,
+            }
+        )
+    frame = pd.DataFrame(metrics_rows)
     return {k: float(v) for k, v in frame.mean(numeric_only=True).to_dict().items()}
 
 

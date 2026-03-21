@@ -4,6 +4,8 @@ from collections import Counter
 from dataclasses import dataclass
 from math import sqrt
 
+import numpy as np
+
 from src.utils import DrawRecord
 
 
@@ -109,7 +111,9 @@ class SimilarWindowRetriever:
         exact_window = exact_count == len(per_draw)
         return aligned, weighted, exact_count, exact_window
 
-    def query(self, history: list[DrawRecord], target_window: list[DrawRecord], day_issue_index: int) -> list[RetrievalMatch]:
+    def _query_legacy_python(
+        self, history: list[DrawRecord], target_window: list[DrawRecord], day_issue_index: int
+    ) -> list[RetrievalMatch]:
         n = len(target_window)
         if n <= 0:
             return []
@@ -150,6 +154,116 @@ class SimilarWindowRetriever:
         matches.sort(key=lambda x: x.similarity, reverse=True)
         return matches[: self.top_k]
 
+    @staticmethod
+    def _history_indicator_matrix(history: list[DrawRecord]) -> np.ndarray:
+        mat = np.zeros((len(history), 80), dtype=np.float64)
+        for i, row in enumerate(history):
+            nums = np.asarray(row.numbers, dtype=np.int64) - 1
+            mat[i, nums] = 1.0
+        return mat
+
+    @staticmethod
+    def _draw_profile_matrix(history: list[DrawRecord]) -> np.ndarray:
+        out = np.zeros((len(history), 5), dtype=np.float64)
+        for i, row in enumerate(history):
+            nums = np.asarray(row.numbers, dtype=np.int64)
+            odd = float(np.mean((nums % 2) == 1))
+            big = float(np.mean(nums > 40))
+            z1 = float(np.mean((1 <= nums) & (nums <= 20)))
+            z2 = float(np.mean((21 <= nums) & (nums <= 40)))
+            z3 = float(np.mean((41 <= nums) & (nums <= 60)))
+            z4 = float(np.mean((61 <= nums) & (nums <= 80)))
+            zone_var = float(((z1 - 0.25) ** 2 + (z2 - 0.25) ** 2 + (z3 - 0.25) ** 2 + (z4 - 0.25) ** 2) ** 0.5)
+            total = float(np.sum(nums) / (80.0 * 20.0))
+            span = float((int(np.max(nums)) - int(np.min(nums))) / 79.0)
+            consecutive = float(np.sum(np.diff(nums) == 1) / 19.0)
+            out[i] = np.array([odd, big, zone_var, total, span + consecutive], dtype=np.float64)
+        return out
+
+    def query(self, history: list[DrawRecord], target_window: list[DrawRecord], day_issue_index: int) -> list[RetrievalMatch]:
+        n = len(target_window)
+        if n <= 0:
+            return []
+        if self.require_same_length_window and len(history) <= n:
+            return []
+        max_end = len(history) - 2
+        if max_end < n - 1:
+            return []
+
+        history_mat = self._history_indicator_matrix(history)
+        target_mat = self._history_indicator_matrix(target_window)
+        history_prof = self._draw_profile_matrix(history)
+        target_prof = self._draw_profile_matrix(target_window)
+        target_freq = np.sum(target_mat, axis=0) / max(1.0, 20.0 * n)
+        target_set = np.array([set(row.numbers) for row in target_window], dtype=object)
+
+        ends = np.arange(n - 1, max_end + 1, dtype=np.int64)
+        starts = ends - n + 1
+        win_count = len(ends)
+
+        aligned_overlap = np.zeros(win_count, dtype=np.float64)
+        recency_overlap = np.zeros(win_count, dtype=np.float64)
+        exact_count = np.zeros(win_count, dtype=np.int64)
+        freq_sim = np.zeros(win_count, dtype=np.float64)
+        profile_sim = np.zeros(win_count, dtype=np.float64)
+        same_progress = np.zeros(win_count, dtype=np.bool_)
+
+        recency_weights = np.arange(1, n + 1, dtype=np.float64)
+        recency_weights = recency_weights / np.sum(recency_weights)
+
+        for i, st in enumerate(starts):
+            cand_block = history_mat[st : st + n]
+            inter = np.sum(cand_block * target_mat, axis=1)
+            union = np.sum(cand_block + target_mat - cand_block * target_mat, axis=1)
+            jacc = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+            aligned_overlap[i] = float(np.mean(jacc))
+            recency_overlap[i] = float(np.sum(jacc * recency_weights))
+
+            # exact draw/window match with strict tuple equality semantics
+            matches_draw = 0
+            for j, tset in enumerate(target_set):
+                if set(history[st + j].numbers) == tset and history[st + j].numbers == target_window[j].numbers:
+                    matches_draw += 1
+            exact_count[i] = matches_draw
+
+            cand_freq = np.sum(cand_block, axis=0) / max(1.0, 20.0 * n)
+            dist = float(np.sqrt(np.sum((target_freq - cand_freq) ** 2)))
+            freq_sim[i] = 1.0 / (1.0 + dist)
+
+            cand_prof = history_prof[st : st + n]
+            p_dist = np.sqrt(np.sum((target_prof - cand_prof) ** 2, axis=1))
+            profile_sim[i] = float(np.mean(1.0 / (1.0 + p_dist)))
+            same_progress[i] = bool(self.prefer_same_day_progress and history[st + n - 1].day_issue_index == day_issue_index)
+
+        similarity = (
+            self.weights.aligned_overlap * aligned_overlap
+            + self.weights.recency_aligned_overlap * recency_overlap
+            + self.weights.freq_similarity * freq_sim
+            + self.weights.profile_similarity * profile_sim
+            + self.weights.exact_draw_match * (exact_count.astype(np.float64) / max(1, n))
+            + self.weights.same_day_progress_bonus * same_progress.astype(np.float64)
+        )
+
+        k = min(self.top_k, win_count)
+        if k <= 0:
+            return []
+        top_idx = np.argsort(-similarity, kind="mergesort")[:k]
+
+        out: list[RetrievalMatch] = []
+        for idx in top_idx.tolist():
+            end_idx = int(ends[idx])
+            out.append(
+                RetrievalMatch(
+                    end_issue=history[end_idx].issue,
+                    similarity=float(similarity[idx]),
+                    next_draw_numbers=history[end_idx + 1].numbers,
+                    same_day_progress=bool(same_progress[idx]),
+                    exact_draw_match_count=int(exact_count[idx]),
+                    exact_window_match=bool(exact_count[idx] == n),
+                )
+            )
+        return out
+
 
 def retrieval_features(matches: list[RetrievalMatch], candidate: int, context_n: int) -> dict[str, float]:
     if not matches:
@@ -185,6 +299,47 @@ def retrieval_features(matches: list[RetrievalMatch], candidate: int, context_n:
         "retrieval_top3_hit_flag": 1.0 if any(candidate in m.next_draw_numbers for m in matches[:3]) else 0.0,
         "retrieval_dynamic_context_n": float(context_n),
     }
+
+
+def retrieval_features_frame(matches: list[RetrievalMatch], context_n: int) -> dict[int, dict[str, float]]:
+    if not matches:
+        base = retrieval_features(matches, 1, context_n)
+        return {cand: dict(base) for cand in range(1, 81)}
+
+    similarities = np.asarray([m.similarity for m in matches], dtype=np.float64)
+    next_hit = np.zeros((len(matches), 80), dtype=np.float64)
+    for i, m in enumerate(matches):
+        next_hit[i, np.asarray(m.next_draw_numbers, dtype=np.int64) - 1] = 1.0
+    vote_count = np.sum(next_hit, axis=0)
+    weighted_vote = np.sum(next_hit * similarities[:, None], axis=0)
+    total_weight = float(np.sum(similarities))
+    top1 = next_hit[0]
+    top3 = np.max(next_hit[: min(3, len(matches))], axis=0)
+    match_count = float(len(matches))
+    sim_mean = float(np.mean(similarities))
+    sim_max = float(np.max(similarities))
+    exact_window = float(sum(1 for m in matches if m.exact_window_match))
+    exact_draw_mean = float(np.mean([m.exact_draw_match_count for m in matches]))
+    same_day_bonus = float(np.mean([1.0 if m.same_day_progress else 0.0 for m in matches]))
+    out: dict[int, dict[str, float]] = {}
+    for cand in range(1, 81):
+        idx = cand - 1
+        row = {
+            "retrieval_match_count_topk": match_count,
+            "retrieval_similarity_mean": sim_mean,
+            "retrieval_similarity_max": sim_max,
+            "retrieval_exact_window_match_count": exact_window,
+            "retrieval_exact_draw_match_count_mean": exact_draw_mean,
+            "retrieval_next_draw_vote_count": float(vote_count[idx]),
+            "retrieval_next_draw_weighted_vote": float(weighted_vote[idx]),
+            "retrieval_next_draw_posterior": float(weighted_vote[idx] / total_weight) if total_weight else 0.0,
+            "retrieval_same_day_progress_bonus": same_day_bonus,
+            "retrieval_top1_hit_flag": float(top1[idx]),
+            "retrieval_top3_hit_flag": float(top3[idx]),
+            "retrieval_dynamic_context_n": float(context_n),
+        }
+        out[cand] = row
+    return out
 
 
 def aggregate_next_draw_votes(matches: list[RetrievalMatch]) -> dict[int, float]:

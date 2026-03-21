@@ -41,6 +41,7 @@ def run_source_consensus(
     sources: list[str],
     report_path: Path = Path("reports/source_consensus_report.json"),
     mismatch_policy: Literal["fail_fast", "majority_merge"] = "fail_fast",
+    timeout_s: float = 10.0,
 ) -> tuple[list[DrawRecord], dict]:
     successful: dict[str, list[DrawRecord]] = {}
     failover_reasons: dict[str, str | None] = {}
@@ -49,7 +50,7 @@ def run_source_consensus(
 
     for src in sources:
         try:
-            result = fetch_latest([src])
+            result = fetch_latest([src], timeout_s=timeout_s)
             successful[src] = result.records
             attempts[src] = result.attempts
             failover_reasons[src] = result.failover_reason

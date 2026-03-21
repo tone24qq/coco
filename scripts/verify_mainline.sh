@@ -13,6 +13,7 @@ pytest -q
 
 echo "[4/7] targeted tests"
 pytest -q tests/test_agents/test_phase1_fetch.py
+pytest -q tests/test_agents/test_phase2_api_and_pipeline.py
 pytest -q tests/test_agents/test_phase3_provenance_and_consensus.py
 pytest -q tests/test_agents/test_phase3_snapshot_predict_backtest.py
 pytest -q tests/test_agents/test_phase1_backtest_runtime_parity.py
@@ -21,6 +22,11 @@ pytest -q tests/test_agents/test_phase5_failover_size_and_logs.py
 pytest -q tests/test_agents/test_phase5_dynamic_weighting.py
 pytest -q tests/test_agents/test_phase6_runtime_history.py
 pytest -q tests/test_agents/test_phase7_large_file_io.py
+pytest -q tests/test_agents/test_phase8_retrieval_vectorized_equivalence.py
+pytest -q tests/test_agents/test_phase8_build_features_vectorized_equivalence.py
+pytest -q tests/test_agents/test_phase8_compute_metrics_equivalence.py
+pytest -q tests/test_agents/test_phase8_oof_cv_equivalence.py
+pytest -q tests/test_agents/test_phase8_perf_sanity.py
 
 echo "[5/7] prepare minimal ranking dataset"
 python - <<'PY'
