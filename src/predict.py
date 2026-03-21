@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -17,7 +18,6 @@ from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest
 from src.fetchers.source_consensus import run_source_consensus
 from src.io.canonical_dataset import read_audit_summary
 from src.runtime_history import (
-    artifact_matches_source,
     build_runtime_history_artifact,
     load_runtime_history_store,
     resolve_processed_source_files,
@@ -26,6 +26,47 @@ from src.runtime_history import (
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
 from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date, read_processed
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _abs_path(value: str, base_dir: Path) -> str:
+    p = Path(value)
+    if not p.is_absolute():
+        p = (base_dir / p).resolve()
+    else:
+        p = p.resolve()
+    return str(p)
+
+
+def normalize_predict_config_paths(config: dict[str, Any], base_dir: Path | None = None) -> dict[str, Any]:
+    cfg = copy.deepcopy(config)
+    root = (base_dir or PROJECT_ROOT).resolve()
+
+    models = cfg.setdefault("models", {})
+    if models.get("dir"):
+        models["dir"] = _abs_path(str(models["dir"]), root)
+
+    history = cfg.setdefault("history", {})
+    history["processed_path"] = _abs_path(str(history.get("processed_path", "data/processed/history_processed.csv")), root)
+    if history.get("runtime_artifact_dir"):
+        history["runtime_artifact_dir"] = _abs_path(str(history["runtime_artifact_dir"]), root)
+
+    provenance = cfg.setdefault("provenance", {})
+    for key, default in [
+        ("audit_path", "reports/local_data_audit.json"),
+        ("manifest_path", "reports/raw_manifest.json"),
+        ("consensus_report_path", "reports/source_consensus_report.json"),
+    ]:
+        provenance[key] = _abs_path(str(provenance.get(key, default)), root)
+    raw_dirs = provenance.get("raw_dirs")
+    if isinstance(raw_dirs, list):
+        provenance["raw_dirs"] = [_abs_path(str(x), root) for x in raw_dirs]
+
+    snapshot = cfg.setdefault("snapshot", {})
+    snapshot["path"] = _abs_path(str(snapshot.get("path", "reports/history_snapshot.json")), root)
+    return cfg
 
 
 def _next_issue(issue: str) -> str:
@@ -112,7 +153,7 @@ def _load_recent_draws(
 
 def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
     processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
-    runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
+    runtime_dir = _resolve_runtime_artifact_dir(config)
     try:
         store = _cached_runtime_history_store(str(processed_path), str(runtime_dir))
     except DataContractError:
@@ -125,12 +166,28 @@ def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
     return store
 
 
+def _resolve_runtime_artifact_dir(config: dict[str, Any]) -> Path:
+    history_cfg = config.get("history", {})
+    explicit = history_cfg.get("runtime_artifact_dir")
+    if explicit:
+        return Path(explicit)
+    processed_path = Path(history_cfg.get("processed_path", "data/processed/history_processed.csv"))
+    if processed_path.parent.name == "processed":
+        return processed_path.parent.parent / "runtime_history"
+    return processed_path.parent / "runtime_history"
+
+
 @lru_cache(maxsize=1)
 def _cached_runtime_history_store(processed_path: str, runtime_dir: str):
-    source = Path(processed_path)
     artifact_dir = Path(runtime_dir)
-    source_files = resolve_processed_source_files(source)
-    if not runtime_history_ready(artifact_dir) or not artifact_matches_source(artifact_dir, source_files):
+    if runtime_history_ready(artifact_dir):
+        return load_runtime_history_store(artifact_dir)
+
+    source = Path(processed_path)
+    if not source.exists() and not sorted(source.parent.glob(f"{source.stem}.part*{source.suffix}")):
+        raise DataContractError("runtime history artifact missing and processed history missing; cannot rebuild")
+    resolve_processed_source_files(source)
+    if not runtime_history_ready(artifact_dir):
         build_runtime_history_artifact(source, artifact_dir)
     return load_runtime_history_store(artifact_dir)
 
@@ -352,12 +409,13 @@ def run_prediction(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/predict.yaml")
-    parser.add_argument("--output", default="reports/latest_prediction.json")
+    parser.add_argument("--config", default=str(PROJECT_ROOT / "configs/predict.yaml"))
+    parser.add_argument("--output", default=str(PROJECT_ROOT / "reports/latest_prediction.json"))
     parser.add_argument("--recent-json", default="")
     args = parser.parse_args()
 
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    config = normalize_predict_config_paths(config)
     artifacts = load_artifacts(Path(config.get("models", {}).get("dir", "models")))
 
     recent_draws = None

@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from pathlib import Path
 
 import src.api as api_module
 from src.api import app
@@ -78,3 +79,21 @@ def test_health_degraded_when_artifacts_missing(monkeypatch):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["model_loaded"] is False
+
+
+def test_get_runtime_normalizes_config_paths_to_absolute(monkeypatch, tmp_path):
+    class FakeArtifacts:
+        feature_columns = ["x"]
+        metadata = {"model_version": "test"}
+
+    monkeypatch.chdir(tmp_path)
+    api_module.get_runtime.cache_clear()
+    monkeypatch.setattr(api_module, "load_artifacts", lambda _path: FakeArtifacts())
+
+    artifacts, cfg, err = api_module.get_runtime()
+    assert err is None
+    assert artifacts is not None
+    assert Path(cfg["models"]["dir"]).is_absolute()
+    assert Path(cfg["history"]["processed_path"]).is_absolute()
+    assert Path(cfg["provenance"]["audit_path"]).is_absolute()
+    assert Path(cfg["snapshot"]["path"]).is_absolute()
