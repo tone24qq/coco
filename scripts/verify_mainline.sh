@@ -20,6 +20,7 @@ pytest -q tests/test_agents/test_phase4_ranking_mainline_contracts.py
 pytest -q tests/test_agents/test_phase5_failover_size_and_logs.py
 pytest -q tests/test_agents/test_phase5_dynamic_weighting.py
 pytest -q tests/test_agents/test_phase6_runtime_history.py
+pytest -q tests/test_agents/test_phase7_large_file_io.py
 
 echo "[5/7] prepare minimal ranking dataset"
 python - <<'PY'
@@ -29,6 +30,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.build_features import build_feature_rows, write_feature_store
+from src.io_utils import safe_read_table
 from src.ranking_dataset import attach_group_ids, write_rows
 from src.utils import DrawRecord, write_processed
 
@@ -47,8 +49,8 @@ for i in range(600):
 rows = build_feature_rows(records, min_history=120, retrieval_window=40, top_k=8)
 feature_path = Path("data/feature_store/ranking_features.csv")
 feature_path.parent.mkdir(parents=True, exist_ok=True)
-write_feature_store(feature_path, rows)
-rank_rows = pd.read_csv(feature_path).to_dict(orient="records")
+feature_out = write_feature_store(feature_path, rows)
+rank_rows = safe_read_table(feature_out).to_dict(orient="records")
 write_rows(Path("data/feature_store/ranking_dataset.csv"), attach_group_ids(rank_rows))
 write_processed(Path("data/processed/history_processed.csv"), records)
 PY
@@ -206,6 +208,38 @@ for p in logs:
 
 for f in ["meta.json", "numbers.npy", "issue.npy", "draw_date_ordinal.npy", "day_issue_index.npy"]:
     assert Path(f"/tmp/deploy_bundle_verify/data/runtime_history/{f}").exists(), f"deploy bundle missing runtime artifact: {f}"
+PY
+
+
+python - <<'PY'
+from pathlib import Path
+import json
+
+tracked = [
+    Path("data/processed/history_processed.csv"),
+    Path("data/processed/history_processed.parquet"),
+    Path("data/processed/history_processed.dataset"),
+    Path("data/feature_store/ranking_features.csv"),
+    Path("data/feature_store/ranking_features.parquet"),
+    Path("data/feature_store/ranking_features.dataset"),
+    Path("data/feature_store/ranking_dataset.csv"),
+    Path("data/feature_store/ranking_dataset.parquet"),
+    Path("data/feature_store/ranking_dataset.dataset"),
+]
+
+for p in tracked:
+    if p.exists() and p.is_file():
+        print(f"[size] {p} -> {p.stat().st_size}")
+        assert p.stat().st_size < 100 * 1024 * 1024
+    if p.exists() and p.is_dir():
+        manifest = p / "manifest.json"
+        if manifest.exists():
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            print(f"[manifest] {manifest}: format={payload.get('format')} shards={payload.get('shard_count')}")
+            for name in payload.get("shards", []):
+                s = p / name
+                assert s.exists()
+                assert s.stat().st_size < 100 * 1024 * 1024
 PY
 
 echo "verify_mainline.sh PASSED"

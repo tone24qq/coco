@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import re
 from dataclasses import dataclass
@@ -9,7 +10,8 @@ from urllib.parse import urlparse
 
 import httpx
 
-from src.utils import DataContractError, DrawRecord, ensure_numbers, parse_date, write_processed
+from src.io_utils import write_json_gz_if_needed
+from src.utils import DataContractError, DrawRecord, enforce_file_size, ensure_numbers, parse_date, write_processed
 
 WINWIN_URL = "https://winwin.tw/Bingo"
 AUZO_URL = "https://lotto.auzo.tw/RK.php"
@@ -328,9 +330,31 @@ def fetch_latest(sources: list[str] | None = None, timeout_s: float = 10.0) -> F
     raise DataContractError(f"fetch failed for all sources: {last_err}")
 
 
-def main(output_path: str = "data/raw/winwin_latest_processed.csv") -> None:
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", default="data/raw/winwin_latest_processed.csv")
+    parser.add_argument("--today-only", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--gzip", action="store_true")
+    parser.add_argument("--max-file-mb", type=float, default=95.0)
+    args = parser.parse_args()
+
     result = fetch_latest()
-    write_processed(Path(output_path), result.records)
+    rows = result.records
+    if args.today_only and rows:
+        latest_day = max(r.draw_date for r in rows)
+        rows = [r for r in rows if r.draw_date == latest_day]
+
+    output_path = Path(args.output)
+    if args.gzip or args.today_only:
+        payload = [r.to_dict() for r in rows]
+        write_json_gz_if_needed(
+            payload,
+            output_path.with_suffix(".json.gz"),
+            max_file_mb=float(args.max_file_mb),
+            producer_script="src.fetch_winwin",
+        )
+    write_processed(output_path, rows)
+    enforce_file_size(output_path, max_bytes=int(args.max_file_mb * 1024 * 1024))
 
 
 if __name__ == "__main__":

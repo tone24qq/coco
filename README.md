@@ -65,3 +65,22 @@ API 啟動與預測均會檢查以上檔案，缺任一檔將 fail-fast。
 - `reports/permutation_distribution.csv`
 - `reports/block_bootstrap_summary.json`
 - `reports/alignment_audit.json`
+
+
+## Large-file Safe Output Contract
+
+Mainline now writes large tabular outputs through `src.io_utils.safe_write_table` and reads through `safe_read_table`:
+
+- Soft threshold: `95MB` per file (auto shard).
+- Hard limit: `100MB` per file (`>=100MB` fail-fast).
+- Supported read formats: `.csv`, `.csv.gz`, `.parquet`, dataset directory (`*.dataset` with `manifest.json`), and direct `manifest.json`.
+- When sharded, output directory includes `manifest.json` with: `format`, `compression`, `shard_count`, `shards`, `columns`, `row_count`, `created_at`, `producer_script`.
+- CLI usage remains unchanged; if output path is a legacy `.csv`, writer may materialize a sibling `*.dataset` directory and downstream mainline still reads it.
+
+Affected pipeline stages:
+
+1. `python -m src.fetch_winwin` (supports `--today-only`, `--gzip`, `--max-file-mb`)
+2. `python -m src.prepare_data ...`
+3. `python -m src.build_features ...`
+4. `python -m src.ranking_dataset ...`
+5. `python -m src.train ... --max-file-mb 95`

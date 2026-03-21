@@ -59,21 +59,24 @@ def parse_date(text: str) -> date:
 
 
 def read_processed(path: Path) -> list[DrawRecord]:
+    from src.io_utils import safe_read_table
+
+    frame = safe_read_table(path)
+    required = {"issue", "draw_date", "numbers", "day_issue_index"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise DataContractError(f"processed data missing columns: {sorted(missing)}")
+
     rows: list[DrawRecord] = []
-    with path.open("r", encoding="utf-8") as fh:
-        reader = csv.DictReader(fh)
-        required = {"issue", "draw_date", "numbers", "day_issue_index"}
-        if not required.issubset(reader.fieldnames or []):
-            raise DataContractError(f"processed CSV missing columns: {required}")
-        for row in reader:
-            rows.append(
-                DrawRecord(
-                    issue=row["issue"],
-                    draw_date=parse_date(row["draw_date"]),
-                    numbers=ensure_numbers(json.loads(row["numbers"])),
-                    day_issue_index=int(row["day_issue_index"]),
-                )
+    for row in frame.itertuples(index=False):
+        rows.append(
+            DrawRecord(
+                issue=str(row.issue),
+                draw_date=parse_date(str(row.draw_date)),
+                numbers=ensure_numbers(json.loads(str(row.numbers))),
+                day_issue_index=int(row.day_issue_index),
             )
+        )
     return rows
 
 

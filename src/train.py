@@ -20,8 +20,9 @@ from src.modeling import (
     run_cv,
     score_with_models,
 )
+from src.io_utils import write_json_gz_if_needed
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, compose_final_score_from_components
-from src.utils import DataContractError, enforce_dir_file_sizes, log_progress, read_processed
+from src.utils import DataContractError, enforce_dir_file_sizes, enforce_file_size, log_progress, read_processed
 
 
 def _score_fixed_window_baseline(val_scored: pd.DataFrame) -> pd.DataFrame:
@@ -80,6 +81,7 @@ def main() -> None:
     parser.add_argument("--config", default="configs/train.yaml")
     parser.add_argument("--experiments", default="configs/experiments.yaml")
     parser.add_argument("--input", default="data/feature_store/ranking_dataset.csv")
+    parser.add_argument("--max-file-mb", type=float, default=95.0)
     args = parser.parse_args()
 
     log_progress(1, 7, "載入訓練設定", f"config={args.config}")
@@ -144,6 +146,12 @@ def main() -> None:
     fold_df.to_csv("reports/train_experiment_per_fold_metrics.csv", index=False)
     pd.DataFrame(backtest_fold_rows).to_csv("reports/backtest_experiment_per_fold_metrics.csv", index=False)
     pd.DataFrame(registry_rows).to_csv("reports/train_experiment_registry.csv", index=False)
+    for p in [
+        Path("reports/train_experiment_per_fold_metrics.csv"),
+        Path("reports/backtest_experiment_per_fold_metrics.csv"),
+        Path("reports/train_experiment_registry.csv"),
+    ]:
+        enforce_file_size(p, max_bytes=int(args.max_file_mb * 1024 * 1024))
 
     train_main = [r["train_top3_hit_rate"] for r in registry_rows if r["experiment"] in {"ranker_main_qsm", "dynamic_n_fusion_main"}]
     backtest_main = [r["backtest_top3_hit_rate"] for r in registry_rows if r["experiment"] in {"ranker_main_qsm", "dynamic_n_fusion_main"}]
@@ -168,8 +176,13 @@ def main() -> None:
 
     Path("models").mkdir(exist_ok=True)
     ranker.booster_.save_model("models/lightgbm_ranker.txt")
-    joblib.dump(logistic, "models/logistic_regression.pkl")
-    Path("models/feature_columns.json").write_text(json.dumps(feature_cols, ensure_ascii=False, indent=2), encoding="utf-8")
+    joblib.dump(logistic, "models/logistic_regression.pkl", compress=3)
+    write_json_gz_if_needed(
+        feature_cols,
+        Path("models/feature_columns.json"),
+        max_file_mb=float(args.max_file_mb),
+        producer_script="src.train",
+    )
 
     issue_list = list(dict.fromkeys(df["issue"].tolist()))
     meta = metadata_payload(feature_cols, issue_list, {"train": config, "experiments": exp_cfg}, summary)
@@ -185,7 +198,14 @@ def main() -> None:
     meta["backtest_summary"] = backtest_summary
     meta["dynamic_weighting_mode"] = dynamic_cfg.mode
     meta["dynamic_weighting_enabled"] = dynamic_cfg.enabled
-    Path("models/metadata.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json_gz_if_needed(
+        meta,
+        Path("models/metadata.json"),
+        max_file_mb=float(args.max_file_mb),
+        producer_script="src.train",
+    )
+    for p in [Path("models/lightgbm_ranker.txt"), Path("models/logistic_regression.pkl")]:
+        enforce_file_size(p, max_bytes=int(args.max_file_mb * 1024 * 1024))
     log_progress(6, 7, "輸出模型產物", "models/")
     enforce_dir_file_sizes([Path("models"), Path("reports"), Path("data/feature_store")])
     log_progress(7, 7, "訓練主線完成", f"issue_count={len(issue_list)}")
