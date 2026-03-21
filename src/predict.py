@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 from functools import lru_cache
 from pathlib import Path
@@ -16,6 +17,7 @@ from src.build_features import build_candidate_rows, resolve_dynamic_context
 from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest
 from src.fetchers.source_consensus import run_source_consensus
 from src.io.canonical_dataset import read_audit_summary
+from src.prepare_data import merge_histories
 from src.runtime_history import (
     artifact_matches_source,
     build_runtime_history_artifact,
@@ -25,7 +27,45 @@ from src.runtime_history import (
 )
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
-from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date, read_processed
+from src.utils import (
+    DataContractError,
+    DrawRecord,
+    enforce_dir_file_sizes,
+    ensure_numbers,
+    log_progress,
+    parse_date,
+    read_processed,
+    shard_csv_if_needed,
+    write_processed,
+)
+
+
+def _resolve_config_path(base_dir: Path, raw: str) -> str:
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str((base_dir / p).resolve())
+
+
+def normalize_predict_config_paths(config: dict[str, Any], base_dir: Path) -> dict[str, Any]:
+    resolved = copy.deepcopy(config)
+    history = resolved.setdefault("history", {})
+    history["processed_path"] = _resolve_config_path(base_dir, str(history.get("processed_path", "data/processed/history_processed.csv")))
+    history["runtime_artifact_dir"] = _resolve_config_path(base_dir, str(history.get("runtime_artifact_dir", "data/runtime_history")))
+
+    models = resolved.setdefault("models", {})
+    models["dir"] = _resolve_config_path(base_dir, str(models.get("dir", "models")))
+
+    snapshot = resolved.setdefault("snapshot", {})
+    snapshot["path"] = _resolve_config_path(base_dir, str(snapshot.get("path", "reports/history_snapshot.json")))
+
+    provenance = resolved.setdefault("provenance", {})
+    provenance["audit_path"] = _resolve_config_path(base_dir, str(provenance.get("audit_path", "reports/local_data_audit.json")))
+    provenance["consensus_report_path"] = _resolve_config_path(
+        base_dir,
+        str(provenance.get("consensus_report_path", "reports/source_consensus_report.json")),
+    )
+    return resolved
 
 
 def _next_issue(issue: str) -> str:
@@ -43,7 +83,13 @@ def _issue_range(records: list[DrawRecord]) -> list[str]:
 
 def _records_from_payload(recent_draws: list[dict[str, Any]]) -> list[DrawRecord]:
     records = []
-    for row in recent_draws:
+    for i, row in enumerate(recent_draws):
+        if not isinstance(row, dict):
+            raise DataContractError(f"recent_draws[{i}] must be object")
+        required = ["issue", "draw_date", "numbers", "day_issue_index"]
+        missing = [k for k in required if k not in row]
+        if missing:
+            raise DataContractError(f"recent_draws[{i}] missing required fields: {missing}")
         records.append(
             DrawRecord(
                 issue=str(row["issue"]),
@@ -113,6 +159,7 @@ def _load_recent_draws(
 def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
     processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
     runtime_dir = Path(config.get("history", {}).get("runtime_artifact_dir", "data/runtime_history"))
+    _ensure_processed_history_for_deploy(config, processed_path)
     try:
         store = _cached_runtime_history_store(str(processed_path), str(runtime_dir))
     except DataContractError:
@@ -123,6 +170,33 @@ def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
     if len(store) == 0:
         raise DataContractError("processed history missing; build processed history before deploy")
     return store
+
+
+def _ensure_processed_history_for_deploy(config: dict[str, Any], processed_path: Path) -> None:
+    has_shards = bool(sorted(processed_path.parent.glob(f"{processed_path.stem}.part*{processed_path.suffix}")))
+    if processed_path.exists() or has_shards:
+        return
+    history_cfg = config.get("history", {})
+    provenance_cfg = config.get("provenance", {})
+    if "raw_dirs" in history_cfg:
+        raw_dir_values = history_cfg.get("raw_dirs") or []
+    elif "raw_dirs" in provenance_cfg:
+        raw_dir_values = provenance_cfg.get("raw_dirs") or []
+    else:
+        raw_dir_values = ["data/raw", "raw"]
+    raw_dirs = [Path(x) for x in raw_dir_values]
+    raw_files: list[Path] = []
+    for d in raw_dirs:
+        if not d.exists():
+            continue
+        raw_files.extend(sorted(p for p in d.glob("*.csv") if p.is_file()))
+    if not raw_files:
+        raise DataContractError("processed history missing; build processed history before deploy")
+    records = merge_histories(raw_files)
+    if not records:
+        raise DataContractError("processed history missing; build processed history before deploy")
+    write_processed(processed_path, records)
+    shard_csv_if_needed(processed_path)
 
 
 @lru_cache(maxsize=1)
@@ -357,7 +431,10 @@ def main() -> None:
     parser.add_argument("--recent-json", default="")
     args = parser.parse_args()
 
-    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    config_path = Path(args.config).resolve()
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    base_dir = config_path.parent.parent if config_path.parent.name == "configs" else config_path.parent
+    config = normalize_predict_config_paths(config, base_dir=base_dir)
     artifacts = load_artifacts(Path(config.get("models", {}).get("dir", "models")))
 
     recent_draws = None
