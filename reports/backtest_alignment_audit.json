@@ -1,0 +1,10 @@
+{
+  "time_series_split_forward_only": true,
+  "train_val_issue_overlap_count": 0,
+  "runtime_backtest_scoring_formula_match": true,
+  "dynamic_weighting_enabled": true,
+  "scoring_backend": "shared_runtime_scoring",
+  "feature_contract_match": true,
+  "artifact_contract_present": true,
+  "dataset_issue_count": 2634
+}

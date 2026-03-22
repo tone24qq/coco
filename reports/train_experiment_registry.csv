@@ -1,0 +1,5 @@
+experiment,status,train_top3_hit_rate,backtest_top3_hit_rate
+baseline_frequency,completed,0.24190911470231766,0.25278622087132724
+ranker_main_qsm,completed,0.8854095875999709,0.25109760216143195
+ablation_no_retrieval,completed,0.8897450960065424,0.2531239446133063
+ablation_no_logistic,completed,0.8535895427546832,0.24907125970955757
