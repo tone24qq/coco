@@ -144,7 +144,36 @@ def _to_draw_records(payload: list[dict[str, object]], *, source_name: str) -> l
                 day_issue_index=idx,
             )
         )
+    _validate_same_day_issue_completeness(results, source_name=source_name)
     return results
+
+
+def _issue_suffix_index(issue: str) -> int | None:
+    if not issue.isdigit() or len(issue) < 3:
+        return None
+    return int(issue[-3:])
+
+
+def _validate_same_day_issue_completeness(rows: list[DrawRecord], source_name: str) -> None:
+    if not rows:
+        raise DataContractError(f"{source_name} same-day rows empty")
+    ordered = sorted(rows, key=lambda r: int(r.issue) if r.issue.isdigit() else r.issue)
+    suffixes: list[int] = []
+    for row in ordered:
+        suffix = _issue_suffix_index(row.issue)
+        if suffix is None:
+            raise DataContractError(f"{source_name} issue format invalid for same-day contract: {row.issue}")
+        suffixes.append(suffix)
+
+    expected = list(range(min(suffixes), max(suffixes) + 1))
+    if suffixes != expected:
+        raise DataContractError(
+            f"{source_name} same-day issue incomplete: expected contiguous suffix {expected[0]}..{expected[-1]} got {suffixes[:3]}...{suffixes[-3:]}"
+        )
+    day_idx = [row.day_issue_index for row in ordered]
+    expected_idx = list(range(1, len(ordered) + 1))
+    if day_idx != expected_idx:
+        raise DataContractError(f"{source_name} day_issue_index contract violated")
 
 
 def _has_dynamic_marker(html: str) -> bool:
@@ -225,6 +254,25 @@ def _fetch_winwin_dynamic_records(html: str, timeout_s: float) -> list[DrawRecor
         except DataContractError:
             continue
     raise DataContractError("winwin dynamic parser failed for all date candidates")
+
+
+def fetch_authoritative_latest_issue(timeout_s: float = 10.0) -> tuple[str, str]:
+    try:
+        page = httpx.get(WINWIN_URL, timeout=timeout_s)
+        page.raise_for_status()
+        dynamic_rows = _fetch_winwin_dynamic_records(page.text, timeout_s=timeout_s)
+        if not dynamic_rows:
+            raise DataContractError("authoritative dynamic endpoint returned no rows")
+        return dynamic_rows[-1].issue, "winwin_dynamic"
+    except Exception as exc:  # noqa: BLE001
+        fallback = fetch_latest(sources=[WINWIN_URL, AUZO_URL], timeout_s=timeout_s)
+        if not fallback.records:
+            raise DataContractError("authoritative latest issue probe failed and fallback fetch returned empty") from exc
+        latest_day = max(r.draw_date for r in fallback.records)
+        same_day = sorted([r for r in fallback.records if r.draw_date == latest_day], key=lambda r: r.issue)
+        if not same_day:
+            raise DataContractError("authoritative latest issue probe fallback has no same-day rows") from exc
+        return same_day[-1].issue, f"fallback:{fallback.source_url}"
 
 
 def _parse_auzo_html(html: str) -> list[DrawRecord]:

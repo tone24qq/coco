@@ -1,4 +1,5 @@
 import threading
+from dataclasses import replace
 from fastapi.testclient import TestClient
 from pathlib import Path
 from unittest.mock import Mock
@@ -185,16 +186,22 @@ def test_log_progress_request_id_and_flush(monkeypatch) -> None:
 
 def test_load_recent_draws_passes_configured_timeout_to_consensus(monkeypatch, synthetic_records, tmp_path) -> None:
     observed: dict[str, float] = {}
+    recent_two = [
+        replace(synthetic_records[-2], issue="115016249", day_issue_index=1),
+        replace(synthetic_records[-1], issue="115016250", day_issue_index=2),
+    ]
 
     def fake_consensus(_sources, _report_path, mismatch_policy="fail_fast", timeout_s=10.0):
         observed["timeout_s"] = timeout_s
-        return synthetic_records[-2:], {
+        return recent_two, {
             "consensus_status": "ok",
             "fetch_attempts": 1,
             "actual_source_used": "consensus_majority_merge",
+            "source_same_day_max_issue": {"s1": "115016250", "s2": "115016250"},
         }
 
     monkeypatch.setattr("src.predict.run_source_consensus", fake_consensus)
+    monkeypatch.setattr("src.predict.fetch_authoritative_latest_issue", lambda timeout_s=10.0: ("115016250", "probe"))
     config = {
         "auto_fetch": {
             "enabled": True,
@@ -210,7 +217,11 @@ def test_load_recent_draws_passes_configured_timeout_to_consensus(monkeypatch, s
 
 def test_load_recent_draws_uses_default_timeout_for_single_source(monkeypatch, synthetic_records) -> None:
     mocked = Mock()
-    mocked.records = synthetic_records[-3:]
+    mocked.records = [
+        replace(synthetic_records[-3], issue="115016248", day_issue_index=1),
+        replace(synthetic_records[-2], issue="115016249", day_issue_index=2),
+        replace(synthetic_records[-1], issue="115016250", day_issue_index=3),
+    ]
     mocked.attempts = 1
     mocked.source_url = "s1"
     mocked.failover_reason = None
@@ -221,6 +232,7 @@ def test_load_recent_draws_uses_default_timeout_for_single_source(monkeypatch, s
         return mocked
 
     monkeypatch.setattr("src.predict.fetch_latest", fake_fetch_latest)
+    monkeypatch.setattr("src.predict.fetch_authoritative_latest_issue", lambda timeout_s=10.0: ("115016250", "probe"))
     config = {
         "auto_fetch": {
             "enabled": True,
