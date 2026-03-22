@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 import threading
@@ -12,7 +13,14 @@ from pydantic import BaseModel, Field
 
 from src.analysis.snapshots import read_history_snapshot
 from src.artifacts import ModelArtifacts, load_artifacts
-from src.predict import PROJECT_ROOT, _resolve_runtime_artifact_dir, normalize_predict_config_paths, run_prediction
+from src.predict import (
+    PROJECT_ROOT,
+    PredictionRuntimeState,
+    _resolve_runtime_artifact_dir,
+    build_prediction_runtime_state,
+    normalize_predict_config_paths,
+    run_prediction,
+)
 from src.runtime_history import runtime_history_ready
 from src.utils import DataContractError
 
@@ -55,10 +63,13 @@ class HealthResponse(BaseModel):
     coverage_year_end: int | None = None
     processed_history_exists: bool
     compact_history_ready: bool
-
-
-app = FastAPI(title="BingoBingo Ranking API", version="1.2.0")
-_PREDICT_SINGLEFLIGHT_LOCK = threading.Lock()
+    runtime_history_ready: bool
+    retrieval_index_ready: bool
+    retrieval_index_version: str | None = None
+    recent_cache_status: str | None = None
+    recent_cache_updated_at: float | None = None
+    fast_path_enabled: bool
+    stale_allowed: bool
 
 
 @lru_cache(maxsize=1)
@@ -73,25 +84,19 @@ def get_runtime() -> tuple[ModelArtifacts | None, dict[str, Any], str | None]:
         return None, config, str(exc)
 
 
-@app.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     artifacts, config, err = get_runtime()
-    snap = read_history_snapshot(Path(config.get("snapshot", {}).get("path", "reports/history_snapshot.json")))
-    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
-    has_processed = processed_path.exists() or bool(sorted(processed_path.parent.glob(f"{processed_path.stem}.part*{processed_path.suffix}")))
-    runtime_dir = _resolve_runtime_artifact_dir(config)
-    return HealthResponse(
-        status="ok" if artifacts else f"degraded: {err}",
-        model_loaded=artifacts is not None,
-        model_version=str((artifacts.metadata.get("model_version") if artifacts else "unavailable")),
-        feature_count=(len(artifacts.feature_columns) if artifacts else 0),
-        required_recent_draws_min=int(config.get("history", {}).get("min_dynamic_n", 20)),
-        source=str(config.get("auto_fetch", {}).get("sources", [config.get("auto_fetch", {}).get("source", "winwin")])[0]),
-        coverage_year_start=snap.get("coverage_year_start"),
-        coverage_year_end=snap.get("coverage_year_end"),
-        processed_history_exists=has_processed,
-        compact_history_ready=runtime_history_ready(runtime_dir),
-    )
+    if artifacts is None:
+        raise RuntimeError(f"startup fail-fast: artifacts unavailable: {err}")
+    app.state.runtime_state = build_prediction_runtime_state(artifacts, config)
+    app.state.config = config
+    app.state.artifacts = artifacts
+    yield
+
+
+app = FastAPI(title="BingoBingo Ranking API", version="1.3.0", lifespan=lifespan)
+_PREDICT_SINGLEFLIGHT_LOCK = threading.Lock()
 
 
 def _minimal_response(result: dict[str, Any]) -> dict[str, Any]:
@@ -124,12 +129,63 @@ def _minimal_response(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@app.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    artifacts, config, err = get_runtime()
+    snap = read_history_snapshot(Path(config.get("snapshot", {}).get("path", "reports/history_snapshot.json")))
+    processed_path = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
+    has_processed = processed_path.exists() or bool(sorted(processed_path.parent.glob(f"{processed_path.stem}.part*{processed_path.suffix}")))
+    runtime_dir = _resolve_runtime_artifact_dir(config)
+    runtime_state: PredictionRuntimeState | None = getattr(app.state, "runtime_state", None)
+    return HealthResponse(
+        status="ok" if artifacts else f"degraded: {err}",
+        model_loaded=artifacts is not None,
+        model_version=str((artifacts.metadata.get("model_version") if artifacts else "unavailable")),
+        feature_count=(len(artifacts.feature_columns) if artifacts else 0),
+        required_recent_draws_min=int(config.get("history", {}).get("min_dynamic_n", 20)),
+        source=str(config.get("auto_fetch", {}).get("sources", [config.get("auto_fetch", {}).get("source", "winwin")])[0]),
+        coverage_year_start=snap.get("coverage_year_start"),
+        coverage_year_end=snap.get("coverage_year_end"),
+        processed_history_exists=has_processed,
+        compact_history_ready=runtime_history_ready(runtime_dir),
+        runtime_history_ready=runtime_state is not None,
+        retrieval_index_ready=runtime_state is not None,
+        retrieval_index_version=(runtime_state.retrieval_index_version if runtime_state else None),
+        recent_cache_status=(runtime_state.recent_cache.cache_status if runtime_state else None),
+        recent_cache_updated_at=(runtime_state.recent_cache.updated_at_epoch if runtime_state else None),
+        fast_path_enabled=bool(config.get("runtime", {}).get("fast_path_enabled", True)),
+        stale_allowed=bool(config.get("recent_cache", {}).get("allow_stale", True)),
+    )
+
+
+@app.get("/debug/runtime")
+def debug_runtime() -> dict[str, Any]:
+    runtime_state: PredictionRuntimeState | None = getattr(app.state, "runtime_state", None)
+    if runtime_state is None:
+        raise HTTPException(status_code=503, detail="runtime not initialized")
+    return {
+        "model_loaded": True,
+        "model_version": runtime_state.artifacts.metadata.get("model_version") or runtime_state.artifacts.metadata.get("created_at"),
+        "runtime_history_ready": True,
+        "runtime_history_version": runtime_state.runtime_history_version,
+        "retrieval_index_ready": True,
+        "retrieval_index_version": runtime_state.retrieval_index_version,
+        "recent_cache_status": runtime_state.recent_cache.cache_status,
+        "recent_cache_updated_at": runtime_state.recent_cache.updated_at_epoch,
+        "recent_last_issue": runtime_state.recent_cache.recent_last_issue,
+        "fast_path_enabled": bool(runtime_state.config.get("runtime", {}).get("fast_path_enabled", True)),
+        "stale_allowed": bool(runtime_state.config.get("recent_cache", {}).get("allow_stale", True)),
+        "latest_runtime_issue_range": [runtime_state.merged_history[0].issue, runtime_state.merged_history[-1].issue],
+    }
+
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(payload: PredictPayload) -> PredictResponse:
     request_id = uuid.uuid4().hex[:8]
     artifacts, config, err = get_runtime()
-    if artifacts is None:
-        raise HTTPException(status_code=503, detail=f"artifacts unavailable: {err}")
+    runtime_state: PredictionRuntimeState | None = getattr(app.state, "runtime_state", None)
+    if artifacts is None or runtime_state is None:
+        raise HTTPException(status_code=503, detail=f"runtime unavailable: {err}")
     acquired = _PREDICT_SINGLEFLIGHT_LOCK.acquire(blocking=False)
     if not acquired:
         print(f"[req={request_id}] /predict rejected: prediction already running", flush=True)
@@ -137,7 +193,7 @@ def predict(payload: PredictPayload) -> PredictResponse:
     try:
         print(f"[req={request_id}] /predict start", flush=True)
         recent = [r.model_dump() for r in payload.recent_draws] if payload.recent_draws else None
-        result = run_prediction(artifacts, config, recent, request_id=request_id, response_mode="minimal")
+        result = run_prediction(artifacts, config, recent, request_id=request_id, response_mode="minimal", runtime_state=runtime_state)
         response = PredictResponse(**_minimal_response(result))
         print(f"[req={request_id}] /predict done", flush=True)
         return response

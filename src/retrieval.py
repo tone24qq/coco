@@ -41,6 +41,16 @@ class RetrievalMatch:
     exact_window_match: bool
 
 
+@dataclass(frozen=True)
+class RetrievalPreparedState:
+    history: list[DrawRecord]
+    history_mat: np.ndarray
+    history_prof: np.ndarray
+    history_prefix: np.ndarray
+    max_end: int
+    index_version: str
+
+
 def _jaccard(a: tuple[int, ...], b: tuple[int, ...]) -> float:
     sa, sb = set(a), set(b)
     inter = len(sa & sb)
@@ -183,18 +193,39 @@ class SimilarWindowRetriever:
         return out
 
     def query(self, history: list[DrawRecord], target_window: list[DrawRecord], day_issue_index: int) -> list[RetrievalMatch]:
+        prepared = self.prepare_history(history)
+        return self.query_prepared(prepared, target_window=target_window, day_issue_index=day_issue_index)
+
+    def prepare_history(self, history: list[DrawRecord], index_version: str = "v1") -> RetrievalPreparedState:
+        history_mat = self._history_indicator_matrix(history)
+        history_prof = self._draw_profile_matrix(history)
+        history_prefix = np.concatenate([np.zeros((1, 80), dtype=np.float64), np.cumsum(history_mat, axis=0)], axis=0)
+        return RetrievalPreparedState(
+            history=history,
+            history_mat=history_mat,
+            history_prof=history_prof,
+            history_prefix=history_prefix,
+            max_end=len(history) - 2,
+            index_version=index_version,
+        )
+
+    def query_prepared(
+        self,
+        state: RetrievalPreparedState,
+        target_window: list[DrawRecord],
+        day_issue_index: int,
+    ) -> list[RetrievalMatch]:
+        history = state.history
         n = len(target_window)
         if n <= 0:
             return []
         if self.require_same_length_window and len(history) <= n:
             return []
-        max_end = len(history) - 2
+        max_end = state.max_end
         if max_end < n - 1:
             return []
 
-        history_mat = self._history_indicator_matrix(history)
         target_mat = self._history_indicator_matrix(target_window)
-        history_prof = self._draw_profile_matrix(history)
         target_prof = self._draw_profile_matrix(target_window)
         target_freq = np.sum(target_mat, axis=0) / max(1.0, 20.0 * n)
         target_set = np.array([set(row.numbers) for row in target_window], dtype=object)
@@ -210,8 +241,7 @@ class SimilarWindowRetriever:
         profile_sim = np.zeros(win_count, dtype=np.float64)
         same_progress = np.zeros(win_count, dtype=np.bool_)
 
-        history_prefix = np.concatenate([np.zeros((1, 80), dtype=np.float64), np.cumsum(history_mat, axis=0)], axis=0)
-        freq_windows = (history_prefix[starts + n] - history_prefix[starts]) / max(1.0, 20.0 * n)
+        freq_windows = (state.history_prefix[starts + n] - state.history_prefix[starts]) / max(1.0, 20.0 * n)
         coarse_dist = np.sqrt(np.sum((freq_windows - target_freq[None, :]) ** 2, axis=1))
         coarse_freq_sim = 1.0 / (1.0 + coarse_dist)
 
@@ -230,7 +260,7 @@ class SimilarWindowRetriever:
 
         for i in coarse_idx.tolist():
             st = int(starts[i])
-            cand_block = history_mat[st : st + n]
+            cand_block = state.history_mat[st : st + n]
             inter = np.sum(cand_block * target_mat, axis=1)
             union = np.sum(cand_block + target_mat - cand_block * target_mat, axis=1)
             jacc = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
@@ -245,7 +275,7 @@ class SimilarWindowRetriever:
 
             freq_sim[i] = float(coarse_freq_sim[i])
 
-            cand_prof = history_prof[st : st + n]
+            cand_prof = state.history_prof[st : st + n]
             p_dist = np.sqrt(np.sum((target_prof - cand_prof) ** 2, axis=1))
             profile_sim[i] = float(np.mean(1.0 / (1.0 + p_dist)))
             same_progress[i] = bool(self.prefer_same_day_progress and history[st + n - 1].day_issue_index == day_issue_index)

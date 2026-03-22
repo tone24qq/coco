@@ -10,6 +10,16 @@ from src.predict import _load_recent_draws
 from src.utils import log_progress
 
 
+class _FakeRuntimeState:
+    retrieval_index_version = "test"
+
+    class _Recent:
+        cache_status = "hit"
+        updated_at_epoch = 0.0
+
+    recent_cache = _Recent()
+
+
 def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_records) -> None:
     class FakeArtifacts:
         feature_columns = ["cand_hits_last_100"]
@@ -17,7 +27,7 @@ def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_re
 
     captured: dict[str, str] = {}
 
-    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None, response_mode="full"):
+    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None, response_mode="full", runtime_state=None):
         captured["response_mode"] = response_mode
         return {
             "issue": "20260101099",
@@ -47,7 +57,9 @@ def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_re
             None,
         ),
     )
+    monkeypatch.setattr(api_module, "build_prediction_runtime_state", lambda artifacts, cfg: _FakeRuntimeState())
     monkeypatch.setattr(api_module, "run_prediction", fake_run_prediction)
+    app.state.runtime_state = _FakeRuntimeState()
 
     client = TestClient(app)
     health = client.get("/health")
@@ -99,6 +111,8 @@ def test_health_degraded_when_artifacts_missing(monkeypatch):
             "missing",
         ),
     )
+    monkeypatch.setattr(api_module, "build_prediction_runtime_state", lambda artifacts, cfg: _FakeRuntimeState())
+    app.state.runtime_state = _FakeRuntimeState()
     client = TestClient(app)
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -113,6 +127,7 @@ def test_get_runtime_normalizes_config_paths_to_absolute(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     api_module.get_runtime.cache_clear()
     monkeypatch.setattr(api_module, "load_artifacts", lambda _path: FakeArtifacts())
+    monkeypatch.setattr(api_module, "build_prediction_runtime_state", lambda artifacts, cfg: object())
 
     artifacts, cfg, err = api_module.get_runtime()
     assert err is None
@@ -131,7 +146,7 @@ def test_predict_singleflight_rejects_concurrent_request(monkeypatch, synthetic_
     lock_entered = threading.Event()
     release_lock = threading.Event()
 
-    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None, response_mode="full"):
+    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None, response_mode="full", runtime_state=None):
         lock_entered.set()
         release_lock.wait(timeout=1.0)
         return {
@@ -160,7 +175,9 @@ def test_predict_singleflight_rejects_concurrent_request(monkeypatch, synthetic_
             None,
         ),
     )
+    monkeypatch.setattr(api_module, "build_prediction_runtime_state", lambda artifacts, cfg: _FakeRuntimeState())
     monkeypatch.setattr(api_module, "run_prediction", fake_run_prediction)
+    app.state.runtime_state = _FakeRuntimeState()
 
     client = TestClient(app)
     payload = {"recent_draws": [r.to_dict() for r in synthetic_records[-30:]]}

@@ -10,7 +10,13 @@ import numpy as np
 import pandas as pd
 
 from src.io_utils import safe_read_table, safe_write_table
-from src.retrieval import RetrievalWeights, SimilarWindowRetriever, retrieval_features, retrieval_features_frame
+from src.retrieval import (
+    RetrievalPreparedState,
+    RetrievalWeights,
+    SimilarWindowRetriever,
+    retrieval_features,
+    retrieval_features_frame,
+)
 from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date
 
 WINDOWS = [20, 50, 100, 200, 500]
@@ -297,6 +303,8 @@ def build_candidate_rows(
     prefer_same_day_progress: bool = True,
     progress_logging: bool = False,
     runtime_cache: dict[str, object] | None = None,
+    retriever: SimilarWindowRetriever | None = None,
+    retrieval_prepared_state: RetrievalPreparedState | None = None,
 ) -> tuple[list[dict[str, float | int | str]], list]:
     if len(history) < min_dynamic_n + 1:
         raise DataContractError("insufficient history for candidate feature generation")
@@ -305,7 +313,7 @@ def build_candidate_rows(
     dynamic_n = len(context)
     if progress_logging:
         log_progress(1, 5, "dynamic_n 已解析", f"dynamic_n={dynamic_n}")
-    retriever = SimilarWindowRetriever(
+    retriever = retriever or SimilarWindowRetriever(
         top_k=top_k,
         weights=RetrievalWeights.from_mapping(retrieval_weights),
         require_same_length_window=True,
@@ -313,7 +321,14 @@ def build_candidate_rows(
     )
     if progress_logging:
         log_progress(2, 5, "開始建立 prediction candidate rows", f"issue={issue}")
-    matches = retriever.query(history=history, target_window=context, day_issue_index=context[-1].day_issue_index)
+    if retrieval_prepared_state is None:
+        matches = retriever.query(history=history, target_window=context, day_issue_index=context[-1].day_issue_index)
+    else:
+        matches = retriever.query_prepared(
+            retrieval_prepared_state,
+            target_window=context,
+            day_issue_index=context[-1].day_issue_index,
+        )
     if progress_logging:
         log_progress(3, 5, "retrieval matches 完成", f"match_count={len(matches)}")
 
