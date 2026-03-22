@@ -44,7 +44,153 @@ METRIC_KEYS = [
     "top3_hit_rate",
     "top3_at_least_one_hit_rate",
     "ndcg_at_10",
+    "exact_hit@3",
+    "exact_hit@10",
+    "top3_at_least_one_exact",
+    "top10_at_least_one_exact",
+    "adj_hit_pm1@3",
+    "adj_hit_pm1@10",
+    "top3_at_least_one_adj_pm1",
+    "top10_at_least_one_adj_pm1",
+    "strict_adj_only_pm1@3",
+    "strict_adj_only_pm1@10",
+    "top3_at_least_one_strict_adj_only_pm1",
+    "top10_at_least_one_strict_adj_only_pm1",
+    "mean_min_distance_at_3",
+    "mean_min_distance_at_10",
+    "median_min_distance_at_3",
+    "median_min_distance_at_10",
+    "near_miss_minus1_count",
+    "near_miss_plus1_count",
+    "near_miss_minus1_rate",
+    "near_miss_plus1_rate",
 ]
+
+
+def _match_count(
+    preds: list[int],
+    actuals: list[int],
+    predicate: callable,
+) -> tuple[int, int, int]:
+    used_actual = set()
+    hits = 0
+    minus1 = 0
+    plus1 = 0
+    for pred in preds:
+        candidates = [a for a in actuals if a not in used_actual and predicate(pred, a)]
+        if not candidates:
+            continue
+        best = sorted(candidates, key=lambda a: (abs(pred - a), a))[0]
+        used_actual.add(best)
+        hits += 1
+        if pred - best == -1:
+            minus1 += 1
+        elif pred - best == 1:
+            plus1 += 1
+    return hits, minus1, plus1
+
+
+def _topk_near_metrics(preds: list[int], actual: set[int], k: int) -> dict[str, float]:
+    actuals = sorted(int(x) for x in actual)
+    pred_topk = [int(x) for x in preds[:k]]
+    denom = float(max(1, len(pred_topk)))
+    if not pred_topk:
+        return {
+            f"exact_hit@{k}": 0.0,
+            f"top{k}_at_least_one_exact": 0.0,
+            f"adj_hit_pm1@{k}": 0.0,
+            f"top{k}_at_least_one_adj_pm1": 0.0,
+            f"strict_adj_only_pm1@{k}": 0.0,
+            f"top{k}_at_least_one_strict_adj_only_pm1": 0.0,
+            f"mean_min_distance_at_{k}": 80.0,
+            f"median_min_distance_at_{k}": 80.0,
+            "near_miss_minus1_count": 0.0,
+            "near_miss_plus1_count": 0.0,
+            "near_miss_minus1_rate": 0.0,
+            "near_miss_plus1_rate": 0.0,
+        }
+
+    exact_hits, _, _ = _match_count(pred_topk, actuals, lambda p, a: p == a)
+    adj_hits, _, _ = _match_count(pred_topk, actuals, lambda p, a: abs(p - a) <= 1)
+    strict_hits, minus1, plus1 = _match_count(
+        pred_topk,
+        actuals,
+        lambda p, a: abs(p - a) == 1,
+    )
+    dists = [min(abs(p - a) for a in actuals) for p in pred_topk]
+
+    return {
+        f"exact_hit@{k}": float(exact_hits / denom),
+        f"top{k}_at_least_one_exact": float(exact_hits > 0),
+        f"adj_hit_pm1@{k}": float(adj_hits / denom),
+        f"top{k}_at_least_one_adj_pm1": float(adj_hits > 0),
+        f"strict_adj_only_pm1@{k}": float(strict_hits / denom),
+        f"top{k}_at_least_one_strict_adj_only_pm1": float(strict_hits > 0),
+        f"mean_min_distance_at_{k}": float(np.mean(dists)),
+        f"median_min_distance_at_{k}": float(np.median(dists)),
+        "near_miss_minus1_count": float(minus1),
+        "near_miss_plus1_count": float(plus1),
+        "near_miss_minus1_rate": float(minus1 / denom),
+        "near_miss_plus1_rate": float(plus1 / denom),
+    }
+
+
+def _compute_extended_metrics_from_order(
+    order: list[int], actual: set[int]
+) -> dict[str, float]:
+    top3 = _topk_near_metrics(order, actual, 3)
+    top10 = _topk_near_metrics(order, actual, 10)
+    return {
+        "exact_hit@3": top3["exact_hit@3"],
+        "exact_hit@10": top10["exact_hit@10"],
+        "top3_at_least_one_exact": top3["top3_at_least_one_exact"],
+        "top10_at_least_one_exact": top10["top10_at_least_one_exact"],
+        "adj_hit_pm1@3": top3["adj_hit_pm1@3"],
+        "adj_hit_pm1@10": top10["adj_hit_pm1@10"],
+        "top3_at_least_one_adj_pm1": top3["top3_at_least_one_adj_pm1"],
+        "top10_at_least_one_adj_pm1": top10["top10_at_least_one_adj_pm1"],
+        "strict_adj_only_pm1@3": top3["strict_adj_only_pm1@3"],
+        "strict_adj_only_pm1@10": top10["strict_adj_only_pm1@10"],
+        "top3_at_least_one_strict_adj_only_pm1": top3[
+            "top3_at_least_one_strict_adj_only_pm1"
+        ],
+        "top10_at_least_one_strict_adj_only_pm1": top10[
+            "top10_at_least_one_strict_adj_only_pm1"
+        ],
+        "mean_min_distance_at_3": top3["mean_min_distance_at_3"],
+        "mean_min_distance_at_10": top10["mean_min_distance_at_10"],
+        "median_min_distance_at_3": top3["median_min_distance_at_3"],
+        "median_min_distance_at_10": top10["median_min_distance_at_10"],
+        "near_miss_minus1_count": top10["near_miss_minus1_count"],
+        "near_miss_plus1_count": top10["near_miss_plus1_count"],
+        "near_miss_minus1_rate": top10["near_miss_minus1_rate"],
+        "near_miss_plus1_rate": top10["near_miss_plus1_rate"],
+    }
+
+
+def _compute_extended_metrics(scores: np.ndarray, actual: set[int]) -> dict[str, float]:
+    order = (np.argsort(scores)[::-1] + 1).tolist()
+    return _compute_extended_metrics_from_order(order, actual)
+
+
+def _bootstrap_ci(
+    values: list[float],
+    iterations: int = 2000,
+    seed: int = 42,
+) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "ci95_low": 0.0, "ci95_high": 0.0}
+    arr = np.array(values, dtype=float)
+    rng = np.random.default_rng(seed)
+    samples = [
+        float(np.mean(rng.choice(arr, size=len(arr), replace=True)))
+        for _ in range(iterations)
+    ]
+    return {
+        "mean": float(arr.mean()),
+        "ci95_low": float(np.percentile(samples, 2.5)),
+        "ci95_high": float(np.percentile(samples, 97.5)),
+    }
 
 
 def _ci95(values: list[float]) -> dict[str, float]:
@@ -74,7 +220,10 @@ def _aggregate(rows: list[dict]) -> dict[str, float]:
 
 
 def _make_fold_issue_metrics(scores: np.ndarray, actual: set[int]) -> dict[str, float]:
-    return issue_metrics(scores, actual)
+    return {
+        **issue_metrics(scores, actual),
+        **_compute_extended_metrics(scores, actual),
+    }
 
 
 def _overfit_audit(
@@ -352,6 +501,15 @@ def _run_experiments(
                                 "pred_top10": pred_top10,
                                 "actual": actual,
                                 "prev_numbers": prev_numbers,
+                                "history_numbers": [
+                                    int(v)
+                                    for item in json.loads(
+                                        str(feat_row.get("history_numbers", "[]"))
+                                    )
+                                    for v in (
+                                        item if isinstance(item, list) else [item]
+                                    )
+                                ],
                             }
                         )
 
@@ -429,39 +587,20 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for _, row in issue_rows.iterrows():
         pred_top10 = [int(x) for x in row.get("pred_top10", [])]
-        pred_top3 = [int(x) for x in row.get("pred_top3", [])]
         actual = set(int(x) for x in row.get("actual", []))
         prev = set(int(x) for x in row.get("prev_numbers", []))
-        if not pred_top3:
+        if not pred_top10:
             continue
-        min_dist_to_actual = [
-            min(abs(n - a) for a in actual) if actual else 80.0 for n in pred_top3
-        ]
+        order = pred_top10 + [n for n in range(1, 81) if n not in pred_top10]
+        metrics = _compute_extended_metrics_from_order(order, actual)
+        pred_top3 = pred_top10[:3]
         min_dist_to_prev = [
             min(abs(n - p) for p in prev) if prev else 80.0 for n in pred_top3
         ]
         rows.append(
             {
                 "history_bucket": _bucket_label(int(row["history_length"])),
-                "exact_hit@3": float(sum(1 for n in pred_top3 if n in actual) / 3.0),
-                "exact_hit@10": float(
-                    sum(1 for n in pred_top10 if n in actual)
-                    / max(1.0, float(len(pred_top10)))
-                ),
-                "top3_at_least_one_exact": float(any(n in actual for n in pred_top3)),
-                "adj_hit_pm1@3": float(
-                    sum(1 for n in pred_top3 if any(abs(n - a) <= 1 for a in actual))
-                    / 3.0
-                ),
-                "strict_adj_only_pm1@3": float(
-                    sum(
-                        1
-                        for n in pred_top3
-                        if n not in actual and any(abs(n - a) == 1 for a in actual)
-                    )
-                    / 3.0
-                ),
-                "mean_min_distance_at_3": float(np.mean(min_dist_to_actual)),
+                **{k: float(v) for k, v in metrics.items()},
                 "top3_prev_draw_mean_min_distance": float(np.mean(min_dist_to_prev)),
             }
         )
@@ -470,6 +609,95 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
         return out
     metric_cols = [c for c in out.columns if c != "history_bucket"]
     return out.groupby("history_bucket")[metric_cols].mean().reset_index()
+
+
+def _build_baseline_predictions(
+    train_numbers: list[list[int]],
+) -> tuple[list[int], list[int], list[int]]:
+    flat = [n for draw in train_numbers for n in draw]
+    freq = pd.Series(flat).value_counts().sort_values(ascending=False)
+    freq_top10 = [int(x) for x in freq.index.tolist()[:10]]
+    if len(freq_top10) < 10:
+        freq_top10.extend(
+            [n for n in range(1, 81) if n not in freq_top10][: 10 - len(freq_top10)]
+        )
+
+    random_top10 = (
+        np.random.default_rng(42)
+        .choice(np.arange(1, 81), size=10, replace=False)
+        .tolist()
+    )
+    random_top10 = [int(x) for x in random_top10]
+
+    popularity_top10 = [
+        int(x) for x in sorted(range(1, 81), key=lambda n: (-(n <= 40), -n))[:10]
+    ]
+    return random_top10, freq_top10, popularity_top10
+
+
+def _summarize_issue_level(
+    rows: list[dict], keys: list[str]
+) -> dict[str, dict[str, float]]:
+    out = {}
+    for k in keys:
+        out[k] = _bootstrap_ci([float(r.get(k, 0.0)) for r in rows])
+    return out
+
+
+def _build_baseline_comparison(issue_rows: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    records = []
+    for _, row in issue_rows.iterrows():
+        actual = set(int(x) for x in row.get("actual", []))
+        model_pred_top10 = [int(x) for x in row.get("pred_top10", [])]
+        hist = [int(x) for x in row.get("history_numbers", [])]
+        train_draws = [
+            hist[i : i + 20]
+            for i in range(0, len(hist), 20)
+            if len(hist[i : i + 20]) == 20
+        ]
+        random_top10, freq_top10, popularity_top10 = _build_baseline_predictions(
+            train_draws or [list(range(1, 21))]
+        )
+
+        for baseline_name, pred_top10 in [
+            ("model", model_pred_top10),
+            ("random_baseline", random_top10),
+            ("frequency_baseline", freq_top10),
+            ("popularity_baseline", popularity_top10),
+        ]:
+            m = _compute_extended_metrics_from_order(
+                pred_top10 + [n for n in range(1, 81) if n not in pred_top10],
+                actual,
+            )
+            records.append({"baseline": baseline_name, "issue": int(row["issue"]), **m})
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df, {}
+    metric_cols = [
+        "exact_hit@3",
+        "adj_hit_pm1@3",
+        "strict_adj_only_pm1@3",
+        "mean_min_distance_at_3",
+        "exact_hit@10",
+        "adj_hit_pm1@10",
+        "strict_adj_only_pm1@10",
+        "mean_min_distance_at_10",
+    ]
+    summary = df.groupby("baseline")[metric_cols].mean().reset_index()
+    ci_summary = {
+        b: _summarize_issue_level(
+            rows=df[df["baseline"] == b].to_dict(orient="records"),
+            keys=[
+                "exact_hit@3",
+                "adj_hit_pm1@3",
+                "strict_adj_only_pm1@3",
+                "mean_min_distance_at_3",
+            ],
+        )
+        for b in df["baseline"].unique()
+    }
+    return summary, ci_summary
 
 
 def main() -> None:
@@ -621,6 +849,48 @@ def main() -> None:
         {"rows": history_bucket_df.to_dict(orient="records")},
     )
 
+    baseline_cmp_df, bootstrap_ci_summary = _build_baseline_comparison(
+        selected_issue_df
+    )
+    baseline_cmp_df.to_csv(REPORTS_DIR / "baseline_comparison.csv", index=False)
+    save_json(
+        REPORTS_DIR / "bootstrap_ci_summary.json",
+        bootstrap_ci_summary,
+    )
+
+    model_row = baseline_cmp_df[baseline_cmp_df["baseline"] == "model"]
+    random_row = baseline_cmp_df[baseline_cmp_df["baseline"] == "random_baseline"]
+    freq_row = baseline_cmp_df[baseline_cmp_df["baseline"] == "frequency_baseline"]
+    adj_improved = bool(
+        not model_row.empty
+        and not freq_row.empty
+        and float(model_row.iloc[0]["adj_hit_pm1@3"])
+        > float(model_row.iloc[0]["exact_hit@3"])
+    )
+    strict_gt_random = bool(
+        not model_row.empty
+        and not random_row.empty
+        and float(model_row.iloc[0]["strict_adj_only_pm1@3"])
+        > float(random_row.iloc[0]["strict_adj_only_pm1@3"])
+    )
+    mean_dist_better = bool(
+        not model_row.empty
+        and not freq_row.empty
+        and float(model_row.iloc[0]["mean_min_distance_at_3"])
+        < float(freq_row.iloc[0]["mean_min_distance_at_3"])
+    )
+
+    save_json(
+        REPORTS_DIR / "near_miss_summary.json",
+        {
+            "adj_hit_pm1_higher_than_exact": adj_improved,
+            "strict_adj_only_pm1_higher_than_random": strict_gt_random,
+            "mean_min_distance_better_than_frequency": mean_dist_better,
+            "needs_ci_support": True,
+            "match_policy": "one_to_one_greedy_nearest_actual",
+        },
+    )
+
     save_json(
         REPORTS_DIR / "experiment_summary.json",
         {
@@ -636,6 +906,8 @@ def main() -> None:
             },
             "total_versions": int(len(registry_df)),
             "kept_versions": int(registry_df["keep_recommendation"].sum()),
+            "baseline_comparison_rows": baseline_cmp_df.to_dict(orient="records"),
+            "bootstrap_ci_summary": bootstrap_ci_summary,
         },
     )
 
