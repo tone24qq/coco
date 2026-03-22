@@ -94,11 +94,13 @@ class SimilarWindowRetriever:
         weights: RetrievalWeights | None = None,
         require_same_length_window: bool = True,
         prefer_same_day_progress: bool = True,
+        coarse_multiplier: int = 8,
     ) -> None:
         self.top_k = top_k
         self.weights = weights or RetrievalWeights()
         self.require_same_length_window = require_same_length_window
         self.prefer_same_day_progress = prefer_same_day_progress
+        self.coarse_multiplier = max(1, int(coarse_multiplier))
 
     def _aligned_overlap(self, target: list[DrawRecord], candidate: list[DrawRecord]) -> tuple[float, float, int, bool]:
         per_draw = [_jaccard(t.numbers, c.numbers) for t, c in zip(target, candidate)]
@@ -208,10 +210,26 @@ class SimilarWindowRetriever:
         profile_sim = np.zeros(win_count, dtype=np.float64)
         same_progress = np.zeros(win_count, dtype=np.bool_)
 
+        history_prefix = np.concatenate([np.zeros((1, 80), dtype=np.float64), np.cumsum(history_mat, axis=0)], axis=0)
+        freq_windows = (history_prefix[starts + n] - history_prefix[starts]) / max(1.0, 20.0 * n)
+        coarse_dist = np.sqrt(np.sum((freq_windows - target_freq[None, :]) ** 2, axis=1))
+        coarse_freq_sim = 1.0 / (1.0 + coarse_dist)
+
+        day_progress_arr = np.asarray([history[int(st + n - 1)].day_issue_index for st in starts], dtype=np.int64)
+        coarse_progress = (day_progress_arr == int(day_issue_index)).astype(np.float64) if self.prefer_same_day_progress else np.zeros(win_count, dtype=np.float64)
+        coarse_score = (
+            self.weights.freq_similarity * coarse_freq_sim
+            + self.weights.same_day_progress_bonus * coarse_progress
+        )
+
+        coarse_k = min(win_count, max(self.top_k * self.coarse_multiplier, self.top_k))
+        coarse_idx = np.argsort(-coarse_score, kind="mergesort")[:coarse_k]
+
         recency_weights = np.arange(1, n + 1, dtype=np.float64)
         recency_weights = recency_weights / np.sum(recency_weights)
 
-        for i, st in enumerate(starts):
+        for i in coarse_idx.tolist():
+            st = int(starts[i])
             cand_block = history_mat[st : st + n]
             inter = np.sum(cand_block * target_mat, axis=1)
             union = np.sum(cand_block + target_mat - cand_block * target_mat, axis=1)
@@ -219,16 +237,13 @@ class SimilarWindowRetriever:
             aligned_overlap[i] = float(np.mean(jacc))
             recency_overlap[i] = float(np.sum(jacc * recency_weights))
 
-            # exact draw/window match with strict tuple equality semantics
             matches_draw = 0
             for j, tset in enumerate(target_set):
                 if set(history[st + j].numbers) == tset and history[st + j].numbers == target_window[j].numbers:
                     matches_draw += 1
             exact_count[i] = matches_draw
 
-            cand_freq = np.sum(cand_block, axis=0) / max(1.0, 20.0 * n)
-            dist = float(np.sqrt(np.sum((target_freq - cand_freq) ** 2)))
-            freq_sim[i] = 1.0 / (1.0 + dist)
+            freq_sim[i] = float(coarse_freq_sim[i])
 
             cand_prof = history_prof[st : st + n]
             p_dist = np.sqrt(np.sum((target_prof - cand_prof) ** 2, axis=1))

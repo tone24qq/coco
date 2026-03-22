@@ -144,7 +144,36 @@ def _to_draw_records(payload: list[dict[str, object]], *, source_name: str) -> l
                 day_issue_index=idx,
             )
         )
+    _validate_same_day_issue_completeness(results, source_name=source_name)
     return results
+
+
+def _issue_suffix_index(issue: str) -> int | None:
+    if not issue.isdigit() or len(issue) < 3:
+        return None
+    return int(issue[-3:])
+
+
+def _validate_same_day_issue_completeness(rows: list[DrawRecord], source_name: str) -> None:
+    if not rows:
+        raise DataContractError(f"{source_name} same-day rows empty")
+    ordered = sorted(rows, key=lambda r: int(r.issue) if r.issue.isdigit() else r.issue)
+    suffixes: list[int] = []
+    for row in ordered:
+        suffix = _issue_suffix_index(row.issue)
+        if suffix is None:
+            raise DataContractError(f"{source_name} issue format invalid for same-day contract: {row.issue}")
+        suffixes.append(suffix)
+
+    expected = list(range(min(suffixes), max(suffixes) + 1))
+    if suffixes != expected:
+        raise DataContractError(
+            f"{source_name} same-day issue incomplete: expected contiguous suffix {expected[0]}..{expected[-1]} got {suffixes[:3]}...{suffixes[-3:]}"
+        )
+    day_idx = [row.day_issue_index for row in ordered]
+    expected_idx = list(range(1, len(ordered) + 1))
+    if day_idx != expected_idx:
+        raise DataContractError(f"{source_name} day_issue_index contract violated")
 
 
 def _has_dynamic_marker(html: str) -> bool:
@@ -328,6 +357,39 @@ def fetch_latest(sources: list[str] | None = None, timeout_s: float = 10.0) -> F
                 failover_reason = last_err
             continue
     raise DataContractError(f"fetch failed for all sources: {last_err}")
+
+
+def _same_day_max_issue(rows: list[DrawRecord]) -> str:
+    if not rows:
+        raise DataContractError("same-day rows empty")
+    ordered = sorted(rows, key=lambda r: int(r.issue) if r.issue.isdigit() else r.issue)
+    return ordered[-1].issue
+
+
+def probe_latest_same_day_issue(timeout_s: float = 10.0, sources: list[str] | None = None) -> tuple[str, str]:
+    errors: list[str] = []
+    base = datetime.now().date()
+    for lag in range(3):
+        date_str = (base - timedelta(days=lag)).isoformat()
+        try:
+            resp = httpx.get(WINWIN_DYNAMIC_URL, params={"date": date_str}, timeout=timeout_s)
+            resp.raise_for_status()
+            rows = _parse_winwin_dynamic_payload(resp.json())
+            if rows:
+                return _same_day_max_issue(rows), "winwin_dynamic"
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"winwin_dynamic@{date_str}: {exc}")
+
+    for src in (sources or [WINWIN_URL, AUZO_URL]):
+        try:
+            result = fetch_latest([src], timeout_s=timeout_s)
+            latest_day = max(r.draw_date for r in result.records)
+            today_rows = [r for r in result.records if r.draw_date == latest_day]
+            if today_rows:
+                return _same_day_max_issue(today_rows), src
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{src}: {exc}")
+    raise DataContractError(f"freshness probe failed across all candidates: {' | '.join(errors)}")
 
 
 def main() -> None:
