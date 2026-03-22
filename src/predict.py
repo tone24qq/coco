@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
+import threading
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from time import perf_counter
@@ -24,12 +27,47 @@ from src.runtime_history import (
     resolve_processed_source_files,
     runtime_history_ready,
 )
+from src.retrieval import RetrievalWeights, SimilarWindowRetriever
 from src.runtime_scoring import DynamicWeightConfig, RuntimeWeights, score_candidates
 from src.strategy import apply_top3_group_dedup
 from src.utils import DataContractError, DrawRecord, enforce_dir_file_sizes, ensure_numbers, log_progress, parse_date, read_processed
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+@dataclass
+class RecentCacheState:
+    rows: list[DrawRecord]
+    source: str
+    updated_at_epoch: float
+    ttl_seconds: int
+    stale_usable: bool
+    authoritative_latest_issue: str | None
+    recent_hash: str
+    stale_data_used: bool = False
+    cache_status: str = "hit"
+
+    @property
+    def recent_last_issue(self) -> str:
+        return self.rows[-1].issue
+
+
+@dataclass
+class PredictionRuntimeState:
+    artifacts: ModelArtifacts
+    config: dict[str, Any]
+    runtime_history: list[DrawRecord]
+    merged_history: list[DrawRecord]
+    runtime_cache: dict[str, object]
+    retriever: SimilarWindowRetriever
+    retrieval_prepared_state: Any
+    runtime_history_version: str
+    retrieval_index_version: str
+    recent_cache: RecentCacheState
+    previous_top20: list[int] | None = None
+    previous_top10: list[int] | None = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 def _abs_path(value: str, base_dir: Path) -> str:
@@ -102,6 +140,21 @@ def _records_from_payload(recent_draws: list[dict[str, Any]]) -> list[DrawRecord
     if issues != sorted(issues):
         raise DataContractError("recent_draws issue must be sorted")
     return records
+
+
+def _recent_hash(rows: list[DrawRecord]) -> str:
+    payload = "|".join(f"{r.issue}:{','.join(str(n) for n in r.numbers)}:{r.day_issue_index}" for r in rows)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _jaccard(a: list[int] | None, b: list[int]) -> float | None:
+    if not a:
+        return None
+    sa, sb = set(a), set(b)
+    union = len(sa | sb)
+    if union == 0:
+        return None
+    return round(len(sa & sb) / union, 6)
 
 
 def _load_recent_draws(
@@ -316,28 +369,110 @@ def _validate_feature_contract(feature_df: pd.DataFrame, artifacts: ModelArtifac
         raise DataContractError(f"feature dtype mismatch, non-numeric: {non_numeric[:5]}")
 
 
+def _build_recent_cache(config: dict[str, Any]) -> RecentCacheState:
+    rows, source, meta = _load_recent_draws(config, None)
+    cache_cfg = config.get("recent_cache", {})
+    ttl_seconds = int(cache_cfg.get("ttl_seconds", 120))
+    return RecentCacheState(
+        rows=rows,
+        source=source,
+        updated_at_epoch=perf_counter(),
+        ttl_seconds=ttl_seconds,
+        stale_usable=bool(cache_cfg.get("allow_stale", True)),
+        authoritative_latest_issue=meta.get("authoritative_latest_issue"),
+        recent_hash=_recent_hash(rows),
+        stale_data_used=False,
+        cache_status="miss",
+    )
+
+
+def _resolve_recent_context(
+    config: dict[str, Any],
+    runtime_state: PredictionRuntimeState | None,
+    recent_draws: list[dict[str, Any]] | None,
+) -> tuple[list[DrawRecord], dict[str, Any]]:
+    if recent_draws:
+        rows = _records_from_payload(recent_draws)
+        return rows, {"recent_cache_status": "manual", "stale_data_used": False}
+    if runtime_state is None:
+        rows, source, meta = _load_recent_draws(config, None)
+        meta["recent_cache_status"] = "miss"
+        meta["stale_data_used"] = False
+        meta["actual_source_used"] = source
+        return rows, meta
+    cache = runtime_state.recent_cache
+    expired = (perf_counter() - cache.updated_at_epoch) > cache.ttl_seconds
+    if not expired:
+        cache.cache_status = "hit"
+        cache.stale_data_used = False
+        return cache.rows, {"recent_cache_status": "hit", "stale_data_used": False}
+    try:
+        refreshed = _build_recent_cache(config)
+        refreshed.cache_status = "refreshed"
+        runtime_state.recent_cache = refreshed
+        return refreshed.rows, {"recent_cache_status": "refreshed", "stale_data_used": False}
+    except Exception:  # noqa: BLE001
+        if cache.stale_usable:
+            cache.cache_status = "stale"
+            cache.stale_data_used = True
+            return cache.rows, {"recent_cache_status": "stale", "stale_data_used": True}
+        raise
+
+
+def build_prediction_runtime_state(artifacts: ModelArtifacts, config: dict[str, Any]) -> PredictionRuntimeState:
+    runtime_history = list(_load_runtime_history(config))
+    recent_cache = _build_recent_cache(config)
+    merged_history = list(_merge_history_with_context(runtime_history, recent_cache.rows))
+    runtime_cache = build_history_runtime_cache(merged_history)
+    retrieval_cfg = config.get("retrieval", {})
+    retriever = SimilarWindowRetriever(
+        top_k=int(retrieval_cfg.get("top_k", 20)),
+        weights=RetrievalWeights.from_mapping(retrieval_cfg.get("weights", {})),
+        require_same_length_window=True,
+        prefer_same_day_progress=bool(retrieval_cfg.get("prefer_same_day_progress", True)),
+    )
+    retrieval_prepared_state = retriever.prepare_history(merged_history, index_version=str(retrieval_cfg.get("index_version", "v1")))
+    return PredictionRuntimeState(
+        artifacts=artifacts,
+        config=config,
+        runtime_history=runtime_history,
+        merged_history=merged_history,
+        runtime_cache=runtime_cache,
+        retriever=retriever,
+        retrieval_prepared_state=retrieval_prepared_state,
+        runtime_history_version=str(len(runtime_history)),
+        retrieval_index_version=str(retrieval_cfg.get("index_version", "v1")),
+        recent_cache=recent_cache,
+    )
+
+
 def run_prediction(
     artifacts: ModelArtifacts,
     config: dict[str, Any],
     recent_draws: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
     response_mode: str = "full",
+    runtime_state: PredictionRuntimeState | None = None,
 ) -> dict[str, Any]:
     if response_mode not in {"full", "minimal"}:
         raise DataContractError(f"unsupported response_mode: {response_mode}")
 
     t0 = perf_counter()
     tm: dict[str, float] = {}
-    log_progress(0, 6, "收到預測請求，開始載入 recent_draws / auto_fetch", request_id=request_id)
-    recent_context, source, fetch_meta = _load_recent_draws(config, recent_draws)
-    tm["fetch"] = (perf_counter() - t0) * 1000.0
-    tm["freshness_probe"] = float(fetch_meta.get("freshness_probe_elapsed_ms", 0.0))
+    log_progress(0, 6, "收到預測請求，開始載入 recent_draws / cache", request_id=request_id)
+    t_recent = perf_counter()
+    recent_context, fetch_meta = _resolve_recent_context(config, runtime_state, recent_draws)
+    source = str(fetch_meta.get("actual_source_used", "cache_or_manual"))
+    tm["recent_resolve"] = (perf_counter() - t_recent) * 1000.0
     log_progress(1, 6, "載入最近開獎上下文", f"來源={source}", request_id=request_id)
     log_progress(2, 6, "開始載入 runtime history", request_id=request_id)
-    t_merge = perf_counter()
-    processed_history = _load_runtime_history(config)
+    t_history = perf_counter()
+    if runtime_state is not None:
+        processed_history = runtime_state.runtime_history
+    else:
+        processed_history = list(_load_runtime_history(config))
     history = _merge_history_with_context(processed_history, recent_context)
-    tm["merge"] = (perf_counter() - t_merge) * 1000.0
+    tm["history_resolve"] = (perf_counter() - t_history) * 1000.0
     log_progress(3, 6, "合併 processed + recent 歷史", f"rows={len(history)}", request_id=request_id)
 
     history_cfg = config.get("history", {})
@@ -351,7 +486,9 @@ def run_prediction(
     verified_latest_fetched_issue = str(fetch_meta.get("verified_latest_fetched_issue") or recent_context[-1].issue)
     target_issue = _next_issue(verified_latest_fetched_issue)
     retrieval_start = perf_counter()
-    runtime_cache = build_history_runtime_cache(list(history))
+    runtime_cache = runtime_state.runtime_cache if runtime_state is not None and history == runtime_state.merged_history else build_history_runtime_cache(list(history))
+    retrieval_ready_state = runtime_state.retrieval_prepared_state if runtime_state is not None and history == runtime_state.merged_history else None
+    t_retrieval = perf_counter()
     rows, matches = build_candidate_rows(
         history=history,
         issue=target_issue,
@@ -364,13 +501,18 @@ def run_prediction(
         prefer_same_day_progress=prefer_same_day_progress,
         progress_logging=True,
         runtime_cache=runtime_cache,
+        retriever=(runtime_state.retriever if runtime_state is not None else None),
+        retrieval_prepared_state=retrieval_ready_state,
     )
-    tm["retrieval_plus_feature_build"] = (perf_counter() - retrieval_start) * 1000.0
+    tm["feature_build"] = (perf_counter() - retrieval_start) * 1000.0
+    tm["retrieval"] = (perf_counter() - t_retrieval) * 1000.0
     feat_df = pd.DataFrame(rows)
     if len(feat_df) != 80:
         raise DataContractError("prediction contract violated: expected 80 candidates")
 
+    t_contract = perf_counter()
     _validate_feature_contract(feat_df, artifacts)
+    tm["feature_contract"] = (perf_counter() - t_contract) * 1000.0
     log_progress(4, 6, "feature contract passed", f"columns={len(artifacts.feature_columns)}", request_id=request_id)
 
     x = feat_df[artifacts.feature_columns].fillna(0.0)
@@ -390,16 +532,28 @@ def run_prediction(
         dynamic_cfg=dynamic_cfg,
         return_diagnostics=True,
     )
-    tm["model_score"] = (perf_counter() - t_score) * 1000.0
+    tm["model_predict"] = (perf_counter() - t_score) * 1000.0
     log_progress(4, 6, "完成 ranking score chain", f"target_issue={target_issue}", request_id=request_id)
 
+    t_rerank = perf_counter()
+    scored = scored.sort_values(
+        ["final_score", "retrieval_score", "ranker_score", "candidate_number"],
+        ascending=[False, False, False, True],
+        kind="mergesort",
+    ).reset_index(drop=True)
     top20 = scored.head(20)["candidate_number"].astype(int).tolist()
     big = sum(1 for n in top20 if n >= 41)
     small = sum(1 for n in top20 if n <= 40)
     odd = sum(1 for n in top20 if n % 2 == 1)
     even = 20 - odd
 
+    tm["rerank"] = (perf_counter() - t_rerank) * 1000.0
     if response_mode == "minimal":
+        top20_jaccard = _jaccard(runtime_state.previous_top20 if runtime_state else None, top20)
+        top10_jaccard = _jaccard(runtime_state.previous_top10 if runtime_state else None, top20[:10])
+        if runtime_state is not None:
+            runtime_state.previous_top20 = top20
+            runtime_state.previous_top10 = top20[:10]
         log_progress(5, 6, "輸出 minimal 預測回應", f"top20={top20[:5]}...", request_id=request_id)
         log_progress(6, 6, "預測主線完成", f"issue={target_issue}", request_id=request_id)
         return {
@@ -415,6 +569,14 @@ def run_prediction(
                 "fetched_same_day_issue_max": fetch_meta.get("fetched_same_day_issue_max"),
                 "fetched_same_day_issue_count": fetch_meta.get("fetched_same_day_issue_count"),
                 "dynamic_context_n": dynamic_n,
+                "recent_last_issue": recent_context[-1].issue,
+                "recent_cache_status": fetch_meta.get("recent_cache_status"),
+                "stale_data_used": fetch_meta.get("stale_data_used", False),
+                "recent_hash": _recent_hash(recent_context),
+                "retrieval_match_count": len(matches),
+                "top20_jaccard_vs_prev": top20_jaccard,
+                "top10_jaccard_vs_prev": top10_jaccard,
+                "latency_ms": {k: round(v, 3) for k, v in tm.items()},
             },
         }
 
@@ -468,6 +630,14 @@ def run_prediction(
         "runtime_history_rows": len(history),
         "runtime_recent_context_rows": len(recent_context),
         "dynamic_context_n": dynamic_n,
+        "recent_last_issue": recent_context[-1].issue,
+        "recent_hash": _recent_hash(recent_context),
+        "recent_cache_status": fetch_meta.get("recent_cache_status"),
+        "stale_data_used": fetch_meta.get("stale_data_used", False),
+        "runtime_history_version": (runtime_state.runtime_history_version if runtime_state else str(len(processed_history))),
+        "retrieval_index_version": (runtime_state.retrieval_index_version if runtime_state else str(config.get("retrieval", {}).get("index_version", "v1"))),
+        "retrieval_match_count": len(matches),
+        "retrieval_top_match_ids": [m.end_issue for m in matches[:5]],
         "training_window_used": f"dynamic_n={dynamic_n}",
         "runtime_history_issue_range": _issue_range(history),
         "history_snapshot_summary": {
@@ -517,17 +687,28 @@ def run_prediction(
         },
         "latest_fetched_issue": verified_latest_fetched_issue,
         "elapsed_ms": {
-            "fetch": round(tm.get("fetch", 0.0), 3),
-            "freshness_probe": round(tm.get("freshness_probe", 0.0), 3),
-            "merge": round(tm.get("merge", 0.0), 3),
-            "retrieval_feature_build": round(tm.get("retrieval_plus_feature_build", 0.0), 3),
-            "model_score": round(tm.get("model_score", 0.0), 3),
+            "recent_resolve": round(tm.get("recent_resolve", 0.0), 3),
+            "history_resolve": round(tm.get("history_resolve", 0.0), 3),
+            "retrieval": round(tm.get("retrieval", 0.0), 3),
+            "feature_build": round(tm.get("feature_build", 0.0), 3),
+            "feature_contract": round(tm.get("feature_contract", 0.0), 3),
+            "model_predict": round(tm.get("model_predict", 0.0), 3),
+            "rerank": round(tm.get("rerank", 0.0), 3),
+            "serialize": 0.0,
             "total": round((perf_counter() - t0) * 1000.0, 3),
         },
     }
     if dynamic_cfg.enabled and "effective_runtime_weights" not in metadata:
         raise DataContractError("dynamic enabled but effective_runtime_weights missing in metadata")
     log_progress(5, 6, "組裝預測輸出", f"top3={top3_after}", request_id=request_id)
+
+    top20_jaccard = _jaccard(runtime_state.previous_top20 if runtime_state else None, top20)
+    top10_jaccard = _jaccard(runtime_state.previous_top10 if runtime_state else None, top10)
+    if runtime_state is not None:
+        runtime_state.previous_top20 = top20
+        runtime_state.previous_top10 = top10
+    metadata["top20_jaccard_vs_prev"] = top20_jaccard
+    metadata["top10_jaccard_vs_prev"] = top10_jaccard
 
     out = {
         "issue": target_issue,

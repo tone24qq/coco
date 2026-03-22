@@ -20,6 +20,8 @@
    - `python -m src.predict --config configs/predict.yaml --output reports/latest_prediction.json`
 8. API
    - `uvicorn src.api:app --host 0.0.0.0 --port 8000`
+9. Fast-path benchmark
+   - `python -m src.benchmark_predict --config configs/predict.yaml --n 20 --warmup 3`
 
 ## Dynamic N Retrieval Contract
 
@@ -38,6 +40,22 @@
 - `metadata.json`
 
 API 啟動與預測均會檢查以上檔案，缺任一檔將 fail-fast。
+
+## Predict Fast Path (Startup preload + cache)
+
+- FastAPI startup 會預載：
+  - model artifacts
+  - runtime history artifact / store
+  - merged history snapshot
+  - retrieval precomputed index（indicator/profile/prefix）
+  - recent cache（含 recent_hash / latest issue）
+- `/predict` warm path 只做：
+  - cache resolve
+  - prepared retrieval lookup
+  - feature contract + model predict + runtime rerank
+- 觀測資訊：
+  - `/health`：model/retrieval/cache readiness
+  - `/debug/runtime`：runtime index/cache lightweight diagnostics
 
 ## Testing
 

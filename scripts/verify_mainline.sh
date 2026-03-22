@@ -29,6 +29,7 @@ pytest -q tests/test_agents/test_phase8_compute_metrics_equivalence.py
 pytest -q tests/test_agents/test_phase8_oof_cv_equivalence.py
 pytest -q tests/test_agents/test_phase8_perf_sanity.py
 pytest -q tests/test_agents/test_phase9_autofetch_contract.py
+pytest -q tests/test_agents/test_phase10_predict_fastpath.py
 
 echo "[5/7] prepare minimal ranking dataset"
 python - <<'PY'
@@ -132,6 +133,7 @@ bash scripts/build_deploy_bundle.sh /tmp/deploy_bundle_verify > reports/logs/bui
 python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history
 rm data/processed/history_processed.csv
 python -m src.predict --config configs/predict.yaml --output reports/latest_prediction_artifact_only.json --recent-json /tmp/verify_recent.json > reports/logs/predict_artifact_only.log 2>&1
+python -m src.benchmark_predict --config configs/predict.yaml --n 5 --warmup 1 > reports/logs/benchmark_predict.log 2>&1
 
 echo "[10/10] output assertions"
 python - <<'PY'
@@ -156,6 +158,7 @@ logs = [
     Path("reports/logs/predict.log"),
     Path("reports/logs/predict_artifact_only.log"),
     Path("reports/logs/build_deploy_bundle.log"),
+    Path("reports/logs/benchmark_predict.log"),
 ]
 progress_logs = [
     Path("reports/logs/build_features.log"),
@@ -201,11 +204,11 @@ assert pred["metadata"]["target_next_issue_contract"] == "passed"
 if pred["metadata"].get("fetched_same_day_issue_max") is not None:
     assert pred["metadata"]["latest_fetched_issue"] == pred["metadata"]["fetched_same_day_issue_max"]
 assert pred["issue"] == str(int(pred["metadata"]["latest_fetched_issue"]) + 1)
-for key in ["fetch", "merge", "retrieval_feature_build", "model_score", "total"]:
+for key in ["recent_resolve", "history_resolve", "retrieval", "feature_build", "feature_contract", "model_predict", "rerank", "serialize", "total"]:
     assert key in pred["metadata"]["elapsed_ms"]
     assert pred["metadata"]["elapsed_ms"][key] >= 0.0
-assert "freshness_probe" in pred["metadata"]["elapsed_ms"]
-assert pred["metadata"]["elapsed_ms"]["freshness_probe"] >= 0.0
+assert "recent_cache_status" in pred["metadata"]
+assert "recent_hash" in pred["metadata"]
 assert "dynamic_weighting" in pred["metadata"]
 assert "effective_runtime_weights" in pred["metadata"]
 assert abs(sum(pred["metadata"]["effective_runtime_weights"].values()) - 1.0) <= 1e-6
