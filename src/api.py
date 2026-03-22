@@ -96,7 +96,8 @@ def _minimal_response(result: dict[str, Any]) -> dict[str, Any]:
     small = sum(1 for n in top20 if n <= 40)
     odd = sum(1 for n in top20 if n % 2 == 1)
     even = 20 - odd
-    latest_issue = str((result.get("metadata") or {}).get("runtime_history_issue_range", [None, None])[-1] or "unknown")
+    meta = result.get("metadata") or {}
+    latest_issue = str(meta.get("latest_fetched_issue") or meta.get("fetched_same_day_issue_max") or (meta.get("runtime_history_issue_range", [None, None])[-1]) or "unknown")
     return {
         "latest_fetched_issue": latest_issue,
         "target_issue": str(result["issue"]),

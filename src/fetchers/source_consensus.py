@@ -37,6 +37,20 @@ def _build_majority_merge(successful: dict[str, list[DrawRecord]]) -> tuple[list
     return merged, unresolved
 
 
+def _same_day_rows(rows: list[DrawRecord]) -> list[DrawRecord]:
+    if not rows:
+        return []
+    latest_day = max(r.draw_date for r in rows)
+    return sorted([r for r in rows if r.draw_date == latest_day], key=lambda r: int(r.issue) if r.issue.isdigit() else r.issue)
+
+
+def _source_same_day_max_issue(rows: list[DrawRecord]) -> str | None:
+    same_day = _same_day_rows(rows)
+    if not same_day:
+        return None
+    return same_day[-1].issue
+
+
 def run_source_consensus(
     sources: list[str],
     report_path: Path = Path("reports/source_consensus_report.json"),
@@ -57,6 +71,8 @@ def run_source_consensus(
         except Exception as exc:  # noqa: BLE001
             errors[src] = str(exc)
 
+    source_same_day_max_issue = {src: _source_same_day_max_issue(rows) for src, rows in successful.items()}
+
     if not successful:
         report = {
             "checked_sources": sources,
@@ -75,6 +91,7 @@ def run_source_consensus(
             "unresolved_mismatch_count": 0,
             "failover_reason": "all_sources_failed",
             "fetch_attempts_by_source": attempts,
+            "source_same_day_max_issue": source_same_day_max_issue,
         }
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -157,6 +174,7 @@ def run_source_consensus(
         "merge_strategy": "majority_merge",
         "unresolved_mismatch_count": unresolved,
         "failover_reason": next((x for x in failover_reasons.values() if x), None),
+        "source_same_day_max_issue": source_same_day_max_issue,
     }
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

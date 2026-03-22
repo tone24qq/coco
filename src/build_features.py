@@ -163,6 +163,44 @@ def _recent_hot_cold_flags(history: list[DrawRecord], indicator: np.ndarray) -> 
     return hot_flag, cold_flag
 
 
+def build_history_runtime_cache(history: list[DrawRecord]) -> dict[str, object]:
+    indicator = _history_indicator_matrix(history)
+    rolling = _rolling_hit_matrix(indicator)
+    total_hits = np.sum(indicator, axis=0)
+    current_gap, avg_gap, max_gap, gap_z = _candidate_gap_stats_matrix(indicator)
+    recent100 = indicator[-100:] if len(indicator) >= 100 else indicator
+    decay_w = np.power(0.97, np.arange(len(recent100), dtype=np.float64))
+    decay_100 = np.sum(recent100[::-1] * decay_w[:, None], axis=0)
+    recent200 = indicator[-200:] if len(indicator) >= 200 else indicator
+    ewma_w = np.power(0.95, np.arange(len(recent200), dtype=np.float64))
+    ewma = np.sum(recent200[::-1] * ewma_w[:, None], axis=0)
+    pm1, pm2 = _neighbor_hit_features_matrix(indicator)
+    hot_flag, cold_flag = _recent_hot_cold_flags(history, indicator)
+    carryover_prev = indicator[-1]
+    carryover_last_k = np.sum(indicator[-10:] if len(indicator) >= 10 else indicator, axis=0)
+    prof_10 = _history_profiles(history, min(10, len(history)))
+    prof_20 = _history_profiles(history, min(20, len(history)))
+    return {
+        "indicator": indicator,
+        "rolling": rolling,
+        "total_hits": total_hits,
+        "current_gap": current_gap,
+        "avg_gap": avg_gap,
+        "max_gap": max_gap,
+        "gap_z": gap_z,
+        "decay_100": decay_100,
+        "ewma": ewma,
+        "pm1": pm1,
+        "pm2": pm2,
+        "hot_flag": hot_flag,
+        "cold_flag": cold_flag,
+        "carryover_prev": carryover_prev,
+        "carryover_last_k": carryover_last_k,
+        "prof_10": prof_10,
+        "prof_20": prof_20,
+    }
+
+
 def _build_candidate_rows_legacy_python(
     history: list[DrawRecord],
     issue: str,
@@ -258,6 +296,7 @@ def build_candidate_rows(
     retrieval_weights: dict[str, float] | None = None,
     prefer_same_day_progress: bool = True,
     progress_logging: bool = False,
+    runtime_cache: dict[str, object] | None = None,
 ) -> tuple[list[dict[str, float | int | str]], list]:
     if len(history) < min_dynamic_n + 1:
         raise DataContractError("insufficient history for candidate feature generation")
@@ -278,28 +317,25 @@ def build_candidate_rows(
     if progress_logging:
         log_progress(3, 5, "retrieval matches 完成", f"match_count={len(matches)}")
 
-    prof_10 = _history_profiles(history, min(10, len(history)))
-    prof_20 = _history_profiles(history, min(20, len(history)))
+    cache = runtime_cache or build_history_runtime_cache(history)
+    prof_10 = dict(cache["prof_10"])  # type: ignore[arg-type]
+    prof_20 = dict(cache["prof_20"])  # type: ignore[arg-type]
     prof_n = _history_profiles(history, min(len(history), max(20, dynamic_n)))
     transition = _regime_transition(history)
-
-    indicator = _history_indicator_matrix(history)
-    rolling = _rolling_hit_matrix(indicator)
-    total_hits = np.sum(indicator, axis=0)
-    current_gap, avg_gap, max_gap, gap_z = _candidate_gap_stats_matrix(indicator)
-
-    recent100 = indicator[-100:] if len(indicator) >= 100 else indicator
-    decay_w = np.power(0.97, np.arange(len(recent100), dtype=np.float64))
-    decay_100 = np.sum(recent100[::-1] * decay_w[:, None], axis=0)
-
-    recent200 = indicator[-200:] if len(indicator) >= 200 else indicator
-    ewma_w = np.power(0.95, np.arange(len(recent200), dtype=np.float64))
-    ewma = np.sum(recent200[::-1] * ewma_w[:, None], axis=0)
-
-    pm1, pm2 = _neighbor_hit_features_matrix(indicator)
-    hot_flag, cold_flag = _recent_hot_cold_flags(history, indicator)
-    carryover_prev = indicator[-1]
-    carryover_last_k = np.sum(indicator[-10:] if len(indicator) >= 10 else indicator, axis=0)
+    rolling = cache["rolling"]  # type: ignore[assignment]
+    total_hits = cache["total_hits"]  # type: ignore[assignment]
+    current_gap = cache["current_gap"]  # type: ignore[assignment]
+    avg_gap = cache["avg_gap"]  # type: ignore[assignment]
+    max_gap = cache["max_gap"]  # type: ignore[assignment]
+    gap_z = cache["gap_z"]  # type: ignore[assignment]
+    decay_100 = cache["decay_100"]  # type: ignore[assignment]
+    ewma = cache["ewma"]  # type: ignore[assignment]
+    pm1 = cache["pm1"]  # type: ignore[assignment]
+    pm2 = cache["pm2"]  # type: ignore[assignment]
+    hot_flag = cache["hot_flag"]  # type: ignore[assignment]
+    cold_flag = cache["cold_flag"]  # type: ignore[assignment]
+    carryover_prev = cache["carryover_prev"]  # type: ignore[assignment]
+    carryover_last_k = cache["carryover_last_k"]  # type: ignore[assignment]
     retrieval_frame = retrieval_features_frame(matches, context_n=dynamic_n)
 
     profile10 = json.dumps(prof_10, ensure_ascii=False, sort_keys=True)

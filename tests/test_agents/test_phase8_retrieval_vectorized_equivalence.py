@@ -4,7 +4,7 @@ from src.retrieval import SimilarWindowRetriever
 def test_retrieval_vectorized_matches_legacy(synthetic_records) -> None:
     history = synthetic_records[:-1]
     target_window = history[-30:]
-    retriever = SimilarWindowRetriever(top_k=12)
+    retriever = SimilarWindowRetriever(top_k=12, coarse_multiplier=1000)
 
     legacy = retriever._query_legacy_python(history=history, target_window=target_window, day_issue_index=target_window[-1].day_issue_index)
     current = retriever.query(history=history, target_window=target_window, day_issue_index=target_window[-1].day_issue_index)

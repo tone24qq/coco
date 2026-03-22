@@ -27,6 +27,7 @@ pytest -q tests/test_agents/test_phase8_build_features_vectorized_equivalence.py
 pytest -q tests/test_agents/test_phase8_compute_metrics_equivalence.py
 pytest -q tests/test_agents/test_phase8_oof_cv_equivalence.py
 pytest -q tests/test_agents/test_phase8_perf_sanity.py
+pytest -q tests/test_agents/test_phase9_autofetch_contract.py
 
 echo "[5/7] prepare minimal ranking dataset"
 python - <<'PY'
@@ -196,6 +197,14 @@ assert len(pred["ranking_score_table"]) == 80
 assert len(pred["top20_numbers"]) == 20
 assert pred["metadata"]["score_type"] == "ranking_score"
 assert pred["metadata"]["target_next_issue_contract"] == "passed"
+if pred["metadata"].get("fetched_same_day_issue_max") is not None:
+    assert pred["metadata"]["latest_fetched_issue"] == pred["metadata"]["fetched_same_day_issue_max"]
+assert pred["issue"] == str(int(pred["metadata"]["latest_fetched_issue"]) + 1)
+for key in ["fetch", "merge", "retrieval_feature_build", "model_score", "total"]:
+    assert key in pred["metadata"]["elapsed_ms"]
+    assert pred["metadata"]["elapsed_ms"][key] >= 0.0
+assert "freshness_probe" in pred["metadata"]["elapsed_ms"]
+assert pred["metadata"]["elapsed_ms"]["freshness_probe"] >= 0.0
 assert "dynamic_weighting" in pred["metadata"]
 assert "effective_runtime_weights" in pred["metadata"]
 assert abs(sum(pred["metadata"]["effective_runtime_weights"].values()) - 1.0) <= 1e-6
