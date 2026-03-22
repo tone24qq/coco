@@ -321,7 +321,11 @@ def run_prediction(
     config: dict[str, Any],
     recent_draws: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
+    response_mode: str = "full",
 ) -> dict[str, Any]:
+    if response_mode not in {"full", "minimal"}:
+        raise DataContractError(f"unsupported response_mode: {response_mode}")
+
     t0 = perf_counter()
     tm: dict[str, float] = {}
     log_progress(0, 6, "收到預測請求，開始載入 recent_draws / auto_fetch", request_id=request_id)
@@ -390,6 +394,30 @@ def run_prediction(
     log_progress(4, 6, "完成 ranking score chain", f"target_issue={target_issue}", request_id=request_id)
 
     top20 = scored.head(20)["candidate_number"].astype(int).tolist()
+    big = sum(1 for n in top20 if n >= 41)
+    small = sum(1 for n in top20 if n <= 40)
+    odd = sum(1 for n in top20 if n % 2 == 1)
+    even = 20 - odd
+
+    if response_mode == "minimal":
+        log_progress(5, 6, "輸出 minimal 預測回應", f"top20={top20[:5]}...", request_id=request_id)
+        log_progress(6, 6, "預測主線完成", f"issue={target_issue}", request_id=request_id)
+        return {
+            "issue": target_issue,
+            "top20_numbers": top20,
+            "big_count": big,
+            "small_count": small,
+            "odd_count": odd,
+            "even_count": even,
+            "metadata": {
+                "latest_fetched_issue": verified_latest_fetched_issue,
+                "fetched_same_day_issue_min": fetch_meta.get("fetched_same_day_issue_min"),
+                "fetched_same_day_issue_max": fetch_meta.get("fetched_same_day_issue_max"),
+                "fetched_same_day_issue_count": fetch_meta.get("fetched_same_day_issue_count"),
+                "dynamic_context_n": dynamic_n,
+            },
+        }
+
     top10 = top20[:10]
     top3_before = top10[:3]
     top3_after = apply_top3_group_dedup(top10)

@@ -15,19 +15,27 @@ def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_re
         feature_columns = ["cand_hits_last_100"]
         metadata = {"created_at": "2026-01-01T00:00:00", "model_family": "test"}
 
-    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None):
+    captured: dict[str, str] = {}
+
+    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None, response_mode="full"):
+        captured["response_mode"] = response_mode
         return {
             "issue": "20260101099",
             "source": "manual",
             "dynamic_context_n": 30,
             "top20_numbers": list(range(1, 21)),
-            "top10_numbers": list(range(1, 11)),
-            "top3_numbers": [1, 4, 7],
-            "top3_before_group_dedup": [1, 2, 3],
-            "top3_after_group_dedup": [1, 4, 7],
-            "retrieval_top_matches": [],
-            "ranking_score_table": [],
-            "metadata": {"runtime_history_issue_range": ["20260101098", "20260101098"]},
+            "big_count": 0,
+            "small_count": 20,
+            "odd_count": 10,
+            "even_count": 10,
+            "metadata": {
+                "latest_fetched_issue": "20260101098",
+                "fetched_same_day_issue_min": "20260101070",
+                "fetched_same_day_issue_max": "20260101098",
+                "fetched_same_day_issue_count": 29,
+                "dynamic_context_n": 30,
+                "runtime_history_issue_range": ["20260101098", "20260101098"],
+            },
         }
 
     monkeypatch.setattr(
@@ -55,6 +63,10 @@ def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_re
     assert sorted(body.keys()) == sorted(
         [
             "latest_fetched_issue",
+            "fetched_same_day_issue_min",
+            "fetched_same_day_issue_max",
+            "fetched_same_day_issue_count",
+            "dynamic_context_n",
             "target_issue",
             "top20_numbers",
             "big_count",
@@ -68,6 +80,13 @@ def test_health_and_predict_schema_with_mocked_runtime(monkeypatch, synthetic_re
     assert len(body["top20_numbers"]) == 20
     assert body["big_count"] + body["small_count"] == 20
     assert body["odd_count"] + body["even_count"] == 20
+    assert body["fetched_same_day_issue_min"] == "20260101070"
+    assert body["fetched_same_day_issue_max"] == "20260101098"
+    assert body["fetched_same_day_issue_count"] == 29
+    assert body["dynamic_context_n"] == 30
+    assert "ranking_score_table" not in body
+    assert "retrieval_top_matches" not in body
+    assert captured["response_mode"] == "minimal"
 
 
 def test_health_degraded_when_artifacts_missing(monkeypatch):
@@ -112,21 +131,24 @@ def test_predict_singleflight_rejects_concurrent_request(monkeypatch, synthetic_
     lock_entered = threading.Event()
     release_lock = threading.Event()
 
-    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None):
+    def fake_run_prediction(_artifacts, _cfg, _recent, request_id=None, response_mode="full"):
         lock_entered.set()
         release_lock.wait(timeout=1.0)
         return {
             "issue": "20260101099",
-            "source": "manual",
-            "dynamic_context_n": 30,
             "top20_numbers": list(range(1, 21)),
-            "top10_numbers": list(range(1, 11)),
-            "top3_numbers": [1, 4, 7],
-            "top3_before_group_dedup": [1, 2, 3],
-            "top3_after_group_dedup": [1, 4, 7],
-            "retrieval_top_matches": [],
-            "ranking_score_table": [],
-            "metadata": {"runtime_history_issue_range": ["20260101098", "20260101098"]},
+            "big_count": 0,
+            "small_count": 20,
+            "odd_count": 10,
+            "even_count": 10,
+            "metadata": {
+                "latest_fetched_issue": "20260101098",
+                "fetched_same_day_issue_min": "20260101070",
+                "fetched_same_day_issue_max": "20260101098",
+                "fetched_same_day_issue_count": 29,
+                "dynamic_context_n": 30,
+                "runtime_history_issue_range": ["20260101098", "20260101098"],
+            },
         }
 
     monkeypatch.setattr(
