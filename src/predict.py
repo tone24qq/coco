@@ -5,6 +5,7 @@ import copy
 import json
 from functools import lru_cache
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Sequence
 
 import pandas as pd
@@ -13,8 +14,8 @@ import yaml
 from src.analysis.explain import build_prediction_explain
 from src.analysis.snapshots import build_history_snapshot, read_history_snapshot
 from src.artifacts import ModelArtifacts, load_artifacts
-from src.build_features import build_candidate_rows, resolve_dynamic_context
-from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest
+from src.build_features import build_candidate_rows, build_history_runtime_cache, resolve_dynamic_context
+from src.fetch_winwin import AUZO_URL, WINWIN_URL, fetch_latest, probe_latest_same_day_issue
 from src.fetchers.source_consensus import run_source_consensus
 from src.io.canonical_dataset import read_audit_summary
 from src.runtime_history import (
@@ -108,7 +109,18 @@ def _load_recent_draws(
 ) -> tuple[list[DrawRecord], str, dict[str, Any]]:
     if recent_draws:
         rows = _records_from_payload(recent_draws)
-        return rows, "manual", {"consensus_status": "manual", "fetch_attempts": 0, "actual_source_used": "manual"}
+        return rows, "manual", {
+            "consensus_status": "manual",
+            "fetch_attempts": 0,
+            "actual_source_used": "manual",
+            "freshness_check_passed": True,
+            "verified_latest_fetched_issue": rows[-1].issue,
+            "authoritative_latest_issue": rows[-1].issue,
+            "authoritative_source": "manual",
+            "merged_same_day_issue_max": rows[-1].issue,
+            "freshness_probe_elapsed_ms": 0.0,
+            "freshness_mismatch_reason": None,
+        }
 
     if config.get("auto_fetch", {}).get("enabled", True):
         timeout_s = float(config.get("auto_fetch", {}).get("fetch_timeout_seconds", 10.0))
@@ -130,19 +142,66 @@ def _load_recent_draws(
             today_rows = sorted([r for r in rows if r.draw_date == latest_day], key=lambda r: r.issue)
             if not today_rows:
                 raise DataContractError("auto_fetch consensus failed: no same-day rows found")
-            return today_rows, "winwin_auto_fetch", report
+            _validate_auto_fetch_same_day(today_rows, source="consensus", source_max=report.get("source_same_day_max_issue", {}))
+            probe_t0 = perf_counter()
+            authoritative_latest_issue, authoritative_source = probe_latest_same_day_issue(timeout_s=timeout_s, sources=sources)
+            freshness_probe_elapsed_ms = (perf_counter() - probe_t0) * 1000.0
+            merged_same_day_issue_max = today_rows[-1].issue
+            if merged_same_day_issue_max != authoritative_latest_issue:
+                reason = (
+                    f"freshness mismatch (stale): merged_same_day_issue_max={merged_same_day_issue_max}, "
+                    f"authoritative_latest_issue={authoritative_latest_issue}"
+                )
+                raise DataContractError(reason)
+            enriched = _with_same_day_debug(report, today_rows)
+            enriched.update(
+                {
+                    "freshness_check_passed": True,
+                    "verified_latest_fetched_issue": authoritative_latest_issue,
+                    "authoritative_latest_issue": authoritative_latest_issue,
+                    "authoritative_source": authoritative_source,
+                    "merged_same_day_issue_max": merged_same_day_issue_max,
+                    "freshness_probe_elapsed_ms": freshness_probe_elapsed_ms,
+                    "freshness_mismatch_reason": None,
+                }
+            )
+            return today_rows, "winwin_auto_fetch", enriched
         fetched = fetch_latest(sources=sources, timeout_s=timeout_s)
         latest_day = max(r.draw_date for r in fetched.records)
         today_rows = sorted([r for r in fetched.records if r.draw_date == latest_day], key=lambda r: r.issue)
         if not today_rows:
             raise DataContractError("auto_fetch failed: no same-day rows found")
-        return today_rows, "winwin_auto_fetch", {
+        _validate_auto_fetch_same_day(today_rows, source=fetched.source_url, source_max={fetched.source_url: today_rows[-1].issue})
+        probe_t0 = perf_counter()
+        authoritative_latest_issue, authoritative_source = probe_latest_same_day_issue(timeout_s=timeout_s, sources=sources)
+        freshness_probe_elapsed_ms = (perf_counter() - probe_t0) * 1000.0
+        merged_same_day_issue_max = today_rows[-1].issue
+        if merged_same_day_issue_max != authoritative_latest_issue:
+            reason = (
+                f"freshness mismatch (stale): merged_same_day_issue_max={merged_same_day_issue_max}, "
+                f"authoritative_latest_issue={authoritative_latest_issue}"
+            )
+            raise DataContractError(reason)
+        enriched = _with_same_day_debug({
             "consensus_status": "single_source",
             "fetch_attempts": fetched.attempts,
             "actual_source_used": fetched.source_url,
             "failover_reason": fetched.failover_reason,
             "source_consensus_report_path": None,
-        }
+            "source_same_day_max_issue": {fetched.source_url: today_rows[-1].issue},
+        }, today_rows)
+        enriched.update(
+            {
+                "freshness_check_passed": True,
+                "verified_latest_fetched_issue": authoritative_latest_issue,
+                "authoritative_latest_issue": authoritative_latest_issue,
+                "authoritative_source": authoritative_source,
+                "merged_same_day_issue_max": merged_same_day_issue_max,
+                "freshness_probe_elapsed_ms": freshness_probe_elapsed_ms,
+                "freshness_mismatch_reason": None,
+            }
+        )
+        return today_rows, "winwin_auto_fetch", enriched
 
     processed = Path(config.get("history", {}).get("processed_path", "data/processed/history_processed.csv"))
     records = read_processed(processed)
@@ -150,7 +209,53 @@ def _load_recent_draws(
     today_rows = sorted([r for r in records if r.draw_date == latest_day], key=lambda r: r.issue)
     if not today_rows:
         raise DataContractError("processed_history failed: no latest-day rows found")
-    return today_rows, "processed_history", {"consensus_status": "processed_history", "fetch_attempts": 0, "actual_source_used": str(processed)}
+    return today_rows, "processed_history", {
+        "consensus_status": "processed_history",
+        "fetch_attempts": 0,
+        "actual_source_used": str(processed),
+        "freshness_check_passed": True,
+        "verified_latest_fetched_issue": today_rows[-1].issue,
+        "authoritative_latest_issue": today_rows[-1].issue,
+        "authoritative_source": "processed_history",
+        "merged_same_day_issue_max": today_rows[-1].issue,
+        "freshness_probe_elapsed_ms": 0.0,
+        "freshness_mismatch_reason": None,
+    }
+
+
+def _with_same_day_debug(meta: dict[str, Any], rows: list[DrawRecord]) -> dict[str, Any]:
+    out = dict(meta)
+    issues = [r.issue for r in rows]
+    out["fetched_same_day_issue_min"] = issues[0]
+    out["fetched_same_day_issue_max"] = issues[-1]
+    out["fetched_same_day_issue_count"] = len(issues)
+    out["fetched_same_day_issue_list_tail"] = issues[-10:]
+    return out
+
+
+def _validate_auto_fetch_same_day(rows: list[DrawRecord], source: str, source_max: dict[str, Any] | None = None) -> None:
+    if not rows:
+        raise DataContractError("auto_fetch same-day rows empty")
+    ordered = sorted(rows, key=lambda r: int(r.issue) if r.issue.isdigit() else r.issue)
+    suffixes: list[int] = []
+    for row in ordered:
+        if not row.issue.isdigit() or len(row.issue) < 3:
+            raise DataContractError(f"auto_fetch same-day invalid issue format: {row.issue}")
+        suffixes.append(int(row.issue[-3:]))
+    expected = list(range(min(suffixes), max(suffixes) + 1))
+    if suffixes != expected:
+        raise DataContractError(
+            f"auto_fetch same-day incomplete issue set from {source}: expected {expected[0]}..{expected[-1]}, got tail={suffixes[-10:]}"
+        )
+    expected_day_idx = list(range(1, len(ordered) + 1))
+    got_day_idx = [r.day_issue_index for r in ordered]
+    if got_day_idx != expected_day_idx:
+        raise DataContractError("auto_fetch same-day day_issue_index must be 1..N contiguous")
+    if source_max:
+        max_issue = ordered[-1].issue
+        has_stale_source = any(v is not None and str(v).isdigit() and int(str(v)) < int(max_issue) for v in source_max.values())
+        if has_stale_source and len(source_max) == 1:
+            raise DataContractError("auto_fetch single source appears stale for latest day; cannot safely continue")
 
 
 def _load_runtime_history(config: dict[str, Any]) -> Sequence[DrawRecord]:
@@ -251,12 +356,17 @@ def run_prediction(
     recent_draws: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
+    t0 = perf_counter()
+    tm: dict[str, float] = {}
     log_progress(0, 6, "收到預測請求，開始載入 recent_draws / auto_fetch", request_id=request_id)
     recent_context, source, fetch_meta = _load_recent_draws(config, recent_draws)
+    tm["fetch"] = (perf_counter() - t0) * 1000.0
     log_progress(1, 6, "載入最近開獎上下文", f"來源={source}", request_id=request_id)
     log_progress(2, 6, "開始載入 runtime history", request_id=request_id)
+    t_merge = perf_counter()
     processed_history = _load_runtime_history(config)
     history = _merge_history_with_context(processed_history, recent_context)
+    tm["merge"] = (perf_counter() - t_merge) * 1000.0
     log_progress(3, 6, "合併 processed + recent 歷史", f"rows={len(history)}", request_id=request_id)
 
     history_cfg = config.get("history", {})
@@ -267,7 +377,10 @@ def run_prediction(
     context = resolve_dynamic_context(history, min_dynamic_n=min_dynamic_n, max_dynamic_n=max_dynamic_n)
     dynamic_n = len(context)
 
-    target_issue = _next_issue(history[-1].issue)
+    verified_latest_fetched_issue = str(fetch_meta.get("verified_latest_fetched_issue") or recent_context[-1].issue)
+    target_issue = _next_issue(verified_latest_fetched_issue)
+    retrieval_start = perf_counter()
+    runtime_cache = build_history_runtime_cache(list(history))
     rows, matches = build_candidate_rows(
         history=history,
         issue=target_issue,
@@ -279,7 +392,9 @@ def run_prediction(
         retrieval_weights=config.get("retrieval", {}).get("weights", {}),
         prefer_same_day_progress=prefer_same_day_progress,
         progress_logging=True,
+        runtime_cache=runtime_cache,
     )
+    tm["retrieval_plus_feature_build"] = (perf_counter() - retrieval_start) * 1000.0
     feat_df = pd.DataFrame(rows)
     if len(feat_df) != 80:
         raise DataContractError("prediction contract violated: expected 80 candidates")
@@ -288,6 +403,7 @@ def run_prediction(
     log_progress(4, 6, "feature contract passed", f"columns={len(artifacts.feature_columns)}", request_id=request_id)
 
     x = feat_df[artifacts.feature_columns].fillna(0.0)
+    t_score = perf_counter()
     ranker_score = artifacts.ranker.predict(x)
     lr_x = x.copy()
     lr_x["ranker_score"] = ranker_score
@@ -303,6 +419,7 @@ def run_prediction(
         dynamic_cfg=dynamic_cfg,
         return_diagnostics=True,
     )
+    tm["model_score"] = (perf_counter() - t_score) * 1000.0
     log_progress(4, 6, "完成 ranking score chain", f"target_issue={target_issue}", request_id=request_id)
 
     top20 = scored.head(20)["candidate_number"].astype(int).tolist()
@@ -369,6 +486,17 @@ def run_prediction(
         "detected_files": audit.get("detected_files", []),
         "canonical_rows": audit.get("canonical_rows", audit.get("total_rows")),
         "source_consensus_status": fetch_meta.get("consensus_status"),
+        "authoritative_latest_issue": fetch_meta.get("authoritative_latest_issue"),
+        "authoritative_source": fetch_meta.get("authoritative_source"),
+        "verified_latest_fetched_issue": verified_latest_fetched_issue,
+        "merged_same_day_issue_max": fetch_meta.get("merged_same_day_issue_max"),
+        "freshness_check_passed": fetch_meta.get("freshness_check_passed", False),
+        "freshness_mismatch_reason": fetch_meta.get("freshness_mismatch_reason"),
+        "fetched_same_day_issue_min": fetch_meta.get("fetched_same_day_issue_min"),
+        "fetched_same_day_issue_max": fetch_meta.get("fetched_same_day_issue_max"),
+        "fetched_same_day_issue_count": fetch_meta.get("fetched_same_day_issue_count"),
+        "fetched_same_day_issue_list_tail": fetch_meta.get("fetched_same_day_issue_list_tail", []),
+        "source_same_day_max_issue": fetch_meta.get("source_same_day_max_issue", {}),
         "source_consensus_report_path": config.get("provenance", {}).get("consensus_report_path", "reports/source_consensus_report.json"),
         "fetch_attempts": fetch_meta.get("fetch_attempts", 0),
         "actual_source_used": fetch_meta.get("actual_source_used", source),
@@ -391,6 +519,15 @@ def run_prediction(
             "mode": dynamic_cfg.mode,
             "gate_value": (diagnostics.get("issues", {}).get(str(target_issue), {}) or {}).get("gate_value", 0.0),
             "source": "retrieval_quality_gate",
+        },
+        "latest_fetched_issue": verified_latest_fetched_issue,
+        "elapsed_ms": {
+            "fetch": round(tm.get("fetch", 0.0), 3),
+            "freshness_probe": round(float(fetch_meta.get("freshness_probe_elapsed_ms", 0.0)), 3),
+            "merge": round(tm.get("merge", 0.0), 3),
+            "retrieval_feature_build": round(tm.get("retrieval_plus_feature_build", 0.0), 3),
+            "model_score": round(tm.get("model_score", 0.0), 3),
+            "total": round((perf_counter() - t0) * 1000.0, 3),
         },
     }
     if dynamic_cfg.enabled and "effective_runtime_weights" not in metadata:
