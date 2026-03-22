@@ -13,6 +13,7 @@ pytest -q
 
 echo "[4/7] targeted tests"
 pytest -q tests/test_agents/test_phase1_fetch.py
+pytest -q tests/test_agents/test_phase1_predict_schema.py
 pytest -q tests/test_agents/test_phase2_api_and_pipeline.py
 pytest -q tests/test_agents/test_phase3_provenance_and_consensus.py
 pytest -q tests/test_agents/test_phase3_snapshot_predict_backtest.py

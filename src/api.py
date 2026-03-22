@@ -30,6 +30,10 @@ class PredictPayload(BaseModel):
 
 class PredictResponse(BaseModel):
     latest_fetched_issue: str
+    fetched_same_day_issue_min: str | None = None
+    fetched_same_day_issue_max: str | None = None
+    fetched_same_day_issue_count: int | None = None
+    dynamic_context_n: int | None = None
     target_issue: str
     top20_numbers: list[int]
     big_count: int
@@ -92,14 +96,23 @@ def health() -> HealthResponse:
 
 def _minimal_response(result: dict[str, Any]) -> dict[str, Any]:
     top20 = [int(x) for x in result["top20_numbers"]]
-    big = sum(1 for n in top20 if n >= 41)
-    small = sum(1 for n in top20 if n <= 40)
-    odd = sum(1 for n in top20 if n % 2 == 1)
-    even = 20 - odd
+    big = int(result.get("big_count", sum(1 for n in top20 if n >= 41)))
+    small = int(result.get("small_count", sum(1 for n in top20 if n <= 40)))
+    odd = int(result.get("odd_count", sum(1 for n in top20 if n % 2 == 1)))
+    even = int(result.get("even_count", 20 - odd))
     meta = result.get("metadata") or {}
-    latest_issue = str(meta.get("latest_fetched_issue") or meta.get("fetched_same_day_issue_max") or (meta.get("runtime_history_issue_range", [None, None])[-1]) or "unknown")
+    latest_issue = str(
+        meta.get("latest_fetched_issue")
+        or meta.get("fetched_same_day_issue_max")
+        or (meta.get("runtime_history_issue_range", [None, None])[-1])
+        or "unknown"
+    )
     return {
         "latest_fetched_issue": latest_issue,
+        "fetched_same_day_issue_min": meta.get("fetched_same_day_issue_min"),
+        "fetched_same_day_issue_max": meta.get("fetched_same_day_issue_max"),
+        "fetched_same_day_issue_count": meta.get("fetched_same_day_issue_count"),
+        "dynamic_context_n": meta.get("dynamic_context_n"),
         "target_issue": str(result["issue"]),
         "top20_numbers": top20,
         "big_count": big,
@@ -124,7 +137,7 @@ def predict(payload: PredictPayload) -> PredictResponse:
     try:
         print(f"[req={request_id}] /predict start", flush=True)
         recent = [r.model_dump() for r in payload.recent_draws] if payload.recent_draws else None
-        result = run_prediction(artifacts, config, recent, request_id=request_id)
+        result = run_prediction(artifacts, config, recent, request_id=request_id, response_mode="minimal")
         response = PredictResponse(**_minimal_response(result))
         print(f"[req={request_id}] /predict done", flush=True)
         return response
