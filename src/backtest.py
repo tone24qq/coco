@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -351,6 +352,9 @@ def _run_experiments(
                                 "pred_top3": pred_top3,
                                 "pred_top10": pred_top10,
                                 "actual": actual,
+                                "history_numbers": json.loads(
+                                    str(feat_row.get("history_numbers", "[]"))
+                                ),
                                 "prev_numbers": prev_numbers,
                             }
                         )
@@ -470,6 +474,296 @@ def _build_history_bucket_report(issue_rows: pd.DataFrame) -> pd.DataFrame:
         return out
     metric_cols = [c for c in out.columns if c != "history_bucket"]
     return out.groupby("history_bucket")[metric_cols].mean().reset_index()
+
+
+def _build_match_pairs(
+    preds: list[int],
+    actuals: list[int],
+    *,
+    max_dist: int,
+    include_exact: bool,
+) -> list[tuple[int, int]]:
+    edges: list[tuple[int, int, int, int, int]] = []
+    for p_idx, pred in enumerate(preds):
+        for a_idx, actual in enumerate(actuals):
+            dist = abs(int(pred) - int(actual))
+            if dist > max_dist:
+                continue
+            if not include_exact and dist == 0:
+                continue
+            edges.append((dist, p_idx, a_idx, int(pred), int(actual)))
+
+    edges.sort(key=lambda x: (x[0], x[1], x[2]))
+    used_pred: set[int] = set()
+    used_actual: set[int] = set()
+    matches: list[tuple[int, int]] = []
+    for _, p_idx, a_idx, pred, actual in edges:
+        if p_idx in used_pred or a_idx in used_actual:
+            continue
+        used_pred.add(p_idx)
+        used_actual.add(a_idx)
+        matches.append((pred, actual))
+    return matches
+
+
+def _min_distances(preds: list[int], actuals: list[int]) -> list[float]:
+    if not actuals:
+        return [80.0 for _ in preds]
+    return [
+        float(min(abs(int(pred) - int(actual)) for actual in actuals)) for pred in preds
+    ]
+
+
+def _near_miss_issue_metrics(
+    preds: list[int], actuals: list[int], top_k: int
+) -> dict[str, float]:
+    scoped_preds = [int(x) for x in preds[:top_k]]
+    scoped_actuals = [int(x) for x in actuals]
+    denom = float(max(1, len(scoped_preds)))
+
+    exact_matches = _build_match_pairs(
+        scoped_preds, scoped_actuals, max_dist=0, include_exact=True
+    )
+    adj_matches = _build_match_pairs(
+        scoped_preds, scoped_actuals, max_dist=1, include_exact=True
+    )
+    strict_matches = _build_match_pairs(
+        scoped_preds, scoped_actuals, max_dist=1, include_exact=False
+    )
+
+    strict_directions = [int(pred - actual) for pred, actual in strict_matches]
+    minus1_count = sum(1 for d in strict_directions if d == -1)
+    plus1_count = sum(1 for d in strict_directions if d == 1)
+
+    min_dist = _min_distances(scoped_preds, scoped_actuals)
+    return {
+        f"exact_hit@{top_k}": float(len(exact_matches) / denom),
+        f"adj_hit_pm1@{top_k}": float(len(adj_matches) / denom),
+        f"strict_adj_only_pm1@{top_k}": float(len(strict_matches) / denom),
+        f"top{top_k}_at_least_one_exact": float(len(exact_matches) > 0),
+        f"top{top_k}_at_least_one_adj_pm1": float(len(adj_matches) > 0),
+        f"top{top_k}_at_least_one_strict_adj_only_pm1": float(len(strict_matches) > 0),
+        f"mean_min_distance_at_{top_k}": float(np.mean(min_dist) if min_dist else 80.0),
+        f"median_min_distance_at_{top_k}": float(
+            np.median(min_dist) if min_dist else 80.0
+        ),
+        "near_miss_minus1_count": float(minus1_count),
+        "near_miss_plus1_count": float(plus1_count),
+        "near_miss_minus1_rate": float(minus1_count / denom),
+        "near_miss_plus1_rate": float(plus1_count / denom),
+    }
+
+
+def _frequency_baseline(history_numbers: list[int], top_k: int) -> list[int]:
+    if not history_numbers:
+        return list(range(1, top_k + 1))
+    flat_numbers: list[int] = []
+    for value in history_numbers:
+        if isinstance(value, list):
+            flat_numbers.extend(int(n) for n in value)
+        else:
+            flat_numbers.append(int(value))
+    freq = Counter(flat_numbers)
+    ranked = [n for n, _ in sorted(freq.items(), key=lambda item: (-item[1], item[0]))]
+    if len(ranked) < top_k:
+        ranked.extend(n for n in range(1, 81) if n not in freq)
+    return ranked[:top_k]
+
+
+def _bootstrap_ci(
+    values: list[float], *, samples: int = 1000, seed: int = 42
+) -> dict[str, float]:
+    if not values:
+        return {"mean": 0.0, "ci95_low": 0.0, "ci95_high": 0.0}
+    arr = np.array(values, dtype=float)
+    rng = np.random.default_rng(seed)
+    boots = []
+    for _ in range(samples):
+        picks = rng.choice(arr, size=len(arr), replace=True)
+        boots.append(float(np.mean(picks)))
+    boot_arr = np.array(boots, dtype=float)
+    return {
+        "mean": float(arr.mean()),
+        "ci95_low": float(np.percentile(boot_arr, 2.5)),
+        "ci95_high": float(np.percentile(boot_arr, 97.5)),
+    }
+
+
+def _evaluate_near_miss_rows(rows: list[dict]) -> pd.DataFrame:
+    metrics = []
+    for row in rows:
+        m3 = _near_miss_issue_metrics(row["pred_top3"], row["actual"], 3)
+        m10 = _near_miss_issue_metrics(row["pred_top10"], row["actual"], 10)
+        merged = {**row, **m3, **m10}
+        metrics.append(merged)
+    return pd.DataFrame(metrics)
+
+
+def _summarize_near_miss(df: pd.DataFrame, label: str) -> dict[str, float | str]:
+    metric_cols = [
+        "exact_hit@3",
+        "exact_hit@10",
+        "top3_at_least_one_exact",
+        "top10_at_least_one_exact",
+        "adj_hit_pm1@3",
+        "adj_hit_pm1@10",
+        "top3_at_least_one_adj_pm1",
+        "top10_at_least_one_adj_pm1",
+        "strict_adj_only_pm1@3",
+        "strict_adj_only_pm1@10",
+        "top3_at_least_one_strict_adj_only_pm1",
+        "top10_at_least_one_strict_adj_only_pm1",
+        "mean_min_distance_at_3",
+        "mean_min_distance_at_10",
+        "median_min_distance_at_3",
+        "median_min_distance_at_10",
+        "near_miss_minus1_count",
+        "near_miss_plus1_count",
+        "near_miss_minus1_rate",
+        "near_miss_plus1_rate",
+    ]
+    out: dict[str, float | str] = {"baseline": label, "n_issues": int(len(df))}
+    if df.empty:
+        for col in metric_cols:
+            out[col] = 0.0
+        return out
+    for col in metric_cols:
+        out[col] = float(df[col].mean())
+    return out
+
+
+def _build_near_miss_report(
+    feat_df: pd.DataFrame,
+    per_issue_df: pd.DataFrame,
+    best_version: str,
+    splits: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
+    if per_issue_df.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), {}
+
+    best_rows = (
+        per_issue_df[per_issue_df["version_id"] == best_version]
+        .sort_values(["fold", "issue"])
+        .to_dict(orient="records")
+    )
+    issue_to_history = {
+        int(row["issue"]): json.loads(str(row.get("history_numbers", "[]")))
+        for _, row in feat_df.iterrows()
+    }
+
+    rng = np.random.default_rng(42)
+    random_rows = []
+    frequency_rows = []
+    binary_rows = (
+        per_issue_df[per_issue_df["version_id"] == "v0_binary_baseline"]
+        .sort_values(["fold", "issue"])
+        .to_dict(orient="records")
+    )
+    for row in best_rows:
+        actual = [int(x) for x in row["actual"]]
+        issue = int(row["issue"])
+        fold = int(row["fold"])
+        rand_top10 = sorted(
+            rng.choice(np.arange(1, 81), size=10, replace=False).tolist()
+        )
+        freq_top10 = _frequency_baseline(issue_to_history.get(issue, []), 10)
+        random_rows.append(
+            {
+                "version_id": "random_baseline",
+                "fold": fold,
+                "issue": issue,
+                "pred_top3": rand_top10[:3],
+                "pred_top10": rand_top10,
+                "actual": actual,
+            }
+        )
+        frequency_rows.append(
+            {
+                "version_id": "frequency_baseline",
+                "fold": fold,
+                "issue": issue,
+                "pred_top3": freq_top10[:3],
+                "pred_top10": freq_top10,
+                "actual": actual,
+            }
+        )
+
+    baseline_frames = [
+        _evaluate_near_miss_rows(best_rows),
+        _evaluate_near_miss_rows(random_rows),
+        _evaluate_near_miss_rows(frequency_rows),
+    ]
+    if binary_rows:
+        baseline_frames.append(_evaluate_near_miss_rows(binary_rows))
+    all_rows = pd.concat(baseline_frames, ignore_index=True)
+
+    per_fold = (
+        all_rows.groupby(["version_id", "fold"])  # type: ignore[call-arg]
+        .apply(lambda g: pd.Series(_summarize_near_miss(g, str(g.name[0]))))
+        .reset_index(drop=True)
+    )
+    overall = pd.DataFrame(
+        [
+            _summarize_near_miss(g, str(version_id))
+            for version_id, g in all_rows.groupby("version_id")
+        ]
+    )
+    model_name = best_version
+    ci_summary = {
+        "model": {
+            metric: _bootstrap_ci(
+                all_rows[all_rows["version_id"] == model_name][metric].tolist()
+            )
+            for metric in [
+                "exact_hit@3",
+                "adj_hit_pm1@3",
+                "strict_adj_only_pm1@3",
+                "mean_min_distance_at_3",
+            ]
+        }
+    }
+    baseline_comp = []
+    model_overall = overall[overall["baseline"] == model_name].iloc[0]
+    for _, row in overall.iterrows():
+        if row["baseline"] == model_name:
+            continue
+        baseline_comp.append(
+            {
+                "model": model_name,
+                "baseline": row["baseline"],
+                "delta_exact_hit@3": float(
+                    model_overall["exact_hit@3"] - row["exact_hit@3"]
+                ),
+                "delta_adj_hit_pm1@3": float(
+                    model_overall["adj_hit_pm1@3"] - row["adj_hit_pm1@3"]
+                ),
+                "delta_strict_adj_only_pm1@3": float(
+                    model_overall["strict_adj_only_pm1@3"]
+                    - row["strict_adj_only_pm1@3"]
+                ),
+                "delta_mean_min_distance_at_3": float(
+                    model_overall["mean_min_distance_at_3"]
+                    - row["mean_min_distance_at_3"]
+                ),
+            }
+        )
+    baseline_df = pd.DataFrame(baseline_comp)
+    # attach baseline CIs for overlap checks
+    ci_summary["baselines"] = {
+        baseline: {
+            metric: _bootstrap_ci(g[metric].tolist())
+            for metric in [
+                "exact_hit@3",
+                "adj_hit_pm1@3",
+                "strict_adj_only_pm1@3",
+                "mean_min_distance_at_3",
+            ]
+        }
+        for baseline, g in all_rows.groupby("version_id")
+        if baseline != model_name
+    }
+    ci_summary["folds"] = splits
+    return per_fold, overall, baseline_df, ci_summary
 
 
 def main() -> None:
@@ -621,6 +915,30 @@ def main() -> None:
         {"rows": history_bucket_df.to_dict(orient="records")},
     )
 
+    near_miss_per_fold_df, near_miss_overall_df, baseline_comp_df, near_miss_ci = (
+        _build_near_miss_report(feat_df, per_issue_df, str(best["version_id"]), splits)
+    )
+    near_miss_per_fold_df.to_csv(
+        REPORTS_DIR / "near_miss_per_fold_metrics.csv", index=False
+    )
+    near_miss_overall_df.to_csv(
+        REPORTS_DIR / "near_miss_overall_summary.csv", index=False
+    )
+    baseline_comp_df.to_csv(
+        REPORTS_DIR / "near_miss_baseline_comparison.csv", index=False
+    )
+    save_json(REPORTS_DIR / "near_miss_bootstrap_ci.json", near_miss_ci)
+
+    model_overall = (
+        near_miss_overall_df[
+            near_miss_overall_df["baseline"] == str(best["version_id"])
+        ]
+        .iloc[0]
+        .to_dict()
+        if not near_miss_overall_df.empty
+        else {}
+    )
+
     save_json(
         REPORTS_DIR / "experiment_summary.json",
         {
@@ -636,6 +954,11 @@ def main() -> None:
             },
             "total_versions": int(len(registry_df)),
             "kept_versions": int(registry_df["keep_recommendation"].sum()),
+            "near_miss": {
+                "overall": model_overall,
+                "baseline_comparison": baseline_comp_df.to_dict(orient="records"),
+                "bootstrap_ci": near_miss_ci,
+            },
         },
     )
 
