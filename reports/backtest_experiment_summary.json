@@ -1,9 +1,0 @@
-{
-  "baseline_top3_hit_rate": 0.2532928064842958,
-  "mainline_top3_hit_rate": 0.25109760216143195,
-  "train_top3_hit_rate": 0.8854095875999709,
-  "train_vs_backtest_gap_top3": 0.634311985438539,
-  "fold_dispersion_top3": 0.009252028052551665,
-  "regime_dispersion_top3": 0.02024250122908686,
-  "permutation_p_value": 0.602
-}

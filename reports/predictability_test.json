@@ -1,5 +1,0 @@
-{
-  "metric": "top3_hit_rate",
-  "null_hypothesis": "mainline_minus_baseline_mean<=0",
-  "permutation_p_value": 0.602
-}
