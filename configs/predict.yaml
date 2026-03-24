@@ -1,0 +1,25 @@
+auto_fetch_sources:
+  - name: winwin
+    url: https://winwin.tw/Bingo
+  - name: pilio
+    url: https://www.pilio.idv.tw/bingo/list.asp
+  - name: taiwanlottery
+    url: https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
+fetch:
+  timeout_seconds: 8.0
+  retries: 2
+  backoff_seconds: 0.5
+runtime:
+  local_history_path: data/processed/history_processed.csv
+  runtime_dir: data/runtime_history
+model:
+  artifact_file: model.ckpt
+  model_version: small_transformer_v2
+  feature_version: rank_window_v2
+  window_size: 100
+  seed: 42
+  stale_threshold: 20
+tensor_contract:
+  raw_tensor: "[batch, 80, feature_dim]"
+  model_input_tensor: "[batch, 80, d_model]"
+  attention_axis: candidate-to-candidate

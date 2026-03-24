@@ -1,17 +1,30 @@
-# 1-80 Candidate Ranking System (Transformer Edition)
+# 1-80 Candidate Ranking System (Transformer Mainline)
 
-這是一個專為「1-80 候選集合」設計的高頻序列預測系統，核心採用 **Small-Transformer 架構**。
+正式入口：
+- 訓練：`python -m src.train_transformer --input <history.csv> --output models/transformer_v1`
+- 回測：`python -m src.backtest_transformer --input <history.csv> --output reports/transformer_backtest`
+- CLI 預測：`python -m src.predict --runtime-dir data/runtime_history`
+- API 預測：`GET /predict`（`app.py`）
 
-## 🎯 專案目標
-- **精準排序：** 預測下一局 80 個號碼的出現機率，產出完整分數鏈。
-- **重點輸出：** 鎖定 Top 20 分數區間，並提取具備多樣性的 Top 3。
-- **輕量高效：** 模型權重嚴格控制在 **100MB 以內**，支援本地 3,000 至 1,000,000 筆數據訓練。
+## Deploy contract（保留）
+- `python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history`
+- `bash scripts/build_deploy_bundle.sh deploy_bundle`
 
-## 🚀 快速開始
-1. **數據準備：** 將歷史資料放置於 `data/history.csv` (格式：期數, 號碼1, 號碼2...)。
-2. **本地訓練：** 執行 `python train.py --epochs 50`。
-3. **API 預測：** 調用 `predict()` 獲取 80 個號碼的完整評分。
+## Runtime artifact
+`runtime_history` 僅建置/同步 artifact，不重訓：
+- history: `history_runtime.parquet` + `history_runtime.csv`
+- score chain: `scores.parquet` + `scores.csv`
+- model: `model.ckpt`, `transformer_metadata.json`
+- contract metadata: `metadata.json`
 
-## 📊 核心指標
-- **NDCG@20：** 衡量前 20 名排序的理想度。
-- **Top 3 Diversity：** 確保前三名號碼不度過度集中（依據區間與尾數去重）。
+## Predict response
+- `latest_known_issue`, `target_issue`
+- `model_version`, `feature_version`
+- `data_source`, `fetch_attempts`
+- `score_type: ranking_score`
+- `scores`, `top20`, `top3`
+- `diversity_relaxed`
+- `drift_metadata`
+- `stale_issues`, `is_stale`
+
+詳細 contract 見 `ARCHITECTURE.md`。
