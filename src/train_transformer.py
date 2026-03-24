@@ -25,6 +25,7 @@ from src.history_store import load_local_history
 from src.model_transformer import SmallTransformerRanker, TransformerConfig
 
 MODEL_VERSION = "small_transformer_v2"
+MODEL_SIZE_LIMIT_BYTES = 100 * 1024 * 1024
 
 
 def _set_seed(seed: int) -> None:
@@ -173,6 +174,11 @@ def train_model(
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / model_file
     model.save(model_path)
+    model_size = model_path.stat().st_size
+    if model_size > MODEL_SIZE_LIMIT_BYTES:
+        raise ValueError(
+            f"Model artifact too large: {model_size} exceeds {MODEL_SIZE_LIMIT_BYTES}"
+        )
 
     _, metrics = _evaluate(model, valid_loader)
     trained_up_to_issue = str(history.iloc[split_idx + window_size - 1]["issue"])

@@ -48,7 +48,22 @@ def _load_runtime_metadata(runtime_dir: Path) -> Dict[str, Any]:
     meta_path = runtime_dir / METADATA_FILENAME
     if not meta_path.exists():
         raise FileNotFoundError(f"Missing metadata artifact: {meta_path}")
-    return json.loads(meta_path.read_text(encoding="utf-8"))
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    required = {
+        "model_version",
+        "feature_version",
+        "feature_names",
+        "tensor_contract",
+        "model_artifact",
+        "model_metadata",
+        "expected_input_schema",
+        "expected_output_schema",
+        "stale_threshold",
+    }
+    missing = sorted(required - set(metadata.keys()))
+    if missing:
+        raise ValueError(f"Runtime metadata mismatch: missing keys {missing}")
+    return metadata
 
 
 def _load_transformer_metadata(
@@ -120,19 +135,39 @@ def _to_issue(value: Any) -> int:
     return int(str(value))
 
 
+def _validate_expected_output_schema(runtime_metadata: Dict[str, Any]) -> None:
+    expected = runtime_metadata.get("expected_output_schema")
+    if not isinstance(expected, list):
+        raise ValueError("Runtime metadata mismatch: expected_output_schema")
+    required = {
+        "latest_known_issue",
+        "target_issue",
+        "model_version",
+        "feature_version",
+        "data_source",
+        "scores",
+        "top20",
+        "top3",
+    }
+    if not required.issubset(set(str(item) for item in expected)):
+        raise ValueError("Runtime metadata mismatch: expected_output_schema")
+
+
 def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
     cfg = _load_predict_config()
     runtime_cfg = cfg.get("runtime")
     fetch_cfg = cfg.get("fetch")
     model_cfg = cfg.get("model")
+    tensor_cfg = cfg.get("tensor_contract")
     sources = cfg.get("auto_fetch_sources")
 
     if (
         not isinstance(runtime_cfg, dict)
         or not isinstance(fetch_cfg, dict)
         or not isinstance(model_cfg, dict)
+        or not isinstance(tensor_cfg, dict)
     ):
-        raise ValueError("Predict config missing runtime/fetch/model sections")
+        raise ValueError("Predict config missing runtime/fetch/model/tensor sections")
     if not isinstance(sources, list) or not sources:
         raise ValueError("Predict config missing auto_fetch_sources")
 
@@ -166,14 +201,19 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
     merged = merge_history(local_df, latest_df)
 
     runtime_metadata = _load_runtime_metadata(resolved_runtime)
+    _validate_expected_output_schema(runtime_metadata)
     transformer_meta = _load_transformer_metadata(resolved_runtime, runtime_metadata)
 
     if runtime_metadata.get("model_version") != model_cfg.get("model_version"):
         raise ValueError("Version mismatch: model_version")
+    if runtime_metadata.get("feature_version") != model_cfg.get("feature_version"):
+        raise ValueError("Version mismatch: feature_version")
     if runtime_metadata.get("feature_version") != FEATURE_VERSION:
         raise ValueError("Feature contract mismatch: runtime feature_version")
     if transformer_meta.get("feature_version") != FEATURE_VERSION:
         raise ValueError("Drift mismatch: transformer feature_version")
+    if runtime_metadata.get("tensor_contract") != tensor_cfg:
+        raise ValueError("Tensor contract mismatch: config vs runtime metadata")
     if transformer_meta.get("feature_names") != runtime_metadata.get("feature_names"):
         raise ValueError("Feature contract mismatch: feature_names")
     if transformer_meta.get("tensor_contract") != TENSOR_CONTRACT:
@@ -202,7 +242,7 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
         score_tensor = model.predict_scores(x_tensor).squeeze(0)
 
     scores = [
-        {"number": float(int(n)), "score": float(s)}
+        {"number": int(n), "score": float(s)}
         for n, s in zip(window.number_ids.tolist(), score_tensor.tolist())
     ]
     top20 = _rank_top20(scores)

@@ -13,10 +13,11 @@ def test_predict_smoke(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> N
     payload = {
         "latest_known_issue": "1001",
         "target_issue": "1002",
-        "model_version": "small_transformer_v1",
-        "feature_version": "rank_window_v1",
+        "model_version": "small_transformer_v2",
+        "feature_version": "rank_window_v2",
         "data_source": "mock",
         "fetch_attempts": [],
+        "score_type": "ranking_score",
         "scores": [{"number": i, "score": float(i)} for i in range(1, 81)],
         "top20": [{"number": i, "score": float(i)} for i in range(80, 60, -1)],
         "top3": [
@@ -24,12 +25,20 @@ def test_predict_smoke(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> N
             {"number": 79, "score": 79.0},
             {"number": 65, "score": 65.0},
         ],
-        "score_semantics": "ranking_score",
+        "diversity_relaxed": False,
+        "stale_issues": 0,
+        "is_stale": False,
+        "drift_metadata": {
+            "trained_up_to_issue": "1000",
+            "baseline_metrics": {},
+            "feature_version": "rank_window_v2",
+            "expected_input_schema": [],
+        },
     }
     monkeypatch.setattr("app.predict", lambda: payload)
 
     response = client.get("/predict")
-    if response.status_code != 200:
+    if response.status_code != 200 or len(response.json()["scores"]) != 80:
         pytest.fail("/predict smoke failed")
 
 

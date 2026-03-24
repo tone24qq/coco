@@ -38,3 +38,10 @@ def test_parquet_preferred(tmp_path: Path) -> None:
     loaded = load_local_history(csv_path)
     if loaded.iloc[-1]["issue"] != "1002":
         pytest.fail("parquet preference failed")
+
+
+def test_merge_requires_consecutive_issues() -> None:
+    local = pd.DataFrame([_row("1001", 1), _row("1003", 3)])
+    latest = pd.DataFrame([_row("1004", 4)])
+    with pytest.raises(ValueError, match="issues are not consecutive"):
+        merge_history(local, latest)

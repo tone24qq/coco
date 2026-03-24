@@ -31,6 +31,17 @@ def _resolve_history_path(local_history_path: Path) -> Path:
     return local_history_path
 
 
+def _coerce_and_validate_numbers(df: pd.DataFrame, label: str) -> pd.DataFrame:
+    normalized = df.copy()
+    normalized["issue"] = normalized["issue"].astype(str)
+    for idx in range(1, 21):
+        col = f"n{idx}"
+        normalized[col] = pd.to_numeric(normalized[col], errors="raise").astype(int)
+        if ((normalized[col] < 1) | (normalized[col] > 80)).any():
+            raise ValueError(f"{label}: {col} contains values outside 1..80")
+    return normalized
+
+
 def _validate_issue_sequence(df: pd.DataFrame, label: str) -> None:
     if df["issue"].duplicated().any():
         raise ValueError(f"{label}: duplicated issue values")
@@ -38,6 +49,15 @@ def _validate_issue_sequence(df: pd.DataFrame, label: str) -> None:
     issues = [int(x) for x in df["issue"].tolist()]
     if issues != sorted(issues):
         raise ValueError(f"{label}: issue not monotonic increasing")
+
+
+def _validate_consecutive_issues(df: pd.DataFrame, label: str) -> None:
+    issues = [int(x) for x in df["issue"].tolist()]
+    if len(issues) < 2:
+        return
+    for left, right in zip(issues, issues[1:]):
+        if right - left != 1:
+            raise ValueError(f"{label}: issues are not consecutive")
 
 
 def load_local_history(local_history_path: Path) -> pd.DataFrame:
@@ -51,22 +71,41 @@ def load_local_history(local_history_path: Path) -> pd.DataFrame:
         raw = pd.read_csv(resolved)
 
     normalized = _normalize_local_schema(raw)
+    normalized = _coerce_and_validate_numbers(normalized, "local_history")
     if normalized.empty:
         raise ValueError("Local history is empty")
 
-    normalized["issue"] = normalized["issue"].astype(str)
-    for idx in range(1, 21):
-        col = f"n{idx}"
-        normalized[col] = pd.to_numeric(normalized[col], errors="raise").astype(int)
+    if (
+        resolved.suffix.lower() == ".parquet"
+        and local_history_path.suffix.lower() == ".csv"
+    ):
+        if local_history_path.exists():
+            csv_raw = pd.read_csv(local_history_path)
+            csv_normalized = _coerce_and_validate_numbers(
+                _normalize_local_schema(csv_raw), "local_history_csv"
+            )
+            if sorted(csv_normalized.columns.tolist()) != sorted(
+                normalized.columns.tolist()
+            ):
+                raise ValueError(
+                    "Local history schema mismatch between parquet and csv"
+                )
 
-    normalized = normalized.sort_values(["issue"], kind="mergesort").reset_index(
-        drop=True
+    normalized["issue_int"] = normalized["issue"].astype(int)
+    normalized = normalized.sort_values(["issue_int"], kind="mergesort").drop(
+        columns=["issue_int"]
     )
+    normalized = normalized.reset_index(drop=True)
     _validate_issue_sequence(normalized, "local_history")
     return normalized
 
 
 def merge_history(local_df: pd.DataFrame, latest_df: pd.DataFrame) -> pd.DataFrame:
+    if sorted(local_df.columns.tolist()) != sorted(CANONICAL_COLUMNS):
+        raise ValueError("local_history: schema mismatch")
+    if sorted(latest_df.columns.tolist()) != sorted(CANONICAL_COLUMNS):
+        raise ValueError("latest_history: schema mismatch")
+
     _validate_issue_sequence(local_df, "local_history")
     _validate_issue_sequence(latest_df, "latest_history")
 
@@ -84,13 +123,12 @@ def merge_history(local_df: pd.DataFrame, latest_df: pd.DataFrame) -> pd.DataFra
 
     merged = pd.concat([local_df, latest_df], ignore_index=True)
     merged = merged.drop_duplicates(subset=["issue"], keep="first")
-    merged = merged.sort_values(["issue"], kind="mergesort").reset_index(drop=True)
+    merged["issue_int"] = merged["issue"].astype(int)
+    merged = merged.sort_values(["issue_int"], kind="mergesort").drop(
+        columns=["issue_int"]
+    )
+    merged = merged.reset_index(drop=True)
     _validate_issue_sequence(merged, "merged_history")
-
-    merged_issues = [int(x) for x in merged["issue"].tolist()]
-    if len(merged_issues) >= 2:
-        for left, right in zip(merged_issues, merged_issues[1:]):
-            if right - left <= 0:
-                raise ValueError("Merged history issue continuity check failed")
+    _validate_consecutive_issues(merged, "merged_history")
 
     return merged

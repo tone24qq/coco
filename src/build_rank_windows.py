@@ -12,7 +12,7 @@ FEATURE_VERSION = "rank_window_v2"
 TENSOR_CONTRACT = {
     "raw_tensor": "[batch, 80, feature_dim]",
     "model_input_tensor": "[batch, 80, d_model]",
-    "attention_axis": "candidate_to_candidate",
+    "attention_axis": "candidate-to-candidate",
 }
 FEATURE_NAMES = [
     "number_norm",

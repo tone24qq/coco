@@ -11,7 +11,7 @@ from src.train_transformer import train_model
 
 def _make_history(path: Path) -> None:
     rows = []
-    for issue in range(1000, 1120):
+    for issue in range(1000, 1065):
         rows.append(
             {
                 "issue": issue,
@@ -30,9 +30,9 @@ def _prepare_runtime(tmp_path: Path) -> tuple[Path, Path]:
         input_path=input_path,
         output_dir=model_source,
         model_file="model.ckpt",
-        window_size=50,
+        window_size=20,
         seed=42,
-        epochs=2,
+        epochs=1,
         batch_size=16,
         alpha=0.2,
         stale_threshold=3,
@@ -54,9 +54,14 @@ def _write_config(tmp_path: Path, local_history: Path, runtime_dir: Path) -> Pat
             "artifact_file": "model.ckpt",
             "model_version": "small_transformer_v2",
             "feature_version": "rank_window_v2",
-            "window_size": 50,
+            "window_size": 20,
             "seed": 42,
             "stale_threshold": 3,
+        },
+        "tensor_contract": {
+            "raw_tensor": "[batch, 80, feature_dim]",
+            "model_input_tensor": "[batch, 80, d_model]",
+            "attention_axis": "candidate-to-candidate",
         },
     }
     p = tmp_path / "predict.yaml"
@@ -74,7 +79,7 @@ def test_inference_deterministic(
     monkeypatch.setattr(
         "src.inference.fetch_latest",
         lambda sources, config: (
-            [{"issue": "1120", "draw_time": "x", "numbers": list(range(1, 21))}],
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
             "mock",
             [{"status": "ok"}],
         ),
@@ -101,7 +106,7 @@ def test_feature_names_drift_fail(
     monkeypatch.setattr(
         "src.inference.fetch_latest",
         lambda sources, config: (
-            [{"issue": "1120", "draw_time": "x", "numbers": list(range(1, 21))}],
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
             "mock",
             [],
         ),
@@ -118,10 +123,54 @@ def test_time_sync_fail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         "src.inference.fetch_latest",
         lambda sources, config: (
-            [{"issue": "1110", "draw_time": "x", "numbers": list(range(1, 21))}],
+            [{"issue": "1060", "draw_time": "x", "numbers": list(range(1, 21))}],
             "mock",
             [],
         ),
     )
     with pytest.raises(ValueError, match="Time-sync mismatch"):
+        predict(runtime_dir)
+
+
+def test_tensor_contract_drift_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(tmp_path, input_path, runtime_dir)
+
+    meta_path = runtime_dir / "metadata.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["tensor_contract"] = {"raw_tensor": "bad"}
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+        ),
+    )
+    with pytest.raises(ValueError, match="Tensor contract mismatch"):
+        predict(runtime_dir)
+
+
+def test_missing_model_artifact_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(tmp_path, input_path, runtime_dir)
+    (runtime_dir / "model.ckpt").unlink()
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+        ),
+    )
+    with pytest.raises(FileNotFoundError, match="Missing model artifact"):
         predict(runtime_dir)

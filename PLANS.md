@@ -1,49 +1,40 @@
 # Plan
 
 ## goal
-Upgrade repository mainline from numpy prototype to production PyTorch Transformer ranking pipeline with decoupled runtime artifacts, deterministic inference, walk-forward backtest, CLI predict, and strict contract/drift validations while preserving existing deploy contract.
+Harden the existing Transformer mainline (no model rollback) so train/backtest/CLI/API/deploy paths are contract-consistent, fail-fast, deterministic, and fully test-covered with runtime/API smoke evidence.
 
 ## touched files
 - PLANS.md
-- requirements.txt
-- README.md
-- ARCHITECTURE.md
-- configs/predict.yaml
-- src/model_transformer.py
 - src/build_rank_windows.py
-- src/train_transformer.py
+- src/history_store.py
+- src/fetch_latest.py
 - src/runtime_history.py
 - src/inference.py
-- src/fetch_latest.py
-- src/history_store.py
-- src/backtest_transformer.py
-- src/predict.py
-- tests/test_model_transformer.py
-- tests/test_build_rank_windows.py
-- tests/test_history_store.py
-- tests/test_train_runtime_predict_integration.py
-- tests/test_inference.py
+- configs/predict.yaml
 - tests/test_fetch_latest.py
+- tests/test_history_store.py
+- tests/test_inference.py
+- tests/test_app.py
+- tests/test_predict_cli.py
+- tests/test_backtest_transformer.py
 
 ## invariants
-- Deploy commands unchanged:
+- Keep Transformer mainline and existing deploy contract unchanged:
   - `python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history`
   - `bash scripts/build_deploy_bundle.sh deploy_bundle`
-- runtime_history does not retrain model.
-- Strict time-series / walk-forward only, no random split.
-- Deterministic inference and reproducible top20/top3.
-- Fail-fast on artifact/schema/version/feature/tensor/drift/time-sync mismatch.
-- Score semantics remain ranking_score.
+- Runtime inference never retrains.
+- Maintain full 1-80 score chain and deterministic top20/top3 ordering.
+- Preserve time-series only behavior (no random split, no future leakage).
+- Keep artifact/state_dict contracts and enforce <100MB model artifact limit.
 
 ## risks
-- Installing torch may increase deploy image size/startup time.
-- Source HTML parsers may need maintenance if upstream layouts change.
-- Full training runtime may be high for large datasets; defaults tuned for local/testing.
+- Source HTML layout drift can still break parsers even with stronger source-specific rules.
+- Live fetch may remain unstable (upstream 503/anti-bot), affecting live smoke.
+- Additional strict validations may surface existing bad local artifacts.
 
 ## validation steps
 - python -m pip install -r requirements-dev.txt
 - python -c "import torch"
-- pytest -q
 - flake8 .
 - black --check .
 - isort --check-only .
@@ -53,11 +44,11 @@ Upgrade repository mainline from numpy prototype to production PyTorch Transform
 - flake8 agent.py
 - flake8 src tests
 - python -m py_compile $(git ls-files '*.py')
-- bash scripts/verify_mainline.sh (if file exists)
-- python -m src.train_transformer --input 賓果賓果_2026.csv --output models/transformer_v1
-- python -m src.runtime_history --input 賓果賓果_2026.csv --output data/runtime_history
-- python -m src.predict --runtime-dir data/runtime_history
-- python -m src.backtest_transformer --input 賓果賓果_2026.csv --output reports/transformer_backtest
+- pytest -q
+- python -m src.train_transformer --input <smoke_history.csv> --output <smoke_model_dir> --epochs 2 --window-size 50
+- python -m src.runtime_history --input <smoke_history.csv> --output <smoke_runtime_dir> --model-source <smoke_model_dir>
+- python -m src.predict --runtime-dir <smoke_runtime_dir>
+- API /predict smoke via FastAPI TestClient (single + 3 repeated calls latency + determinism)
 
 ## rollback plan
-Revert this commit to restore previous runtime-fetch baseline.
+Revert the hardening commit to restore the prior transformer branch behavior.

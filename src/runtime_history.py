@@ -12,6 +12,7 @@ import pandas as pd
 
 ARTIFACT_VERSION = "runtime_history_v5"
 METADATA_FILENAME = "metadata.json"
+MODEL_SIZE_LIMIT_BYTES = 100 * 1024 * 1024
 
 REQUIRED_COLUMNS: List[str] = ["issue", "draw_time", *[f"n{i}" for i in range(1, 21)]]
 RAW_COLUMN_MAP: Dict[str, str] = {
@@ -54,6 +55,15 @@ def _build_score_chain(history: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def _validate_model_artifact_size(path: Path) -> None:
+    size = path.stat().st_size
+    if size > MODEL_SIZE_LIMIT_BYTES:
+        raise ValueError(
+            "Model artifact too large: "
+            f"{path} size={size} exceeds {MODEL_SIZE_LIMIT_BYTES}"
+        )
+
+
 def build_runtime_history(
     input_path: Path, output_dir: Path, model_source: Path
 ) -> None:
@@ -70,6 +80,7 @@ def build_runtime_history(
             "Missing model artifacts. Run training first: "
             f"expected {model_ckpt} and {model_meta}"
         )
+    _validate_model_artifact_size(model_ckpt)
 
     model_metadata = json.loads(model_meta.read_text(encoding="utf-8"))
     required_model_keys = {
@@ -81,6 +92,7 @@ def build_runtime_history(
         "baseline_metrics",
         "expected_input_schema",
         "expected_output_schema",
+        "stale_threshold",
     }
     missing = sorted(required_model_keys - set(model_metadata.keys()))
     if missing:
@@ -96,6 +108,7 @@ def build_runtime_history(
 
     shutil.copy2(model_ckpt, output_dir / "model.ckpt")
     shutil.copy2(model_meta, output_dir / "transformer_metadata.json")
+    _validate_model_artifact_size(output_dir / "model.ckpt")
 
     metadata = {
         "artifact_version": ARTIFACT_VERSION,
@@ -112,7 +125,7 @@ def build_runtime_history(
         "baseline_metrics": model_metadata["baseline_metrics"],
         "feature_names": model_metadata["feature_names"],
         "tensor_contract": model_metadata["tensor_contract"],
-        "stale_threshold": model_metadata.get("stale_threshold", 20),
+        "stale_threshold": model_metadata["stale_threshold"],
         "expected_input_schema": model_metadata["expected_input_schema"],
         "expected_output_schema": model_metadata["expected_output_schema"],
     }

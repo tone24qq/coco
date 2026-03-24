@@ -14,7 +14,7 @@ def test_train_runtime_predict_pipeline(
 ) -> None:
     history_path = tmp_path / "history.csv"
     rows = []
-    for issue in range(1000, 1120):
+    for issue in range(1000, 1065):
         rows.append(
             {
                 "issue": issue,
@@ -29,9 +29,9 @@ def test_train_runtime_predict_pipeline(
         input_path=history_path,
         output_dir=model_dir,
         model_file="model.ckpt",
-        window_size=50,
+        window_size=20,
         seed=42,
-        epochs=2,
+        epochs=1,
         batch_size=16,
         alpha=0.2,
         stale_threshold=20,
@@ -51,9 +51,14 @@ def test_train_runtime_predict_pipeline(
             "artifact_file": "model.ckpt",
             "model_version": "small_transformer_v2",
             "feature_version": "rank_window_v2",
-            "window_size": 50,
+            "window_size": 20,
             "seed": 42,
             "stale_threshold": 20,
+        },
+        "tensor_contract": {
+            "raw_tensor": "[batch, 80, feature_dim]",
+            "model_input_tensor": "[batch, 80, d_model]",
+            "attention_axis": "candidate-to-candidate",
         },
     }
     config_path = tmp_path / "predict.yaml"
@@ -63,7 +68,7 @@ def test_train_runtime_predict_pipeline(
     monkeypatch.setattr(
         "src.inference.fetch_latest",
         lambda sources, config: (
-            [{"issue": "1120", "draw_time": "x", "numbers": list(range(1, 21))}],
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
             "mock",
             [],
         ),

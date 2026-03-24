@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from torch.optim import AdamW
 
 from src.model_transformer import SmallTransformerRanker, TransformerConfig
 
@@ -27,3 +28,12 @@ def test_model_save_load_consistency(tmp_path: Path) -> None:
 
     if not torch.allclose(out1, out2, atol=1e-6):
         pytest.fail("save/load prediction mismatch")
+
+
+def test_encoder_weights_in_optimizer() -> None:
+    model = SmallTransformerRanker(TransformerConfig(feature_dim=24))
+    optimizer = AdamW(model.parameters(), lr=1e-3)
+    opt_params = {id(p) for group in optimizer.param_groups for p in group["params"]}
+    encoder_param_ids = {id(p) for p in model.encoder.parameters()}
+    if not encoder_param_ids.issubset(opt_params):
+        pytest.fail("encoder weights are missing from optimizer")

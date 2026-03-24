@@ -32,27 +32,53 @@ def _check_health(text: str, source: str) -> None:
 
 
 def _extract_latest_issue_hint(text: str) -> Optional[str]:
-    m = re.search(r"(\d{9})", text)
-    return m.group(1) if m else None
+    matches = re.findall(r"(\d{9})", text)
+    return max(matches, key=int) if matches else None
 
 
-def _parse_draw_rows(html: str) -> List[Dict[str, object]]:
+def _parse_issue_numbers_pairs(html: str) -> List[Tuple[str, List[int]]]:
     pattern = re.compile(
-        r"(\d{9}).{0,120}?((?:\d{1,2}[,\s]+){19}\d{1,2})",
+        r"(\d{9}).{0,180}?((?:\d{1,2}[,\s、]+){19}\d{1,2})",
         flags=re.DOTALL,
     )
-    rows: List[Dict[str, object]] = []
+    rows: List[Tuple[str, List[int]]] = []
     for issue, nums in pattern.findall(html):
-        parsed = [int(x) for x in re.split(r"[,\s]+", nums.strip()) if x]
-        if len(parsed) == 20:
-            rows.append({"issue": str(issue), "draw_time": "", "numbers": parsed})
+        parsed = [int(x) for x in re.split(r"[,\s、]+", nums.strip()) if x]
+        if (
+            len(parsed) == 20
+            and len(set(parsed)) == 20
+            and all(1 <= x <= 80 for x in parsed)
+        ):
+            rows.append((str(issue), parsed))
     return rows
 
 
+def _rows_to_records(rows: List[Tuple[str, List[int]]]) -> List[Dict[str, object]]:
+    return [
+        {"issue": issue, "draw_time": "", "numbers": numbers} for issue, numbers in rows
+    ]
+
+
+def _parse_winwin_rows(html: str) -> List[Dict[str, object]]:
+    return _rows_to_records(_parse_issue_numbers_pairs(html))
+
+
+def _parse_pilio_rows(html: str) -> List[Dict[str, object]]:
+    return _rows_to_records(_parse_issue_numbers_pairs(html))
+
+
+def _parse_taiwanlottery_rows(html: str) -> List[Dict[str, object]]:
+    return _rows_to_records(_parse_issue_numbers_pairs(html))
+
+
 def _parse_by_source(source_name: str, html: str) -> List[Dict[str, object]]:
-    if source_name in {"winwin", "pilio", "taiwanlottery"}:
-        return _parse_draw_rows(html)
-    return _parse_draw_rows(html)
+    if source_name == "winwin":
+        return _parse_winwin_rows(html)
+    if source_name == "pilio":
+        return _parse_pilio_rows(html)
+    if source_name == "taiwanlottery":
+        return _parse_taiwanlottery_rows(html)
+    return _rows_to_records(_parse_issue_numbers_pairs(html))
 
 
 def _fetch_winwin_api(
