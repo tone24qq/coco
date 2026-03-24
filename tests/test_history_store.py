@@ -61,3 +61,32 @@ def test_merge_history_dedupe_success(tmp_path: Path) -> None:
     merged = merge_history(local_df, latest_df)
     if merged["issue"].tolist() != ["1001", "1002"]:
         pytest.fail("merged issues mismatch")
+
+
+def test_load_local_history_prefers_parquet(tmp_path: Path) -> None:
+    csv_path = tmp_path / "history.csv"
+    parquet_path = tmp_path / "history.parquet"
+
+    pd.DataFrame(
+        [
+            {
+                "issue": "1001",
+                "draw_time": "2026-01-01",
+                **{f"n{i}": i for i in range(1, 21)},
+            }
+        ]
+    ).to_csv(csv_path, index=False)
+
+    pd.DataFrame(
+        [
+            {
+                "issue": "1002",
+                "draw_time": "2026-01-02",
+                **{f"n{i}": i + 1 for i in range(1, 21)},
+            }
+        ]
+    ).to_parquet(parquet_path, index=False)
+
+    loaded = load_local_history(csv_path)
+    if loaded.iloc[-1]["issue"] != "1002":
+        pytest.fail("parquet preference not applied")

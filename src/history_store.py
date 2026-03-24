@@ -27,11 +27,24 @@ def _normalize_local_schema(df: pd.DataFrame) -> pd.DataFrame:
     raise ValueError("Local history schema mismatch")
 
 
-def load_local_history(local_history_path: Path) -> pd.DataFrame:
-    if not local_history_path.exists():
-        raise FileNotFoundError(f"Missing local history: {local_history_path}")
+def _resolve_history_path(local_history_path: Path) -> Path:
+    if local_history_path.suffix.lower() == ".csv":
+        parquet_path = local_history_path.with_suffix(".parquet")
+        if parquet_path.exists():
+            return parquet_path
+    return local_history_path
 
-    df = pd.read_csv(local_history_path)
+
+def load_local_history(local_history_path: Path) -> pd.DataFrame:
+    resolved_path = _resolve_history_path(local_history_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"Missing local history: {resolved_path}")
+
+    if resolved_path.suffix.lower() == ".parquet":
+        df = pd.read_parquet(resolved_path)
+    else:
+        df = pd.read_csv(resolved_path)
+
     normalized = _normalize_local_schema(df)
     if normalized.empty:
         raise ValueError("Local history is empty")

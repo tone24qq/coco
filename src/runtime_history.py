@@ -11,11 +11,13 @@ import pandas as pd
 
 from src.train_transformer import FEATURE_VERSION, MODEL_VERSION, train_model
 
-ARTIFACT_VERSION = "runtime_history_v3"
-SCORE_ARTIFACT_FILENAME = "scores.csv"
+ARTIFACT_VERSION = "runtime_history_v4"
+SCORE_ARTIFACT_FILENAME = "scores.parquet"
 METADATA_FILENAME = "metadata.json"
 MODEL_ARTIFACT_FILENAME = "transformer_model.npz"
 MODEL_METADATA_FILENAME = "transformer_metadata.json"
+HISTORY_PARQUET_FILENAME = "history_runtime.parquet"
+HISTORY_CSV_FILENAME = "history_runtime.csv"
 
 REQUIRED_COLUMNS: List[str] = [
     "issue",
@@ -77,14 +79,20 @@ def build_runtime_history(input_path: Path, output_dir: Path) -> None:
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    history_path = output_dir / "history_runtime.csv"
-    score_path = output_dir / SCORE_ARTIFACT_FILENAME
+    history_csv_path = output_dir / HISTORY_CSV_FILENAME
+    history_parquet_path = output_dir / HISTORY_PARQUET_FILENAME
+    score_parquet_path = output_dir / SCORE_ARTIFACT_FILENAME
+    score_csv_path = output_dir / "scores.csv"
 
-    normalized.to_csv(history_path, index=False)
-    _build_score_chain(normalized).to_csv(score_path, index=False)
+    normalized.to_csv(history_csv_path, index=False)
+    normalized.to_parquet(history_parquet_path, index=False)
+
+    score_df = _build_score_chain(normalized)
+    score_df.to_parquet(score_parquet_path, index=False)
+    score_df.to_csv(score_csv_path, index=False)
 
     train_model(
-        input_path=history_path,
+        input_path=history_parquet_path,
         output_dir=output_dir,
         model_file=MODEL_ARTIFACT_FILENAME,
         window_size=100,
@@ -93,7 +101,11 @@ def build_runtime_history(input_path: Path, output_dir: Path) -> None:
 
     metadata = {
         "artifact_version": ARTIFACT_VERSION,
+        "storage_preference": "parquet",
+        "history_artifact": HISTORY_PARQUET_FILENAME,
+        "history_csv_compat": HISTORY_CSV_FILENAME,
         "score_artifact": SCORE_ARTIFACT_FILENAME,
+        "score_csv_compat": "scores.csv",
         "score_chain_size": 80,
         "history_rows": int(len(normalized)),
         "latest_issue": str(normalized.iloc[-1]["issue"]),

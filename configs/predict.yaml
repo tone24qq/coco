@@ -18,3 +18,8 @@ model:
   feature_version: rank_window_v1
   window_size: 100
   seed: 42
+tensor_contract:
+  raw_candidate_axis: [candidate]
+  raw_feature_axis: [feature]
+  attention_axis: candidate_to_candidate
+  model_input_shape: dynamic_[80, feature_dim]

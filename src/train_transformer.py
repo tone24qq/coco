@@ -55,7 +55,11 @@ def train_model(
         "seed": seed,
         "train_samples": int(len(train_x)),
         "valid_samples": int(len(valid_x)),
-        "valid_mean_score": valid_score,
+        "trained_up_to_issue": str(history.iloc[-1]["issue"]),
+        "baseline_metrics": {
+            "valid_mean_score": valid_score,
+            "objective": "ranking_binary_hit",
+        },
         "required_input_schema": [
             "issue",
             "draw_time",

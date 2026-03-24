@@ -25,13 +25,7 @@ def _prepare_runtime(tmp_path: Path) -> Path:
     return runtime_dir
 
 
-def test_predict_success_and_deterministic(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    runtime_dir = _prepare_runtime(tmp_path)
-    local_path = tmp_path / "local.csv"
-    pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
-
+def _write_config(tmp_path: Path, runtime_dir: Path, local_path: Path) -> Path:
     cfg = {
         "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
         "fetch": {"timeout_seconds": 3.0, "retries": 0, "backoff_seconds": 0.0},
@@ -49,7 +43,17 @@ def test_predict_success_and_deterministic(
     }
     config_path = tmp_path / "predict.yaml"
     config_path.write_text(json.dumps(cfg), encoding="utf-8")
+    return config_path
 
+
+def test_predict_success_and_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = _prepare_runtime(tmp_path)
+    local_path = tmp_path / "local.csv"
+    pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
+
+    config_path = _write_config(tmp_path, runtime_dir, local_path)
     latest = [
         {
             "issue": "1120",
@@ -67,6 +71,30 @@ def test_predict_success_and_deterministic(
     second = predict()
     if first["top20"] != second["top20"] or first["top3"] != second["top3"]:
         pytest.fail("predict output must be deterministic")
+    if "diversity_relaxed" not in first:
+        pytest.fail("predict must include diversity_relaxed metadata")
+
+
+def test_predict_time_sync_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = _prepare_runtime(tmp_path)
+    local_path = tmp_path / "local.csv"
+    pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
+
+    config_path = _write_config(tmp_path, runtime_dir, local_path)
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1110", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Time-sync mismatch"):
+        predict()
 
 
 def test_predict_version_mismatch_fail(
@@ -81,24 +109,7 @@ def test_predict_version_mismatch_fail(
     local_path = tmp_path / "local.csv"
     pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
 
-    cfg = {
-        "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
-        "fetch": {"timeout_seconds": 3.0, "retries": 0, "backoff_seconds": 0.0},
-        "runtime": {
-            "local_history_path": str(local_path),
-            "runtime_dir": str(runtime_dir),
-        },
-        "model": {
-            "artifact_file": "transformer_model.npz",
-            "model_version": "small_transformer_v1",
-            "feature_version": "rank_window_v1",
-            "window_size": 100,
-            "seed": 42,
-        },
-    }
-    config_path = tmp_path / "predict.yaml"
-    config_path.write_text(json.dumps(cfg), encoding="utf-8")
-
+    config_path = _write_config(tmp_path, runtime_dir, local_path)
     monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
     monkeypatch.setattr(
         "src.inference.fetch_latest",
@@ -122,24 +133,7 @@ def test_predict_missing_artifact_fail(
     local_path = tmp_path / "local.csv"
     pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
 
-    cfg = {
-        "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
-        "fetch": {"timeout_seconds": 3.0, "retries": 0, "backoff_seconds": 0.0},
-        "runtime": {
-            "local_history_path": str(local_path),
-            "runtime_dir": str(runtime_dir),
-        },
-        "model": {
-            "artifact_file": "transformer_model.npz",
-            "model_version": "small_transformer_v1",
-            "feature_version": "rank_window_v1",
-            "window_size": 100,
-            "seed": 42,
-        },
-    }
-    config_path = tmp_path / "predict.yaml"
-    config_path.write_text(json.dumps(cfg), encoding="utf-8")
-
+    config_path = _write_config(tmp_path, runtime_dir, local_path)
     monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
     monkeypatch.setattr(
         "src.inference.fetch_latest",

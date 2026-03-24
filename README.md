@@ -4,9 +4,10 @@
 
 1. `/predict` 執行時自動抓最新期數（multi-source + retries + timeout）
 2. 正規化最新資料後與本地 history 合併（issue dedupe / conflict fail-fast）
-3. 建立最近視窗特徵（僅使用過去資料）
-4. 載入 Small Transformer Encoder 模型輸出 1..80 ranking score
-5. 回傳完整 `scores` + deterministic `top20` + diversity rerank `top3`
+3. 預測前做 time-sync validation（若 latest_known_issue 落後真實最新期數直接 fail-fast）
+4. 建立最近視窗特徵（僅使用過去資料）
+5. 載入 Small Transformer Encoder 模型輸出 1..80 ranking score
+6. 回傳完整 `scores` + deterministic `top20` + diversity rerank `top3`
 
 ## Deploy contract（保留）
 
@@ -15,11 +16,13 @@
 
 ## Runtime outputs
 
-`src.runtime_history` 會產出：
+`src.runtime_history` 會產出（Parquet 優先 + CSV 相容）：
 
 - `data/runtime_history/metadata.json`
 - `data/runtime_history/transformer_metadata.json`
 - `data/runtime_history/transformer_model.npz`
+- `data/runtime_history/history_runtime.parquet`
+- `data/runtime_history/scores.parquet`
 - `data/runtime_history/history_runtime.csv`
 - `data/runtime_history/scores.csv`
 
@@ -36,5 +39,9 @@
   - `scores`
   - `top20`
   - `top3`
+  - `diversity_relaxed`
+  - `drift_metadata`
 
 分數是 **ranking score**，不是 calibrated probability。
+
+詳細 tensor/attention 與 drift 規格請見 `ARCHITECTURE.md`。

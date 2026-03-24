@@ -30,7 +30,9 @@ def test_build_runtime_history_success(sample_input: Path, tmp_path: Path) -> No
         "metadata.json",
         "transformer_metadata.json",
         "transformer_model.npz",
+        "scores.parquet",
         "scores.csv",
+        "history_runtime.parquet",
         "history_runtime.csv",
     ]
     for file_name in required:

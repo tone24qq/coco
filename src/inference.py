@@ -44,6 +44,34 @@ def _load_runtime_metadata(runtime_dir: Path) -> Dict[str, Any]:
     return metadata
 
 
+def _load_transformer_metadata(
+    runtime_dir: Path, metadata: Dict[str, Any]
+) -> Dict[str, Any]:
+    metadata_name = metadata.get("model_metadata")
+    if not isinstance(metadata_name, str) or not metadata_name:
+        raise ValueError("Artifact schema mismatch: model_metadata")
+
+    transformer_metadata_path = runtime_dir / metadata_name
+    if not transformer_metadata_path.exists():
+        raise FileNotFoundError(
+            f"Missing transformer metadata: {transformer_metadata_path}"
+        )
+
+    transformer_metadata = json.loads(
+        transformer_metadata_path.read_text(encoding="utf-8")
+    )
+    required = {
+        "trained_up_to_issue",
+        "baseline_metrics",
+        "feature_version",
+        "required_input_schema",
+    }
+    missing = sorted(required - set(transformer_metadata.keys()))
+    if missing:
+        raise ValueError(f"Transformer metadata drift: missing keys {missing}")
+    return transformer_metadata
+
+
 def _rank_top20(scores: Sequence[Dict[str, float]]) -> List[Dict[str, float]]:
     return sorted(scores, key=lambda item: (-item["score"], item["number"]))[:20]
 
@@ -66,15 +94,34 @@ def _combo_metrics(
     return (tail_unique, cross_zone, -adjacency_pairs, -rank_sum)
 
 
-def _select_top3(top20: Sequence[Dict[str, float]]) -> List[Dict[str, float]]:
+def _select_top3(
+    top20: Sequence[Dict[str, float]],
+) -> Tuple[List[Dict[str, float]], bool]:
     if len(top20) < 3:
         raise ValueError("Insufficient candidates for top3")
+
     ranks = {int(item["number"]): idx for idx, item in enumerate(top20)}
-    best_combo = max(
-        itertools.combinations(top20, 3),
-        key=lambda combo: _combo_metrics(combo, ranks),
-    )
-    return sorted(best_combo, key=lambda item: ranks[int(item["number"])])
+    combos = list(itertools.combinations(top20, 3))
+
+    strict = []
+    for combo in combos:
+        tail_unique, cross_zone, neg_adjacency, _ = _combo_metrics(combo, ranks)
+        if tail_unique == 3 and cross_zone == 1 and neg_adjacency == 0:
+            strict.append(combo)
+
+    if strict:
+        best_combo = max(strict, key=lambda combo: _combo_metrics(combo, ranks))
+        return sorted(best_combo, key=lambda item: ranks[int(item["number"])]), False
+
+    relaxed_combo = max(combos, key=lambda combo: _combo_metrics(combo, ranks))
+    return sorted(relaxed_combo, key=lambda item: ranks[int(item["number"])]), True
+
+
+def _parse_issue(issue: Any) -> int:
+    try:
+        return int(str(issue))
+    except ValueError as exc:
+        raise ValueError(f"Invalid issue value: {issue}") from exc
 
 
 def predict() -> Dict[str, object]:
@@ -112,6 +159,15 @@ def predict() -> Dict[str, object]:
 
     latest_df = normalize_latest_records(latest_records)
     local_df = load_local_history(local_history_path)
+
+    fetched_latest_issue = _parse_issue(latest_df.iloc[-1]["issue"])
+    local_latest_issue = _parse_issue(local_df.iloc[-1]["issue"])
+    if fetched_latest_issue < local_latest_issue:
+        raise ValueError(
+            "Time-sync mismatch: fetched latest issue is behind local history "
+            f"({fetched_latest_issue} < {local_latest_issue})"
+        )
+
     merged_df = merge_history(local_df, latest_df)
 
     model_file = str(model_cfg.get("artifact_file", ""))
@@ -126,6 +182,8 @@ def predict() -> Dict[str, object]:
         )
 
     metadata = _load_runtime_metadata(runtime_dir)
+    transformer_metadata = _load_transformer_metadata(runtime_dir, metadata)
+
     if metadata.get("model_version") != model_version:
         raise ValueError(
             "Model version mismatch: expected "
@@ -142,6 +200,12 @@ def predict() -> Dict[str, object]:
         raise FileNotFoundError(f"Missing model artifact: {model_path}")
 
     window = build_inference_window(merged_df, window_size=window_size)
+    if _parse_issue(window.issue) < fetched_latest_issue:
+        raise ValueError(
+            "Time-sync mismatch: latest_known_issue lags fetched latest issue "
+            f"({window.issue} < {fetched_latest_issue})"
+        )
+
     model = SmallTransformerRanker.load(TransformerConfig(seed=seed), str(model_path))
     raw_scores = model.predict_scores(window.features)
 
@@ -150,7 +214,7 @@ def predict() -> Dict[str, object]:
         for number, score in zip(window.number_ids, raw_scores)
     ]
     top20 = _rank_top20(scores)
-    top3 = _select_top3(top20)
+    top3, diversity_relaxed = _select_top3(top20)
 
     return {
         "latest_known_issue": window.issue,
@@ -163,4 +227,11 @@ def predict() -> Dict[str, object]:
         "top20": top20,
         "top3": top3,
         "score_semantics": "ranking_score",
+        "diversity_relaxed": diversity_relaxed,
+        "drift_metadata": {
+            "trained_up_to_issue": transformer_metadata.get("trained_up_to_issue"),
+            "baseline_metrics": transformer_metadata.get("baseline_metrics"),
+            "expected_input_schema": transformer_metadata.get("required_input_schema"),
+            "feature_version": transformer_metadata.get("feature_version"),
+        },
     }
