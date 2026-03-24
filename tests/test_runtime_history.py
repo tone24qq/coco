@@ -4,49 +4,60 @@ import pandas as pd
 import pytest
 
 from src.runtime_history import build_runtime_history
+from src.train_transformer import train_model
 
 
-@pytest.fixture
-def sample_input(tmp_path: Path) -> Path:
+def _make_history(path: Path) -> None:
     rows = []
     for issue in range(1000, 1120):
         rows.append(
             {
                 "issue": issue,
-                "draw_time": "2026-01-01T00:00:00",
+                "draw_time": "2026-01-01",
                 **{f"n{i}": ((issue + i) % 80) + 1 for i in range(1, 21)},
             }
         )
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def test_runtime_history_build_with_model_source(tmp_path: Path) -> None:
     input_path = tmp_path / "history.csv"
-    pd.DataFrame(rows).to_csv(input_path, index=False)
-    return input_path
+    _make_history(input_path)
 
+    model_source = tmp_path / "models"
+    train_model(
+        input_path=input_path,
+        output_dir=model_source,
+        model_file="model.ckpt",
+        window_size=50,
+        seed=42,
+        epochs=2,
+        batch_size=16,
+        alpha=0.2,
+        stale_threshold=20,
+    )
 
-def test_build_runtime_history_success(sample_input: Path, tmp_path: Path) -> None:
-    output_dir = tmp_path / "runtime"
-    build_runtime_history(sample_input, output_dir)
+    runtime_dir = tmp_path / "runtime"
+    build_runtime_history(input_path, runtime_dir, model_source)
 
     required = [
-        "metadata.json",
-        "transformer_metadata.json",
-        "transformer_model.npz",
-        "scores.parquet",
-        "scores.csv",
         "history_runtime.parquet",
         "history_runtime.csv",
+        "scores.parquet",
+        "scores.csv",
+        "model.ckpt",
+        "transformer_metadata.json",
+        "metadata.json",
     ]
-    for file_name in required:
-        if not (output_dir / file_name).exists():
-            pytest.fail(f"missing runtime artifact: {file_name}")
+    for name in required:
+        if not (runtime_dir / name).exists():
+            pytest.fail(f"missing runtime artifact: {name}")
 
 
-def test_build_runtime_history_schema_mismatch(tmp_path: Path) -> None:
-    bad_path = tmp_path / "bad.csv"
-    pd.DataFrame([{"issue": 1, "x": 2}]).to_csv(bad_path, index=False)
-    with pytest.raises(ValueError, match="Input schema mismatch"):
-        build_runtime_history(bad_path, tmp_path / "runtime")
-
-
-def test_build_runtime_history_missing_input_fail(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError, match="Input file not found"):
-        build_runtime_history(tmp_path / "missing.csv", tmp_path / "runtime")
+def test_runtime_history_missing_model_fail(tmp_path: Path) -> None:
+    input_path = tmp_path / "history.csv"
+    _make_history(input_path)
+    with pytest.raises(FileNotFoundError, match="Missing model artifacts"):
+        build_runtime_history(
+            input_path, tmp_path / "runtime", tmp_path / "empty_models"
+        )

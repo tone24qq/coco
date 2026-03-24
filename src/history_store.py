@@ -1,9 +1,8 @@
-"""Local history loading and merge utilities."""
+"""Local history loading and merge utilities with strict validators."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
 
 import pandas as pd
 
@@ -19,11 +18,8 @@ RAW_COLUMN_MAP = {
 def _normalize_local_schema(df: pd.DataFrame) -> pd.DataFrame:
     if all(col in df.columns for col in CANONICAL_COLUMNS):
         return df[CANONICAL_COLUMNS].copy()
-
     if all(col in df.columns for col in RAW_COLUMN_MAP):
-        normalized = df.rename(columns=RAW_COLUMN_MAP)
-        return normalized[CANONICAL_COLUMNS].copy()
-
+        return df.rename(columns=RAW_COLUMN_MAP)[CANONICAL_COLUMNS].copy()
     raise ValueError("Local history schema mismatch")
 
 
@@ -35,17 +31,26 @@ def _resolve_history_path(local_history_path: Path) -> Path:
     return local_history_path
 
 
+def _validate_issue_sequence(df: pd.DataFrame, label: str) -> None:
+    if df["issue"].duplicated().any():
+        raise ValueError(f"{label}: duplicated issue values")
+
+    issues = [int(x) for x in df["issue"].tolist()]
+    if issues != sorted(issues):
+        raise ValueError(f"{label}: issue not monotonic increasing")
+
+
 def load_local_history(local_history_path: Path) -> pd.DataFrame:
-    resolved_path = _resolve_history_path(local_history_path)
-    if not resolved_path.exists():
-        raise FileNotFoundError(f"Missing local history: {resolved_path}")
+    resolved = _resolve_history_path(local_history_path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Missing local history: {resolved}")
 
-    if resolved_path.suffix.lower() == ".parquet":
-        df = pd.read_parquet(resolved_path)
+    if resolved.suffix.lower() == ".parquet":
+        raw = pd.read_parquet(resolved)
     else:
-        df = pd.read_csv(resolved_path)
+        raw = pd.read_csv(resolved)
 
-    normalized = _normalize_local_schema(df)
+    normalized = _normalize_local_schema(raw)
     if normalized.empty:
         raise ValueError("Local history is empty")
 
@@ -53,24 +58,26 @@ def load_local_history(local_history_path: Path) -> pd.DataFrame:
     for idx in range(1, 21):
         col = f"n{idx}"
         normalized[col] = pd.to_numeric(normalized[col], errors="raise").astype(int)
+
     normalized = normalized.sort_values(["issue"], kind="mergesort").reset_index(
         drop=True
     )
+    _validate_issue_sequence(normalized, "local_history")
     return normalized
 
 
 def merge_history(local_df: pd.DataFrame, latest_df: pd.DataFrame) -> pd.DataFrame:
-    local_issues = set(local_df["issue"].astype(str).tolist())
+    _validate_issue_sequence(local_df, "local_history")
+    _validate_issue_sequence(latest_df, "latest_history")
 
-    for row in latest_df.itertuples(index=False):
-        issue = str(row.issue)
-        if issue not in local_issues:
+    local_index = {str(row.issue): row for row in local_df.itertuples(index=False)}
+    for latest in latest_df.itertuples(index=False):
+        issue = str(latest.issue)
+        if issue not in local_index:
             continue
-
-        conflict_cols: List[str] = ["draw_time", *[f"n{i}" for i in range(1, 21)]]
-        local_row = local_df[local_df["issue"].astype(str) == issue].iloc[-1]
-        for col in conflict_cols:
-            if str(local_row[col]) != str(getattr(row, col)):
+        local_row = local_index[issue]
+        for col in ["draw_time", *[f"n{i}" for i in range(1, 21)]]:
+            if str(getattr(local_row, col)) != str(getattr(latest, col)):
                 raise ValueError(
                     f"Issue conflict detected for issue={issue}, column={col}"
                 )
@@ -78,4 +85,12 @@ def merge_history(local_df: pd.DataFrame, latest_df: pd.DataFrame) -> pd.DataFra
     merged = pd.concat([local_df, latest_df], ignore_index=True)
     merged = merged.drop_duplicates(subset=["issue"], keep="first")
     merged = merged.sort_values(["issue"], kind="mergesort").reset_index(drop=True)
+    _validate_issue_sequence(merged, "merged_history")
+
+    merged_issues = [int(x) for x in merged["issue"].tolist()]
+    if len(merged_issues) >= 2:
+        for left, right in zip(merged_issues, merged_issues[1:]):
+            if right - left <= 0:
+                raise ValueError("Merged history issue continuity check failed")
+
     return merged

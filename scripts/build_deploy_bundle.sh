@@ -21,9 +21,11 @@ REQUIRED_FILES=(
   "src/train_transformer.py"
   "src/runtime_history.py"
   "src/inference.py"
+  "src/predict.py"
+  "src/backtest_transformer.py"
   "data/runtime_history/metadata.json"
   "data/runtime_history/transformer_metadata.json"
-  "data/runtime_history/transformer_model.npz"
+  "data/runtime_history/model.ckpt"
 )
 
 for required in "${REQUIRED_FILES[@]}"; do

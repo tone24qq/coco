@@ -1,112 +1,113 @@
-"""Small encoder-only transformer for deterministic ranking inference."""
+"""PyTorch Small Transformer ranker for candidate ranking."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict
 
-import numpy as np
+import torch
+from torch import nn
 
 
 @dataclass
 class TransformerConfig:
     layers: int = 3
     d_model: int = 128
-    feature_dim: int = 7
-    seed: int = 42
+    nhead: int = 8
+    dim_feedforward: int = 256
+    dropout: float = 0.1
+    feature_dim: int = 24
+    max_candidates: int = 80
 
 
-class SmallTransformerRanker:
-    def __init__(
-        self, config: TransformerConfig, params: Dict[str, np.ndarray]
-    ) -> None:
+class SmallTransformerRanker(nn.Module):
+    """Tensor contract:
+    - raw tensor: [batch, 80, feature_dim]
+    - model input tensor: [batch, 80, d_model]
+    - attention axis: candidate-to-candidate self-attention
+    """
+
+    def __init__(self, config: TransformerConfig) -> None:
+        super().__init__()
         self.config = config
-        self.params = params
 
-    @staticmethod
-    def init_params(config: TransformerConfig) -> Dict[str, np.ndarray]:
-        rng = np.random.default_rng(config.seed)
-        params: Dict[str, np.ndarray] = {
-            "input_w": rng.normal(0.0, 0.05, size=(config.feature_dim, config.d_model)),
-            "input_b": np.zeros(config.d_model, dtype=np.float64),
-            "head_w": np.zeros(config.d_model, dtype=np.float64),
-            "head_b": np.zeros(1, dtype=np.float64),
+        self.input_proj = nn.Linear(config.feature_dim, config.d_model)
+        self.number_embedding = nn.Embedding(config.max_candidates + 1, config.d_model)
+        self.input_norm = nn.LayerNorm(config.d_model)
+        self.input_dropout = nn.Dropout(config.dropout)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=config.d_model,
+            nhead=config.nhead,
+            dim_feedforward=config.dim_feedforward,
+            dropout=config.dropout,
+            batch_first=True,
+            activation="gelu",
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=config.layers)
+        self.head = nn.Linear(config.d_model, 1)
+
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            if isinstance(module, nn.Embedding):
+                nn.init.xavier_uniform_(module.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 3:
+            raise ValueError(
+                f"Expected input [batch,80,feature_dim], got ndim={x.ndim}"
+            )
+        if x.shape[1] != self.config.max_candidates:
+            raise ValueError(f"Expected candidate axis=80, got {x.shape[1]}")
+        if x.shape[2] != self.config.feature_dim:
+            raise ValueError(
+                f"Expected feature_dim={self.config.feature_dim}, got {x.shape[2]}"
+            )
+
+        batch_size = x.shape[0]
+        number_ids = torch.arange(1, self.config.max_candidates + 1, device=x.device)
+        number_ids = number_ids.unsqueeze(0).expand(batch_size, -1)
+
+        hidden = self.input_proj(x) + self.number_embedding(number_ids)
+        hidden = self.input_norm(hidden)
+        hidden = self.input_dropout(hidden)
+
+        encoded = self.encoder(hidden)
+        scores = self.head(encoded).squeeze(-1)
+        return scores
+
+    def predict_scores(self, x: torch.Tensor) -> torch.Tensor:
+        self.eval()
+        with torch.no_grad():
+            return self.forward(x)
+
+    def save(self, path: Path | str, metadata: Dict[str, Any] | None = None) -> None:
+        payload = {
+            "state_dict": self.state_dict(),
+            "config": asdict(self.config),
+            "metadata": metadata or {},
         }
-        for layer in range(config.layers):
-            params[f"q_{layer}"] = rng.normal(
-                0.0, 0.05, size=(config.d_model, config.d_model)
-            )
-            params[f"k_{layer}"] = rng.normal(
-                0.0, 0.05, size=(config.d_model, config.d_model)
-            )
-            params[f"v_{layer}"] = rng.normal(
-                0.0, 0.05, size=(config.d_model, config.d_model)
-            )
-            params[f"ff1_{layer}"] = rng.normal(
-                0.0, 0.05, size=(config.d_model, config.d_model)
-            )
-            params[f"ff2_{layer}"] = rng.normal(
-                0.0, 0.05, size=(config.d_model, config.d_model)
-            )
-        return params
-
-    @staticmethod
-    def _softmax(x: np.ndarray) -> np.ndarray:
-        shifted = x - np.max(x, axis=-1, keepdims=True)
-        exp = np.exp(shifted)
-        return exp / np.sum(exp, axis=-1, keepdims=True)
-
-    def encode(self, features: np.ndarray) -> np.ndarray:
-        hidden = features @ self.params["input_w"] + self.params["input_b"]
-        hidden = np.tanh(hidden)
-
-        for layer in range(self.config.layers):
-            q = hidden @ self.params[f"q_{layer}"]
-            k = hidden @ self.params[f"k_{layer}"]
-            v = hidden @ self.params[f"v_{layer}"]
-
-            attn = (q @ k.T) / np.sqrt(float(self.config.d_model))
-            attn = self._softmax(attn)
-            hidden = hidden + (attn @ v)
-
-            ff = np.tanh(hidden @ self.params[f"ff1_{layer}"])
-            ff = ff @ self.params[f"ff2_{layer}"]
-            hidden = hidden + ff
-
-        return hidden
-
-    def predict_scores(self, features: np.ndarray) -> np.ndarray:
-        encoded = self.encode(features)
-        scores = encoded @ self.params["head_w"] + self.params["head_b"]
-        return scores.astype(np.float64)
-
-    def fit_head(
-        self, training_features: np.ndarray, training_labels: np.ndarray
-    ) -> None:
-        encoded_batches: List[np.ndarray] = []
-        label_batches: List[np.ndarray] = []
-
-        for x_item, y_item in zip(training_features, training_labels):
-            encoded_batches.append(self.encode(x_item))
-            label_batches.append(y_item)
-
-        x_flat = np.vstack(encoded_batches)
-        y_flat = np.concatenate(label_batches)
-
-        reg = 1e-3
-        xtx = x_flat.T @ x_flat + reg * np.eye(self.config.d_model)
-        xty = x_flat.T @ y_flat
-        head_w = np.linalg.solve(xtx, xty)
-
-        self.params["head_w"] = head_w.astype(np.float64)
-        self.params["head_b"] = np.array([float(np.mean(y_flat))], dtype=np.float64)
-
-    def save(self, path: str) -> None:
-        params = {key: value for key, value in self.params.items()}
-        np.savez_compressed(path, **params)  # type: ignore[arg-type]
+        torch.save(payload, str(path))
 
     @classmethod
-    def load(cls, config: TransformerConfig, path: str) -> "SmallTransformerRanker":
-        loaded = np.load(path)
-        params = {key: loaded[key] for key in loaded.files}
-        return cls(config=config, params=params)
+    def load(
+        cls, path: Path | str, config: TransformerConfig | None = None
+    ) -> "SmallTransformerRanker":
+        payload = torch.load(str(path), map_location="cpu")  # nosec B614
+        saved_cfg = TransformerConfig(**payload["config"])
+        runtime_cfg = config or saved_cfg
+        if asdict(runtime_cfg) != asdict(saved_cfg):
+            raise ValueError(
+                "Tensor contract mismatch between runtime config and checkpoint"
+            )
+
+        model = cls(runtime_cfg)
+        model.load_state_dict(payload["state_dict"])
+        return model

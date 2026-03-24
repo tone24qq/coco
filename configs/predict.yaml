@@ -13,13 +13,13 @@ runtime:
   local_history_path: data/processed/history_processed.csv
   runtime_dir: data/runtime_history
 model:
-  artifact_file: transformer_model.npz
-  model_version: small_transformer_v1
-  feature_version: rank_window_v1
+  artifact_file: model.ckpt
+  model_version: small_transformer_v2
+  feature_version: rank_window_v2
   window_size: 100
   seed: 42
+  stale_threshold: 20
 tensor_contract:
-  raw_candidate_axis: [candidate]
-  raw_feature_axis: [feature]
+  raw_tensor: "[batch, 80, feature_dim]"
+  model_input_tensor: "[batch, 80, d_model]"
   attention_axis: candidate_to_candidate
-  model_input_shape: dynamic_[80, feature_dim]
