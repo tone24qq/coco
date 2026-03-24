@@ -1,33 +1,45 @@
 # Plan
 
 ## goal
-Upgrade the current runtime/deploy baseline to a production-grade, versioned artifact + deterministic inference mainline while preserving the existing deployment contract in `.github/workflows/deployment.yml`.
+Upgrade the current static score-artifact flow to a production mainline with runtime auto-fetch, canonical merge, Transformer-style ranking inference, and deterministic Top20/Top3 outputs while preserving existing deploy commands.
 
 ## touched files
 - PLANS.md
 - README.md
 - app.py
-- scripts/build_deploy_bundle.sh
 - src/runtime_history.py
 - src/inference.py
-- tests/test_runtime_history.py
+- src/fetch_latest.py
+- src/normalize_latest.py
+- src/history_store.py
+- src/build_rank_windows.py
+- src/model_transformer.py
+- src/train_transformer.py
+- scripts/build_deploy_bundle.sh
+- configs/predict.yaml
+- tests/test_fetch_latest.py
+- tests/test_normalize_latest.py
+- tests/test_history_store.py
+- tests/test_build_rank_windows.py
 - tests/test_inference.py
 - tests/test_app.py
 
 ## invariants
-- Keep deploy commands unchanged:
+- Keep deploy contract unchanged:
   - `python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history`
   - `bash scripts/build_deploy_bundle.sh deploy_bundle`
-- Keep Python 3.9 and Azure Web App compatibility.
-- Fail fast for missing input/artifact/schema/version mismatch.
-- Deterministic ranking: stable sorting with explicit tie-breaker.
-- Preserve full 1..80 score chain in runtime artifact and inference response.
-- Top3 diversity is post-ranking rerank, not label shortcut.
-- Do not present ranking scores as probabilities.
+- Python 3.9 / Azure Web App compatible.
+- Fail fast for missing input/artifact/schema/version mismatch/conflict.
+- Inference deterministic (fixed seed, stable sort, explicit tie-breaker).
+- No random split; training uses time-series split only.
+- Preserve complete 1..80 score chain.
+- Top3 diversity is post-ranking rerank.
+- Ranking score is not calibrated probability.
 
 ## risks
-- Existing runtime artifact from old version will become incompatible and must be rebuilt.
-- Strict schema validation may reject malformed upstream files earlier (intended fail-fast behavior).
+- External source HTML structure can change and break parsers.
+- Runtime fetch depends on network/source availability; `/predict` will fail fast on source failures.
+- Lightweight numpy transformer is intentionally simple and may underperform a deep-learning implementation.
 
 ## validation steps
 - python -m pip install -r requirements-dev.txt
@@ -46,4 +58,4 @@ Upgrade the current runtime/deploy baseline to a production-grade, versioned art
 - python - <<'PY' ... TestClient('/predict') ... PY
 
 ## rollback plan
-Revert the final commit to restore the previous baseline.
+Revert the final commit to restore previous runtime_history + static artifact behavior.

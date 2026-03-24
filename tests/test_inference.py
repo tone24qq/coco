@@ -5,59 +5,150 @@ import pandas as pd
 import pytest
 
 from src.inference import predict
-from src.runtime_history import ARTIFACT_VERSION
+from src.runtime_history import build_runtime_history
 
 
-def _write_valid_artifact(runtime_dir: Path) -> None:
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    metadata = {
-        "artifact_version": ARTIFACT_VERSION,
-        "score_artifact": "scores.csv",
-        "score_chain_size": 80,
-        "history_rows": 2,
-        "latest_issue": "1002",
+def _prepare_runtime(tmp_path: Path) -> Path:
+    history_path = tmp_path / "history.csv"
+    rows = []
+    for issue in range(1000, 1120):
+        rows.append(
+            {
+                "issue": issue,
+                "draw_time": "2026-01-01",
+                **{f"n{i}": ((issue + i) % 80) + 1 for i in range(1, 21)},
+            }
+        )
+    pd.DataFrame(rows).to_csv(history_path, index=False)
+    runtime_dir = tmp_path / "runtime"
+    build_runtime_history(history_path, runtime_dir)
+    return runtime_dir
+
+
+def test_predict_success_and_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = _prepare_runtime(tmp_path)
+    local_path = tmp_path / "local.csv"
+    pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
+
+    cfg = {
+        "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
+        "fetch": {"timeout_seconds": 3.0, "retries": 0, "backoff_seconds": 0.0},
+        "runtime": {
+            "local_history_path": str(local_path),
+            "runtime_dir": str(runtime_dir),
+        },
+        "model": {
+            "artifact_file": "transformer_model.npz",
+            "model_version": "small_transformer_v1",
+            "feature_version": "rank_window_v1",
+            "window_size": 100,
+            "seed": 42,
+        },
     }
-    (runtime_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    config_path = tmp_path / "predict.yaml"
+    config_path.write_text(json.dumps(cfg), encoding="utf-8")
 
-    scores = pd.DataFrame([{"number": i, "score": float(81 - i)} for i in range(1, 81)])
-    scores.to_csv(runtime_dir / "scores.csv", index=False)
+    latest = [
+        {
+            "issue": "1120",
+            "draw_time": "2026-01-02",
+            "numbers": list(range(1, 21)),
+        }
+    ]
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (latest, "mock_source", [{"status": "ok"}]),
+    )
+
+    first = predict()
+    second = predict()
+    if first["top20"] != second["top20"] or first["top3"] != second["top3"]:
+        pytest.fail("predict output must be deterministic")
 
 
-def test_predict_loads_artifact_success(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    _write_valid_artifact(runtime_dir)
-
-    result = predict(runtime_dir)
-    scores = result["scores"]
-    top20 = result["top20"]
-    top3 = result["top3"]
-    if not isinstance(scores, list) or len(scores) != 80:
-        pytest.fail("scores chain must have 80 entries")
-    if not isinstance(top20, list) or len(top20) != 20:
-        pytest.fail("top20 must have 20 entries")
-    if not isinstance(top3, list) or len(top3) != 3:
-        pytest.fail("top3 must have 3 entries")
-
-
-def test_predict_artifact_version_mismatch_fail(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    _write_valid_artifact(runtime_dir)
-
+def test_predict_version_mismatch_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = _prepare_runtime(tmp_path)
     metadata_path = runtime_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    metadata["artifact_version"] = "runtime_history_v1"
+    metadata["model_version"] = "mismatch"
     metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Artifact version mismatch"):
-        predict(runtime_dir)
+    local_path = tmp_path / "local.csv"
+    pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
+
+    cfg = {
+        "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
+        "fetch": {"timeout_seconds": 3.0, "retries": 0, "backoff_seconds": 0.0},
+        "runtime": {
+            "local_history_path": str(local_path),
+            "runtime_dir": str(runtime_dir),
+        },
+        "model": {
+            "artifact_file": "transformer_model.npz",
+            "model_version": "small_transformer_v1",
+            "feature_version": "rank_window_v1",
+            "window_size": 100,
+            "seed": 42,
+        },
+    }
+    config_path = tmp_path / "predict.yaml"
+    config_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1120", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Model version mismatch"):
+        predict()
 
 
-def test_predict_score_chain_incomplete_fail(tmp_path: Path) -> None:
-    runtime_dir = tmp_path / "runtime"
-    _write_valid_artifact(runtime_dir)
+def test_predict_missing_artifact_fail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_dir = _prepare_runtime(tmp_path)
+    (runtime_dir / "transformer_model.npz").unlink()
 
-    scores = pd.DataFrame([{"number": i, "score": float(81 - i)} for i in range(1, 80)])
-    scores.to_csv(runtime_dir / "scores.csv", index=False)
+    local_path = tmp_path / "local.csv"
+    pd.read_csv(runtime_dir / "history_runtime.csv").to_csv(local_path, index=False)
 
-    with pytest.raises(ValueError, match="Score chain is not complete"):
-        predict(runtime_dir)
+    cfg = {
+        "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
+        "fetch": {"timeout_seconds": 3.0, "retries": 0, "backoff_seconds": 0.0},
+        "runtime": {
+            "local_history_path": str(local_path),
+            "runtime_dir": str(runtime_dir),
+        },
+        "model": {
+            "artifact_file": "transformer_model.npz",
+            "model_version": "small_transformer_v1",
+            "feature_version": "rank_window_v1",
+            "window_size": 100,
+            "seed": 42,
+        },
+    }
+    config_path = tmp_path / "predict.yaml"
+    config_path.write_text(json.dumps(cfg), encoding="utf-8")
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1120", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError, match="Missing model artifact"):
+        predict()

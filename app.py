@@ -19,8 +19,6 @@ def healthz() -> Dict[str, str]:
 @app.get("/predict")
 def predict_api() -> Dict[str, object]:
     try:
-        result = predict()
-    except (FileNotFoundError, ValueError) as exc:
+        return predict()
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    return result

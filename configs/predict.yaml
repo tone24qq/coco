@@ -1,0 +1,20 @@
+auto_fetch_sources:
+  - name: winwin
+    url: https://winwin.tw/Bingo
+  - name: pilio
+    url: https://www.pilio.idv.tw/bingo/list.asp
+  - name: taiwanlottery
+    url: https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
+fetch:
+  timeout_seconds: 8.0
+  retries: 2
+  backoff_seconds: 0.5
+runtime:
+  local_history_path: data/processed/history_processed.csv
+  runtime_dir: data/runtime_history
+model:
+  artifact_file: transformer_model.npz
+  model_version: small_transformer_v1
+  feature_version: rank_window_v1
+  window_size: 100
+  seed: 42

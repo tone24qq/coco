@@ -1,10 +1,7 @@
-from pathlib import Path
-
 import pytest
 from fastapi.testclient import TestClient
 
 import app
-from src.runtime_history import build_runtime_history
 
 
 @pytest.fixture
@@ -12,46 +9,36 @@ def client() -> TestClient:
     return TestClient(app.app)
 
 
-def test_predict_smoke(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    input_path = tmp_path / "history.csv"
-    rows = [
-        {
-            "issue": 1001,
-            "draw_time": "2026-01-01T00:00:00",
-            **{f"n{i}": i for i in range(1, 21)},
-        },
-        {
-            "issue": 1002,
-            "draw_time": "2026-01-01T00:05:00",
-            **{f"n{i}": i + 1 for i in range(1, 21)},
-        },
-    ]
-
-    import pandas as pd
-
-    pd.DataFrame(rows).to_csv(input_path, index=False)
-    runtime_dir = tmp_path / "runtime"
-    build_runtime_history(input_path, runtime_dir)
-
-    monkeypatch.setattr("src.inference.DEFAULT_RUNTIME_DIR", runtime_dir)
+def test_predict_smoke(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "latest_known_issue": "1001",
+        "target_issue": "1002",
+        "model_version": "small_transformer_v1",
+        "feature_version": "rank_window_v1",
+        "data_source": "mock",
+        "fetch_attempts": [],
+        "scores": [{"number": i, "score": float(i)} for i in range(1, 81)],
+        "top20": [{"number": i, "score": float(i)} for i in range(80, 60, -1)],
+        "top3": [
+            {"number": 80, "score": 80.0},
+            {"number": 79, "score": 79.0},
+            {"number": 65, "score": 65.0},
+        ],
+        "score_semantics": "ranking_score",
+    }
+    monkeypatch.setattr("app.predict", lambda: payload)
 
     response = client.get("/predict")
     if response.status_code != 200:
-        pytest.fail(f"unexpected status code: {response.status_code}")
-
-    body = response.json()
-    if len(body["scores"]) != 80:
-        pytest.fail("scores chain should have 80 entries")
+        pytest.fail("/predict smoke failed")
 
 
-def test_predict_missing_artifact_returns_500(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_predict_remote_failure_returns_500(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime_dir = tmp_path / "missing_runtime"
-    monkeypatch.setattr("src.inference.DEFAULT_RUNTIME_DIR", runtime_dir)
-
+    monkeypatch.setattr(
+        "app.predict", lambda: (_ for _ in ()).throw(RuntimeError("fetch failed"))
+    )
     response = client.get("/predict")
     if response.status_code != 500:
-        pytest.fail(f"expected 500, got {response.status_code}")
+        pytest.fail("expected 500 for fetch failure")
