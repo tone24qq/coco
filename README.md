@@ -1,17 +1,29 @@
-# 1-80 Candidate Ranking System (Transformer Edition)
+# 1-80 Candidate Ranking System
 
-這是一個專為「1-80 候選集合」設計的高頻序列預測系統，核心採用 **Small-Transformer 架構**。
+本專案目前主線提供兩個正式入口：
 
-## 🎯 專案目標
-- **精準排序：** 預測下一局 80 個號碼的出現機率，產出完整分數鏈。
-- **重點輸出：** 鎖定 Top 20 分數區間，並提取具備多樣性的 Top 3。
-- **輕量高效：** 模型權重嚴格控制在 **100MB 以內**，支援本地 3,000 至 1,000,000 筆數據訓練。
+- **Artifact 建置入口**：
+  `python -m src.runtime_history --input data/processed/history_processed.csv --output data/runtime_history`
+- **推論 API 入口**：`app.py`（FastAPI，提供 `/healthz` 與 `/predict`）
 
-## 🚀 快速開始
-1. **數據準備：** 將歷史資料放置於 `data/history.csv` (格式：期數, 號碼1, 號碼2...)。
-2. **本地訓練：** 執行 `python train.py --epochs 50`。
-3. **API 預測：** 調用 `predict()` 獲取 80 個號碼的完整評分。
+> 文件內容以 repo 內可執行程式碼為準，不使用不存在的 `train.py` 或其他假入口。
 
-## 📊 核心指標
-- **NDCG@20：** 衡量前 20 名排序的理想度。
-- **Top 3 Diversity：** 確保前三名號碼不度過度集中（依據區間與尾數去重）。
+## Runtime artifact
+
+`src.runtime_history` 會輸出：
+
+- `data/runtime_history/metadata.json`
+- `data/runtime_history/scores.csv`（完整 1..80 score chain）
+- `data/runtime_history/history_runtime.csv`
+
+artifact schema/version 不符時，inference 會直接報錯（fail-fast）。
+
+## API
+
+- `GET /healthz`: 健康檢查
+- `GET /predict`: 呼叫 `src.inference`，回傳：
+  - `scores`（完整 1..80 score chain）
+  - `top20`（deterministic 排序）
+  - `top3`（依 diversity post-ranking 規則）
+
+分數是 ranking score，不是 calibrated probability。
