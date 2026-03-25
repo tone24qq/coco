@@ -1,7 +1,7 @@
 # Plan
 
 ## goal
-Add explicit issue-wise sequence guardrails so `/predict` is provably computed from per-issue rows (not aggregated bag data), while preserving full-day selected-source records and `target_issue = latest + 1`.
+Make model-ranking outputs explicit and primary (`raw_*` + `final_*`), keep anti-repeat style rules disabled by default, and expose optional rerank impact observability without changing core inference sequence modeling.
 
 ## touched files
 - PLANS.md
@@ -21,11 +21,13 @@ Add explicit issue-wise sequence guardrails so `/predict` is provably computed f
 - Deterministic tie-breaking for source selection.
 - Distinguish `full_records` vs `latest_tail_records` without name ambiguity.
 - Fail fast when normalized latest records violate issue-wise row invariants.
+- Final ranking must default to raw model ordering with optional rerank clearly flagged.
 
 ## risks
 - Live source structure drift can reduce parsed full-day issue counts.
 - Existing tests may assume `source_records_count` semantics; changing to full-count may require expectation updates.
 - PyTorch import limitations in this environment can block full `pytest -q`.
+- Additional response fields may require downstream clients to adapt if they validate strict schemas.
 
 ## validation steps
 - bash scripts/verify_mainline.sh
@@ -36,6 +38,7 @@ Add explicit issue-wise sequence guardrails so `/predict` is provably computed f
 - pytest -q tests/test_fetch_latest.py
 - pytest -q tests/test_inference.py
 - live fetch integration script for selected source + issue first/last/count output
+- live predict-shape script printing prev_draw/raw_top20/final_top20 overlap diagnostics
 
 ## rollback plan
 Revert this commit to restore previous multi-source behavior (tail-returning semantics).

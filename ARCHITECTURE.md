@@ -53,3 +53,6 @@
 - `consensus_status`: `unanimous` / `partial` / `divergent`
 - `max_observed_issue`: max latest issue observed across successful sources
 - `source_consensus.conflicts`: same-issue number conflicts across sources
+- `raw_scores`, `raw_top20`, `raw_top3`: direct model ranking outputs
+- `final_top20`, `final_top3`: externally consumed final ranking view
+- `rerank_applied`, `rerank_reason`: whether optional rerank changed final view

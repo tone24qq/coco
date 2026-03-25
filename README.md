@@ -24,6 +24,8 @@
 - `source_latest_issues`, `selected_source_reason`, `source_records_count`
 - `source_tail_count`, `selected_source_full_records_count`, `selected_source_tail_count`
 - `consensus_status`, `max_observed_issue`
+- `raw_scores`, `raw_top20`, `raw_top3`
+- `final_top20`, `final_top3`, `rerank_applied`, `rerank_reason`
 - `score_type: ranking_score`
 - `scores`, `top20`, `top3`
 - `diversity_relaxed`

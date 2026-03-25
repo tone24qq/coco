@@ -43,7 +43,12 @@ def _prepare_runtime(tmp_path: Path) -> tuple[Path, Path]:
     return input_path, runtime_dir
 
 
-def _write_config(tmp_path: Path, local_history: Path, runtime_dir: Path) -> Path:
+def _write_config(
+    tmp_path: Path,
+    local_history: Path,
+    runtime_dir: Path,
+    enable_top3_rerank: bool = False,
+) -> Path:
     cfg = {
         "auto_fetch_sources": [{"name": "mock", "url": "https://mock"}],
         "fetch": {"timeout_seconds": 1.0, "retries": 0, "backoff_seconds": 0.0},
@@ -58,6 +63,7 @@ def _write_config(tmp_path: Path, local_history: Path, runtime_dir: Path) -> Pat
             "window_size": 20,
             "seed": 42,
             "stale_threshold": 3,
+            "enable_top3_rerank": enable_top3_rerank,
         },
         "tensor_contract": {
             "raw_tensor": "[batch, 80, feature_dim]",
@@ -322,3 +328,87 @@ def test_predict_fail_fast_on_aggregated_bag_latest_records(
         match="Latest records must be issue-wise rows, not aggregated bag data",
     ):
         predict(runtime_dir)
+
+
+def test_raw_top20_driven_by_model_scores_without_anti_repeat_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import torch
+
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(
+        tmp_path, input_path, runtime_dir, enable_top3_rerank=False
+    )
+    prev_row = (
+        pd.read_csv(input_path)
+        .sort_values("issue")
+        .iloc[-2][[f"n{i}" for i in range(1, 21)]]
+        .tolist()
+    )
+    prev_numbers = [int(x) for x in prev_row]
+
+    class FakeModel:
+        def eval(self) -> None:
+            return None
+
+        def predict_scores(self, x_tensor):
+            out = torch.zeros((x_tensor.shape[0], 80), dtype=torch.float32)
+            for rank, number in enumerate(prev_numbers):
+                out[:, number - 1] = 500.0 - rank
+            return out
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+            {"selected_source_full_records_count": 1},
+        ),
+    )
+    monkeypatch.setattr(
+        "src.inference.SmallTransformerRanker.load", lambda *a, **k: FakeModel()
+    )
+
+    result = predict(runtime_dir)
+    raw_top20_numbers = [int(item["number"]) for item in result["raw_top20"]]
+    final_top20_numbers = [int(item["number"]) for item in result["final_top20"]]
+    overlap = set(raw_top20_numbers) & set(prev_numbers)
+
+    if len(overlap) < 10:
+        pytest.fail("raw_top20 should keep high-scored previous-draw numbers")
+    if final_top20_numbers != raw_top20_numbers:
+        pytest.fail("final_top20 must equal raw_top20 when rerank is disabled")
+    if result["rerank_applied"]:
+        pytest.fail("rerank_applied must be false when rerank is disabled")
+
+
+def test_optional_rerank_changes_top3_with_observable_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(
+        tmp_path, input_path, runtime_dir, enable_top3_rerank=True
+    )
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+            {"selected_source_full_records_count": 1},
+        ),
+    )
+    monkeypatch.setattr(
+        "src.inference._select_top3",
+        lambda top20: (list(reversed(top20[:3])), True),
+    )
+
+    result = predict(runtime_dir)
+    if result["raw_top3"] == result["final_top3"]:
+        pytest.fail("optional rerank enabled should allow observable top3 differences")
+    if not result["rerank_applied"]:
+        pytest.fail("rerank_applied should be true when rerank changes top3")

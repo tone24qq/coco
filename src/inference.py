@@ -168,6 +168,17 @@ def _select_top3(
     return sorted(relaxed, key=lambda item: ranks[int(item["number"])]), True
 
 
+def _extract_prev_draw_numbers(merged: Any) -> List[int]:
+    if len(merged) < 2:
+        return []
+    prev = merged.iloc[-2]
+    return [int(prev[f"n{i}"]) for i in range(1, 21)]
+
+
+def _overlap_count(a: Sequence[int], b: Sequence[int]) -> int:
+    return len(set(a) & set(b))
+
+
 def _to_issue(value: Any) -> int:
     return int(str(value))
 
@@ -355,13 +366,32 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
         {"number": int(n), "score": float(s)}
         for n, s in zip(window.number_ids.tolist(), score_tensor.tolist())
     ]
-    top20 = _rank_top20(scores)
-    top3, diversity_relaxed = _select_top3(top20)
+    raw_scores = scores
+    raw_top20 = _rank_top20(raw_scores)
+    raw_top3 = list(raw_top20[:3])
+
+    rerank_top3_enabled = bool(model_cfg.get("enable_top3_rerank", False))
+    reranked_top3, diversity_relaxed = _select_top3(raw_top20)
+    if rerank_top3_enabled:
+        final_top3 = reranked_top3
+        rerank_applied = reranked_top3 != raw_top3
+        rerank_reason = "top3_diversity_rerank_enabled"
+    else:
+        final_top3 = raw_top3
+        rerank_applied = False
+        rerank_reason = "disabled"
+        diversity_relaxed = False
+
+    final_top20 = list(raw_top20)
     _progress(94, "Top20 / Top3 重排完成", time.perf_counter() - stage_start)
 
     trained_issue = _to_issue(transformer_meta["trained_up_to_issue"])
     stale_issues = max(0, _to_issue(window.issue) - trained_issue)
     stale_threshold = int(runtime_metadata.get("stale_threshold", 20))
+
+    prev_draw_numbers = _extract_prev_draw_numbers(merged)
+    raw_top20_numbers = [int(item["number"]) for item in raw_top20]
+    final_top20_numbers = [int(item["number"]) for item in final_top20]
 
     result = {
         "latest_known_issue": window.issue,
@@ -386,10 +416,29 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
         ),
         "source_consensus": fetch_diagnostics.get("source_consensus", {}),
         "score_type": "ranking_score",
-        "scores": scores,
-        "top20": top20,
-        "top3": top3,
+        "scores": raw_scores,
+        "raw_scores": raw_scores,
+        "raw_top20": raw_top20,
+        "raw_top3": raw_top3,
+        "reranked_top3": reranked_top3,
+        "rerank_applied": rerank_applied,
+        "rerank_reason": rerank_reason,
+        "final_top20": final_top20,
+        "final_top3": final_top3,
+        "top20": final_top20,
+        "top3": final_top3,
         "diversity_relaxed": diversity_relaxed,
+        "ranking_diagnostics": {
+            "model_raw_top20": raw_top20_numbers,
+            "final_top20": final_top20_numbers,
+            "prev_draw_numbers": prev_draw_numbers,
+            "overlap_with_prev_draw_raw_top20": _overlap_count(
+                raw_top20_numbers, prev_draw_numbers
+            ),
+            "overlap_with_prev_draw_final_top20": _overlap_count(
+                final_top20_numbers, prev_draw_numbers
+            ),
+        },
         "drift_metadata": {
             "trained_up_to_issue": transformer_meta["trained_up_to_issue"],
             "baseline_metrics": transformer_meta["baseline_metrics"],
