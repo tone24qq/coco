@@ -1,7 +1,7 @@
 # Plan
 
 ## goal
-Fix `/predict` fetch semantics so source selection still uses latest-tail comparison, but selected source returns full-day validated records (not just tail), ensuring inference context uses all currently opened issues for today and predicts `latest + 1`.
+Add explicit issue-wise sequence guardrails so `/predict` is provably computed from per-issue rows (not aggregated bag data), while preserving full-day selected-source records and `target_issue = latest + 1`.
 
 ## touched files
 - PLANS.md
@@ -20,6 +20,7 @@ Fix `/predict` fetch semantics so source selection still uses latest-tail compar
 - Use configured sources only (no hard-coded runtime source list).
 - Deterministic tie-breaking for source selection.
 - Distinguish `full_records` vs `latest_tail_records` without name ambiguity.
+- Fail fast when normalized latest records violate issue-wise row invariants.
 
 ## risks
 - Live source structure drift can reduce parsed full-day issue counts.
@@ -33,6 +34,7 @@ Fix `/predict` fetch semantics so source selection still uses latest-tail compar
 - python -m py_compile $(git ls-files '*.py')
 - pytest -q
 - pytest -q tests/test_fetch_latest.py
+- pytest -q tests/test_inference.py
 - live fetch integration script for selected source + issue first/last/count output
 
 ## rollback plan

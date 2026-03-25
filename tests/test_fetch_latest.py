@@ -279,6 +279,29 @@ def test_selected_source_returns_full_records_not_tail() -> None:
         pytest.fail("diagnostics should expose selected tail count")
 
 
+def test_full_day_1_to_10_returns_10_rows_tail_5() -> None:
+    html = " ".join(f"{115016800 + i} {_nums()}" for i in range(1, 11))
+    client = DummyClient(
+        {("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(status_code=200, text=html)}
+    )
+
+    records, _, _, diagnostics = fetch_latest(
+        sources=[{"name": "auzo", "url": "https://www.auzo.tw/RJ.php"}],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+
+    issues = [int(item["issue"]) for item in records]
+    if issues[0] != 115016801 or issues[-1] != 115016810 or len(issues) != 10:
+        pytest.fail("fetch_latest should return 1..10 issue-wise rows")
+    if len(set(issues)) != 10:
+        pytest.fail("each issue row should remain independent and non-aggregated")
+    if diagnostics["selected_source_full_records_count"] != 10:
+        pytest.fail("full_records_count should match returned issue row count")
+    if diagnostics["selected_source_tail_count"] != 10:
+        pytest.fail("tail_count should match latest consecutive tail length")
+
+
 def test_parser_fail_does_not_block_other_sources() -> None:
     bad = "only garbage"
     good = (

@@ -288,3 +288,37 @@ def test_predict_uses_full_day_records_latest_and_target(
         pytest.fail("response should expose full records count")
     if result["selected_source_tail_count"] != 5:
         pytest.fail("response should expose selected source tail count")
+
+
+def test_predict_fail_fast_on_aggregated_bag_latest_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(tmp_path, input_path, runtime_dir)
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1074", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "auzo",
+            [{"source": "auzo", "status": "ok"}],
+            {
+                "source_latest_issues": {"auzo": "1074"},
+                "selected_source_reason": "selected highest latest_issue",
+                "source_records_count": {"auzo": 10},
+                "source_tail_count": {"auzo": 5},
+                "consensus_status": "unanimous",
+                "max_observed_issue": "1074",
+                "selected_source_full_records_count": 10,
+                "selected_source_tail_count": 5,
+                "source_consensus": {"latest_issue_gap": 0, "conflicts": []},
+            },
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Latest records must be issue-wise rows, not aggregated bag data",
+    ):
+        predict(runtime_dir)

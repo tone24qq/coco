@@ -190,6 +190,37 @@ def _validate_expected_output_schema(runtime_metadata: Dict[str, Any]) -> None:
         raise ValueError("Runtime metadata mismatch: expected_output_schema")
 
 
+def _validate_latest_issue_rows(
+    latest_df: Any, fetch_diagnostics: Dict[str, object]
+) -> None:
+    if latest_df.empty:
+        raise ValueError("Latest records must contain issue-wise rows")
+
+    issues = [int(x) for x in latest_df["issue"].tolist()]
+    if len(issues) != len(set(issues)):
+        raise ValueError("Latest records contain duplicate issue values")
+    if any(left >= right for left, right in zip(issues, issues[1:])):
+        raise ValueError("Latest records issue sequence must be strictly increasing")
+
+    selected_full_count_raw = fetch_diagnostics.get(
+        "selected_source_full_records_count"
+    )
+    if selected_full_count_raw is None:
+        return
+
+    selected_full_count = int(selected_full_count_raw)
+    if selected_full_count > 1 and len(issues) == 1:
+        raise ValueError(
+            "Latest records must be issue-wise rows, not aggregated bag data"
+        )
+    if len(issues) != selected_full_count:
+        raise ValueError(
+            "Latest records row count mismatch: "
+            f"normalized_rows={len(issues)} selected_source_full_records_count="
+            f"{selected_full_count}"
+        )
+
+
 def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
     total_start = time.perf_counter()
     stage_start = total_start
@@ -237,6 +268,7 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
 
     stage_start = time.perf_counter()
     latest_df = normalize_latest_records(latest_records)
+    _validate_latest_issue_rows(latest_df, fetch_diagnostics)
     _progress(38, "最新資料標準化完成", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
