@@ -412,3 +412,36 @@ def test_optional_rerank_changes_top3_with_observable_flag(
         pytest.fail("optional rerank enabled should allow observable top3 differences")
     if not result["rerank_applied"]:
         pytest.fail("rerank_applied should be true when rerank changes top3")
+    if (
+        result["top20"] != result["raw_top20"]
+        or result["top20"] != result["final_top20"]
+    ):
+        pytest.fail("top20 must always equal raw_top20 and final_top20")
+
+
+def test_rerank_disabled_keeps_top3_equal_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(
+        tmp_path, input_path, runtime_dir, enable_top3_rerank=False
+    )
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "mock",
+            [],
+            {"selected_source_full_records_count": 1},
+        ),
+    )
+    result = predict(runtime_dir)
+    if (
+        result["final_top3"] != result["raw_top3"]
+        or result["top3"] != result["raw_top3"]
+    ):
+        pytest.fail("when rerank is disabled, top3 must equal raw_top3")
+    if result["rerank_applied"]:
+        pytest.fail("rerank_applied must be false when rerank is disabled")

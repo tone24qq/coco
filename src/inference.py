@@ -392,10 +392,17 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
     prev_draw_numbers = _extract_prev_draw_numbers(merged)
     raw_top20_numbers = [int(item["number"]) for item in raw_top20]
     final_top20_numbers = [int(item["number"]) for item in final_top20]
+    latest_issue_values = [int(x) for x in latest_df["issue"].tolist()]
 
     result = {
         "latest_known_issue": window.issue,
         "target_issue": window.target_issue,
+        "first_issue_used": str(latest_issue_values[0]),
+        "last_issue_used": str(latest_issue_values[-1]),
+        "issues_strictly_increasing": all(
+            left < right
+            for left, right in zip(latest_issue_values, latest_issue_values[1:])
+        ),
         "model_version": runtime_metadata["model_version"],
         "feature_version": runtime_metadata["feature_version"],
         "data_source": data_source,
@@ -432,10 +439,10 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
             "model_raw_top20": raw_top20_numbers,
             "final_top20": final_top20_numbers,
             "prev_draw_numbers": prev_draw_numbers,
-            "overlap_with_prev_draw_raw_top20": _overlap_count(
+            "raw_top20_overlap_count": _overlap_count(
                 raw_top20_numbers, prev_draw_numbers
             ),
-            "overlap_with_prev_draw_final_top20": _overlap_count(
+            "final_top20_overlap_count": _overlap_count(
                 final_top20_numbers, prev_draw_numbers
             ),
         },
