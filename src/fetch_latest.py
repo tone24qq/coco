@@ -268,7 +268,7 @@ def _build_source_tail_map(
     per_source: Dict[str, Dict[str, List[int]]] = {}
     for item in source_results:
         source = str(item["source"])
-        tail_records = item["records"]
+        tail_records = item["latest_tail_records"]
         issue_map: Dict[str, List[int]] = {}
         for record in tail_records:  # type: ignore[union-attr]
             issue_map[str(record["issue"])] = [int(x) for x in record["numbers"]]
@@ -339,6 +339,7 @@ def _select_best_source(
         source_results,
         key=lambda item: (
             -int(item["latest_issue"]),
+            -int(item["tail_count"]),
             -int(item["records_count"]),
             str(item["source"]),
         ),
@@ -355,7 +356,7 @@ def _select_best_source(
     same_count = [
         item
         for item in tie_pool
-        if int(item["records_count"]) == int(selected["records_count"])
+        if int(item["tail_count"]) == int(selected["tail_count"])
     ]
     if len(same_count) == 1:
         return selected, "selected by latest_issue tie-break with longest records tail"
@@ -424,17 +425,19 @@ def fetch_latest(
                         )
 
                     deduped = _dedupe_and_validate_conflicts(source_name, records)
-                    tail = _latest_consecutive_tail(deduped)
-                    if len(tail) < MIN_CONSECUTIVE_TAIL:
+                    full_records = deduped
+                    latest_tail_records = _latest_consecutive_tail(full_records)
+                    if len(latest_tail_records) < MIN_CONSECUTIVE_TAIL:
                         raise ValueError(
                             f"{source_name}: consecutive tail too short "
-                            f"(tail={len(tail)}, min={MIN_CONSECUTIVE_TAIL})"
+                            f"(tail={len(latest_tail_records)}, "
+                            f"min={MIN_CONSECUTIVE_TAIL})"
                         )
 
                     hint_issue = _extract_latest_issue_hint(html_text)
-                    _validate_hint(source_name, hint_issue, tail)
+                    _validate_hint(source_name, hint_issue, latest_tail_records)
 
-                    latest_issue = str(tail[-1]["issue"])
+                    latest_issue = str(latest_tail_records[-1]["issue"])
                     attempts.append(
                         {
                             "source": source_name,
@@ -442,16 +445,19 @@ def fetch_latest(
                             "status": "ok",
                             "parser_path": parser_path,
                             "latest_issue": latest_issue,
-                            "records_count": len(tail),
+                            "records_count": len(full_records),
+                            "tail_count": len(latest_tail_records),
                         }
                     )
                     source_results.append(
                         {
                             "source": source_name,
                             "url": source_url,
-                            "records": tail,
+                            "full_records": full_records,
+                            "latest_tail_records": latest_tail_records,
                             "latest_issue": latest_issue,
-                            "records_count": len(tail),
+                            "records_count": len(full_records),
+                            "tail_count": len(latest_tail_records),
                             "parser_path": parser_path,
                             "attempt": attempt,
                         }
@@ -488,6 +494,9 @@ def fetch_latest(
         source_records_count = {
             str(item["source"]): int(item["records_count"]) for item in source_results
         }
+        source_tail_count = {
+            str(item["source"]): int(item["tail_count"]) for item in source_results
+        }
 
         if int(consensus.get("latest_issue_gap") or 0) >= DIVERGENT_GAP_THRESHOLD:
             selected_reason = (
@@ -498,16 +507,19 @@ def fetch_latest(
         diagnostics = {
             "source_latest_issues": source_latest_issues,
             "source_records_count": source_records_count,
+            "source_tail_count": source_tail_count,
             "selected_source_reason": selected_reason,
             "consensus_status": str(consensus["consensus_status"]),
             "max_observed_issue": str(consensus.get("max_observed_issue")),
+            "selected_source_full_records_count": int(selected["records_count"]),
+            "selected_source_tail_count": int(selected["tail_count"]),
             "source_consensus": {
                 "latest_issue_gap": consensus.get("latest_issue_gap"),
                 "conflicts": consensus.get("conflicts", []),
             },
         }
 
-        return selected["records"], str(selected["url"]), attempts, diagnostics
+        return selected["full_records"], str(selected["url"]), attempts, diagnostics
     finally:
         if owns_client and isinstance(active_client, httpx.Client):
             active_client.close()

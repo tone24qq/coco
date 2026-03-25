@@ -238,6 +238,47 @@ def test_same_latest_issue_uses_longer_tail() -> None:
         pytest.fail("selection reason should include tie-break detail")
 
 
+def test_selected_source_returns_full_records_not_tail() -> None:
+    html = (
+        f"115016801 {_nums()} "
+        f"115016802 {_nums()} "
+        f"115016804 {_nums()} "
+        f"115016805 {_nums()} "
+        f"115016806 {_nums()} "
+        f"115016807 {_nums()} "
+        f"115016808 {_nums()} "
+        f"115016809 {_nums()} "
+        f"115016810 {_nums()}"
+    )
+    client = DummyClient(
+        {("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(status_code=200, text=html)}
+    )
+
+    records, _, _, diagnostics = fetch_latest(
+        sources=[{"name": "auzo", "url": "https://www.auzo.tw/RJ.php"}],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+
+    issues = [int(item["issue"]) for item in records]
+    if issues != [
+        115016801,
+        115016802,
+        115016804,
+        115016805,
+        115016806,
+        115016807,
+        115016808,
+        115016809,
+        115016810,
+    ]:
+        pytest.fail("fetch_latest should return selected source full_records")
+    if diagnostics["selected_source_full_records_count"] != 9:
+        pytest.fail("diagnostics should expose selected full records count")
+    if diagnostics["selected_source_tail_count"] != 7:
+        pytest.fail("diagnostics should expose selected tail count")
+
+
 def test_parser_fail_does_not_block_other_sources() -> None:
     bad = "only garbage"
     good = (
@@ -319,3 +360,26 @@ def test_same_issue_numbers_conflict_marked_divergent() -> None:
     conflicts = diagnostics["source_consensus"]["conflicts"]
     if not conflicts or conflicts[0]["issue"] != "115016860":
         pytest.fail("conflict diagnostics should include conflicted issue")
+
+
+def test_source_records_count_and_tail_count_diagnostics() -> None:
+    html = (
+        f"115016801 {_nums()} "
+        f"115016802 {_nums()} "
+        f"115016803 {_nums()} "
+        f"115016804 {_nums()} "
+        f"115016805 {_nums()} "
+        f"115016806 {_nums()} "
+    )
+    client = DummyClient(
+        {("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(status_code=200, text=html)}
+    )
+    _, _, _, diagnostics = fetch_latest(
+        sources=[{"name": "auzo", "url": "https://www.auzo.tw/RJ.php"}],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+    if diagnostics["source_records_count"] != {"auzo": 6}:
+        pytest.fail("source_records_count should use full records count")
+    if diagnostics["source_tail_count"] != {"auzo": 6}:
+        pytest.fail("source_tail_count should be exposed")

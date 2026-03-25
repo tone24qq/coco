@@ -45,8 +45,11 @@
 
 ## Predict observability fields
 - `source_latest_issues`: per-source latest observed issue
-- `source_records_count`: per-source usable consecutive tail size
+- `source_records_count`: per-source validated full records count
+- `source_tail_count`: per-source latest consecutive tail size
 - `selected_source_reason`: deterministic source selection rationale
+- `selected_source_full_records_count`: selected source full records count
+- `selected_source_tail_count`: selected source latest tail size
 - `consensus_status`: `unanimous` / `partial` / `divergent`
 - `max_observed_issue`: max latest issue observed across successful sources
 - `source_consensus.conflicts`: same-issue number conflicts across sources

@@ -1,15 +1,15 @@
 # Plan
 
 ## goal
-Refactor `/predict` latest fetch policy from first-success short-circuit to multi-source max-latest selection, add `auzo` source/config, preserve existing ranking contract fields, and expose source-level observability/consensus diagnostics without breaking existing endpoints.
+Fix `/predict` fetch semantics so source selection still uses latest-tail comparison, but selected source returns full-day validated records (not just tail), ensuring inference context uses all currently opened issues for today and predicts `latest + 1`.
 
 ## touched files
 - PLANS.md
-- configs/predict.yaml
 - src/fetch_latest.py
 - src/inference.py
 - tests/test_fetch_latest.py
 - tests/test_inference.py
+- README.md
 - ARCHITECTURE.md
 
 ## invariants
@@ -19,11 +19,12 @@ Refactor `/predict` latest fetch policy from first-success short-circuit to mult
 - Keep runtime_history no-retrain behavior.
 - Use configured sources only (no hard-coded runtime source list).
 - Deterministic tie-breaking for source selection.
+- Distinguish `full_records` vs `latest_tail_records` without name ambiguity.
 
 ## risks
-- Source divergence logic could accidentally reject usable data if thresholds are too strict.
-- New response fields may require updates in tests that stub inference output.
-- Auzo parser may be brittle if source HTML format changes.
+- Live source structure drift can reduce parsed full-day issue counts.
+- Existing tests may assume `source_records_count` semantics; changing to full-count may require expectation updates.
+- PyTorch import limitations in this environment can block full `pytest -q`.
 
 ## validation steps
 - bash scripts/verify_mainline.sh
@@ -31,7 +32,8 @@ Refactor `/predict` latest fetch policy from first-success short-circuit to mult
 - flake8 src tests
 - python -m py_compile $(git ls-files '*.py')
 - pytest -q
-- pytest -q tests/test_fetch_latest.py tests/test_inference.py
+- pytest -q tests/test_fetch_latest.py
+- live fetch integration script for selected source + issue first/last/count output
 
 ## rollback plan
-Revert the commit to restore previous first-success fetch strategy and prior `/predict` response shape.
+Revert this commit to restore previous multi-source behavior (tail-returning semantics).

@@ -341,9 +341,16 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
         "source_latest_issues": fetch_diagnostics.get("source_latest_issues", {}),
         "selected_source_reason": fetch_diagnostics.get("selected_source_reason", ""),
         "source_records_count": fetch_diagnostics.get("source_records_count", {}),
+        "source_tail_count": fetch_diagnostics.get("source_tail_count", {}),
         "consensus_status": fetch_diagnostics.get("consensus_status", "partial"),
         "max_observed_issue": fetch_diagnostics.get(
             "max_observed_issue", str(window.issue)
+        ),
+        "selected_source_full_records_count": fetch_diagnostics.get(
+            "selected_source_full_records_count", len(latest_records)
+        ),
+        "selected_source_tail_count": fetch_diagnostics.get(
+            "selected_source_tail_count", len(latest_records)
         ),
         "source_consensus": fetch_diagnostics.get("source_consensus", {}),
         "score_type": "ranking_score",

@@ -245,3 +245,46 @@ def test_predict_includes_source_diagnostics_fields(
         or result["max_observed_issue"] != "1065"
     ):
         pytest.fail("consensus diagnostics should be present in response")
+
+
+def test_predict_uses_full_day_records_latest_and_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(tmp_path, input_path, runtime_dir)
+
+    full_records = [
+        {"issue": str(issue), "draw_time": "x", "numbers": list(range(1, 21))}
+        for issue in range(1065, 1075)
+    ]
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            full_records,
+            "auzo",
+            [{"source": "auzo", "status": "ok"}],
+            {
+                "source_latest_issues": {"auzo": "1074"},
+                "selected_source_reason": "selected highest latest_issue",
+                "source_records_count": {"auzo": 10},
+                "source_tail_count": {"auzo": 5},
+                "consensus_status": "unanimous",
+                "max_observed_issue": "1074",
+                "selected_source_full_records_count": 10,
+                "selected_source_tail_count": 5,
+                "source_consensus": {"latest_issue_gap": 0, "conflicts": []},
+            },
+        ),
+    )
+
+    result = predict(runtime_dir)
+    if result["latest_known_issue"] != "1074":
+        pytest.fail("latest_known_issue should be selected full record latest issue")
+    if result["target_issue"] != "1075":
+        pytest.fail("target_issue should be latest_known_issue + 1")
+    if result["selected_source_full_records_count"] != 10:
+        pytest.fail("response should expose full records count")
+    if result["selected_source_tail_count"] != 5:
+        pytest.fail("response should expose selected source tail count")
