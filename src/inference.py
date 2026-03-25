@@ -220,7 +220,7 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
     _set_deterministic(seed)
 
     stage_start = time.perf_counter()
-    latest_records, data_source, fetch_attempts = fetch_latest(
+    fetch_result = fetch_latest(
         sources=sources,
         config=FetchConfig(
             timeout_seconds=float(fetch_cfg.get("timeout_seconds", 8.0)),
@@ -228,6 +228,11 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
             backoff_seconds=float(fetch_cfg.get("backoff_seconds", 0.5)),
         ),
     )
+    if len(fetch_result) == 3:
+        latest_records, data_source, fetch_attempts = fetch_result
+        fetch_diagnostics: Dict[str, object] = {}
+    else:
+        latest_records, data_source, fetch_attempts, fetch_diagnostics = fetch_result
     _progress(30, "抓取最新資料完成", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
@@ -333,6 +338,14 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
         "feature_version": runtime_metadata["feature_version"],
         "data_source": data_source,
         "fetch_attempts": fetch_attempts,
+        "source_latest_issues": fetch_diagnostics.get("source_latest_issues", {}),
+        "selected_source_reason": fetch_diagnostics.get("selected_source_reason", ""),
+        "source_records_count": fetch_diagnostics.get("source_records_count", {}),
+        "consensus_status": fetch_diagnostics.get("consensus_status", "partial"),
+        "max_observed_issue": fetch_diagnostics.get(
+            "max_observed_issue", str(window.issue)
+        ),
+        "source_consensus": fetch_diagnostics.get("source_consensus", {}),
         "score_type": "ranking_score",
         "scores": scores,
         "top20": top20,

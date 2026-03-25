@@ -18,7 +18,7 @@
 - mismatch 一律 fail-fast
 
 ## Runtime flow
-1. fetch latest (multi-source failover + retries + source parser)
+1. fetch latest (multi-source full scan + retries + source parser + consensus diagnostics)
 2. normalize latest
 3. merge with local history
 4. time-sync validation
@@ -41,3 +41,12 @@
 ## Stale policy
 - `stale_issues = current_issue - trained_up_to_issue`
 - if stale_issues > stale_threshold, still return result but `is_stale = true`
+
+
+## Predict observability fields
+- `source_latest_issues`: per-source latest observed issue
+- `source_records_count`: per-source usable consecutive tail size
+- `selected_source_reason`: deterministic source selection rationale
+- `consensus_status`: `unanimous` / `partial` / `divergent`
+- `max_observed_issue`: max latest issue observed across successful sources
+- `source_consensus.conflicts`: same-issue number conflicts across sources

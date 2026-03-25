@@ -25,6 +25,7 @@ DEFAULT_HEADERS = {
 }
 MIN_CONSECUTIVE_TAIL = 5
 HINT_MISMATCH_TOLERANCE = 200
+DIVERGENT_GAP_THRESHOLD = 5
 
 
 class FetchClient(Protocol):
@@ -137,6 +138,26 @@ def _parse_taiwanlottery_html(html: str) -> List[Dict[str, object]]:
     return _rows_to_records(_parse_issue_numbers_pairs(html))
 
 
+def _parse_auzo_html(html: str) -> List[Dict[str, object]]:
+    rows = _parse_issue_numbers_pairs(html)
+    if rows:
+        return _rows_to_records(rows)
+
+    payload_pattern = re.compile(
+        r'"(?:Issue|issue|drawIssue)"\s*:\s*"?(\d{9})"?.{0,200}?'
+        r'"(?:numbers|BigShowOrder|bingoNumbers)"\s*:\s*\[([^\]]+)\]',
+        flags=re.DOTALL,
+    )
+    parsed_rows: List[Tuple[str, List[int]]] = []
+    for issue, nums_text in payload_pattern.findall(html):
+        nums = [int(x) for x in re.split(r"[^0-9]+", nums_text.strip()) if x]
+        parsed = _parse_big_show_order(nums)
+        if parsed is not None:
+            parsed_rows.append((str(issue), parsed))
+
+    return _rows_to_records(parsed_rows)
+
+
 def _parse_generic_html(html: str) -> List[Dict[str, object]]:
     return _rows_to_records(_parse_issue_numbers_pairs(html))
 
@@ -241,12 +262,113 @@ def _validate_hint(
         )
 
 
+def _build_source_tail_map(
+    source_results: Sequence[Dict[str, object]],
+) -> Dict[str, Dict[str, List[int]]]:
+    per_source: Dict[str, Dict[str, List[int]]] = {}
+    for item in source_results:
+        source = str(item["source"])
+        tail_records = item["records"]
+        issue_map: Dict[str, List[int]] = {}
+        for record in tail_records:  # type: ignore[union-attr]
+            issue_map[str(record["issue"])] = [int(x) for x in record["numbers"]]
+        per_source[source] = issue_map
+    return per_source
+
+
+def _evaluate_source_consensus(
+    source_results: Sequence[Dict[str, object]],
+) -> Dict[str, object]:
+    if not source_results:
+        return {
+            "consensus_status": "divergent",
+            "conflicts": [],
+            "latest_issue_gap": None,
+            "selected_source_reason": "no successful source",
+        }
+
+    latest_values = [int(item["latest_issue"]) for item in source_results]
+    max_issue = max(latest_values)
+    min_issue = min(latest_values)
+    tails = _build_source_tail_map(source_results)
+
+    conflicts: List[Dict[str, object]] = []
+    issues_union = sorted(
+        {int(issue) for issue_map in tails.values() for issue in issue_map.keys()}
+    )
+    for issue_int in issues_union:
+        issue = str(issue_int)
+        observed = {
+            source: issue_map[issue]
+            for source, issue_map in tails.items()
+            if issue in issue_map
+        }
+        if len(observed) < 2:
+            continue
+        unique_numbers = {tuple(nums) for nums in observed.values()}
+        if len(unique_numbers) > 1:
+            conflicts.append(
+                {
+                    "issue": issue,
+                    "sources": sorted(observed.keys()),
+                    "type": "numbers_conflict",
+                }
+            )
+
+    if conflicts:
+        consensus_status = "divergent"
+    elif max_issue == min_issue:
+        consensus_status = "unanimous"
+    elif max_issue - min_issue >= DIVERGENT_GAP_THRESHOLD:
+        consensus_status = "divergent"
+    else:
+        consensus_status = "partial"
+
+    return {
+        "consensus_status": consensus_status,
+        "conflicts": conflicts,
+        "latest_issue_gap": max_issue - min_issue,
+        "max_observed_issue": str(max_issue),
+    }
+
+
+def _select_best_source(
+    source_results: Sequence[Dict[str, object]],
+) -> Tuple[Dict[str, object], str]:
+    ordered = sorted(
+        source_results,
+        key=lambda item: (
+            -int(item["latest_issue"]),
+            -int(item["records_count"]),
+            str(item["source"]),
+        ),
+    )
+    selected = ordered[0]
+    tie_pool = [
+        item
+        for item in ordered
+        if int(item["latest_issue"]) == int(selected["latest_issue"])
+    ]
+    if len(tie_pool) == 1:
+        return selected, "selected highest latest_issue"
+
+    same_count = [
+        item
+        for item in tie_pool
+        if int(item["records_count"]) == int(selected["records_count"])
+    ]
+    if len(same_count) == 1:
+        return selected, "selected by latest_issue tie-break with longest records tail"
+    return selected, "selected by deterministic source-name tie-break"
+
+
 def fetch_latest(
     sources: List[Dict[str, str]],
     config: FetchConfig,
     client: Optional[FetchClient] = None,
-) -> Tuple[List[Dict[str, object]], str, List[Dict[str, object]]]:
+) -> Tuple[List[Dict[str, object]], str, List[Dict[str, object]], Dict[str, object]]:
     attempts: List[Dict[str, object]] = []
+    source_results: List[Dict[str, object]] = []
     owns_client = client is None
     active_client: Any = client or httpx.Client(follow_redirects=True)
 
@@ -257,6 +379,7 @@ def fetch_latest(
             if not source_url:
                 raise ValueError("Source config missing url")
 
+            source_ok = False
             for attempt in range(1, config.retries + 2):
                 parser_path = "unknown"
                 try:
@@ -286,6 +409,8 @@ def fetch_latest(
                             records = _parse_pilio_html(html_text)
                         elif source_name == "taiwanlottery":
                             records = _parse_taiwanlottery_html(html_text)
+                        elif source_name == "auzo":
+                            records = _parse_auzo_html(html_text)
                         else:
                             records = []
 
@@ -309,15 +434,30 @@ def fetch_latest(
                     hint_issue = _extract_latest_issue_hint(html_text)
                     _validate_hint(source_name, hint_issue, tail)
 
+                    latest_issue = str(tail[-1]["issue"])
                     attempts.append(
                         {
                             "source": source_name,
                             "attempt": attempt,
                             "status": "ok",
                             "parser_path": parser_path,
+                            "latest_issue": latest_issue,
+                            "records_count": len(tail),
                         }
                     )
-                    return tail, source_url, attempts
+                    source_results.append(
+                        {
+                            "source": source_name,
+                            "url": source_url,
+                            "records": tail,
+                            "latest_issue": latest_issue,
+                            "records_count": len(tail),
+                            "parser_path": parser_path,
+                            "attempt": attempt,
+                        }
+                    )
+                    source_ok = True
+                    break
                 except Exception as exc:  # noqa: BLE001
                     attempts.append(
                         {
@@ -330,11 +470,44 @@ def fetch_latest(
                     )
                     if attempt < config.retries + 1:
                         time.sleep(config.backoff_seconds)
+            if not source_ok:
+                continue
 
-        raise RuntimeError(
-            "All sources failed. attempts="
-            + json.dumps(attempts, ensure_ascii=False, sort_keys=True)
-        )
+        if not source_results:
+            raise RuntimeError(
+                "All sources failed. attempts="
+                + json.dumps(attempts, ensure_ascii=False, sort_keys=True)
+            )
+
+        selected, selected_reason = _select_best_source(source_results)
+        consensus = _evaluate_source_consensus(source_results)
+
+        source_latest_issues = {
+            str(item["source"]): str(item["latest_issue"]) for item in source_results
+        }
+        source_records_count = {
+            str(item["source"]): int(item["records_count"]) for item in source_results
+        }
+
+        if int(consensus.get("latest_issue_gap") or 0) >= DIVERGENT_GAP_THRESHOLD:
+            selected_reason = (
+                f"{selected_reason}; divergent latest gap="
+                f"{consensus['latest_issue_gap']}"
+            )
+
+        diagnostics = {
+            "source_latest_issues": source_latest_issues,
+            "source_records_count": source_records_count,
+            "selected_source_reason": selected_reason,
+            "consensus_status": str(consensus["consensus_status"]),
+            "max_observed_issue": str(consensus.get("max_observed_issue")),
+            "source_consensus": {
+                "latest_issue_gap": consensus.get("latest_issue_gap"),
+                "conflicts": consensus.get("conflicts", []),
+            },
+        }
+
+        return selected["records"], str(selected["url"]), attempts, diagnostics
     finally:
         if owns_client and isinstance(active_client, httpx.Client):
             active_client.close()

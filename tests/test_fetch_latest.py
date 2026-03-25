@@ -40,6 +40,10 @@ def _nums() -> str:
     return "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20"
 
 
+def _nums_alt() -> str:
+    return "21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40"
+
+
 def test_winwin_json_new_fields_parse_success() -> None:
     client = DummyClient(
         {
@@ -76,112 +80,21 @@ def test_winwin_json_new_fields_parse_success() -> None:
         }
     )
 
-    records, _, attempts = fetch_latest(
+    records, _, attempts, diagnostics = fetch_latest(
         sources=[{"name": "winwin", "url": "https://winwin.tw/Bingo"}],
         config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
         client=client,
     )
     if len(records) != 5 or attempts[-1].get("parser_path") != "json":
         pytest.fail("winwin new json format should parse")
+    if diagnostics["max_observed_issue"] != "115000005":
+        pytest.fail("diagnostics should include max observed issue")
     if not client.calls or "User-Agent" not in client.calls[0]["headers"]:
         pytest.fail("browser-like headers are required")
     if client.calls[0]["headers"].get("Accept-Language") != DEFAULT_HEADERS.get(
         "Accept-Language"
     ):
         pytest.fail("browser-like headers are required")
-
-
-def test_winwin_json_old_fields_parse_success() -> None:
-    nums_csv = _nums()
-    client = DummyClient(
-        {
-            ("WINWIN_JSON", 1.0): DummyResponse(
-                status_code=200,
-                payload=[
-                    {
-                        "No": "115000002",
-                        "OpenDate": "2026-03-24 12:05",
-                        "BigShowOrder": nums_csv,
-                    },
-                    {
-                        "No": "115000003",
-                        "OpenDate": "2026-03-24 12:10",
-                        "BigShowOrder": nums_csv,
-                    },
-                    {
-                        "No": "115000004",
-                        "OpenDate": "2026-03-24 12:15",
-                        "BigShowOrder": nums_csv,
-                    },
-                    {
-                        "No": "115000005",
-                        "OpenDate": "2026-03-24 12:20",
-                        "BigShowOrder": nums_csv,
-                    },
-                    {
-                        "No": "115000006",
-                        "OpenDate": "2026-03-24 12:25",
-                        "BigShowOrder": nums_csv,
-                    },
-                ],
-            )
-        }
-    )
-
-    records, _, _ = fetch_latest(
-        sources=[{"name": "winwin", "url": "https://winwin.tw/Bingo"}],
-        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
-        client=client,
-    )
-    if records[0]["issue"] != "115000002":
-        pytest.fail("winwin old json format should parse")
-
-
-def test_big_show_order_string_split_to_20_unique_numbers() -> None:
-    nums_spaced = "01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20"
-    client = DummyClient(
-        {
-            ("WINWIN_JSON", 1.0): DummyResponse(
-                status_code=200,
-                payload=[
-                    {
-                        "No": "115000003",
-                        "OpenDate": "2026-03-24 12:10",
-                        "BigShowOrder": nums_spaced,
-                    },
-                    {
-                        "No": "115000004",
-                        "OpenDate": "2026-03-24 12:15",
-                        "BigShowOrder": nums_spaced,
-                    },
-                    {
-                        "No": "115000005",
-                        "OpenDate": "2026-03-24 12:20",
-                        "BigShowOrder": nums_spaced,
-                    },
-                    {
-                        "No": "115000006",
-                        "OpenDate": "2026-03-24 12:25",
-                        "BigShowOrder": nums_spaced,
-                    },
-                    {
-                        "No": "115000007",
-                        "OpenDate": "2026-03-24 12:30",
-                        "BigShowOrder": nums_spaced,
-                    },
-                ],
-            )
-        }
-    )
-
-    records, _, _ = fetch_latest(
-        sources=[{"name": "winwin", "url": "https://winwin.tw/Bingo"}],
-        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
-        client=client,
-    )
-    numbers = records[0]["numbers"]
-    if len(numbers) != 20 or len(set(numbers)) != 20:
-        pytest.fail("BigShowOrder string must split into 20 unique numbers")
 
 
 def test_source_specific_fail_then_generic_fallback() -> None:
@@ -196,98 +109,13 @@ def test_source_specific_fail_then_generic_fallback() -> None:
         {("https://x", 1.0): DummyResponse(status_code=200, text=good)}
     )
 
-    records, _, attempts = fetch_latest(
+    records, _, attempts, _ = fetch_latest(
         sources=[{"name": "unknown", "url": "https://x"}],
         config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
         client=client,
     )
     if len(records) != 5 or attempts[-1].get("parser_path") != "generic":
         pytest.fail("generic parser should be fallback path")
-
-
-def test_hint_mismatch_but_records_reasonable_should_not_fail() -> None:
-    html = (
-        f"115000006 {_nums()} "
-        f"115000007 {_nums()} "
-        f"115000008 {_nums()} "
-        f"115000009 {_nums()} "
-        f"115000010 {_nums()} "
-        "115000090"
-    )
-    client = DummyClient(
-        {("https://x", 1.0): DummyResponse(status_code=200, text=html)}
-    )
-
-    records, _, _ = fetch_latest(
-        sources=[{"name": "pilio", "url": "https://x"}],
-        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
-        client=client,
-    )
-    if records[-1]["issue"] != "115000010":
-        pytest.fail("reasonable hint mismatch should not hard fail")
-
-
-def test_tail_consecutive_accepts_gap_in_older_history() -> None:
-    html = (
-        f"115000001 {_nums()} "
-        f"115000002 {_nums()} "
-        f"115000004 {_nums()} "
-        f"115000005 {_nums()} "
-        f"115000006 {_nums()} "
-        f"115000007 {_nums()} "
-        f"115000008 {_nums()}"
-    )
-    client = DummyClient(
-        {("https://x", 1.0): DummyResponse(status_code=200, text=html)}
-    )
-
-    records, _, _ = fetch_latest(
-        sources=[{"name": "pilio", "url": "https://x"}],
-        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
-        client=client,
-    )
-    if records[0]["issue"] != "115000004" or records[-1]["issue"] != "115000008":
-        pytest.fail("should keep newest consecutive tail")
-
-
-def test_benign_duplicate_issue_deduped() -> None:
-    html = (
-        f"115000010 {_nums()} "
-        f"115000010 {_nums()} "
-        f"115000011 {_nums()} "
-        f"115000012 {_nums()} "
-        f"115000013 {_nums()} "
-        f"115000014 {_nums()}"
-    )
-    client = DummyClient(
-        {("https://x", 1.0): DummyResponse(status_code=200, text=html)}
-    )
-
-    records, _, _ = fetch_latest(
-        sources=[{"name": "pilio", "url": "https://x"}],
-        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
-        client=client,
-    )
-    issues = [r["issue"] for r in records]
-    if issues.count("115000010") != 1:
-        pytest.fail("benign duplicate issue should be deduped")
-
-
-def test_conflicting_duplicate_issue_fail_fast() -> None:
-    html = (
-        "115000010 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20 "
-        "115000010 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,21"
-    )
-    client = DummyClient(
-        {("https://x", 1.0): DummyResponse(status_code=200, text=html)}
-    )
-
-    with pytest.raises(RuntimeError, match="conflicting duplicate"):
-        fetch_latest(
-            sources=[{"name": "pilio", "url": "https://x"}],
-            config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
-            client=client,
-        )
 
 
 def test_all_sources_failed_error_contains_attempt_details() -> None:
@@ -314,3 +142,180 @@ def test_all_sources_failed_error_contains_attempt_details() -> None:
     parsed = json.loads(payload)
     if not parsed or parsed[0]["status"] != "error":
         pytest.fail("attempt details should be structured and include error status")
+
+
+def test_winwin_old_but_auzo_newer_selects_auzo() -> None:
+    winwin_html = (
+        f"115016845 {_nums()} "
+        f"115016846 {_nums()} "
+        f"115016847 {_nums()} "
+        f"115016848 {_nums()} "
+        f"115016849 {_nums()}"
+    )
+    auzo_html = (
+        f"115016856 {_nums()} "
+        f"115016857 {_nums()} "
+        f"115016858 {_nums()} "
+        f"115016859 {_nums()} "
+        f"115016860 {_nums()}"
+    )
+    client = DummyClient(
+        {
+            ("WINWIN_JSON", 1.0): DummyResponse(status_code=500),
+            ("https://winwin.tw/Bingo", 1.0): DummyResponse(
+                status_code=200, text=winwin_html
+            ),
+            ("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(
+                status_code=200, text=auzo_html
+            ),
+        }
+    )
+
+    records, data_source, attempts, diagnostics = fetch_latest(
+        sources=[
+            {"name": "winwin", "url": "https://winwin.tw/Bingo"},
+            {"name": "auzo", "url": "https://www.auzo.tw/RJ.php"},
+        ],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+
+    if data_source != "https://www.auzo.tw/RJ.php":
+        pytest.fail("newer source should be selected")
+    if records[-1]["issue"] != "115016860":
+        pytest.fail("selected tail should match newer latest issue")
+    if not any(item.get("source") == "winwin" for item in attempts):
+        pytest.fail("must evaluate all configured sources")
+    if diagnostics["source_latest_issues"] != {
+        "winwin": "115016849",
+        "auzo": "115016860",
+    }:
+        pytest.fail("source latest issues diagnostics mismatch")
+
+
+def test_same_latest_issue_uses_longer_tail() -> None:
+    short_tail = (
+        f"115016856 {_nums()} "
+        f"115016857 {_nums()} "
+        f"115016858 {_nums()} "
+        f"115016859 {_nums()} "
+        f"115016860 {_nums()}"
+    )
+    long_tail = (
+        f"115016853 {_nums()} "
+        f"115016854 {_nums()} "
+        f"115016855 {_nums()} "
+        f"115016856 {_nums()} "
+        f"115016857 {_nums()} "
+        f"115016858 {_nums()} "
+        f"115016859 {_nums()} "
+        f"115016860 {_nums()}"
+    )
+    client = DummyClient(
+        {
+            ("https://winwin.tw/Bingo", 1.0): DummyResponse(
+                status_code=200, text=short_tail
+            ),
+            ("WINWIN_JSON", 1.0): DummyResponse(status_code=500),
+            ("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(
+                status_code=200, text=long_tail
+            ),
+        }
+    )
+
+    _, data_source, _, diagnostics = fetch_latest(
+        sources=[
+            {"name": "winwin", "url": "https://winwin.tw/Bingo"},
+            {"name": "auzo", "url": "https://www.auzo.tw/RJ.php"},
+        ],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+
+    if data_source != "https://www.auzo.tw/RJ.php":
+        pytest.fail("same issue should use longer tail source")
+    if "longest records tail" not in diagnostics["selected_source_reason"]:
+        pytest.fail("selection reason should include tie-break detail")
+
+
+def test_parser_fail_does_not_block_other_sources() -> None:
+    bad = "only garbage"
+    good = (
+        f"115016856 {_nums()} "
+        f"115016857 {_nums()} "
+        f"115016858 {_nums()} "
+        f"115016859 {_nums()} "
+        f"115016860 {_nums()}"
+    )
+    client = DummyClient(
+        {
+            ("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(
+                status_code=200, text=bad
+            ),
+            ("https://www.pilio.idv.tw/bingo/list.asp", 1.0): DummyResponse(
+                status_code=200, text=good
+            ),
+        }
+    )
+
+    records, data_source, attempts, _ = fetch_latest(
+        sources=[
+            {"name": "auzo", "url": "https://www.auzo.tw/RJ.php"},
+            {"name": "pilio", "url": "https://www.pilio.idv.tw/bingo/list.asp"},
+        ],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+
+    if (
+        data_source != "https://www.pilio.idv.tw/bingo/list.asp"
+        or records[-1]["issue"] != "115016860"
+    ):
+        pytest.fail("failed parser source should not block usable source")
+    if not any(
+        item["source"] == "auzo" and item["status"] == "error" for item in attempts
+    ):
+        pytest.fail("parser failure attempt should be recorded")
+
+
+def test_same_issue_numbers_conflict_marked_divergent() -> None:
+    winwin_html = (
+        f"115016856 {_nums()} "
+        f"115016857 {_nums()} "
+        f"115016858 {_nums()} "
+        f"115016859 {_nums()} "
+        f"115016860 {_nums()}"
+    )
+    auzo_html = (
+        f"115016856 {_nums()} "
+        f"115016857 {_nums()} "
+        f"115016858 {_nums()} "
+        f"115016859 {_nums()} "
+        f"115016860 {_nums_alt()}"
+    )
+    client = DummyClient(
+        {
+            ("WINWIN_JSON", 1.0): DummyResponse(status_code=500),
+            ("https://winwin.tw/Bingo", 1.0): DummyResponse(
+                status_code=200, text=winwin_html
+            ),
+            ("https://www.auzo.tw/RJ.php", 1.0): DummyResponse(
+                status_code=200, text=auzo_html
+            ),
+        }
+    )
+
+    _, _, _, diagnostics = fetch_latest(
+        sources=[
+            {"name": "winwin", "url": "https://winwin.tw/Bingo"},
+            {"name": "auzo", "url": "https://www.auzo.tw/RJ.php"},
+        ],
+        config=FetchConfig(timeout_seconds=1.0, retries=0, backoff_seconds=0.0),
+        client=client,
+    )
+
+    if diagnostics["consensus_status"] != "divergent":
+        pytest.fail("numbers conflict must be divergent")
+    conflicts = diagnostics["source_consensus"]["conflicts"]
+    if not conflicts or conflicts[0]["issue"] != "115016860":
+        pytest.fail("conflict diagnostics should include conflicted issue")

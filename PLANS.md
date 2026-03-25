@@ -1,36 +1,37 @@
 # Plan
 
 ## goal
-Upgrade Transformer training UX and reliability with Chinese progress output, percentage updates, max-issues time-ordered slicing, and early-stop patience=3, while keeping artifact/output contracts stable; also optimize inference runtime path with safe caching and Chinese per-stage latency logs to meet <=10s SLA target without changing ranking semantics.
+Refactor `/predict` latest fetch policy from first-success short-circuit to multi-source max-latest selection, add `auzo` source/config, preserve existing ranking contract fields, and expose source-level observability/consensus diagnostics without breaking existing endpoints.
 
 ## touched files
 - PLANS.md
-- src/train_transformer.py
-- src/build_rank_windows.py
+- configs/predict.yaml
+- src/fetch_latest.py
 - src/inference.py
-- tests/test_train_transformer.py
+- tests/test_fetch_latest.py
 - tests/test_inference.py
+- ARCHITECTURE.md
 
 ## invariants
-- Keep Transformer architecture/output contracts unchanged.
-- Keep `model.ckpt` and `transformer_metadata.json` compatibility.
-- Keep app -> inference -> output schema unchanged (`scores/top20/top3/score_type`).
-- No retraining during inference/runtime history.
-- Deterministic inference behavior preserved.
+- Keep `GET /predict` route shape and availability unchanged.
+- Preserve ranking output semantics (`score_type=ranking_score`, `scores/top20/top3`, `diversity_relaxed`, `drift_metadata`, `stale_issues`, `is_stale`).
+- Keep fail-fast behavior for artifact/schema/tensor/version mismatches.
+- Keep runtime_history no-retrain behavior.
+- Use configured sources only (no hard-coded runtime source list).
+- Deterministic tie-breaking for source selection.
 
 ## risks
-- Additional logging may increase console noise.
-- Caching must respect artifact updates; stale cache risk mitigated via mtime keys.
-- PyTorch-heavy tests are slow in this environment.
+- Source divergence logic could accidentally reject usable data if thresholds are too strict.
+- New response fields may require updates in tests that stub inference output.
+- Auzo parser may be brittle if source HTML format changes.
 
 ## validation steps
-- python -m pip install -r requirements-dev.txt
+- bash scripts/verify_mainline.sh
 - flake8 agent.py
 - flake8 src tests
 - python -m py_compile $(git ls-files '*.py')
 - pytest -q
-- python -m src.train_transformer --input <csv> --output <dir> --max-issues 3000
-- python -m src.predict --runtime-dir <dir>
+- pytest -q tests/test_fetch_latest.py tests/test_inference.py
 
 ## rollback plan
-Revert this commit to restore pre-upgrade train/inference behavior.
+Revert the commit to restore previous first-success fetch strategy and prior `/predict` response shape.

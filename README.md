@@ -21,6 +21,8 @@
 - `latest_known_issue`, `target_issue`
 - `model_version`, `feature_version`
 - `data_source`, `fetch_attempts`
+- `source_latest_issues`, `selected_source_reason`, `source_records_count`
+- `consensus_status`, `max_observed_issue`
 - `score_type: ranking_score`
 - `scores`, `top20`, `top3`
 - `diversity_relaxed`

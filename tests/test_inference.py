@@ -205,3 +205,43 @@ def test_predict_outputs_chinese_timing_progress_and_sla(
         pytest.fail("predict total latency should be <= 10 seconds in this test")
     if first["top20"] != second["top20"] or first["top3"] != second["top3"]:
         pytest.fail("predict outputs changed after optimization path")
+
+
+def test_predict_includes_source_diagnostics_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    input_path, runtime_dir = _prepare_runtime(tmp_path)
+    config_path = _write_config(tmp_path, input_path, runtime_dir)
+
+    monkeypatch.setattr("src.inference.CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "src.inference.fetch_latest",
+        lambda sources, config: (
+            [{"issue": "1065", "draw_time": "x", "numbers": list(range(1, 21))}],
+            "auzo",
+            [{"source": "winwin", "status": "ok"}, {"source": "auzo", "status": "ok"}],
+            {
+                "source_latest_issues": {"winwin": "1064", "auzo": "1065"},
+                "selected_source_reason": "selected highest latest_issue",
+                "source_records_count": {"winwin": 5, "auzo": 8},
+                "consensus_status": "partial",
+                "max_observed_issue": "1065",
+                "source_consensus": {"latest_issue_gap": 1, "conflicts": []},
+            },
+        ),
+    )
+
+    result = predict(runtime_dir)
+    if result["latest_known_issue"] != "1065":
+        pytest.fail("latest_known_issue should match selected latest source issue")
+    if result["source_latest_issues"] != {"winwin": "1064", "auzo": "1065"}:
+        pytest.fail("source_latest_issues should be present in response")
+    if result["selected_source_reason"] != "selected highest latest_issue":
+        pytest.fail("selected_source_reason should be present in response")
+    if result["source_records_count"] != {"winwin": 5, "auzo": 8}:
+        pytest.fail("source_records_count should be present in response")
+    if (
+        result["consensus_status"] != "partial"
+        or result["max_observed_issue"] != "1065"
+    ):
+        pytest.fail("consensus diagnostics should be present in response")
