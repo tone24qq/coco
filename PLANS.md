@@ -1,44 +1,32 @@
 # Plan
 
 ## goal
-Make model-ranking outputs explicit and primary (`raw_*` + `final_*`), keep anti-repeat style rules disabled by default, and expose optional rerank impact observability without changing core inference sequence modeling.
+Allow `merge_history` to accept non-consecutive issue sequences while preserving strict ordering, duplicate detection, and overlap conflict fail-fast checks.
 
 ## touched files
 - PLANS.md
-- src/fetch_latest.py
-- src/inference.py
-- tests/test_fetch_latest.py
-- tests/test_inference.py
+- src/history_store.py
+- tests/test_history_store.py
 - README.md
 - ARCHITECTURE.md
 
 ## invariants
-- Keep `GET /predict` route shape and availability unchanged.
-- Preserve ranking output semantics (`score_type=ranking_score`, `scores/top20/top3`, `diversity_relaxed`, `drift_metadata`, `stale_issues`, `is_stale`).
-- Keep fail-fast behavior for artifact/schema/tensor/version mismatches.
-- Keep runtime_history no-retrain behavior.
-- Use configured sources only (no hard-coded runtime source list).
-- Deterministic tie-breaking for source selection.
-- Distinguish `full_records` vs `latest_tail_records` without name ambiguity.
-- Fail fast when normalized latest records violate issue-wise row invariants.
-- Final ranking must default to raw model ordering with optional rerank clearly flagged.
+- Keep canonical history schema checks unchanged.
+- Keep issue sequence strictly increasing and duplicate-free.
+- Keep fail-fast behavior for overlapping issue conflicts.
+- Keep deterministic merge ordering (sorted by issue as integer).
+- Keep runtime artifacts and prediction output contract unchanged.
 
 ## risks
-- Live source structure drift can reduce parsed full-day issue counts.
-- Existing tests may assume `source_records_count` semantics; changing to full-count may require expectation updates.
-- PyTorch import limitations in this environment can block full `pytest -q`.
-- Additional response fields may require downstream clients to adapt if they validate strict schemas.
+- Downstream readers may assume issue continuity and interpret gap-based windows as issue distance.
+- Existing tests that asserted contiguous issues can fail until updated.
+- Full test suite may contain unrelated legacy failures in this environment.
 
 ## validation steps
-- bash scripts/verify_mainline.sh
-- flake8 agent.py
 - flake8 src tests
 - python -m py_compile $(git ls-files '*.py')
+- pytest -q tests/test_history_store.py
 - pytest -q
-- pytest -q tests/test_fetch_latest.py
-- pytest -q tests/test_inference.py
-- live fetch integration script for selected source + issue first/last/count output
-- live predict-shape script printing prev_draw/raw_top20/final_top20 overlap diagnostics
 
 ## rollback plan
-Revert this commit to restore previous multi-source behavior (tail-returning semantics).
+Revert this commit to restore the previous strict-consecutive merge behavior.

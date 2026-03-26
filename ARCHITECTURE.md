@@ -27,6 +27,11 @@
 7. torch deterministic inference
 8. top20 + top3 diversity rerank (strict then relaxation)
 
+## History merge invariants
+- merged history 允許 issue 缺期（non-consecutive），但必須 strict increasing 且無 duplicate。
+- local/latest 重疊 issue 若欄位不一致，立即 fail-fast（conflict）。
+- gap / rolling / retrieval 現行以 observed rows 為計算單位，而非連續 issue 真實距離。
+
 ## Storage / artifact
 - Parquet-first, CSV compatibility kept.
 - runtime_history only builds/syncs artifacts; never retrains.

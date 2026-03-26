@@ -40,8 +40,8 @@ def test_parquet_preferred(tmp_path: Path) -> None:
         pytest.fail("parquet preference failed")
 
 
-def test_merge_requires_consecutive_issues() -> None:
+def test_merge_allows_missing_issues() -> None:
     local = pd.DataFrame([_row("1001", 1), _row("1003", 3)])
     latest = pd.DataFrame([_row("1004", 4)])
-    with pytest.raises(ValueError, match="issues are not consecutive"):
-        merge_history(local, latest)
+    merged = merge_history(local, latest)
+    assert merged["issue"].tolist() == ["1001", "1003", "1004"]
