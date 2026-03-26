@@ -51,15 +51,6 @@ def _validate_issue_sequence(df: pd.DataFrame, label: str) -> None:
         raise ValueError(f"{label}: issue not monotonic increasing")
 
 
-def _validate_consecutive_issues(df: pd.DataFrame, label: str) -> None:
-    issues = [int(x) for x in df["issue"].tolist()]
-    if len(issues) < 2:
-        return
-    for left, right in zip(issues, issues[1:]):
-        if right - left != 1:
-            raise ValueError(f"{label}: issues are not consecutive")
-
-
 def load_local_history(local_history_path: Path) -> pd.DataFrame:
     resolved = _resolve_history_path(local_history_path)
     if not resolved.exists():
@@ -129,6 +120,5 @@ def merge_history(local_df: pd.DataFrame, latest_df: pd.DataFrame) -> pd.DataFra
     )
     merged = merged.reset_index(drop=True)
     _validate_issue_sequence(merged, "merged_history")
-    _validate_consecutive_issues(merged, "merged_history")
 
     return merged

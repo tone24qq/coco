@@ -17,6 +17,11 @@
 - model: `model.ckpt`, `transformer_metadata.json`
 - contract metadata: `metadata.json`
 
+## History merge behavior
+- `merge_history` 允許 issue 缺期（非連號）資料合併，只要求 issue 嚴格遞增且不可重複。
+- 若 local/latest 在同 issue 有任一欄位不一致，維持 fail-fast（issue conflict）。
+- 目前 gap / rolling / retrieval 視窗以 observed rows 計算，不代表真實連續 issue 距離。
+
 ## Predict response
 - `latest_known_issue`, `target_issue`
 - `model_version`, `feature_version`
