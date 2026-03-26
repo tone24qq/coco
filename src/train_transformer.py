@@ -68,6 +68,41 @@ def _pairwise_ranking_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.
     return torch.stack(losses).mean()
 
 
+def _apply_label_smoothing(labels: torch.Tensor, epsilon: float) -> torch.Tensor:
+    if epsilon <= 0:
+        return labels
+    return labels * (1.0 - epsilon) + 0.5 * epsilon
+
+
+def _cosine_overlap_penalty(
+    logits: torch.Tensor, x_batch: torch.Tensor
+) -> torch.Tensor:
+    gap_feature_index = 1
+    prev_hit = (x_batch[:, :, gap_feature_index] <= 1.0).float()
+    if prev_hit.sum() <= 0:
+        return torch.tensor(0.0, dtype=logits.dtype, device=logits.device)
+    pred = torch.sigmoid(logits)
+    return F.cosine_similarity(pred, prev_hit, dim=1).mean()
+
+
+def _apply_last_issue_mask(
+    x_batch: torch.Tensor, feature_names: list[str], mask_prob: float
+) -> torch.Tensor:
+    if mask_prob <= 0:
+        return x_batch
+    cols = [
+        idx
+        for idx, name in enumerate(feature_names)
+        if name.startswith("prev_") or name.startswith("retrieval_")
+    ]
+    if not cols:
+        return x_batch
+    masked = x_batch.clone()
+    if torch.rand(1).item() < mask_prob:
+        masked[:, :, cols] = 0.0
+    return masked
+
+
 def _topk_metrics(logits: np.ndarray, labels: np.ndarray, k: int) -> float:
     hits = []
     for sample_logit, sample_label in zip(logits, labels):
@@ -122,7 +157,10 @@ def train_model(
     epochs: int,
     batch_size: int,
     alpha: float,
-    stale_threshold: int,
+    cosine_weight: float = 0.2,
+    label_smoothing: float = 0.05,
+    last_issue_mask_prob: float = 0.3,
+    stale_threshold: int = 20,
     max_issues: Optional[int] = None,
 ) -> None:
     _set_seed(seed)
@@ -185,7 +223,7 @@ def train_model(
         TensorDataset(x_valid, y_valid), batch_size=batch_size, shuffle=False
     )
 
-    config = TransformerConfig(feature_dim=x_all.shape[-1])
+    config = TransformerConfig(feature_dim=x_all.shape[-1], dropout=0.2)
     model = SmallTransformerRanker(config)
 
     optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -205,10 +243,15 @@ def train_model(
         model.train()
         for x_batch, y_batch in train_loader:
             optimizer.zero_grad()
-            logits = model(x_batch)
-            bce_loss = bce(logits, y_batch)
+            masked_x = _apply_last_issue_mask(
+                x_batch, feature_names=FEATURE_NAMES, mask_prob=last_issue_mask_prob
+            )
+            logits = model(masked_x)
+            smoothed_labels = _apply_label_smoothing(y_batch, epsilon=label_smoothing)
+            bce_loss = bce(logits, smoothed_labels)
             rank_loss = _pairwise_ranking_loss(logits, y_batch)
-            loss = bce_loss + alpha * rank_loss
+            cosine_loss = _cosine_overlap_penalty(logits, masked_x)
+            loss = bce_loss + alpha * rank_loss + cosine_weight * cosine_loss
             loss.backward()
             optimizer.step()
 
@@ -271,6 +314,9 @@ def train_model(
         "valid_samples": int(len(x_valid)),
         "trained_up_to_issue": trained_up_to_issue,
         "stale_threshold": stale_threshold,
+        "label_smoothing": label_smoothing,
+        "cosine_weight": cosine_weight,
+        "last_issue_mask_prob": last_issue_mask_prob,
         "baseline_metrics": metrics,
         "source_issue_count": source_count,
         "used_issue_count": used_count,
@@ -306,6 +352,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--alpha", type=float, default=0.3)
+    parser.add_argument("--cosine-weight", type=float, default=0.2)
+    parser.add_argument("--label-smoothing", type=float, default=0.05)
+    parser.add_argument("--last-issue-mask-prob", type=float, default=0.3)
     parser.add_argument("--stale-threshold", type=int, default=20)
     parser.add_argument("--max-issues", type=int, default=None)
     return parser.parse_args()
@@ -322,6 +371,9 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         alpha=args.alpha,
+        cosine_weight=args.cosine_weight,
+        label_smoothing=args.label_smoothing,
+        last_issue_mask_prob=args.last_issue_mask_prob,
         stale_threshold=args.stale_threshold,
         max_issues=args.max_issues,
     )

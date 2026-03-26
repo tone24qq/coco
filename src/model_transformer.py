@@ -19,6 +19,7 @@ class TransformerConfig:
     dropout: float = 0.1
     feature_dim: int = 24
     max_candidates: int = 80
+    gap_buckets: int = 64
 
 
 class SmallTransformerRanker(nn.Module):
@@ -34,6 +35,7 @@ class SmallTransformerRanker(nn.Module):
 
         self.input_proj = nn.Linear(config.feature_dim, config.d_model)
         self.number_embedding = nn.Embedding(config.max_candidates + 1, config.d_model)
+        self.gap_embedding = nn.Embedding(config.gap_buckets + 1, config.d_model)
         self.input_norm = nn.LayerNorm(config.d_model)
         self.input_dropout = nn.Dropout(config.dropout)
 
@@ -75,7 +77,17 @@ class SmallTransformerRanker(nn.Module):
         number_ids = torch.arange(1, self.config.max_candidates + 1, device=x.device)
         number_ids = number_ids.unsqueeze(0).expand(batch_size, -1)
 
-        hidden = self.input_proj(x) + self.number_embedding(number_ids)
+        gap_feature_index = 1
+        gap_bucket = (
+            torch.round(x[:, :, gap_feature_index])
+            .clamp(min=0, max=self.config.gap_buckets)
+            .long()
+        )
+        hidden = (
+            self.input_proj(x)
+            + self.number_embedding(number_ids)
+            + self.gap_embedding(gap_bucket)
+        )
         hidden = self.input_norm(hidden)
         hidden = self.input_dropout(hidden)
 
