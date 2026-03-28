@@ -168,6 +168,17 @@ def _select_top3(
     return sorted(relaxed, key=lambda item: ranks[int(item["number"])]), True
 
 
+def _extract_prev_draw_numbers(merged: Any) -> List[int]:
+    if len(merged) < 2:
+        return []
+    prev = merged.iloc[-2]
+    return [int(prev[f"n{i}"]) for i in range(1, 21)]
+
+
+def _overlap_count(a: Sequence[int], b: Sequence[int]) -> int:
+    return len(set(a) & set(b))
+
+
 def _to_issue(value: Any) -> int:
     return int(str(value))
 
@@ -188,6 +199,37 @@ def _validate_expected_output_schema(runtime_metadata: Dict[str, Any]) -> None:
     }
     if not required.issubset(set(str(item) for item in expected)):
         raise ValueError("Runtime metadata mismatch: expected_output_schema")
+
+
+def _validate_latest_issue_rows(
+    latest_df: Any, fetch_diagnostics: Dict[str, object]
+) -> None:
+    if latest_df.empty:
+        raise ValueError("Latest records must contain issue-wise rows")
+
+    issues = [int(x) for x in latest_df["issue"].tolist()]
+    if len(issues) != len(set(issues)):
+        raise ValueError("Latest records contain duplicate issue values")
+    if any(left >= right for left, right in zip(issues, issues[1:])):
+        raise ValueError("Latest records issue sequence must be strictly increasing")
+
+    selected_full_count_raw = fetch_diagnostics.get(
+        "selected_source_full_records_count"
+    )
+    if selected_full_count_raw is None:
+        return
+
+    selected_full_count = int(selected_full_count_raw)
+    if selected_full_count > 1 and len(issues) == 1:
+        raise ValueError(
+            "Latest records must be issue-wise rows, not aggregated bag data"
+        )
+    if len(issues) != selected_full_count:
+        raise ValueError(
+            "Latest records row count mismatch: "
+            f"normalized_rows={len(issues)} selected_source_full_records_count="
+            f"{selected_full_count}"
+        )
 
 
 def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
@@ -220,7 +262,7 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
     _set_deterministic(seed)
 
     stage_start = time.perf_counter()
-    latest_records, data_source, fetch_attempts = fetch_latest(
+    fetch_result = fetch_latest(
         sources=sources,
         config=FetchConfig(
             timeout_seconds=float(fetch_cfg.get("timeout_seconds", 8.0)),
@@ -228,10 +270,16 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
             backoff_seconds=float(fetch_cfg.get("backoff_seconds", 0.5)),
         ),
     )
+    if len(fetch_result) == 3:
+        latest_records, data_source, fetch_attempts = fetch_result
+        fetch_diagnostics: Dict[str, object] = {}
+    else:
+        latest_records, data_source, fetch_attempts, fetch_diagnostics = fetch_result
     _progress(30, "抓取最新資料完成", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
     latest_df = normalize_latest_records(latest_records)
+    _validate_latest_issue_rows(latest_df, fetch_diagnostics)
     _progress(38, "最新資料標準化完成", time.perf_counter() - stage_start)
 
     stage_start = time.perf_counter()
@@ -318,26 +366,86 @@ def predict(runtime_dir: Path | None = None) -> Dict[str, object]:
         {"number": int(n), "score": float(s)}
         for n, s in zip(window.number_ids.tolist(), score_tensor.tolist())
     ]
-    top20 = _rank_top20(scores)
-    top3, diversity_relaxed = _select_top3(top20)
+    raw_scores = scores
+    raw_top20 = _rank_top20(raw_scores)
+    raw_top3 = list(raw_top20[:3])
+
+    rerank_top3_enabled = bool(model_cfg.get("enable_top3_rerank", False))
+    reranked_top3, diversity_relaxed = _select_top3(raw_top20)
+    if rerank_top3_enabled:
+        final_top3 = reranked_top3
+        rerank_applied = reranked_top3 != raw_top3
+        rerank_reason = "top3_diversity_rerank_enabled"
+    else:
+        final_top3 = raw_top3
+        rerank_applied = False
+        rerank_reason = "disabled"
+        diversity_relaxed = False
+
+    final_top20 = list(raw_top20)
     _progress(94, "Top20 / Top3 重排完成", time.perf_counter() - stage_start)
 
     trained_issue = _to_issue(transformer_meta["trained_up_to_issue"])
     stale_issues = max(0, _to_issue(window.issue) - trained_issue)
     stale_threshold = int(runtime_metadata.get("stale_threshold", 20))
 
+    prev_draw_numbers = _extract_prev_draw_numbers(merged)
+    raw_top20_numbers = [int(item["number"]) for item in raw_top20]
+    final_top20_numbers = [int(item["number"]) for item in final_top20]
+    latest_issue_values = [int(x) for x in latest_df["issue"].tolist()]
+
     result = {
         "latest_known_issue": window.issue,
         "target_issue": window.target_issue,
+        "first_issue_used": str(latest_issue_values[0]),
+        "last_issue_used": str(latest_issue_values[-1]),
+        "issues_strictly_increasing": all(
+            left < right
+            for left, right in zip(latest_issue_values, latest_issue_values[1:])
+        ),
         "model_version": runtime_metadata["model_version"],
         "feature_version": runtime_metadata["feature_version"],
         "data_source": data_source,
         "fetch_attempts": fetch_attempts,
+        "source_latest_issues": fetch_diagnostics.get("source_latest_issues", {}),
+        "selected_source_reason": fetch_diagnostics.get("selected_source_reason", ""),
+        "source_records_count": fetch_diagnostics.get("source_records_count", {}),
+        "source_tail_count": fetch_diagnostics.get("source_tail_count", {}),
+        "consensus_status": fetch_diagnostics.get("consensus_status", "partial"),
+        "max_observed_issue": fetch_diagnostics.get(
+            "max_observed_issue", str(window.issue)
+        ),
+        "selected_source_full_records_count": fetch_diagnostics.get(
+            "selected_source_full_records_count", len(latest_records)
+        ),
+        "selected_source_tail_count": fetch_diagnostics.get(
+            "selected_source_tail_count", len(latest_records)
+        ),
+        "source_consensus": fetch_diagnostics.get("source_consensus", {}),
         "score_type": "ranking_score",
-        "scores": scores,
-        "top20": top20,
-        "top3": top3,
+        "scores": raw_scores,
+        "raw_scores": raw_scores,
+        "raw_top20": raw_top20,
+        "raw_top3": raw_top3,
+        "reranked_top3": reranked_top3,
+        "rerank_applied": rerank_applied,
+        "rerank_reason": rerank_reason,
+        "final_top20": final_top20,
+        "final_top3": final_top3,
+        "top20": final_top20,
+        "top3": final_top3,
         "diversity_relaxed": diversity_relaxed,
+        "ranking_diagnostics": {
+            "model_raw_top20": raw_top20_numbers,
+            "final_top20": final_top20_numbers,
+            "prev_draw_numbers": prev_draw_numbers,
+            "raw_top20_overlap_count": _overlap_count(
+                raw_top20_numbers, prev_draw_numbers
+            ),
+            "final_top20_overlap_count": _overlap_count(
+                final_top20_numbers, prev_draw_numbers
+            ),
+        },
         "drift_metadata": {
             "trained_up_to_issue": transformer_meta["trained_up_to_issue"],
             "baseline_metrics": transformer_meta["baseline_metrics"],

@@ -5,6 +5,8 @@ auto_fetch_sources:
     url: https://www.pilio.idv.tw/bingo/list.asp
   - name: taiwanlottery
     url: https://www.taiwanlottery.com.tw/lotto/bingobingo/history.aspx
+  - name: auzo
+    url: https://www.auzo.tw/RJ.php
 fetch:
   timeout_seconds: 8.0
   retries: 2

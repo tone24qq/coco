@@ -37,3 +37,13 @@ def test_encoder_weights_in_optimizer() -> None:
     encoder_param_ids = {id(p) for p in model.encoder.parameters()}
     if not encoder_param_ids.issubset(opt_params):
         pytest.fail("encoder weights are missing from optimizer")
+
+
+def test_gap_embedding_affects_scores() -> None:
+    model = SmallTransformerRanker(TransformerConfig(feature_dim=24))
+    x = torch.zeros(1, 80, 24)
+    y1 = model.predict_scores(x)
+    x[:, :, 1] = 10.0
+    y2 = model.predict_scores(x)
+    if torch.allclose(y1, y2):
+        pytest.fail("gap embedding should affect output scores")
