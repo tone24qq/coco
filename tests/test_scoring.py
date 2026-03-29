@@ -191,6 +191,23 @@ def test_regime_detailed_metrics_only_in_debug_mode() -> None:
     assert "regime_metrics_raw" in debug["metadata"]
 
 
+def test_lightweight_detector_path_when_debug_false() -> None:
+    draws = _baseline_draws()
+    light = detect_regime(
+        draws,
+        config=AppConfig(),
+        include_debug_metrics=False,
+    )
+    heavy = detect_regime(
+        draws,
+        config=AppConfig(),
+        include_debug_metrics=True,
+    )
+    assert light["regime_metrics_zscore"] == {}
+    assert light["regime_metrics_percentile"] == {}
+    assert heavy["regime_metrics_zscore"] != {}
+
+
 def test_fail_fast_when_draw_count_not_enough() -> None:
     try:
         predict_top3(

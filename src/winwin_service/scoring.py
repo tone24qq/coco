@@ -425,9 +425,94 @@ def _normal_oscillation_flags(
     return flags
 
 
+def _quick_detector_bands(metrics_raw: dict[str, float]) -> dict[str, str]:
+    bands: dict[str, str] = {}
+
+    def _set(metric: str, warning: bool, anomaly: bool) -> None:
+        if anomaly:
+            bands[metric] = "anomaly"
+        elif warning:
+            bands[metric] = "warning"
+        else:
+            bands[metric] = "normal"
+
+    _set(
+        "overlap_prev",
+        warning=metrics_raw["overlap_prev"] >= 8,
+        anomaly=metrics_raw["overlap_prev"] >= 9,
+    )
+    _set(
+        "overlap_prev_low",
+        warning=metrics_raw["overlap_prev"] <= 2,
+        anomaly=metrics_raw["overlap_prev"] <= 1,
+    )
+    _set(
+        "max_consecutive_run",
+        warning=metrics_raw["max_consecutive_run"] >= 5,
+        anomaly=metrics_raw["max_consecutive_run"] >= 6,
+    )
+    _set(
+        "hot_number_peak",
+        warning=metrics_raw["hot_number_peak"] >= 24,
+        anomaly=metrics_raw["hot_number_peak"] >= 25,
+    )
+    _set(
+        "cold_number_floor",
+        warning=metrics_raw["cold_number_floor"] <= 4,
+        anomaly=metrics_raw["cold_number_floor"] <= 3,
+    )
+    _set(
+        "skip_concentration",
+        warning=metrics_raw["skip_concentration"] >= 0.16,
+        anomaly=metrics_raw["skip_concentration"] >= 0.20,
+    )
+    _set(
+        "small_large_drift",
+        warning=metrics_raw["small_large_drift"] >= 0.18,
+        anomaly=metrics_raw["small_large_drift"] >= 0.22,
+    )
+    _set(
+        "pair_concentration",
+        warning=metrics_raw["pair_concentration"] >= 0.75,
+        anomaly=metrics_raw["pair_concentration"] >= 0.82,
+    )
+    _set(
+        "tens_zone_concentration",
+        warning=metrics_raw["tens_zone_concentration"] >= 0.30,
+        anomaly=metrics_raw["tens_zone_concentration"] >= 0.35,
+    )
+    _set(
+        "tail_entropy_low",
+        warning=metrics_raw["tail_entropy"] <= 2.85,
+        anomaly=metrics_raw["tail_entropy"] <= 2.60,
+    )
+    _set(
+        "tail_entropy_high",
+        warning=metrics_raw["tail_entropy"] >= 3.15,
+        anomaly=metrics_raw["tail_entropy"] >= 3.25,
+    )
+    _set(
+        "tens_dispersion",
+        warning=metrics_raw["tens_unique_zones"] >= 8,
+        anomaly=metrics_raw["tens_unique_zones"] >= 9,
+    )
+    _set(
+        "odd_even_drift",
+        warning=metrics_raw["odd_even_drift"] >= 0.20,
+        anomaly=metrics_raw["odd_even_drift"] >= 0.25,
+    )
+    _set(
+        "streak_concentration",
+        warning=metrics_raw["streak_concentration"] >= 0.10,
+        anomaly=metrics_raw["streak_concentration"] >= 0.14,
+    )
+    return bands
+
+
 def detect_regime(
     recent_draws: list[list[int]],
     config: AppConfig,
+    include_debug_metrics: bool = True,
 ) -> dict[str, object]:
     detector_cfg = config.regime
     draws = recent_draws[:]
@@ -452,55 +537,72 @@ def detect_regime(
             "detector_band": "normal_band",
         }
 
-    metric_history: defaultdict[str, list[float]] = defaultdict(list)
-    for idx in range(detector_cfg.min_history - 1, len(draws)):
-        snapshot = _compute_metric_snapshot(draws[: idx + 1])
-        metric_history["pair_concentration"].append(
-            snapshot["pair_concentration"]
-        )
-        metric_history["overlap_prev"].append(snapshot["overlap_prev"])
-        metric_history["skip_concentration"].append(
-            snapshot["skip_concentration"]
-        )
-        metric_history["streak_concentration"].append(
-            snapshot["streak_concentration"]
-        )
-        metric_history["odd_even_drift"].append(snapshot["odd_even_drift"])
-        metric_history["small_large_drift"].append(
-            snapshot["small_large_drift"]
-        )
-        metric_history["tens_zone_concentration"].append(
-            snapshot["tens_zone_concentration"]
-        )
-        metric_history["tens_unique_zones"].append(
-            snapshot["tens_unique_zones"]
-        )
-        metric_history["tail_entropy"].append(snapshot["tail_entropy"])
-        metric_history["hot_number_peak"].append(snapshot["hot_number_peak"])
-        metric_history["cold_number_floor"].append(
-            snapshot["cold_number_floor"]
-        )
-        metric_history["max_consecutive_run"].append(
-            snapshot["max_consecutive_run"]
-        )
-        metric_history["tail_entropy_low"].append(-snapshot["tail_entropy"])
-        metric_history["tail_entropy_high"].append(snapshot["tail_entropy"])
-        metric_history["overlap_prev_low"].append(-snapshot["overlap_prev"])
-        metric_history["tens_dispersion"].append(snapshot["tens_unique_zones"])
-
     now_raw = _compute_metric_snapshot(draws)
     prev_raw = _compute_metric_snapshot(draws[:-1])
+    if include_debug_metrics:
+        metric_history: defaultdict[str, list[float]] = defaultdict(list)
+        for idx in range(detector_cfg.min_history - 1, len(draws)):
+            snapshot = _compute_metric_snapshot(draws[: idx + 1])
+            metric_history["pair_concentration"].append(
+                snapshot["pair_concentration"]
+            )
+            metric_history["overlap_prev"].append(snapshot["overlap_prev"])
+            metric_history["skip_concentration"].append(
+                snapshot["skip_concentration"]
+            )
+            metric_history["streak_concentration"].append(
+                snapshot["streak_concentration"]
+            )
+            metric_history["odd_even_drift"].append(
+                snapshot["odd_even_drift"]
+            )
+            metric_history["small_large_drift"].append(
+                snapshot["small_large_drift"]
+            )
+            metric_history["tens_zone_concentration"].append(
+                snapshot["tens_zone_concentration"]
+            )
+            metric_history["tens_unique_zones"].append(
+                snapshot["tens_unique_zones"]
+            )
+            metric_history["tail_entropy"].append(snapshot["tail_entropy"])
+            metric_history["hot_number_peak"].append(
+                snapshot["hot_number_peak"]
+            )
+            metric_history["cold_number_floor"].append(
+                snapshot["cold_number_floor"]
+            )
+            metric_history["max_consecutive_run"].append(
+                snapshot["max_consecutive_run"]
+            )
+            metric_history["tail_entropy_low"].append(
+                -snapshot["tail_entropy"]
+            )
+            metric_history["tail_entropy_high"].append(
+                snapshot["tail_entropy"]
+            )
+            metric_history["overlap_prev_low"].append(
+                -snapshot["overlap_prev"]
+            )
+            metric_history["tens_dispersion"].append(
+                snapshot["tens_unique_zones"]
+            )
 
-    now_z, now_pct, now_bands = _collect_detector_bands(
-        now_raw,
-        metric_history,
-        detector_cfg,
-    )
-    prev_z, prev_pct, prev_bands = _collect_detector_bands(
-        prev_raw,
-        metric_history,
-        detector_cfg,
-    )
+        now_z, now_pct, now_bands = _collect_detector_bands(
+            now_raw,
+            metric_history,
+            detector_cfg,
+        )
+        _, _, prev_bands = _collect_detector_bands(
+            prev_raw,
+            metric_history,
+            detector_cfg,
+        )
+    else:
+        now_z = {}
+        now_pct = {}
+        now_bands = _quick_detector_bands(now_raw)
+        prev_bands = _quick_detector_bands(prev_raw)
 
     (
         now_regime,
@@ -576,7 +678,9 @@ def detect_regime(
         "regime_metrics_raw": now_raw,
         "regime_metrics_zscore": now_z,
         "regime_metrics_percentile": now_pct,
-        "normal_oscillation_flags": normal_flags,
+        "normal_oscillation_flags": (
+            normal_flags if include_debug_metrics else []
+        ),
         "warning_flags": now_warning_flags,
         "detector_band": now_detector_band,
     }
@@ -721,7 +825,11 @@ def predict_top3(
             f"kill_zone_size={len(kill_zone)})"
         )
 
-    regime_info = detect_regime(recent_draws, config=config)
+    regime_info = detect_regime(
+        recent_draws,
+        config=config,
+        include_debug_metrics=include_regime_debug,
+    )
 
     candidate_pool_before_trim = len(valid_pool)
     coarse_ranked_pool = sorted(

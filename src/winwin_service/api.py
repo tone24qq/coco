@@ -28,6 +28,25 @@ def health() -> dict[str, str]:
 
 @app.get("/predict", response_model=PredictionResponse)
 def predict(debug: bool = False) -> PredictionResponse:
+    now = time.time()
+    cached_debug = _PREDICTION_CACHE.get("debug")
+    cached_at = _PREDICTION_CACHE.get("created_at")
+    ttl_seconds = DEFAULT_CONFIG.prediction_cache_ttl_seconds
+    cache_result = _PREDICTION_CACHE.get("result")
+    if (
+        cached_debug == debug
+        and isinstance(cached_at, float)
+        and isinstance(cache_result, dict)
+        and (now - cached_at) <= ttl_seconds
+    ):
+        cached = deepcopy(cache_result)
+        cached_metadata = cached.setdefault("metadata", {})
+        cache_age = max(0.0, now - cached_at)
+        cached_metadata["cache_hit"] = True
+        cached_metadata["cache_age_seconds"] = round(cache_age, 3)
+        cached_metadata["cache_strategy"] = "ttl_before_fetch"
+        return PredictionResponse(**cached)
+
     try:
         draws, latest_period = fetch_latest_draws()
     except FetchError as exc:
@@ -41,26 +60,6 @@ def predict(debug: bool = False) -> PredictionResponse:
         ) from exc
 
     try:
-        now = time.time()
-        cached_period = _PREDICTION_CACHE.get("latest_period")
-        cached_debug = _PREDICTION_CACHE.get("debug")
-        cached_at = _PREDICTION_CACHE.get("created_at")
-        ttl_seconds = DEFAULT_CONFIG.prediction_cache_ttl_seconds
-        cache_result = _PREDICTION_CACHE.get("result")
-        if (
-            cached_period == latest_period
-            and cached_debug == debug
-            and isinstance(cached_at, float)
-            and isinstance(cache_result, dict)
-            and (now - cached_at) <= ttl_seconds
-        ):
-            cached = deepcopy(cache_result)
-            cached_metadata = cached.setdefault("metadata", {})
-            cache_age = max(0.0, now - cached_at)
-            cached_metadata["cache_hit"] = True
-            cached_metadata["cache_age_seconds"] = round(cache_age, 3)
-            return PredictionResponse(**cached)
-
         result = predict_top3(
             draws,
             latest_period,
@@ -68,6 +67,7 @@ def predict(debug: bool = False) -> PredictionResponse:
         )
         result["metadata"]["cache_hit"] = False
         result["metadata"]["cache_age_seconds"] = 0.0
+        result["metadata"]["cache_strategy"] = "ttl_before_fetch"
         _PREDICTION_CACHE["latest_period"] = latest_period
         _PREDICTION_CACHE["debug"] = debug
         _PREDICTION_CACHE["created_at"] = now
