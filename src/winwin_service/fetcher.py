@@ -91,6 +91,7 @@ def fetch_latest_draws(
 
     endpoint = f"{config.source_url.rstrip('/')}/GetBingoData"
     draw_map: dict[int, list[int]] = {}
+    last_json_exception: str | None = None
 
     for delta in range(config.history_lookback_days):
         day = date.today() - timedelta(days=delta)
@@ -105,17 +106,18 @@ def fetch_latest_draws(
             day_draws = parse_draws_from_json(response.text)
             for period, nums in day_draws:
                 draw_map[period] = nums
-            if len(draw_map) >= config.recent_draws_count:
-                break
         except (requests.RequestException, FetchError) as exc:
+            last_json_exception = str(exc)
             logger.warning(
-                "JSON fetch failed for %s: %s",
+                "JSON endpoint failed for %s: %s",
                 day.isoformat(),
                 exc,
             )
 
     draws = sorted(draw_map.items(), key=lambda x: x[0])
+    logger.info("JSON endpoint draw count=%s", len(draws))
 
+    html_fallback_failed = False
     if not draws:
         try:
             page = requests.get(
@@ -125,17 +127,38 @@ def fetch_latest_draws(
             )
             page.raise_for_status()
             draws = parse_draws_from_html(page.text)
-        except requests.RequestException as exc:
-            raise FetchError(f"Failed to fetch upstream data: {exc}") from exc
+            logger.info(
+                "HTML fallback draw count=%s",
+                len(draws),
+            )
+        except (requests.RequestException, FetchError) as exc:
+            html_fallback_failed = True
+            logger.exception("HTML fallback failed: %s", exc)
+            raise FetchError(
+                "Failed to fetch upstream data "
+                f"(json_error={last_json_exception}, html_error={exc})"
+            ) from exc
 
     if not draws:
-        raise FetchError("No valid draws parsed from upstream source")
+        raise FetchError(
+            "No valid draws parsed from upstream source "
+            f"(json_error={last_json_exception}, "
+            f"html_fallback_failed={html_fallback_failed}, "
+            f"draw_count={len(draws)})"
+        )
 
-    recent_draws = draws[-config.recent_draws_count:]
-    if len(recent_draws) < config.recent_draws_count:
+    if config.max_recent_draws_count is None:
+        recent_draws = draws[:]
+    else:
+        recent_draws = draws[-config.max_recent_draws_count:]
+
+    if len(recent_draws) < config.min_prediction_draws:
         raise FetchError(
             "Not enough draws to compute prediction "
-            f"(got={len(recent_draws)}, need={config.recent_draws_count})"
+            f"(got_draws={len(recent_draws)}, "
+            f"min_required_draws={config.min_prediction_draws}, "
+            "configured_max_draws="
+            f"{config.max_recent_draws_count})"
         )
 
     latest_period = recent_draws[-1][0]

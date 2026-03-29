@@ -10,6 +10,7 @@ from winwin_service.fetcher import (
     parse_draws_from_html,
     parse_draws_from_json,
 )
+from winwin_service.config import AppConfig
 
 
 def _row(period: int, start: int) -> str:
@@ -44,10 +45,38 @@ def test_fetch_latest_draws_success(mock_get: Mock) -> None:
     response.raise_for_status = Mock()
     mock_get.return_value = response
 
-    draws, latest_period = fetch_latest_draws()
+    draws, latest_period = fetch_latest_draws(
+        config=AppConfig(
+            min_prediction_draws=10,
+            max_recent_draws_count=50,
+        )
+    )
 
     assert len(draws) == 50
     assert latest_period == 114000055
+
+
+@patch('winwin_service.fetcher.requests.get')
+def test_fetch_latest_draws_max_none_uses_all(mock_get: Mock) -> None:
+    rows = []
+    for i in range(48):
+        nums = ','.join(f'{n:02d}' for n in range(1, 21))
+        rows.append({'No': str(114100001 + i), 'BigShowOrder': nums})
+
+    response = Mock()
+    response.text = str(rows).replace("'", '"')
+    response.raise_for_status = Mock()
+    mock_get.return_value = response
+
+    draws, latest_period = fetch_latest_draws(
+        config=AppConfig(
+            min_prediction_draws=10,
+            max_recent_draws_count=None,
+        )
+    )
+
+    assert len(draws) == 48
+    assert latest_period == 114100048
 
 
 @patch('winwin_service.fetcher.requests.get')
@@ -60,3 +89,27 @@ def test_fetch_latest_draws_fail_fast_no_draws(mock_get: Mock) -> None:
 
     with pytest.raises(FetchError):
         fetch_latest_draws()
+
+
+@patch('winwin_service.fetcher.requests.get')
+def test_fetch_latest_draws_fail_when_below_min_prediction(
+    mock_get: Mock,
+) -> None:
+    rows = []
+    for i in range(8):
+        nums = ','.join(f'{n:02d}' for n in range(1, 21))
+        rows.append({'No': str(114200001 + i), 'BigShowOrder': nums})
+
+    response = Mock()
+    response.text = str(rows).replace("'", '"')
+    response.raise_for_status = Mock()
+    mock_get.return_value = response
+
+    with pytest.raises(FetchError) as exc:
+        fetch_latest_draws(
+            config=AppConfig(
+                min_prediction_draws=10,
+                max_recent_draws_count=None,
+            )
+        )
+    assert 'got_draws=8' in str(exc.value)
