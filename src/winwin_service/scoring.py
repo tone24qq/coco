@@ -785,6 +785,9 @@ def predict_top3(
         )
 
     recent_window = max(config.min_prediction_draws, config.recent_draws_count)
+    if config.max_recent_draws_count is not None:
+        recent_window = min(recent_window, config.max_recent_draws_count)
+        recent_window = max(recent_window, config.min_prediction_draws)
     recent_draws = past_draws[-recent_window:]
     effective_draws_used = len(recent_draws)
 
