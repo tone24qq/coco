@@ -784,10 +784,8 @@ def predict_top3(
             f"{config.min_prediction_draws} draws, got {available_draws}"
         )
 
-    if config.max_recent_draws_count is None:
-        recent_draws = past_draws[:]
-    else:
-        recent_draws = past_draws[-config.max_recent_draws_count:]
+    recent_window = max(config.min_prediction_draws, config.recent_draws_count)
+    recent_draws = past_draws[-recent_window:]
     effective_draws_used = len(recent_draws)
 
     skips = {i: 0 for i in range(1, 81)}

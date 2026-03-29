@@ -64,6 +64,9 @@ def test_predict_with_48_draws_still_allowed() -> None:
         config=AppConfig(min_prediction_draws=10),
     )
     assert len(result["top3"]) == 3
+    assert result["metadata"]["analyzed_draws"] == 48
+    assert result["metadata"]["effective_draws_used"] == 48
+    assert result["metadata"]["regime_window"] == 48
 
 
 def test_diversified_strict_overlap() -> None:
@@ -206,6 +209,8 @@ def test_lightweight_detector_path_when_debug_false() -> None:
     assert light["regime_metrics_zscore"] == {}
     assert light["regime_metrics_percentile"] == {}
     assert heavy["regime_metrics_zscore"] != {}
+    assert light["regime_window"] == len(draws)
+    assert heavy["regime_window"] == len(draws)
 
 
 def test_fail_fast_when_draw_count_not_enough() -> None:
@@ -221,32 +226,36 @@ def test_fail_fast_when_draw_count_not_enough() -> None:
         assert False, "expected fail-fast error"
 
 
-def test_max_recent_draws_none_uses_all() -> None:
+def test_recent_window_with_less_than_50_uses_available_draws() -> None:
     draws = _baseline_draws_n(48)
     result = predict_top3(
         draws,
         latest_period=10,
         config=AppConfig(
             min_prediction_draws=10,
-            max_recent_draws_count=None,
+            recent_draws_count=50,
         ),
     )
     assert result["metadata"]["available_draws"] == 48
+    assert result["metadata"]["analyzed_draws"] == 48
     assert result["metadata"]["effective_draws_used"] == 48
+    assert result["metadata"]["regime_window"] == 48
 
 
-def test_max_recent_draws_50_uses_latest_50() -> None:
-    draws = _baseline_draws() + _baseline_draws_n(12)
+def test_recent_window_50_uses_latest_50_when_history_is_large() -> None:
+    draws = (_baseline_draws() * 27)[:1348]
     result = predict_top3(
         draws,
         latest_period=10,
         config=AppConfig(
             min_prediction_draws=10,
-            max_recent_draws_count=50,
+            recent_draws_count=50,
         ),
     )
-    assert result["metadata"]["available_draws"] == len(draws)
+    assert result["metadata"]["available_draws"] == 1348
+    assert result["metadata"]["analyzed_draws"] == 50
     assert result["metadata"]["effective_draws_used"] == 50
+    assert result["metadata"]["regime_window"] == 50
 
 
 def test_regime_disabled_when_insufficient_history_but_predict_ok() -> None:

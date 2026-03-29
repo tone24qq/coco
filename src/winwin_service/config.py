@@ -88,8 +88,9 @@ class RegimeConfig:
 class AppConfig:
     source_url: str = "https://winwin.tw/Bingo"
     request_timeout: int = 15
+    recent_draws_count: int = 50
     min_prediction_draws: int = 10
-    max_recent_draws_count: int | None = None
+    max_recent_draws_count: int | None = 50
     history_lookback_days: int = 7
     skip_kill_threshold: int = 10
     streak_kill_threshold: int = 4
