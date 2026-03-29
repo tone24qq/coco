@@ -185,3 +185,105 @@ All outputs must be described as:
 - ranking result
 - backtest result
 not certainty, not guarantee, not winning claim.
+## Optimization Goal
+
+Do not optimize for generic hit-looking metrics only.
+The primary target is:
+
+- `same_triplet_2hit_rate` on strict walk-forward and final holdout
+- business target: `same_triplet_2hit_rate >= 0.50`
+
+Secondary targets:
+- `top1_2hit_rate`
+- `same_triplet_3hit_rate`
+- `exact_hit@3`
+
+Success is NOT defined by `top3_at_least_one_hit_rate` alone.
+
+---
+
+## Search Objective
+
+Use the following selection priority:
+
+1. higher `final_holdout.same_triplet_2hit_rate`
+2. higher `final_holdout.top1_2hit_rate`
+3. higher `final_holdout.same_triplet_3hit_rate`
+4. higher `final_holdout.exact_hit@3`
+5. smaller distance to production config
+
+If two configs are close in KPI, always choose the one closer to production config.
+
+Recommended ranking score:
+
+search_objective =
+1000 * final_same_triplet_2hit_rate
++ 100 * final_top1_2hit_rate
++ 30 * final_same_triplet_3hit_rate
++ 10 * final_exact_hit@3
+- proximity_penalty
+
+Where:
+
+proximity_penalty =
+λ * normalized_L1_distance(candidate_config, production_config)
+
+Use λ large enough so that small KPI differences do not justify extreme parameter drift.
+
+---
+
+## Production Proximity Rule
+
+The search must stay near the current production/mainline config unless there is clear final-holdout improvement.
+
+Current production config is the default live config.
+Treat it as the center point for search.
+
+Required rule:
+- search local neighborhood around production config first
+- only expand outward if local search cannot improve final holdout
+- prefer bounded local search over unconstrained random drift
+
+Recommended local search ranges:
+- `recent_draws_count`: production ± 20
+- `max_recent_draws_count`: production ± 20
+- `min_score_threshold`: production ± 15
+- `candidate_trim_size`: production ± 15
+- kill / streak / warm knobs: small local step search only
+
+Hard rule:
+- reject configs with contradictory knob meaning
+- if `recent_draws_count > max_recent_draws_count`, do not keep that as “best” without explicitly reporting effective analyzed window
+
+---
+
+## Mainline Wiring Rule
+
+The live `/predict` path must use the same validated config that won final holdout.
+
+Required implementation:
+- save validated config to a stable artifact
+- load that artifact in production inference
+- expose active config in prediction metadata
+- report whether runtime config == validated best config
+
+Task is incomplete if:
+- reports use one config
+- live `/predict` still uses a different default config
+
+---
+
+## Acceptance Criteria
+
+A change is only considered successful if all conditions hold:
+
+1. strict walk-forward passes
+2. final holdout passes
+3. `same_triplet_2hit_rate >= 0.50`
+4. chosen config is either:
+   - close to production config, or
+   - clearly better on final holdout with documented margin
+5. live `/predict` is wired to the validated config
+
+Do not optimize only for prettier report numbers.
+Do not allow search to win by drifting into brittle extreme knobs that are not connected to live inference.
