@@ -1,0 +1,13 @@
+# Final Holdout Validation
+- snapshot_source: frozen_snapshot
+- snapshot_fingerprint: 6a148b03b82b705f4612d197d06a2cba914f52d6e0a1fe7a90c955ed583fe2d8
+- search_issue_range: [115017775, 115017828]
+- validation_issue_range: [115017829, 115017846]
+- final_holdout_issue_range: [115017847, 115017864]
+- final_top3_at_least_one_hit_rate: 0.833333
+- final_exact_hit@3: 0.500000
+- p_value_vs_frequency: 0.104224
+- bootstrap_ci_vs_frequency: {'low': 0.0, 'high': 0.6111111111111112}
+- leakage_check_passed: True
+- passed: False
+- pass_reason: failed_on_block_guardrails_or_exact_hit

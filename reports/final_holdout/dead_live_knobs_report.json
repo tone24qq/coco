@@ -1,0 +1,17 @@
+{
+  "live_knobs": [
+    "recent_draws_count",
+    "max_recent_draws_count",
+    "min_score_threshold",
+    "skip_kill_threshold",
+    "streak_kill_threshold",
+    "candidate_trim_size",
+    "warm_skip_min",
+    "warm_skip_max",
+    "streak_min",
+    "streak_max"
+  ],
+  "dead_knobs": [],
+  "metadata_only_knobs": [],
+  "checked_entrypoint": "winwin_service.scoring.predict_top3"
+}

@@ -1,0 +1,18 @@
+{
+  "search_strategy": "coarse_fine_local_refine",
+  "baseline_search_score": 0.8863636363636364,
+  "params": {
+    "recent_draws_count": 67,
+    "max_recent_draws_count": 56,
+    "min_score_threshold": 77,
+    "skip_kill_threshold": 11,
+    "streak_kill_threshold": 7,
+    "candidate_trim_size": 25,
+    "warm_skip_min": 2,
+    "warm_skip_max": 8,
+    "streak_min": 1,
+    "streak_max": 4
+  },
+  "validation_score": 0.9444444444444444,
+  "validation_exact_hit@3": 0.7222222222222222
+}

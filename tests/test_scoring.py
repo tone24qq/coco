@@ -326,3 +326,35 @@ def test_detector_band_exposes_normal_vs_anomaly() -> None:
     )
     anomaly = detect_regime(draws, config=cfg)
     assert anomaly["detector_band"] in {"warm_band", "anomaly_band"}
+
+
+def test_max_recent_draws_count_caps_effective_window() -> None:
+    draws = (_baseline_draws() * 20)[:500]
+    result = predict_top3(
+        draws,
+        latest_period=10,
+        config=AppConfig(
+            min_prediction_draws=10,
+            recent_draws_count=80,
+            max_recent_draws_count=30,
+            min_score_threshold=10,
+        ),
+    )
+    assert result["metadata"]["analyzed_draws"] == 30
+    assert result["metadata"]["effective_draws_used"] == 30
+
+
+def test_max_recent_draws_count_never_below_min_prediction_draws() -> None:
+    draws = (_baseline_draws() * 5)[:120]
+    result = predict_top3(
+        draws,
+        latest_period=10,
+        config=AppConfig(
+            min_prediction_draws=12,
+            recent_draws_count=80,
+            max_recent_draws_count=5,
+            min_score_threshold=10,
+        ),
+    )
+    assert result["metadata"]["analyzed_draws"] == 12
+    assert result["metadata"]["effective_draws_used"] == 12

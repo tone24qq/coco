@@ -1,0 +1,4 @@
+variant,top3_at_least_one_hit_rate,note
+baseline_default,0.8863636363636364,default config on search window
+chosen_config_validation,0.9444444444444444,selected by validation
+chosen_config_final,0.8333333333333334,final untouched holdout

@@ -1,0 +1,21 @@
+{
+  "snapshot_path": "reports/final_holdout/snapshot_draws.json",
+  "snapshot_source": "frozen_snapshot",
+  "fingerprint": "6a148b03b82b705f4612d197d06a2cba914f52d6e0a1fe7a90c955ed583fe2d8",
+  "issue_range": [
+    115017775,
+    115017864
+  ],
+  "total_draws": 90,
+  "final_blocks": [
+    [
+      115017847,
+      115017855
+    ],
+    [
+      115017856,
+      115017864
+    ]
+  ],
+  "generated_at_utc": "2026-03-29T22:22:02.434182+00:00"
+}
