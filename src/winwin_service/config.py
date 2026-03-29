@@ -100,6 +100,8 @@ class AppConfig:
     min_score_threshold: int = 60
     score_weights: ScoreWeights = ScoreWeights()
     regime: RegimeConfig = RegimeConfig()
+    prediction_cache_ttl_seconds: int = 30
+    candidate_trim_size: int = 40
 
 
 DEFAULT_CONFIG = AppConfig()

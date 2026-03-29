@@ -671,6 +671,7 @@ def predict_top3(
     past_draws: list[list[int]],
     latest_period: int,
     config: AppConfig = DEFAULT_CONFIG,
+    include_regime_debug: bool = False,
 ) -> dict[str, object]:
     available_draws = len(past_draws)
     if available_draws < config.min_prediction_draws:
@@ -699,7 +700,9 @@ def predict_top3(
                 streaks[num] = 0
 
     pair_counts: defaultdict[tuple[int, int], int] = defaultdict(int)
+    number_counts: Counter[int] = Counter()
     for draw in recent_draws:
+        number_counts.update(draw)
         for pair in itertools.combinations(sorted(draw), 2):
             pair_counts[pair] += 1
 
@@ -719,9 +722,26 @@ def predict_top3(
         )
 
     regime_info = detect_regime(recent_draws, config=config)
+
+    candidate_pool_before_trim = len(valid_pool)
+    coarse_ranked_pool = sorted(
+        valid_pool,
+        key=lambda num: (
+            number_counts[num] * 2
+            - skips[num]
+            + min(streaks[num], 3) * 2
+        ),
+        reverse=True,
+    )
+    trim_size = max(
+        3,
+        min(config.candidate_trim_size, len(coarse_ranked_pool)),
+    )
+    trimmed_pool = sorted(coarse_ranked_pool[:trim_size])
+    candidate_pool_after_trim = len(trimmed_pool)
     candidates: list[dict[str, object]] = []
 
-    for triplet in itertools.combinations(valid_pool, 3):
+    for triplet in itertools.combinations(trimmed_pool, 3):
         base_score, components = _calc_triplet_base_score(
             triplet,
             skips=skips,
@@ -754,7 +774,7 @@ def predict_top3(
     candidates.sort(key=lambda c: float(c["score"]), reverse=True)
     top3, fallback_used = _select_diversified_top3(candidates)
 
-    return {
+    result = {
         "target_period": latest_period + 1,
         "latest_period": latest_period,
         "top3": top3,
@@ -768,7 +788,12 @@ def predict_top3(
             "regime_min_history": config.regime.min_history,
             "regime_disabled_reason": regime_info["regime_disabled_reason"],
             "valid_pool_size": len(valid_pool),
+            "candidate_pool_before_trim": candidate_pool_before_trim,
+            "candidate_pool_after_trim": candidate_pool_after_trim,
             "total_combinations": math.comb(len(valid_pool), 3),
+            "total_combinations_evaluated": math.comb(
+                len(trimmed_pool), 3
+            ),
             "qualified_combinations": len(candidates),
             "min_score_threshold": config.min_score_threshold,
             "dedup_enabled": True,
@@ -787,18 +812,26 @@ def predict_top3(
             ],
             "adjustment_strength": regime_info["adjustment_strength"],
             "fallback_to_normal": regime_info["fallback_to_normal"],
-            "regime_metrics": regime_info["metrics"],
-            "regime_metrics_raw": regime_info["regime_metrics_raw"],
-            "regime_metrics_zscore": regime_info[
-                "regime_metrics_zscore"
-            ],
-            "regime_metrics_percentile": regime_info[
-                "regime_metrics_percentile"
-            ],
-            "normal_oscillation_flags": regime_info[
-                "normal_oscillation_flags"
-            ],
             "warning_flags": regime_info["warning_flags"],
             "detector_band": regime_info["detector_band"],
         },
     }
+
+    if include_regime_debug:
+        result["metadata"].update(
+            {
+                "regime_metrics": regime_info["metrics"],
+                "regime_metrics_raw": regime_info["regime_metrics_raw"],
+                "regime_metrics_zscore": regime_info[
+                    "regime_metrics_zscore"
+                ],
+                "regime_metrics_percentile": regime_info[
+                    "regime_metrics_percentile"
+                ],
+                "normal_oscillation_flags": regime_info[
+                    "normal_oscillation_flags"
+                ],
+            }
+        )
+
+    return result

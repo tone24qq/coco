@@ -159,11 +159,6 @@ def test_metadata_contains_new_detector_fields() -> None:
         "consecutive_trigger_hits",
         "adjustment_strength",
         "fallback_to_normal",
-        "regime_metrics",
-        "regime_metrics_raw",
-        "regime_metrics_zscore",
-        "regime_metrics_percentile",
-        "normal_oscillation_flags",
         "warning_flags",
         "detector_band",
         "available_draws",
@@ -172,8 +167,28 @@ def test_metadata_contains_new_detector_fields() -> None:
         "max_recent_draws_count",
         "regime_min_history",
         "regime_disabled_reason",
+        "candidate_pool_before_trim",
+        "candidate_pool_after_trim",
+        "total_combinations_evaluated",
     }
     assert expected.issubset(set(metadata.keys()))
+
+
+def test_regime_detailed_metrics_only_in_debug_mode() -> None:
+    normal = predict_top3(
+        _baseline_draws(),
+        latest_period=6000,
+        config=AppConfig(min_score_threshold=10),
+    )
+    debug = predict_top3(
+        _baseline_draws(),
+        latest_period=6000,
+        config=AppConfig(min_score_threshold=10),
+        include_regime_debug=True,
+    )
+
+    assert "regime_metrics_raw" not in normal["metadata"]
+    assert "regime_metrics_raw" in debug["metadata"]
 
 
 def test_fail_fast_when_draw_count_not_enough() -> None:
