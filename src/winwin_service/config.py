@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,70 @@ class ScoreWeights:
 
 
 @dataclass(frozen=True)
+class RegimeConfig:
+    min_history: int = 10
+    min_core_hits: int = 2
+    min_structural_hits: int = 1
+    consecutive_confirmation: int = 2
+    hold_periods: int = 2
+    adjustment_cap: float = 0.10
+    percentile_window: int = 25
+    warning_zscore: float = 1.3
+    anomaly_zscore: float = 1.8
+    warning_percentile: float = 0.90
+    anomaly_percentile: float = 0.97
+    normal_overlap_prev_min: int = 2
+    normal_overlap_prev_max: int = 8
+    normal_odd_count_min: int = 7
+    normal_odd_count_max: int = 13
+    normal_small_count_min: int = 7
+    normal_small_count_max: int = 13
+    normal_max_streak_min: int = 2
+    normal_max_streak_max: int = 4
+    normal_tens_peak_min: int = 4
+    normal_tens_peak_max: int = 6
+    normal_hot_number_min: int = 4
+    normal_hot_number_max: int = 23
+    normal_cold_number_min: int = 4
+    normal_cold_number_max: int = 23
+    core_metrics: dict[str, tuple[str, str]] = field(
+        default_factory=lambda: {
+            "hot_continuation": (
+                "overlap_prev",
+                "max_consecutive_run",
+                "hot_number_peak",
+            ),
+            "warm_rebound": (
+                "skip_concentration",
+                "cold_number_floor",
+                "small_large_drift",
+            ),
+            "concentrated": (
+                "pair_concentration",
+                "tens_zone_concentration",
+                "tail_entropy_low",
+            ),
+            "dispersed": (
+                "tail_entropy_high",
+                "tens_dispersion",
+                "overlap_prev_low",
+            ),
+        }
+    )
+    structural_metrics: dict[str, tuple[str, str]] = field(
+        default_factory=lambda: {
+            "hot_continuation": ("pair_concentration", "odd_even_drift"),
+            "warm_rebound": ("skip_concentration", "odd_even_drift"),
+            "concentrated": (
+                "tens_zone_concentration",
+                "tail_entropy_low",
+            ),
+            "dispersed": ("tens_dispersion", "tail_entropy_high"),
+        }
+    )
+
+
+@dataclass(frozen=True)
 class AppConfig:
     source_url: str = "https://winwin.tw/Bingo"
     request_timeout: int = 15
@@ -34,6 +98,7 @@ class AppConfig:
     streak_max: int = 3
     min_score_threshold: int = 60
     score_weights: ScoreWeights = ScoreWeights()
+    regime: RegimeConfig = RegimeConfig()
 
 
 DEFAULT_CONFIG = AppConfig()
