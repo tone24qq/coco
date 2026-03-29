@@ -1,0 +1,181 @@
+{
+  "total_blocks": 12,
+  "total_draws_evaluated": 120,
+  "original_mean_hits_10": 7.416666666666667,
+  "baseline_mean_hits_10": 6.5,
+  "mean_diff": 0.9166666666666666,
+  "median_diff": 1.0,
+  "original_win_rate": 0.5833333333333334,
+  "confidence_interval": [
+    -1.0833333333333333,
+    2.75
+  ],
+  "p_value": 0.4205794205794206,
+  "effect_size": 0.2579470733725578,
+  "single_draw_hit_distribution": {
+    "0_hit": 51,
+    "1_hit": 50,
+    "2_hit": 18,
+    "3_hit": 1
+  },
+  "edge_blocks": [
+    {
+      "block_id": 1,
+      "start_issue": 115017613,
+      "end_issue": 115017622,
+      "original_top3_total_hits_10": 9,
+      "baseline_top3_total_hits_10": 6,
+      "original_at_least_one_hit_count_10": 9,
+      "baseline_at_least_one_hit_count_10": 5,
+      "top3_exact_2plus_count_10": 0,
+      "avg_hits_per_draw": 0.9,
+      "hit_diff_10": 3,
+      "winner": "original"
+    },
+    {
+      "block_id": 2,
+      "start_issue": 115017623,
+      "end_issue": 115017632,
+      "original_top3_total_hits_10": 9,
+      "baseline_top3_total_hits_10": 8,
+      "original_at_least_one_hit_count_10": 6,
+      "baseline_at_least_one_hit_count_10": 7,
+      "top3_exact_2plus_count_10": 2,
+      "avg_hits_per_draw": 0.9,
+      "hit_diff_10": 1,
+      "winner": "original"
+    },
+    {
+      "block_id": 3,
+      "start_issue": 115017633,
+      "end_issue": 115017642,
+      "original_top3_total_hits_10": 12,
+      "baseline_top3_total_hits_10": 8,
+      "original_at_least_one_hit_count_10": 8,
+      "baseline_at_least_one_hit_count_10": 6,
+      "top3_exact_2plus_count_10": 4,
+      "avg_hits_per_draw": 1.2,
+      "hit_diff_10": 4,
+      "winner": "original"
+    },
+    {
+      "block_id": 5,
+      "start_issue": 115017653,
+      "end_issue": 115017662,
+      "original_top3_total_hits_10": 9,
+      "baseline_top3_total_hits_10": 5,
+      "original_at_least_one_hit_count_10": 6,
+      "baseline_at_least_one_hit_count_10": 4,
+      "top3_exact_2plus_count_10": 3,
+      "avg_hits_per_draw": 0.9,
+      "hit_diff_10": 4,
+      "winner": "original"
+    },
+    {
+      "block_id": 6,
+      "start_issue": 115017663,
+      "end_issue": 115017672,
+      "original_top3_total_hits_10": 7,
+      "baseline_top3_total_hits_10": 3,
+      "original_at_least_one_hit_count_10": 6,
+      "baseline_at_least_one_hit_count_10": 3,
+      "top3_exact_2plus_count_10": 1,
+      "avg_hits_per_draw": 0.7,
+      "hit_diff_10": 4,
+      "winner": "original"
+    },
+    {
+      "block_id": 9,
+      "start_issue": 115017693,
+      "end_issue": 115017702,
+      "original_top3_total_hits_10": 6,
+      "baseline_top3_total_hits_10": 5,
+      "original_at_least_one_hit_count_10": 5,
+      "baseline_at_least_one_hit_count_10": 5,
+      "top3_exact_2plus_count_10": 1,
+      "avg_hits_per_draw": 0.6,
+      "hit_diff_10": 1,
+      "winner": "original"
+    },
+    {
+      "block_id": 12,
+      "start_issue": 115017723,
+      "end_issue": 115017732,
+      "original_top3_total_hits_10": 10,
+      "baseline_top3_total_hits_10": 4,
+      "original_at_least_one_hit_count_10": 7,
+      "baseline_at_least_one_hit_count_10": 4,
+      "top3_exact_2plus_count_10": 3,
+      "avg_hits_per_draw": 1.0,
+      "hit_diff_10": 6,
+      "winner": "original"
+    }
+  ],
+  "weak_blocks": [
+    {
+      "block_id": 4,
+      "start_issue": 115017643,
+      "end_issue": 115017652,
+      "original_top3_total_hits_10": 5,
+      "baseline_top3_total_hits_10": 11,
+      "original_at_least_one_hit_count_10": 3,
+      "baseline_at_least_one_hit_count_10": 9,
+      "top3_exact_2plus_count_10": 2,
+      "avg_hits_per_draw": 0.5,
+      "hit_diff_10": -6,
+      "winner": "baseline"
+    },
+    {
+      "block_id": 7,
+      "start_issue": 115017673,
+      "end_issue": 115017682,
+      "original_top3_total_hits_10": 7,
+      "baseline_top3_total_hits_10": 7,
+      "original_at_least_one_hit_count_10": 6,
+      "baseline_at_least_one_hit_count_10": 6,
+      "top3_exact_2plus_count_10": 1,
+      "avg_hits_per_draw": 0.7,
+      "hit_diff_10": 0,
+      "winner": "tie"
+    },
+    {
+      "block_id": 8,
+      "start_issue": 115017683,
+      "end_issue": 115017692,
+      "original_top3_total_hits_10": 6,
+      "baseline_top3_total_hits_10": 7,
+      "original_at_least_one_hit_count_10": 6,
+      "baseline_at_least_one_hit_count_10": 6,
+      "top3_exact_2plus_count_10": 0,
+      "avg_hits_per_draw": 0.6,
+      "hit_diff_10": -1,
+      "winner": "baseline"
+    },
+    {
+      "block_id": 10,
+      "start_issue": 115017703,
+      "end_issue": 115017712,
+      "original_top3_total_hits_10": 2,
+      "baseline_top3_total_hits_10": 6,
+      "original_at_least_one_hit_count_10": 2,
+      "baseline_at_least_one_hit_count_10": 6,
+      "top3_exact_2plus_count_10": 0,
+      "avg_hits_per_draw": 0.2,
+      "hit_diff_10": -4,
+      "winner": "baseline"
+    },
+    {
+      "block_id": 11,
+      "start_issue": 115017713,
+      "end_issue": 115017722,
+      "original_top3_total_hits_10": 7,
+      "baseline_top3_total_hits_10": 8,
+      "original_at_least_one_hit_count_10": 5,
+      "baseline_at_least_one_hit_count_10": 6,
+      "top3_exact_2plus_count_10": 2,
+      "avg_hits_per_draw": 0.7,
+      "hit_diff_10": -1,
+      "winner": "baseline"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+block_id,start_issue,end_issue,original_top3_total_hits_10,baseline_top3_total_hits_10,original_at_least_one_hit_count_10,baseline_at_least_one_hit_count_10,top3_exact_2plus_count_10,avg_hits_per_draw,hit_diff_10,winner
+1,115017613,115017622,9,6,9,5,0,0.9,3,original
+2,115017623,115017632,9,8,6,7,2,0.9,1,original
+3,115017633,115017642,12,8,8,6,4,1.2,4,original
+4,115017643,115017652,5,11,3,9,2,0.5,-6,baseline
+5,115017653,115017662,9,5,6,4,3,0.9,4,original
+6,115017663,115017672,7,3,6,3,1,0.7,4,original
+7,115017673,115017682,7,7,6,6,1,0.7,0,tie
+8,115017683,115017692,6,7,6,6,0,0.6,-1,baseline
+9,115017693,115017702,6,5,5,5,1,0.6,1,original
+10,115017703,115017712,2,6,2,6,0,0.2,-4,baseline
+11,115017713,115017722,7,8,5,6,2,0.7,-1,baseline
+12,115017723,115017732,10,4,7,4,3,1.0,6,original
