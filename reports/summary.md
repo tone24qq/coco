@@ -1,0 +1,11 @@
+# Block Evaluation Summary
+- total_blocks: 13
+- original_mean_hits_10: 8.308
+- baseline_mean_hits_10: 6.923
+- mean_diff: 1.385
+- median_diff: 1.000
+- original_win_rate: 0.615
+- confidence_interval: [-0.077, 3.000]
+- p_value: 0.1580
+- effect_size: 0.464
+- conclusion: no_stable_edge_over_random

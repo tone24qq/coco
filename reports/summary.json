@@ -1,0 +1,31 @@
+{
+  "total_blocks": 13,
+  "total_draws_evaluated": 130,
+  "original_mean_hits_10": 8.307692307692308,
+  "baseline_mean_hits_10": 6.923076923076923,
+  "mean_diff": 1.3846153846153846,
+  "median_diff": 1.0,
+  "original_win_rate": 0.6153846153846154,
+  "confidence_interval": {
+    "low": -0.07692307692307693,
+    "high": 3.0
+  },
+  "p_value": 0.15796050987253188,
+  "effect_size": 0.4635235823621443,
+  "single_draw_hit_distribution": {
+    "original": {
+      "0": 47,
+      "1": 59,
+      "2": 23,
+      "3": 1
+    },
+    "random": {
+      "0": 59,
+      "1": 53,
+      "2": 17,
+      "3": 1
+    }
+  },
+  "random_expected_hits_per_draw": 0.75,
+  "random_expected_hits_per_10_draws": 7.5
+}
