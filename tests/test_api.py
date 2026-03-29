@@ -51,4 +51,29 @@ def test_predict_fail_fast(monkeypatch) -> None:
 
     response = client.get('/predict')
     assert response.status_code == 502
-    assert 'upstream down' in response.json()['detail']
+    body = response.json()['detail']
+    assert body['error_code'] == 'FETCH_FAILED'
+    assert 'upstream down' in body['detail']
+
+
+def test_predict_fail_fast_predict_error(monkeypatch) -> None:
+    from winwin_service import api
+
+    monkeypatch.setattr(
+        api,
+        'fetch_latest_draws',
+        lambda: ([list(range(1, 21))] * 20, 114000123),
+    )
+    monkeypatch.setattr(
+        api,
+        'predict_top3',
+        lambda draws, latest: (_ for _ in ()).throw(
+            api.PredictError('no combinations')
+        ),
+    )
+
+    response = client.get('/predict')
+    assert response.status_code == 502
+    body = response.json()['detail']
+    assert body['error_code'] == 'PREDICT_FAILED'
+    assert 'no combinations' in body['detail']

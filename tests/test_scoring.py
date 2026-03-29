@@ -18,6 +18,11 @@ def _baseline_draws() -> list[list[int]]:
     return draws
 
 
+def _baseline_draws_n(count: int) -> list[list[int]]:
+    draws = _baseline_draws()
+    return draws[:count]
+
+
 def _concentrated_draw(base: int = 1) -> list[int]:
     return list(range(base, base + 20))
 
@@ -48,6 +53,15 @@ def test_top3_length_is_always_three() -> None:
         _baseline_draws(),
         latest_period=1000,
         config=AppConfig(min_score_threshold=10),
+    )
+    assert len(result["top3"]) == 3
+
+
+def test_predict_with_48_draws_still_allowed() -> None:
+    result = predict_top3(
+        _baseline_draws_n(48),
+        latest_period=2222,
+        config=AppConfig(min_prediction_draws=10),
     )
     assert len(result["top3"]) == 3
 
@@ -152,6 +166,12 @@ def test_metadata_contains_new_detector_fields() -> None:
         "normal_oscillation_flags",
         "warning_flags",
         "detector_band",
+        "available_draws",
+        "effective_draws_used",
+        "min_prediction_draws",
+        "max_recent_draws_count",
+        "regime_min_history",
+        "regime_disabled_reason",
     }
     assert expected.issubset(set(metadata.keys()))
 
@@ -161,12 +181,59 @@ def test_fail_fast_when_draw_count_not_enough() -> None:
         predict_top3(
             _baseline_draws()[:20],
             latest_period=10,
-            config=AppConfig(recent_draws_count=50),
+            config=AppConfig(min_prediction_draws=30),
         )
     except Exception as exc:  # noqa: BLE001
         assert "Need >=" in str(exc)
     else:
         assert False, "expected fail-fast error"
+
+
+def test_max_recent_draws_none_uses_all() -> None:
+    draws = _baseline_draws_n(48)
+    result = predict_top3(
+        draws,
+        latest_period=10,
+        config=AppConfig(
+            min_prediction_draws=10,
+            max_recent_draws_count=None,
+        ),
+    )
+    assert result["metadata"]["available_draws"] == 48
+    assert result["metadata"]["effective_draws_used"] == 48
+
+
+def test_max_recent_draws_50_uses_latest_50() -> None:
+    draws = _baseline_draws() + _baseline_draws_n(12)
+    result = predict_top3(
+        draws,
+        latest_period=10,
+        config=AppConfig(
+            min_prediction_draws=10,
+            max_recent_draws_count=50,
+        ),
+    )
+    assert result["metadata"]["available_draws"] == len(draws)
+    assert result["metadata"]["effective_draws_used"] == 50
+
+
+def test_regime_disabled_when_insufficient_history_but_predict_ok() -> None:
+    draws = _baseline_draws_n(12)
+    result = predict_top3(
+        draws,
+        latest_period=10,
+        config=AppConfig(
+            min_prediction_draws=10,
+            regime=RegimeConfig(min_history=20),
+        ),
+    )
+    assert result["metadata"]["regime"] == "normal"
+    assert result["metadata"]["regime_adjustment_enabled"] is False
+    assert result["metadata"]["fallback_to_normal"] is True
+    assert (
+        result["metadata"]["regime_disabled_reason"]
+        == "insufficient_history"
+    )
 
 
 def test_single_high_metric_does_not_trigger_regime() -> None:

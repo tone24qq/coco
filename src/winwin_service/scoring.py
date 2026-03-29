@@ -429,12 +429,8 @@ def detect_regime(
     recent_draws: list[list[int]],
     config: AppConfig,
 ) -> dict[str, object]:
-    window = config.recent_draws_count
     detector_cfg = config.regime
-    if len(recent_draws) >= window:
-        draws = recent_draws[-window:]
-    else:
-        draws = recent_draws[:]
+    draws = recent_draws[:]
 
     if len(draws) < detector_cfg.min_history:
         return {
@@ -446,6 +442,7 @@ def detect_regime(
             "fallback_to_normal": True,
             "regime_window": len(draws),
             "regime_adjustment_enabled": False,
+            "regime_disabled_reason": "insufficient_history",
             "metrics": {},
             "regime_metrics_raw": {},
             "regime_metrics_zscore": {},
@@ -574,6 +571,7 @@ def detect_regime(
         "fallback_to_normal": fallback_to_normal,
         "regime_window": len(draws),
         "regime_adjustment_enabled": not fallback_to_normal,
+        "regime_disabled_reason": "",
         "metrics": now_raw,
         "regime_metrics_raw": now_raw,
         "regime_metrics_zscore": now_z,
@@ -674,12 +672,18 @@ def predict_top3(
     latest_period: int,
     config: AppConfig = DEFAULT_CONFIG,
 ) -> dict[str, object]:
-    if len(past_draws) < config.recent_draws_count:
+    available_draws = len(past_draws)
+    if available_draws < config.min_prediction_draws:
         raise PredictError(
-            f"Need >= {config.recent_draws_count} draws, got {len(past_draws)}"
+            "Need >= "
+            f"{config.min_prediction_draws} draws, got {available_draws}"
         )
 
-    recent_draws = past_draws[-config.recent_draws_count:]
+    if config.max_recent_draws_count is None:
+        recent_draws = past_draws[:]
+    else:
+        recent_draws = past_draws[-config.max_recent_draws_count:]
+    effective_draws_used = len(recent_draws)
 
     skips = {i: 0 for i in range(1, 81)}
     streaks = {i: 0 for i in range(1, 81)}
@@ -709,7 +713,9 @@ def predict_top3(
 
     if len(valid_pool) < 3:
         raise PredictError(
-            "Valid number pool below 3 after applying kill-zone"
+            "Valid number pool below 3 after applying kill-zone "
+            f"(valid_pool_size={len(valid_pool)}, "
+            f"kill_zone_size={len(kill_zone)})"
         )
 
     regime_info = detect_regime(recent_draws, config=config)
@@ -739,7 +745,11 @@ def predict_top3(
             )
 
     if not candidates:
-        raise PredictError("No combinations exceed min_score_threshold")
+        raise PredictError(
+            "No combinations exceed min_score_threshold "
+            f"(min_score_threshold={config.min_score_threshold}, "
+            "qualified_combinations=0)"
+        )
 
     candidates.sort(key=lambda c: float(c["score"]), reverse=True)
     top3, fallback_used = _select_diversified_top3(candidates)
@@ -751,6 +761,12 @@ def predict_top3(
         "kill_zone": kill_zone,
         "metadata": {
             "analyzed_draws": len(recent_draws),
+            "available_draws": available_draws,
+            "effective_draws_used": effective_draws_used,
+            "min_prediction_draws": config.min_prediction_draws,
+            "max_recent_draws_count": config.max_recent_draws_count,
+            "regime_min_history": config.regime.min_history,
+            "regime_disabled_reason": regime_info["regime_disabled_reason"],
             "valid_pool_size": len(valid_pool),
             "total_combinations": math.comb(len(valid_pool), 3),
             "qualified_combinations": len(candidates),
