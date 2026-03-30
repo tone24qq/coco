@@ -1,4 +1,4 @@
-variant,top3_at_least_one_hit_rate,note
-baseline_default,0.8863636363636364,default config on search window
-chosen_config_validation,0.9444444444444444,selected by validation
-chosen_config_final,0.8333333333333334,final untouched holdout
+variant,same_triplet_2hit_rate,note
+baseline_default,0.36363636363636365,default config on search window
+chosen_config_validation,0.5555555555555556,selected by validation
+chosen_config_final,0.4444444444444444,final untouched holdout

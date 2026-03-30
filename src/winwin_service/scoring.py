@@ -29,6 +29,7 @@ def _calc_triplet_base_score(
     skips: dict[int, int],
     streaks: dict[int, int],
     pair_counts: dict[tuple[int, int], int],
+    transition_scores: dict[int, float],
     config: AppConfig,
 ) -> tuple[float, dict[str, float]]:
     score = 0.0
@@ -97,9 +98,16 @@ def _calc_triplet_base_score(
     pair3 = pair_counts[(n1, n3)]
     momentum_score = min(15, (pair1 + pair2 + pair3))
     score += momentum_score
+    transition_score = (
+        transition_scores.get(n1, 0.0)
+        + transition_scores.get(n2, 0.0)
+        + transition_scores.get(n3, 0.0)
+    )
+    score += transition_score * 0.35
 
     components = {
         "momentum_score": float(momentum_score),
+        "transition_score": float(transition_score),
         "warm_skip_count": float(len(warm_nums)),
         "streak_count": float(len(streak_nums)),
         "pair_sum": float(pair1 + pair2 + pair3),
@@ -728,6 +736,26 @@ def _shared_numbers(a: list[int], b: list[int]) -> int:
     return len(set(a) & set(b))
 
 
+def _build_transition_scores(
+    recent_draws: list[list[int]],
+) -> dict[int, float]:
+    if len(recent_draws) < 3:
+        return {i: 0.0 for i in range(1, 81)}
+    last_draw = set(recent_draws[-1])
+    scores = {i: 0.0 for i in range(1, 81)}
+    for idx in range(len(recent_draws) - 1):
+        context = set(recent_draws[idx])
+        next_draw = recent_draws[idx + 1]
+        overlap = len(context & last_draw)
+        if overlap < 4:
+            continue
+        weight = float((overlap - 3) ** 2)
+        recency_boost = (idx + 1) / len(recent_draws)
+        for num in next_draw:
+            scores[num] += weight * recency_boost
+    return scores
+
+
 def _select_diversified_top3(
     candidates: list[dict[str, object]],
 ) -> tuple[list[list[int]], bool]:
@@ -810,6 +838,7 @@ def predict_top3(
         number_counts.update(draw)
         for pair in itertools.combinations(sorted(draw), 2):
             pair_counts[pair] += 1
+    transition_scores = _build_transition_scores(recent_draws)
 
     kill_zone = sorted(
         num
@@ -839,6 +868,7 @@ def predict_top3(
             number_counts[num] * 2
             - skips[num]
             + min(streaks[num], 3) * 2
+            + transition_scores[num] * 1.5
         ),
         reverse=True,
     )
@@ -856,6 +886,7 @@ def predict_top3(
             skips=skips,
             streaks=streaks,
             pair_counts=pair_counts,
+            transition_scores=transition_scores,
             config=config,
         )
         adjusted_score = _apply_regime_adjustment(
@@ -909,6 +940,9 @@ def predict_top3(
             "dedup_rule": "shared<=1_then_shared<=2_fallback",
             "raw_top_candidates_considered": len(candidates),
             "fallback_used": fallback_used,
+            "transition_signal_active": any(
+                v > 0 for v in transition_scores.values()
+            ),
             "regime": regime_info["regime"],
             "anomaly_flags": regime_info["anomaly_flags"],
             "regime_adjustment_enabled": regime_info[

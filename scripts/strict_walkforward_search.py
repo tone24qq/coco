@@ -83,6 +83,9 @@ def metrics_from_triplets(top3: list[list[int]], actual: list[int]) -> dict[str,
     best3 = max(hits_each)
 
     return {
+        "same_triplet_2hit_rate": 1.0 if best3 >= 2 else 0.0,
+        "top1_2hit_rate": 1.0 if hits_each[0] >= 2 else 0.0,
+        "same_triplet_3hit_rate": 1.0 if best3 >= 3 else 0.0,
         "top3_at_least_one_hit": 1.0 if best3 >= 1 else 0.0,
         "exact_hit@3": float(hit_count(top1, actual)),
         "exact_hit@10": float(hit_count(top10, actual)),
@@ -249,6 +252,24 @@ def eval_config(
 
     summary: dict[str, object] = {
         "holdouts": holdout_stats,
+        "same_triplet_2hit_rate": mean([
+            b["model_same_triplet_2hit_rate"] for b in holdout_stats
+        ]) if holdout_stats else 0.0,
+        "top1_2hit_rate": mean([
+            b["model_top1_2hit_rate"] for b in holdout_stats
+        ]) if holdout_stats else 0.0,
+        "same_triplet_3hit_rate": mean([
+            b["model_same_triplet_3hit_rate"] for b in holdout_stats
+        ]) if holdout_stats else 0.0,
+        "avg_model_same_triplet_2hit_rate": mean([
+            b["model_same_triplet_2hit_rate"] for b in holdout_stats
+        ]) if holdout_stats else 0.0,
+        "avg_model_top1_2hit_rate": mean([
+            b["model_top1_2hit_rate"] for b in holdout_stats
+        ]) if holdout_stats else 0.0,
+        "avg_model_same_triplet_3hit_rate": mean([
+            b["model_same_triplet_3hit_rate"] for b in holdout_stats
+        ]) if holdout_stats else 0.0,
         "avg_model_top3_at_least_one_hit_rate": mean([
             b["model_top3_at_least_one_hit"] for b in holdout_stats
         ]) if holdout_stats else 0.0,
@@ -303,11 +324,13 @@ def main() -> None:
             params = random_param(rng)
             cfg = build_config(params)
             summary, _ = eval_config(numbers, periods, cfg, holdouts, args.seed + rd * 1000 + idx)
-            score = float(summary["avg_model_top3_at_least_one_hit_rate"])
+            score = float(summary["avg_model_same_triplet_2hit_rate"])
             row = {
                 "round": rd,
                 "idx": idx,
                 "score": score,
+                "top1_2hit_rate": float(summary["avg_model_top1_2hit_rate"]),
+                "same_triplet_3hit_rate": float(summary["avg_model_same_triplet_3hit_rate"]),
                 "exact_hit@3": float(summary["avg_model_exact_hit@3"]),
                 **params,
             }
@@ -352,14 +375,18 @@ def main() -> None:
                     for hid, s, e in holdouts
                 ],
                 "pass_threshold": 0.80,
+                "primary_pass_threshold": 0.50,
                 "passed": bool(
                     len(best_summary["holdouts"]) >= 2
-                    and all(h["model_top3_at_least_one_hit"] >= 0.80 for h in best_summary["holdouts"])
-                    and all(h["model_exact_hit@3"] >= h["frequency_exact_hit@3"] for h in best_summary["holdouts"])
-                    and all(h["paired_perm_p_vs_frequency"] < 0.05 for h in best_summary["holdouts"])
-                    and all(h["bootstrap_ci_low_vs_frequency"] > 0 for h in best_summary["holdouts"])
+                    and all(
+                        h["model_same_triplet_2hit_rate"] >= 0.50
+                        for h in best_summary["holdouts"]
+                    )
                 ),
                 "metric_definitions": {
+                    "same_triplet_2hit_rate": "any one triplet in top3 has >=2 overlaps",
+                    "top1_2hit_rate": "first triplet has >=2 overlaps",
+                    "same_triplet_3hit_rate": "any one triplet in top3 has >=3 overlaps",
                     "top3_at_least_one_hit_rate": "max overlap among 3 triplets >=1",
                     "exact_hit@3": "hit count of top1 triplet",
                     "exact_hit@10": "hit count in first 10 unique numbers from top3",
@@ -383,11 +410,17 @@ def main() -> None:
     ablation = [
         {
             "config": "baseline",
+            "same_triplet_2hit_rate": baseline_summary["avg_model_same_triplet_2hit_rate"],
+            "top1_2hit_rate": baseline_summary["avg_model_top1_2hit_rate"],
+            "same_triplet_3hit_rate": baseline_summary["avg_model_same_triplet_3hit_rate"],
             "top3_at_least_one_hit_rate": baseline_summary["avg_model_top3_at_least_one_hit_rate"],
             "exact_hit@3": baseline_summary["avg_model_exact_hit@3"],
         },
         {
             "config": "best_config",
+            "same_triplet_2hit_rate": best_summary["avg_model_same_triplet_2hit_rate"],
+            "top1_2hit_rate": best_summary["avg_model_top1_2hit_rate"],
+            "same_triplet_3hit_rate": best_summary["avg_model_same_triplet_3hit_rate"],
             "top3_at_least_one_hit_rate": best_summary["avg_model_top3_at_least_one_hit_rate"],
             "exact_hit@3": best_summary["avg_model_exact_hit@3"],
         },

@@ -25,7 +25,7 @@ def test_predict_integration_mocked_network(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'predict_top3',
-        lambda draws, latest, include_regime_debug=False: {
+        lambda draws, latest, config=None, include_regime_debug=False: {
             'target_period': latest + 1,
             'latest_period': latest,
             'top3': [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
@@ -71,7 +71,7 @@ def test_predict_fail_fast_predict_error(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'predict_top3',
-        lambda draws, latest, include_regime_debug=False: (
+        lambda draws, latest, config=None, include_regime_debug=False: (
             _ for _ in ()
         ).throw(api.PredictError('no combinations')),
     )
@@ -97,7 +97,12 @@ def test_predict_cache_hit_without_recompute(monkeypatch) -> None:
 
     monkeypatch.setattr(api, 'fetch_latest_draws', _fake_fetch)
 
-    def _fake_predict(draws, latest, include_regime_debug=False):
+    def _fake_predict(
+        draws,
+        latest,
+        config=None,
+        include_regime_debug=False,
+    ):
         calls["predict"] += 1
         return {
             'target_period': latest + 1,
@@ -133,7 +138,12 @@ def test_predict_cache_expired_refetches(monkeypatch) -> None:
         calls["fetch"] += 1
         return ([list(range(1, 21))] * 20, 114000210)
 
-    def _fake_predict(draws, latest, include_regime_debug=False):
+    def _fake_predict(
+        draws,
+        latest,
+        config=None,
+        include_regime_debug=False,
+    ):
         calls["predict"] += 1
         return {
             'target_period': latest + 1,
@@ -167,7 +177,7 @@ def test_predict_debug_false_metadata_is_trimmed(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'predict_top3',
-        lambda draws, latest, include_regime_debug=False: {
+        lambda draws, latest, config=None, include_regime_debug=False: {
             'target_period': latest + 1,
             'latest_period': latest,
             'top3': [[1, 2, 3], [4, 5, 6], [7, 8, 9]],

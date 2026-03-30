@@ -92,6 +92,9 @@ def test_metrics_output_reality_check() -> None:
     actual = list(range(1, 21))
     metrics = metrics_from_top3(top3, actual)
     expected_keys = {
+        "same_triplet_2hit_rate",
+        "top1_2hit_rate",
+        "same_triplet_3hit_rate",
         "top3_at_least_one_hit_rate",
         "exact_hit@3",
         "exact_hit@10",
@@ -120,6 +123,9 @@ def test_summary_schema_keys_present() -> None:
         "total_draws_final_holdout": 4,
         "chosen_config": {},
         "final_metrics": {},
+        "final_same_triplet_2hit_rate": 0.0,
+        "final_top1_2hit_rate": 0.0,
+        "final_same_triplet_3hit_rate": 0.0,
         "baseline_metrics": {},
         "block_metrics": [],
         "p_value_vs_frequency": 0.1,
