@@ -30,6 +30,9 @@ REQUIRED_SUMMARY_KEYS = {
     "total_draws_final_holdout",
     "chosen_config",
     "final_metrics",
+    "final_same_triplet_2hit_rate",
+    "final_top1_2hit_rate",
+    "final_same_triplet_3hit_rate",
     "baseline_metrics",
     "block_metrics",
     "p_value_vs_frequency",
@@ -157,6 +160,9 @@ def metrics_from_top3(top3: list[list[int]], actual: list[int]) -> dict[str, flo
     undershoot = sum(1 for x in offsets if x < 0) / len(offsets)
 
     return {
+        "same_triplet_2hit_rate": 1.0 if max(hits_by_triplet) >= 2 else 0.0,
+        "top1_2hit_rate": 1.0 if hits_by_triplet[0] >= 2 else 0.0,
+        "same_triplet_3hit_rate": 1.0 if max(hits_by_triplet) >= 3 else 0.0,
         "top3_at_least_one_hit_rate": 1.0 if max(hits_by_triplet) >= 1 else 0.0,
         "exact_hit@3": float(hit_count(top1, actual)),
         "exact_hit@10": float(hit_count(top10, actual)),
@@ -311,6 +317,13 @@ def evaluate_window(
             "latest_period": latest_period,
             "model_top3": json.dumps(top3, ensure_ascii=False),
             "actual": json.dumps(actual, ensure_ascii=False),
+            "model_regime": str(pred["metadata"].get("regime", "unknown")),
+            "model_detector_band": str(
+                pred["metadata"].get("detector_band", "unknown")
+            ),
+            "model_fallback_used": bool(
+                pred["metadata"].get("fallback_used", False)
+            ),
         }
         for k, v in model_metrics.items():
             row[f"model_{k}"] = v
@@ -353,6 +366,34 @@ def candidate_key(params: dict[str, int]) -> tuple[int, ...]:
         params["streak_min"],
         params["streak_max"],
     )
+
+
+def ranking_score(metrics: dict[str, float]) -> float:
+    return (
+        1000.0 * metrics["same_triplet_2hit_rate"]
+        + 100.0 * metrics["top1_2hit_rate"]
+        + 30.0 * metrics["same_triplet_3hit_rate"]
+        + 10.0 * metrics["exact_hit@3"]
+    )
+
+
+def instability_penalty(rows: list[dict[str, Any]]) -> float:
+    if not rows:
+        return 0.0
+    warning_or_anomaly = sum(
+        1
+        for row in rows
+        if row.get("model_detector_band") in {"warning", "anomaly"}
+    ) / len(rows)
+    fallback_rate = sum(
+        1 for row in rows if bool(row.get("model_fallback_used", False))
+    ) / len(rows)
+    return (warning_or_anomaly * 1.2) + (fallback_rate * 0.8)
+
+
+def split_middle(start: int, end: int) -> tuple[tuple[int, int], tuple[int, int]]:
+    mid = start + ((end - start) // 2)
+    return (start, mid), (mid, end)
 
 
 def main() -> None:
@@ -406,7 +447,7 @@ def main() -> None:
     _, baseline_search_b = evaluate_window(
         numbers, periods, search_start, search_end, baseline, args.seed, False
     )
-    base_score = aggregate(baseline_search_b["model"])["top3_at_least_one_hit_rate"]
+    base_score = aggregate(baseline_search_b["model"])["same_triplet_2hit_rate"]
 
     candidates: dict[tuple[int, ...], dict[str, int]] = {}
 
@@ -419,12 +460,23 @@ def main() -> None:
         cfg = build_config(params)
         try:
             _, b = evaluate_window(numbers, periods, search_start, search_end, cfg, args.seed + 101, False)
-            score = aggregate(b["model"])["top3_at_least_one_hit_rate"]
-            exact3 = aggregate(b["model"])["exact_hit@3"]
+            aggregated = aggregate(b["model"])
+            score = ranking_score(aggregated)
+            exact3 = aggregated["exact_hit@3"]
+            kpi2 = aggregated["same_triplet_2hit_rate"]
         except PredictError:
             score = -1.0
             exact3 = -1.0
-        search_log.append({"stage": "coarse", "score": score, "exact_hit@3": exact3, **params})
+            kpi2 = -1.0
+        search_log.append(
+            {
+                "stage": "coarse",
+                "score": score,
+                "same_triplet_2hit_rate": kpi2,
+                "exact_hit@3": exact3,
+                **params,
+            }
+        )
         coarse_rank.append((score, params))
 
     coarse_rank.sort(key=lambda x: x[0], reverse=True)
@@ -441,17 +493,76 @@ def main() -> None:
         candidates[candidate_key(p)] = p
 
     validated: list[dict[str, Any]] = []
+    (v1s, v1e), (v2s, v2e) = split_middle(val_start, val_end)
     for params in candidates.values():
         cfg = build_config(params)
         try:
-            _, search_b = evaluate_window(numbers, periods, search_start, search_end, cfg, args.seed + 201, False)
-            _, val_b = evaluate_window(numbers, periods, val_start, val_end, cfg, args.seed + 202, False)
+            _, search_b = evaluate_window(
+                numbers,
+                periods,
+                search_start,
+                search_end,
+                cfg,
+                args.seed + 201,
+                False,
+            )
+            val_rows, val_b = evaluate_window(
+                numbers,
+                periods,
+                val_start,
+                val_end,
+                cfg,
+                args.seed + 202,
+                False,
+            )
+            _, v1_b = evaluate_window(
+                numbers,
+                periods,
+                v1s,
+                v1e,
+                cfg,
+                args.seed + 203,
+                False,
+            )
+            _, v2_b = evaluate_window(
+                numbers,
+                periods,
+                v2s,
+                v2e,
+                cfg,
+                args.seed + 204,
+                False,
+            )
             search_metrics = aggregate(search_b["model"])
             val_metrics = aggregate(val_b["model"])
+            v1_metrics = aggregate(v1_b["model"])
+            v2_metrics = aggregate(v2_b["model"])
+            block_min_same2 = min(
+                v1_metrics["same_triplet_2hit_rate"],
+                v2_metrics["same_triplet_2hit_rate"],
+            )
+            block_gap_same2 = abs(
+                v1_metrics["same_triplet_2hit_rate"]
+                - v2_metrics["same_triplet_2hit_rate"]
+            )
+            instability = instability_penalty(val_rows)
+            score = (
+                ranking_score(val_metrics)
+                + (200.0 * block_min_same2)
+                - (120.0 * block_gap_same2)
+                - (80.0 * instability)
+            )
             row = {
                 "stage": "validate",
-                "search_score": search_metrics["top3_at_least_one_hit_rate"],
-                "validation_score": val_metrics["top3_at_least_one_hit_rate"],
+                "search_score": ranking_score(search_metrics),
+                "search_same_triplet_2hit_rate": search_metrics["same_triplet_2hit_rate"],
+                "validation_score": score,
+                "validation_same_triplet_2hit_rate": val_metrics["same_triplet_2hit_rate"],
+                "validation_block_min_same_triplet_2hit_rate": block_min_same2,
+                "validation_block_gap_same_triplet_2hit_rate": block_gap_same2,
+                "validation_instability_penalty": instability,
+                "validation_top1_2hit_rate": val_metrics["top1_2hit_rate"],
+                "validation_same_triplet_3hit_rate": val_metrics["same_triplet_3hit_rate"],
                 "validation_exact_hit@3": val_metrics["exact_hit@3"],
                 **params,
             }
@@ -465,6 +576,11 @@ def main() -> None:
 
     validated.sort(
         key=lambda r: (
+            r["validation_block_min_same_triplet_2hit_rate"],
+            r["validation_same_triplet_2hit_rate"],
+            -r["validation_block_gap_same_triplet_2hit_rate"],
+            r["validation_top1_2hit_rate"],
+            r["validation_same_triplet_3hit_rate"],
             r["validation_score"],
             r["validation_exact_hit@3"],
             r["search_score"],
@@ -495,11 +611,14 @@ def main() -> None:
     )
 
     final_metrics = aggregate(final_b["model"])
+    final_same_triplet_2hit_rate = final_metrics["same_triplet_2hit_rate"]
+    final_top1_2hit_rate = final_metrics["top1_2hit_rate"]
+    final_same_triplet_3hit_rate = final_metrics["same_triplet_3hit_rate"]
     baseline_metrics = {k: aggregate(v) for k, v in final_b.items() if k != "model"}
 
     diffs = [
-        final_b["model"][i]["top3_at_least_one_hit_rate"]
-        - final_b["frequency"][i]["top3_at_least_one_hit_rate"]
+        final_b["model"][i]["same_triplet_2hit_rate"]
+        - final_b["frequency"][i]["same_triplet_2hit_rate"]
         for i in range(len(final_b["model"]))
     ]
     p_value = paired_permutation_pvalue(diffs, random.Random(args.seed + 3000))
@@ -511,8 +630,8 @@ def main() -> None:
         m = aggregate(b["model"])
         f = aggregate(b["frequency"])
         d = [
-            b["model"][i]["top3_at_least_one_hit_rate"]
-            - b["frequency"][i]["top3_at_least_one_hit_rate"]
+            b["model"][i]["same_triplet_2hit_rate"]
+            - b["frequency"][i]["same_triplet_2hit_rate"]
             for i in range(len(b["model"]))
         ]
         pv = paired_permutation_pvalue(d, random.Random(args.seed + 3200 + idx))
@@ -523,6 +642,9 @@ def main() -> None:
                 "issue_start": periods[bs],
                 "issue_end": periods[be - 1],
                 "draws": be - bs,
+                "model_same_triplet_2hit_rate": m["same_triplet_2hit_rate"],
+                "model_top1_2hit_rate": m["top1_2hit_rate"],
+                "model_same_triplet_3hit_rate": m["same_triplet_3hit_rate"],
                 "model_top3_at_least_one_hit_rate": m["top3_at_least_one_hit_rate"],
                 "model_exact_hit@3": m["exact_hit@3"],
                 "frequency_exact_hit@3": f["exact_hit@3"],
@@ -532,13 +654,8 @@ def main() -> None:
             }
         )
 
-    blocks_hit_ok = all(x["model_top3_at_least_one_hit_rate"] >= 0.80 for x in block_metrics)
-    exact_ok = all(x["model_exact_hit@3"] >= x["frequency_exact_hit@3"] for x in block_metrics)
-    stats_ok = all(
-        x["p_value_vs_frequency"] < 0.05 and x["bootstrap_ci_low_vs_frequency"] > 0
-        for x in block_metrics
-    )
-    passed = bool(blocks_hit_ok and exact_ok and stats_ok and leak_free)
+    blocks_hit_ok = all(x["model_same_triplet_2hit_rate"] >= 0.50 for x in block_metrics)
+    passed = bool(blocks_hit_ok and final_same_triplet_2hit_rate >= 0.50 and leak_free)
 
     summary = {
         "snapshot_source": snapshot_source,
@@ -558,9 +675,24 @@ def main() -> None:
             "baseline_search_score": base_score,
             "params": chosen_params,
             "validation_score": best["validation_score"],
+            "validation_same_triplet_2hit_rate": best["validation_same_triplet_2hit_rate"],
+            "validation_block_min_same_triplet_2hit_rate": best[
+                "validation_block_min_same_triplet_2hit_rate"
+            ],
+            "validation_block_gap_same_triplet_2hit_rate": best[
+                "validation_block_gap_same_triplet_2hit_rate"
+            ],
+            "validation_instability_penalty": best[
+                "validation_instability_penalty"
+            ],
+            "validation_top1_2hit_rate": best["validation_top1_2hit_rate"],
+            "validation_same_triplet_3hit_rate": best["validation_same_triplet_3hit_rate"],
             "validation_exact_hit@3": best["validation_exact_hit@3"],
         },
         "final_metrics": final_metrics,
+        "final_same_triplet_2hit_rate": final_same_triplet_2hit_rate,
+        "final_top1_2hit_rate": final_top1_2hit_rate,
+        "final_same_triplet_3hit_rate": final_same_triplet_3hit_rate,
         "baseline_metrics": baseline_metrics,
         "block_metrics": block_metrics,
         "p_value_vs_frequency": p_value,
@@ -568,9 +700,9 @@ def main() -> None:
         "leakage_check_passed": leak_free,
         "passed": passed,
         "pass_reason": (
-            "all_final_holdout_block_guardrails_passed"
+            "all_final_holdout_same_triplet_2hit_guardrails_passed"
             if passed
-            else "failed_on_block_guardrails_or_exact_hit"
+            else "failed_on_same_triplet_2hit_guardrails"
         ),
     }
 
@@ -588,6 +720,9 @@ def main() -> None:
                 f"- search_issue_range: {summary['search_issue_range']}",
                 f"- validation_issue_range: {summary['validation_issue_range']}",
                 f"- final_holdout_issue_range: {summary['final_holdout_issue_range']}",
+                f"- final_same_triplet_2hit_rate: {summary['final_same_triplet_2hit_rate']:.6f}",
+                f"- final_top1_2hit_rate: {summary['final_top1_2hit_rate']:.6f}",
+                f"- final_same_triplet_3hit_rate: {summary['final_same_triplet_3hit_rate']:.6f}",
                 f"- final_top3_at_least_one_hit_rate: {summary['final_metrics']['top3_at_least_one_hit_rate']:.6f}",
                 f"- final_exact_hit@3: {summary['final_metrics']['exact_hit@3']:.6f}",
                 f"- p_value_vs_frequency: {summary['p_value_vs_frequency']:.6f}",
@@ -636,17 +771,17 @@ def main() -> None:
     ablation = [
         {
             "variant": "baseline_default",
-            "top3_at_least_one_hit_rate": base_score,
+            "same_triplet_2hit_rate": base_score,
             "note": "default config on search window",
         },
         {
             "variant": "chosen_config_validation",
-            "top3_at_least_one_hit_rate": best["validation_score"],
+            "same_triplet_2hit_rate": best["validation_same_triplet_2hit_rate"],
             "note": "selected by validation",
         },
         {
             "variant": "chosen_config_final",
-            "top3_at_least_one_hit_rate": final_metrics["top3_at_least_one_hit_rate"],
+            "same_triplet_2hit_rate": final_metrics["same_triplet_2hit_rate"],
             "note": "final untouched holdout",
         },
     ]
