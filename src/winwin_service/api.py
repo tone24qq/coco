@@ -9,7 +9,13 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from .fetcher import FetchError, fetch_latest_draws
-from .config import AppConfig, DEFAULT_CONFIG
+from .config import (
+    AppConfig,
+    DEFAULT_CONFIG,
+    RECENT_WINDOW_MAX,
+    RECENT_WINDOW_MIN,
+    normalize_recent_window,
+)
 from .scoring import PredictError, predict_top3
 from .schemas import PredictionResponse
 
@@ -44,10 +50,42 @@ def _load_validated_config() -> tuple[AppConfig, str, bool]:
         payload = json.loads(_BEST_CONFIG_PATH.read_text(encoding="utf-8"))
         params = payload.get("params", payload)
         kwargs = {
-            key: int(params[key]) for key in _LIVE_PARAM_KEYS if key in params
+            key: int(params[key])
+            for key in _LIVE_PARAM_KEYS
+            if key in params
         }
         if not kwargs:
             return DEFAULT_CONFIG, "default_config_invalid_best_config", False
+        raw_recent = int(
+            kwargs.get(
+                "recent_draws_count",
+                DEFAULT_CONFIG.recent_draws_count,
+            )
+        )
+        raw_max = int(
+            kwargs.get(
+                "max_recent_draws_count",
+                DEFAULT_CONFIG.max_recent_draws_count
+                or RECENT_WINDOW_MAX,
+            )
+        )
+        normalized_recent, normalized_max = normalize_recent_window(
+            raw_recent,
+            raw_max,
+        )
+        if (
+            raw_recent != normalized_recent
+            or raw_max != normalized_max
+            or raw_recent < RECENT_WINDOW_MIN
+            or raw_recent > RECENT_WINDOW_MAX
+            or raw_max < RECENT_WINDOW_MIN
+            or raw_max > RECENT_WINDOW_MAX
+        ):
+            return (
+                DEFAULT_CONFIG,
+                "default_config_reject_long_window_best_config",
+                False,
+            )
         return AppConfig(**kwargs), "validated_best_config", True
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to load validated best config: %s", exc)

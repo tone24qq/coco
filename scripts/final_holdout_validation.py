@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 
-from winwin_service.config import AppConfig
+from winwin_service.config import AppConfig, RECENT_WINDOW_MAX, RECENT_WINDOW_MIN, normalize_recent_window
 from winwin_service.fetcher import parse_draws_from_json
 from winwin_service.scoring import PredictError, predict_top3
 
@@ -194,10 +194,14 @@ def previous_neighbor_baseline(prev_draw: list[int], k: int = 3) -> list[int]:
 
 
 def build_config(params: dict[str, int]) -> AppConfig:
+    recent, max_recent = normalize_recent_window(
+        params["recent_draws_count"],
+        params["max_recent_draws_count"],
+    )
     return AppConfig(
         min_prediction_draws=10,
-        recent_draws_count=params["recent_draws_count"],
-        max_recent_draws_count=params["max_recent_draws_count"],
+        recent_draws_count=recent,
+        max_recent_draws_count=max_recent,
         min_score_threshold=params["min_score_threshold"],
         skip_kill_threshold=params["skip_kill_threshold"],
         streak_kill_threshold=params["streak_kill_threshold"],
@@ -214,9 +218,13 @@ def sample_params(rng: random.Random) -> dict[str, int]:
     warm_max = rng.randint(max(4, warm_min + 1), 8)
     streak_min = rng.randint(1, 2)
     streak_max = rng.randint(max(2, streak_min + 1), 5)
+    recent, max_recent = normalize_recent_window(
+        rng.randint(RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+        rng.randint(RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+    )
     return {
-        "recent_draws_count": rng.randint(20, 90),
-        "max_recent_draws_count": rng.randint(20, 90),
+        "recent_draws_count": recent,
+        "max_recent_draws_count": max_recent if max_recent is not None else RECENT_WINDOW_MAX,
         "min_score_threshold": rng.randint(35, 85),
         "skip_kill_threshold": rng.randint(6, 15),
         "streak_kill_threshold": rng.randint(3, 7),
@@ -237,9 +245,14 @@ def refine_params(base: dict[str, int], rng: random.Random, scale: int) -> dict[
     streak_min = clamp(base["streak_min"] + rng.randint(-1, 1), 1, 3)
     streak_max = clamp(base["streak_max"] + rng.randint(-scale, scale), streak_min + 1, 6)
 
+    recent, max_recent = normalize_recent_window(
+        clamp(base["recent_draws_count"] + rng.randint(-1, 1), RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+        clamp(base["max_recent_draws_count"] + rng.randint(-1, 1), RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+    )
+
     return {
-        "recent_draws_count": clamp(base["recent_draws_count"] + rng.randint(-scale * 4, scale * 4), 15, 100),
-        "max_recent_draws_count": clamp(base["max_recent_draws_count"] + rng.randint(-scale * 4, scale * 4), 15, 100),
+        "recent_draws_count": recent,
+        "max_recent_draws_count": max_recent if max_recent is not None else RECENT_WINDOW_MAX,
         "min_score_threshold": clamp(base["min_score_threshold"] + rng.randint(-scale * 3, scale * 3), 20, 95),
         "skip_kill_threshold": clamp(base["skip_kill_threshold"] + rng.randint(-scale, scale), 4, 20),
         "streak_kill_threshold": clamp(base["streak_kill_threshold"] + rng.randint(-1, 1), 2, 8),

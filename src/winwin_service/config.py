@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+RECENT_WINDOW_MIN = 1
+RECENT_WINDOW_MAX = 5
+
+
 @dataclass(frozen=True)
 class ScoreWeights:
     streak_perfect: int = 15
@@ -88,9 +92,9 @@ class RegimeConfig:
 class AppConfig:
     source_url: str = "https://winwin.tw/Bingo"
     request_timeout: int = 15
-    recent_draws_count: int = 50
+    recent_draws_count: int = 3
     min_prediction_draws: int = 10
-    max_recent_draws_count: int | None = 50
+    max_recent_draws_count: int | None = 5
     history_lookback_days: int = 7
     skip_kill_threshold: int = 10
     streak_kill_threshold: int = 4
@@ -106,3 +110,21 @@ class AppConfig:
 
 
 DEFAULT_CONFIG = AppConfig()
+
+
+def clamp_recent_window_value(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return max(RECENT_WINDOW_MIN, min(RECENT_WINDOW_MAX, int(value)))
+
+
+def normalize_recent_window(
+    recent_draws_count: int,
+    max_recent_draws_count: int | None,
+) -> tuple[int, int | None]:
+    normalized_recent = clamp_recent_window_value(recent_draws_count)
+    assert normalized_recent is not None
+    normalized_max = clamp_recent_window_value(max_recent_draws_count)
+    if normalized_max is None:
+        return normalized_recent, None
+    return min(normalized_recent, normalized_max), normalized_max

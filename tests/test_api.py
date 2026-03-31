@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from winwin_service.api import app
@@ -192,3 +195,29 @@ def test_predict_debug_false_metadata_is_trimmed(monkeypatch) -> None:
     response = client.get('/predict')
     assert response.status_code == 200
     assert 'regime_metrics_raw' not in response.json()['metadata']
+
+
+def test_load_validated_config_rejects_legacy_long_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from winwin_service import api
+
+    payload = {
+        "params": {
+            "recent_draws_count": 50,
+            "max_recent_draws_count": 50,
+            "min_score_threshold": 60,
+        }
+    }
+    cfg_path = tmp_path / "best_config.json"
+    cfg_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(api, "_BEST_CONFIG_PATH", cfg_path)
+    loaded, source, matched = api._load_validated_config()
+
+    assert loaded.recent_draws_count <= 5
+    assert loaded.max_recent_draws_count is not None
+    assert loaded.max_recent_draws_count <= 5
+    assert source == "default_config_reject_long_window_best_config"
+    assert matched is False
