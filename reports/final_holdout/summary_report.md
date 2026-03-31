@@ -1,16 +1,16 @@
 # Final Holdout Validation
-- snapshot_source: frozen_snapshot
-- snapshot_fingerprint: 6a148b03b82b705f4612d197d06a2cba914f52d6e0a1fe7a90c955ed583fe2d8
-- search_issue_range: [115017775, 115017828]
-- validation_issue_range: [115017829, 115017846]
-- final_holdout_issue_range: [115017847, 115017864]
-- final_same_triplet_2hit_rate: 0.444444
-- final_top1_2hit_rate: 0.166667
-- final_same_triplet_3hit_rate: 0.055556
-- final_top3_at_least_one_hit_rate: 0.888889
-- final_exact_hit@3: 0.666667
-- p_value_vs_frequency: 0.363159
-- bootstrap_ci_vs_frequency: {'low': -0.1111111111111111, 'high': 0.5555555555555556}
+- snapshot_source: live_fetch_frozen
+- snapshot_fingerprint: 00e372098177af305fc8faf313e17a3f90be3c9893eb32fe017484653ae1af5d
+- search_issue_range: [115018003, 115018062]
+- validation_issue_range: [115018063, 115018082]
+- final_holdout_issue_range: [115018083, 115018102]
+- final_same_triplet_2hit_rate: 0.450000
+- final_top1_2hit_rate: 0.300000
+- final_same_triplet_3hit_rate: 0.050000
+- final_top3_at_least_one_hit_rate: 0.850000
+- final_exact_hit@3: 0.850000
+- p_value_vs_frequency: 0.061235
+- bootstrap_ci_vs_frequency: {'low': 0.05, 'high': 0.65}
 - leakage_check_passed: True
 - passed: False
 - pass_reason: failed_on_same_triplet_2hit_guardrails

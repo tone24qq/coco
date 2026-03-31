@@ -4,7 +4,12 @@ import itertools
 import math
 from collections import Counter, defaultdict
 
-from .config import AppConfig, DEFAULT_CONFIG, RegimeConfig
+from .config import (
+    AppConfig,
+    DEFAULT_CONFIG,
+    RegimeConfig,
+    normalize_recent_window,
+)
 
 
 class PredictError(RuntimeError):
@@ -812,10 +817,14 @@ def predict_top3(
             f"{config.min_prediction_draws} draws, got {available_draws}"
         )
 
-    recent_window = max(config.min_prediction_draws, config.recent_draws_count)
-    if config.max_recent_draws_count is not None:
-        recent_window = min(recent_window, config.max_recent_draws_count)
-        recent_window = max(recent_window, config.min_prediction_draws)
+    normalized_recent, normalized_max_recent = normalize_recent_window(
+        config.recent_draws_count,
+        config.max_recent_draws_count,
+    )
+    recent_window = normalized_recent
+    if normalized_max_recent is not None:
+        recent_window = min(recent_window, normalized_max_recent)
+    recent_window = max(1, recent_window)
     recent_draws = past_draws[-recent_window:]
     effective_draws_used = len(recent_draws)
 
@@ -923,8 +932,9 @@ def predict_top3(
             "analyzed_draws": len(recent_draws),
             "available_draws": available_draws,
             "effective_draws_used": effective_draws_used,
+            "effective_recent_window": recent_window,
             "min_prediction_draws": config.min_prediction_draws,
-            "max_recent_draws_count": config.max_recent_draws_count,
+            "max_recent_draws_count": normalized_max_recent,
             "regime_min_history": config.regime.min_history,
             "regime_disabled_reason": regime_info["regime_disabled_reason"],
             "valid_pool_size": len(valid_pool),

@@ -1,24 +1,24 @@
 {
   "search_strategy": "coarse_fine_local_refine",
-  "baseline_search_score": 0.36363636363636365,
+  "baseline_search_score": 0.34,
   "params": {
-    "recent_draws_count": 85,
-    "max_recent_draws_count": 55,
-    "min_score_threshold": 58,
-    "skip_kill_threshold": 15,
-    "streak_kill_threshold": 6,
-    "candidate_trim_size": 60,
-    "warm_skip_min": 2,
+    "recent_draws_count": 4,
+    "max_recent_draws_count": 4,
+    "min_score_threshold": 36,
+    "skip_kill_threshold": 7,
+    "streak_kill_threshold": 3,
+    "candidate_trim_size": 51,
+    "warm_skip_min": 3,
     "warm_skip_max": 7,
     "streak_min": 1,
-    "streak_max": 5
+    "streak_max": 3
   },
-  "validation_score": 640.0,
-  "validation_same_triplet_2hit_rate": 0.5555555555555556,
-  "validation_block_min_same_triplet_2hit_rate": 0.4444444444444444,
-  "validation_block_gap_same_triplet_2hit_rate": 0.2222222222222222,
+  "validation_score": 472.0,
+  "validation_same_triplet_2hit_rate": 0.4,
+  "validation_block_min_same_triplet_2hit_rate": 0.3,
+  "validation_block_gap_same_triplet_2hit_rate": 0.2,
   "validation_instability_penalty": 0.0,
-  "validation_top1_2hit_rate": 0.1111111111111111,
-  "validation_same_triplet_3hit_rate": 0.16666666666666666,
-  "validation_exact_hit@3": 0.6111111111111112
+  "validation_top1_2hit_rate": 0.25,
+  "validation_same_triplet_3hit_rate": 0.05,
+  "validation_exact_hit@3": 0.95
 }

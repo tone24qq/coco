@@ -12,7 +12,7 @@ from statistics import mean
 
 import requests
 
-from winwin_service.config import AppConfig
+from winwin_service.config import AppConfig, RECENT_WINDOW_MAX, RECENT_WINDOW_MIN, normalize_recent_window
 from winwin_service.fetcher import parse_draws_from_json
 from winwin_service.scoring import PredictError, predict_top3
 
@@ -121,10 +121,14 @@ def paired_permutation_pvalue(diffs: list[float], rng: random.Random, n: int = 3
 
 
 def build_config(params: dict[str, int]) -> AppConfig:
+    recent, max_recent = normalize_recent_window(
+        params["recent_draws_count"],
+        params["max_recent_draws_count"],
+    )
     return AppConfig(
         min_prediction_draws=10,
-        recent_draws_count=params["recent_draws_count"],
-        max_recent_draws_count=params["max_recent_draws_count"],
+        recent_draws_count=recent,
+        max_recent_draws_count=max_recent,
         min_score_threshold=params["min_score_threshold"],
         skip_kill_threshold=params["skip_kill_threshold"],
         streak_kill_threshold=params["streak_kill_threshold"],
@@ -141,8 +145,8 @@ def random_param(rng: random.Random) -> dict[str, int]:
     warm_max = rng.randint(max(warm_min + 1, 4), 8)
     streak_min = rng.randint(1, 2)
     streak_max = rng.randint(max(streak_min + 1, 2), 5)
-    rc = rng.randint(20, 90)
-    mrc = rng.randint(20, 90)
+    rc = rng.randint(RECENT_WINDOW_MIN, RECENT_WINDOW_MAX)
+    mrc = rng.randint(rc, RECENT_WINDOW_MAX)
     return {
         "recent_draws_count": rc,
         "max_recent_draws_count": mrc,

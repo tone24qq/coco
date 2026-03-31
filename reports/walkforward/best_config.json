@@ -1,12 +1,12 @@
 {
-  "recent_draws_count": 23,
-  "max_recent_draws_count": 83,
-  "min_score_threshold": 41,
-  "skip_kill_threshold": 9,
-  "streak_kill_threshold": 7,
-  "candidate_trim_size": 44,
+  "recent_draws_count": 5,
+  "max_recent_draws_count": 5,
+  "min_score_threshold": 46,
+  "skip_kill_threshold": 10,
+  "streak_kill_threshold": 3,
+  "candidate_trim_size": 29,
   "warm_skip_min": 2,
   "warm_skip_max": 5,
   "streak_min": 1,
-  "streak_max": 4
+  "streak_max": 5
 }
