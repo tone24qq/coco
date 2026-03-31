@@ -38,10 +38,16 @@ def test_predict_contract_top3_schema_unchanged() -> None:
         "target_period",
         "latest_period",
         "top3",
+        "top10",
+        "top10_display",
         "kill_zone",
         "metadata",
     }
     assert isinstance(result["top3"], list)
+    assert isinstance(result["top10"], list)
+    assert len(result["top10"]) == 10
+    assert isinstance(result["top10_display"], list)
+    assert len(result["top10_display"]) == 10
     assert all(
         isinstance(item, list) and len(item) == 3
         for item in result["top3"]
@@ -55,6 +61,27 @@ def test_top3_length_is_always_three() -> None:
         config=AppConfig(min_score_threshold=10),
     )
     assert len(result["top3"]) == 3
+
+
+def test_top10_rank_and_sort_contract() -> None:
+    result = predict_top3(
+        _baseline_draws(),
+        latest_period=1001,
+        config=AppConfig(min_score_threshold=10),
+    )
+    top10 = result["top10"]
+    assert [entry["rank"] for entry in top10] == list(range(1, 11))
+    scores = [entry["score"] for entry in top10]
+    assert scores == sorted(scores, reverse=True)
+    for entry in top10:
+        assert set(entry.keys()) == {
+            "rank",
+            "numbers",
+            "score",
+            "confidence",
+            "overlap_count_vs_previous",
+            "high_confidence_overlap",
+        }
 
 
 def test_predict_with_48_draws_still_allowed() -> None:
@@ -79,6 +106,22 @@ def test_diversified_strict_overlap() -> None:
     top3 = result["top3"]
     assert len(set(top3[0]) & set(top3[1])) <= 1
     assert len(set(top3[0]) & set(top3[2])) <= 1
+
+
+def test_top10_overlap_guardrail() -> None:
+    result = predict_top3(
+        _baseline_draws(),
+        latest_period=2000,
+        config=AppConfig(min_score_threshold=10),
+    )
+    top10 = result["top10"]
+    for idx, current in enumerate(top10):
+        current_numbers = current["numbers"]
+        for prev in top10[:idx]:
+            overlap = len(set(current_numbers) & set(prev["numbers"]))
+            if overlap > 1:
+                assert current["high_confidence_overlap"] is True
+                assert current["confidence"] > 0.9
 
 
 def test_fallback_path_can_fill_top3() -> None:

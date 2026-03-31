@@ -899,6 +899,61 @@ def _select_diversified_top3(
     return selected[:3], fallback_used
 
 
+def _compute_confidence_scores(
+    candidates: list[dict[str, object]],
+) -> list[float]:
+    if not candidates:
+        return []
+    raw_scores = [float(entry["score"]) for entry in candidates]
+    max_score = max(raw_scores)
+    min_score = min(raw_scores)
+    if max_score == min_score:
+        return [1.0 for _ in raw_scores]
+    return [
+        (score - min_score) / (max_score - min_score)
+        for score in raw_scores
+    ]
+
+
+def _select_diversified_top10(
+    candidates: list[dict[str, object]],
+    high_confidence_threshold: float = 0.90,
+) -> list[dict[str, object]]:
+    if not candidates:
+        return []
+
+    confidences = _compute_confidence_scores(candidates)
+    selected: list[dict[str, object]] = []
+
+    for idx, entry in enumerate(candidates):
+        numbers = list(entry["triplet"])
+        overlap_count = 0
+        if selected:
+            overlap_count = max(
+                _shared_numbers(numbers, list(picked["numbers"]))
+                for picked in selected
+            )
+        confidence = round(confidences[idx], 4)
+        high_confidence_overlap = (
+            overlap_count > 1 and confidence > high_confidence_threshold
+        )
+        if overlap_count <= 1 or high_confidence_overlap:
+            selected.append(
+                {
+                    "rank": len(selected) + 1,
+                    "numbers": numbers,
+                    "score": round(float(entry["score"]), 4),
+                    "confidence": confidence,
+                    "overlap_count_vs_previous": overlap_count,
+                    "high_confidence_overlap": high_confidence_overlap,
+                }
+            )
+        if len(selected) == 10:
+            break
+
+    return selected
+
+
 def predict_top3(
     past_draws: list[list[int]],
     latest_period: int,
@@ -1018,12 +1073,32 @@ def predict_top3(
         )
 
     candidates.sort(key=lambda c: float(c["score"]), reverse=True)
-    top3, fallback_used = _select_diversified_top3(candidates)
+    top10 = _select_diversified_top10(candidates)
+    if len(top10) < 10:
+        raise PredictError(
+            "Unable to construct diversified top10 "
+            f"(selected={len(top10)}, required=10)"
+        )
+    top3 = [list(entry["numbers"]) for entry in top10[:3]]
+    fallback_used = any(
+        bool(entry["high_confidence_overlap"]) for entry in top10
+    )
+    top10_display = [
+        (
+            f"Top{entry['rank']}: "
+            f"{entry['numbers'][0]}, "
+            f"{entry['numbers'][1]}, "
+            f"{entry['numbers'][2]}"
+        )
+        for entry in top10
+    ]
 
     result = {
         "target_period": latest_period + 1,
         "latest_period": latest_period,
         "top3": top3,
+        "top10": top10,
+        "top10_display": top10_display,
         "kill_zone": kill_zone,
         "metadata": {
             "analyzed_draws": len(recent_draws),
@@ -1044,9 +1119,10 @@ def predict_top3(
             "qualified_combinations": len(candidates),
             "min_score_threshold": config.min_score_threshold,
             "dedup_enabled": True,
-            "dedup_rule": "shared<=1_then_shared<=2_fallback",
+            "dedup_rule": "shared<=1_only_allow_gt1_when_confidence>0.9",
             "raw_top_candidates_considered": len(candidates),
             "fallback_used": fallback_used,
+            "top10_size": len(top10),
             "transition_signal_active": any(
                 v > 0 for v in transition_scores.values()
             ),
