@@ -147,19 +147,16 @@ def fetch_latest_draws(
             f"draw_count={len(draws)})"
         )
 
-    if config.max_recent_draws_count is None:
-        recent_draws = draws[:]
-    else:
-        recent_draws = draws[-config.max_recent_draws_count:]
+    history_draws = draws[:]
 
-    if len(recent_draws) < config.min_prediction_draws:
+    if len(history_draws) < config.min_prediction_draws:
         raise FetchError(
             "Not enough draws to compute prediction "
-            f"(got_draws={len(recent_draws)}, "
+            f"(got_draws={len(history_draws)}, "
             f"min_required_draws={config.min_prediction_draws}, "
-            "configured_max_draws="
+            "configured_recent_window_cap="
             f"{config.max_recent_draws_count})"
         )
 
-    latest_period = recent_draws[-1][0]
-    return [d[1] for d in recent_draws], latest_period
+    latest_period = history_draws[-1][0]
+    return [d[1] for d in history_draws], latest_period

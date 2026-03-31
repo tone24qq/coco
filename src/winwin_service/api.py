@@ -9,7 +9,14 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 
 from .fetcher import FetchError, fetch_latest_draws
-from .config import AppConfig, DEFAULT_CONFIG
+from .config import (
+    AppConfig,
+    DEFAULT_CONFIG,
+    RECENT_WINDOW_MAX,
+    RECENT_WINDOW_MIN,
+    RegimeConfig,
+    normalize_recent_window,
+)
 from .scoring import PredictError, predict_top3
 from .schemas import PredictionResponse
 
@@ -33,7 +40,69 @@ _LIVE_PARAM_KEYS = (
     "warm_skip_max",
     "streak_min",
     "streak_max",
+    "streak_score_len1_hit1",
+    "streak_score_len1_hit2",
+    "streak_score_len1_hit3",
+    "streak_score_len2",
+    "streak_score_len3",
+    "warm_score_len1_skip3",
+    "warm_score_len1_skip4",
+    "warm_score_len1_skip5",
+    "warm_score_len2",
+    "warm_score_len3",
+    "momentum_score_cap",
+    "transition_score_multiplier",
+    "coarse_number_count_weight",
+    "coarse_skip_weight",
+    "coarse_streak_weight",
+    "coarse_streak_cap",
+    "coarse_transition_weight",
+    "regime_hot_momentum_weight",
+    "regime_hot_streak_weight",
+    "regime_warm_skip_weight",
+    "regime_concentrated_pair_weight",
+    "regime_concentrated_tail_weight",
+    "regime_concentrated_tens_weight",
+    "regime_dispersed_tail_weight",
+    "regime_dispersed_tens_weight",
+    "regime_signal_hot_multiplier",
+    "regime_signal_warm_multiplier",
+    "regime_signal_concentrated_multiplier",
+    "regime_signal_dispersed_multiplier",
+    "regime_delta_base_ratio",
+    "regime_delta_min_abs",
+    "quick_overlap_prev_warning",
+    "quick_overlap_prev_anomaly",
+    "quick_overlap_prev_low_warning",
+    "quick_overlap_prev_low_anomaly",
+    "quick_skip_concentration_warning",
+    "quick_skip_concentration_anomaly",
+    "quick_pair_concentration_warning",
+    "quick_pair_concentration_anomaly",
 )
+_INT_PARAM_KEYS = {
+    "recent_draws_count",
+    "max_recent_draws_count",
+    "min_score_threshold",
+    "skip_kill_threshold",
+    "streak_kill_threshold",
+    "candidate_trim_size",
+    "warm_skip_min",
+    "warm_skip_max",
+    "streak_min",
+    "streak_max",
+    "coarse_streak_cap",
+}
+_REGIME_FLOAT_KEYS = {
+    "quick_overlap_prev_warning",
+    "quick_overlap_prev_anomaly",
+    "quick_overlap_prev_low_warning",
+    "quick_overlap_prev_low_anomaly",
+    "quick_skip_concentration_warning",
+    "quick_skip_concentration_anomaly",
+    "quick_pair_concentration_warning",
+    "quick_pair_concentration_anomaly",
+}
 
 
 def _load_validated_config() -> tuple[AppConfig, str, bool]:
@@ -43,11 +112,56 @@ def _load_validated_config() -> tuple[AppConfig, str, bool]:
     try:
         payload = json.loads(_BEST_CONFIG_PATH.read_text(encoding="utf-8"))
         params = payload.get("params", payload)
-        kwargs = {
-            key: int(params[key]) for key in _LIVE_PARAM_KEYS if key in params
-        }
+        kwargs = {}
+        regime_updates = {}
+        for key in _LIVE_PARAM_KEYS:
+            if key not in params:
+                continue
+            if key in _REGIME_FLOAT_KEYS:
+                regime_updates[key] = float(params[key])
+            elif key in _INT_PARAM_KEYS:
+                kwargs[key] = int(params[key])
+            else:
+                kwargs[key] = float(params[key])
         if not kwargs:
             return DEFAULT_CONFIG, "default_config_invalid_best_config", False
+        raw_recent = int(
+            kwargs.get(
+                "recent_draws_count",
+                DEFAULT_CONFIG.recent_draws_count,
+            )
+        )
+        raw_max = int(
+            kwargs.get(
+                "max_recent_draws_count",
+                DEFAULT_CONFIG.max_recent_draws_count
+                or RECENT_WINDOW_MAX,
+            )
+        )
+        normalized_recent, normalized_max = normalize_recent_window(
+            raw_recent,
+            raw_max,
+        )
+        if (
+            raw_recent != normalized_recent
+            or raw_max != normalized_max
+            or raw_recent < RECENT_WINDOW_MIN
+            or raw_recent > RECENT_WINDOW_MAX
+            or raw_max < RECENT_WINDOW_MIN
+            or raw_max > RECENT_WINDOW_MAX
+        ):
+            return (
+                DEFAULT_CONFIG,
+                "default_config_reject_long_window_best_config",
+                False,
+            )
+        if regime_updates:
+            kwargs["regime"] = RegimeConfig(
+                **{
+                    **DEFAULT_CONFIG.regime.__dict__,
+                    **regime_updates,
+                }
+            )
         return AppConfig(**kwargs), "validated_best_config", True
     except Exception as exc:  # noqa: BLE001
         logger.warning("failed to load validated best config: %s", exc)
@@ -88,7 +202,7 @@ def predict(debug: bool = False) -> PredictionResponse:
         return PredictionResponse(**cached)
 
     try:
-        draws, latest_period = fetch_latest_draws()
+        draws, latest_period = fetch_latest_draws(config=_ACTIVE_CONFIG)
     except FetchError as exc:
         logger.exception("fetch failed reason=%s", exc)
         raise HTTPException(

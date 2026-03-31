@@ -4,7 +4,12 @@ import itertools
 import math
 from collections import Counter, defaultdict
 
-from .config import AppConfig, DEFAULT_CONFIG, RegimeConfig
+from .config import (
+    AppConfig,
+    DEFAULT_CONFIG,
+    RegimeConfig,
+    normalize_recent_window,
+)
 
 
 class PredictError(RuntimeError):
@@ -43,15 +48,15 @@ def _calc_triplet_base_score(
     if len(streak_nums) == 1:
         s_val = streaks[streak_nums[0]]
         if s_val == 1:
-            score += 20
+            score += config.streak_score_len1_hit1
         elif s_val == 2:
-            score += 10
+            score += config.streak_score_len1_hit2
         elif s_val == 3:
-            score += 5
+            score += config.streak_score_len1_hit3
     elif len(streak_nums) == 2:
-        score += 5
+        score += config.streak_score_len2
     elif len(streak_nums) == 3:
-        score -= 20
+        score += config.streak_score_len3
 
     warm_nums = [
         n
@@ -61,15 +66,15 @@ def _calc_triplet_base_score(
     if len(warm_nums) == 1:
         w_val = skips[warm_nums[0]]
         if w_val == 3:
-            score += 20
+            score += config.warm_score_len1_skip3
         elif w_val == 4:
-            score += 10
+            score += config.warm_score_len1_skip4
         elif w_val == 5:
-            score += 5
+            score += config.warm_score_len1_skip5
     elif len(warm_nums) == 2:
-        score += 5
+        score += config.warm_score_len2
     elif len(warm_nums) == 3:
-        score -= 20
+        score += config.warm_score_len3
 
     weights = config.score_weights
 
@@ -96,14 +101,14 @@ def _calc_triplet_base_score(
     pair1 = pair_counts[(n1, n2)]
     pair2 = pair_counts[(n2, n3)]
     pair3 = pair_counts[(n1, n3)]
-    momentum_score = min(15, (pair1 + pair2 + pair3))
+    momentum_score = min(config.momentum_score_cap, (pair1 + pair2 + pair3))
     score += momentum_score
     transition_score = (
         transition_scores.get(n1, 0.0)
         + transition_scores.get(n2, 0.0)
         + transition_scores.get(n3, 0.0)
     )
-    score += transition_score * 0.35
+    score += transition_score * config.transition_score_multiplier
 
     components = {
         "momentum_score": float(momentum_score),
@@ -433,7 +438,10 @@ def _normal_oscillation_flags(
     return flags
 
 
-def _quick_detector_bands(metrics_raw: dict[str, float]) -> dict[str, str]:
+def _quick_detector_bands(
+    metrics_raw: dict[str, float],
+    detector_cfg: RegimeConfig,
+) -> dict[str, str]:
     bands: dict[str, str] = {}
 
     def _set(metric: str, warning: bool, anomaly: bool) -> None:
@@ -446,73 +454,157 @@ def _quick_detector_bands(metrics_raw: dict[str, float]) -> dict[str, str]:
 
     _set(
         "overlap_prev",
-        warning=metrics_raw["overlap_prev"] >= 8,
-        anomaly=metrics_raw["overlap_prev"] >= 9,
+        warning=(
+            metrics_raw["overlap_prev"]
+            >= detector_cfg.quick_overlap_prev_warning
+        ),
+        anomaly=(
+            metrics_raw["overlap_prev"]
+            >= detector_cfg.quick_overlap_prev_anomaly
+        ),
     )
     _set(
         "overlap_prev_low",
-        warning=metrics_raw["overlap_prev"] <= 2,
-        anomaly=metrics_raw["overlap_prev"] <= 1,
+        warning=(
+            metrics_raw["overlap_prev"]
+            <= detector_cfg.quick_overlap_prev_low_warning
+        ),
+        anomaly=(
+            metrics_raw["overlap_prev"]
+            <= detector_cfg.quick_overlap_prev_low_anomaly
+        ),
     )
     _set(
         "max_consecutive_run",
-        warning=metrics_raw["max_consecutive_run"] >= 5,
-        anomaly=metrics_raw["max_consecutive_run"] >= 6,
+        warning=(
+            metrics_raw["max_consecutive_run"]
+            >= detector_cfg.quick_max_consecutive_run_warning
+        ),
+        anomaly=(
+            metrics_raw["max_consecutive_run"]
+            >= detector_cfg.quick_max_consecutive_run_anomaly
+        ),
     )
     _set(
         "hot_number_peak",
-        warning=metrics_raw["hot_number_peak"] >= 24,
-        anomaly=metrics_raw["hot_number_peak"] >= 25,
+        warning=(
+            metrics_raw["hot_number_peak"]
+            >= detector_cfg.quick_hot_number_peak_warning
+        ),
+        anomaly=(
+            metrics_raw["hot_number_peak"]
+            >= detector_cfg.quick_hot_number_peak_anomaly
+        ),
     )
     _set(
         "cold_number_floor",
-        warning=metrics_raw["cold_number_floor"] <= 4,
-        anomaly=metrics_raw["cold_number_floor"] <= 3,
+        warning=(
+            metrics_raw["cold_number_floor"]
+            <= detector_cfg.quick_cold_number_floor_warning
+        ),
+        anomaly=(
+            metrics_raw["cold_number_floor"]
+            <= detector_cfg.quick_cold_number_floor_anomaly
+        ),
     )
     _set(
         "skip_concentration",
-        warning=metrics_raw["skip_concentration"] >= 0.16,
-        anomaly=metrics_raw["skip_concentration"] >= 0.20,
+        warning=(
+            metrics_raw["skip_concentration"]
+            >= detector_cfg.quick_skip_concentration_warning
+        ),
+        anomaly=(
+            metrics_raw["skip_concentration"]
+            >= detector_cfg.quick_skip_concentration_anomaly
+        ),
     )
     _set(
         "small_large_drift",
-        warning=metrics_raw["small_large_drift"] >= 0.18,
-        anomaly=metrics_raw["small_large_drift"] >= 0.22,
+        warning=(
+            metrics_raw["small_large_drift"]
+            >= detector_cfg.quick_small_large_drift_warning
+        ),
+        anomaly=(
+            metrics_raw["small_large_drift"]
+            >= detector_cfg.quick_small_large_drift_anomaly
+        ),
     )
     _set(
         "pair_concentration",
-        warning=metrics_raw["pair_concentration"] >= 0.75,
-        anomaly=metrics_raw["pair_concentration"] >= 0.82,
+        warning=(
+            metrics_raw["pair_concentration"]
+            >= detector_cfg.quick_pair_concentration_warning
+        ),
+        anomaly=(
+            metrics_raw["pair_concentration"]
+            >= detector_cfg.quick_pair_concentration_anomaly
+        ),
     )
     _set(
         "tens_zone_concentration",
-        warning=metrics_raw["tens_zone_concentration"] >= 0.30,
-        anomaly=metrics_raw["tens_zone_concentration"] >= 0.35,
+        warning=(
+            metrics_raw["tens_zone_concentration"]
+            >= detector_cfg.quick_tens_zone_concentration_warning
+        ),
+        anomaly=(
+            metrics_raw["tens_zone_concentration"]
+            >= detector_cfg.quick_tens_zone_concentration_anomaly
+        ),
     )
     _set(
         "tail_entropy_low",
-        warning=metrics_raw["tail_entropy"] <= 2.85,
-        anomaly=metrics_raw["tail_entropy"] <= 2.60,
+        warning=(
+            metrics_raw["tail_entropy"]
+            <= detector_cfg.quick_tail_entropy_low_warning
+        ),
+        anomaly=(
+            metrics_raw["tail_entropy"]
+            <= detector_cfg.quick_tail_entropy_low_anomaly
+        ),
     )
     _set(
         "tail_entropy_high",
-        warning=metrics_raw["tail_entropy"] >= 3.15,
-        anomaly=metrics_raw["tail_entropy"] >= 3.25,
+        warning=(
+            metrics_raw["tail_entropy"]
+            >= detector_cfg.quick_tail_entropy_high_warning
+        ),
+        anomaly=(
+            metrics_raw["tail_entropy"]
+            >= detector_cfg.quick_tail_entropy_high_anomaly
+        ),
     )
     _set(
         "tens_dispersion",
-        warning=metrics_raw["tens_unique_zones"] >= 8,
-        anomaly=metrics_raw["tens_unique_zones"] >= 9,
+        warning=(
+            metrics_raw["tens_unique_zones"]
+            >= detector_cfg.quick_tens_dispersion_warning
+        ),
+        anomaly=(
+            metrics_raw["tens_unique_zones"]
+            >= detector_cfg.quick_tens_dispersion_anomaly
+        ),
     )
     _set(
         "odd_even_drift",
-        warning=metrics_raw["odd_even_drift"] >= 0.20,
-        anomaly=metrics_raw["odd_even_drift"] >= 0.25,
+        warning=(
+            metrics_raw["odd_even_drift"]
+            >= detector_cfg.quick_odd_even_drift_warning
+        ),
+        anomaly=(
+            metrics_raw["odd_even_drift"]
+            >= detector_cfg.quick_odd_even_drift_anomaly
+        ),
     )
     _set(
         "streak_concentration",
-        warning=metrics_raw["streak_concentration"] >= 0.10,
-        anomaly=metrics_raw["streak_concentration"] >= 0.14,
+        warning=(
+            metrics_raw["streak_concentration"]
+            >= detector_cfg.quick_streak_concentration_warning
+        ),
+        anomaly=(
+            metrics_raw["streak_concentration"]
+            >= detector_cfg.quick_streak_concentration_anomaly
+        ),
     )
     return bands
 
@@ -609,8 +701,8 @@ def detect_regime(
     else:
         now_z = {}
         now_pct = {}
-        now_bands = _quick_detector_bands(now_raw)
-        prev_bands = _quick_detector_bands(prev_raw)
+        now_bands = _quick_detector_bands(now_raw, detector_cfg)
+        prev_bands = _quick_detector_bands(prev_raw, detector_cfg)
 
     (
         now_regime,
@@ -698,6 +790,7 @@ def _apply_regime_adjustment(
     base_score: float,
     components: dict[str, float],
     regime_info: dict[str, object],
+    config: AppConfig,
 ) -> float:
     regime = str(regime_info.get("regime", "normal"))
     strength = float(regime_info.get("adjustment_strength", 0.0))
@@ -707,27 +800,34 @@ def _apply_regime_adjustment(
     signal = 0.0
     if regime == "hot_continuation":
         signal = (
-            components["momentum_score"] * 0.5
-            + components["streak_count"] * 4
+            components["momentum_score"] * config.regime_hot_momentum_weight
+            + components["streak_count"] * config.regime_hot_streak_weight
         )
+        signal *= config.regime_signal_hot_multiplier
     elif regime == "warm_rebound":
-        signal = components["warm_skip_count"] * 5
+        signal = (
+            components["warm_skip_count"] * config.regime_warm_skip_weight
+        ) * config.regime_signal_warm_multiplier
     elif regime == "concentrated":
         signal = (
-            components["pair_sum"] * 0.6
-            + (4 - components["tail_unique"]) * 4
-            + (4 - components["tens_unique"]) * 4
+            components["pair_sum"] * config.regime_concentrated_pair_weight
+            + (4 - components["tail_unique"])
+            * config.regime_concentrated_tail_weight
+            + (4 - components["tens_unique"])
+            * config.regime_concentrated_tens_weight
         )
+        signal *= config.regime_signal_concentrated_multiplier
     elif regime == "dispersed":
         signal = (
-            components["tail_unique"] * 5
-            + components["tens_unique"] * 5
+            components["tail_unique"] * config.regime_dispersed_tail_weight
+            + components["tens_unique"] * config.regime_dispersed_tens_weight
         )
+        signal *= config.regime_signal_dispersed_multiplier
 
     raw_delta = signal * strength
-    max_delta = abs(base_score) * 0.10
+    max_delta = abs(base_score) * config.regime_delta_base_ratio
     if max_delta == 0:
-        max_delta = 1.0
+        max_delta = config.regime_delta_min_abs
     delta = max(-max_delta, min(max_delta, raw_delta))
     return base_score + delta
 
@@ -812,10 +912,14 @@ def predict_top3(
             f"{config.min_prediction_draws} draws, got {available_draws}"
         )
 
-    recent_window = max(config.min_prediction_draws, config.recent_draws_count)
-    if config.max_recent_draws_count is not None:
-        recent_window = min(recent_window, config.max_recent_draws_count)
-        recent_window = max(recent_window, config.min_prediction_draws)
+    normalized_recent, normalized_max_recent = normalize_recent_window(
+        config.recent_draws_count,
+        config.max_recent_draws_count,
+    )
+    recent_window = normalized_recent
+    if normalized_max_recent is not None:
+        recent_window = min(recent_window, normalized_max_recent)
+    recent_window = max(1, recent_window)
     recent_draws = past_draws[-recent_window:]
     effective_draws_used = len(recent_draws)
 
@@ -865,10 +969,11 @@ def predict_top3(
     coarse_ranked_pool = sorted(
         valid_pool,
         key=lambda num: (
-            number_counts[num] * 2
-            - skips[num]
-            + min(streaks[num], 3) * 2
-            + transition_scores[num] * 1.5
+            number_counts[num] * config.coarse_number_count_weight
+            - skips[num] * config.coarse_skip_weight
+            + min(streaks[num], config.coarse_streak_cap)
+            * config.coarse_streak_weight
+            + transition_scores[num] * config.coarse_transition_weight
         ),
         reverse=True,
     )
@@ -893,6 +998,7 @@ def predict_top3(
             base_score=base_score,
             components=components,
             regime_info=regime_info,
+            config=config,
         )
 
         if adjusted_score >= config.min_score_threshold:
@@ -923,8 +1029,9 @@ def predict_top3(
             "analyzed_draws": len(recent_draws),
             "available_draws": available_draws,
             "effective_draws_used": effective_draws_used,
+            "effective_recent_window": recent_window,
             "min_prediction_draws": config.min_prediction_draws,
-            "max_recent_draws_count": config.max_recent_draws_count,
+            "max_recent_draws_count": normalized_max_recent,
             "regime_min_history": config.regime.min_history,
             "regime_disabled_reason": regime_info["regime_disabled_reason"],
             "valid_pool_size": len(valid_pool),

@@ -52,7 +52,7 @@ def test_fetch_latest_draws_success(mock_get: Mock) -> None:
         )
     )
 
-    assert len(draws) == 50
+    assert len(draws) == 55
     assert latest_period == 114000055
 
 
@@ -77,6 +77,32 @@ def test_fetch_latest_draws_max_none_uses_all(mock_get: Mock) -> None:
 
     assert len(draws) == 48
     assert latest_period == 114100048
+
+
+@patch('winwin_service.fetcher.requests.get')
+def test_fetch_latest_draws_recent_cap_does_not_reduce_history(
+    mock_get: Mock,
+) -> None:
+    rows = []
+    for i in range(12):
+        nums = ','.join(f'{n:02d}' for n in range(1, 21))
+        rows.append({'No': str(114150001 + i), 'BigShowOrder': nums})
+
+    response = Mock()
+    response.text = str(rows).replace("'", '"')
+    response.raise_for_status = Mock()
+    mock_get.return_value = response
+
+    draws, latest_period = fetch_latest_draws(
+        config=AppConfig(
+            min_prediction_draws=10,
+            recent_draws_count=5,
+            max_recent_draws_count=5,
+        )
+    )
+
+    assert len(draws) == 12
+    assert latest_period == 114150012
 
 
 @patch('winwin_service.fetcher.requests.get')

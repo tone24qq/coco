@@ -1,21 +1,21 @@
 {
   "snapshot_path": "reports/final_holdout/snapshot_draws.json",
-  "snapshot_source": "frozen_snapshot",
-  "fingerprint": "6a148b03b82b705f4612d197d06a2cba914f52d6e0a1fe7a90c955ed583fe2d8",
+  "snapshot_source": "live_fetch_frozen",
+  "fingerprint": "f3c7011ed15af53932180c5ed268e712005395bf58d10aeb17013ac1c7448372",
   "issue_range": [
-    115017775,
-    115017864
+    115018014,
+    115018113
   ],
-  "total_draws": 90,
+  "total_draws": 100,
   "final_blocks": [
     [
-      115017847,
-      115017855
+      115018094,
+      115018103
     ],
     [
-      115017856,
-      115017864
+      115018104,
+      115018113
     ]
   ],
-  "generated_at_utc": "2026-03-30T04:13:14.978449+00:00"
+  "generated_at_utc": "2026-03-31T02:57:02.099503+00:00"
 }
