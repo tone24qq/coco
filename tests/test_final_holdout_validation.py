@@ -93,6 +93,7 @@ def test_metrics_output_reality_check() -> None:
     metrics = metrics_from_top3(top3, actual)
     expected_keys = {
         "same_triplet_2hit_rate",
+        "top10_same_triplet_2hit_rate",
         "top1_2hit_rate",
         "same_triplet_3hit_rate",
         "top3_at_least_one_hit_rate",
@@ -124,6 +125,7 @@ def test_summary_schema_keys_present() -> None:
         "chosen_config": {},
         "final_metrics": {},
         "final_same_triplet_2hit_rate": 0.0,
+        "final_top10_same_triplet_2hit_rate": 0.0,
         "final_top1_2hit_rate": 0.0,
         "final_same_triplet_3hit_rate": 0.0,
         "baseline_metrics": {},

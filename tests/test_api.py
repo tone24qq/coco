@@ -32,6 +32,23 @@ def test_predict_integration_mocked_network(monkeypatch) -> None:
             'target_period': latest + 1,
             'latest_period': latest,
             'top3': [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            'top10': [
+                {
+                    'rank': i + 1,
+                    'numbers': [i + 1, i + 2, i + 3],
+                    'score': float(100 - i),
+                    'confidence': float(max(0.0, 1 - i * 0.05)),
+                    'overlap_count_vs_previous': 0,
+                    'high_confidence_overlap': False,
+                }
+                for i in range(10)
+            ],
+            'top10_display': [
+                (
+                    f'Top{i + 1}: {i + 1}, {i + 2}, {i + 3}'
+                )
+                for i in range(10)
+            ],
             'kill_zone': [10, 11],
             'metadata': {'analyzed_draws': len(draws)},
         },
@@ -42,6 +59,8 @@ def test_predict_integration_mocked_network(monkeypatch) -> None:
     data = response.json()
     assert data['target_period'] == 114000124
     assert len(data['top3']) == 3
+    assert len(data['top10']) == 10
+    assert data['top10'][0]['rank'] == 1
     assert data['metadata']['cache_hit'] is False
 
 
@@ -113,6 +132,23 @@ def test_predict_cache_hit_without_recompute(monkeypatch) -> None:
             'target_period': latest + 1,
             'latest_period': latest,
             'top3': [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            'top10': [
+                {
+                    'rank': i + 1,
+                    'numbers': [i + 1, i + 2, i + 3],
+                    'score': float(100 - i),
+                    'confidence': float(max(0.0, 1 - i * 0.05)),
+                    'overlap_count_vs_previous': 0,
+                    'high_confidence_overlap': False,
+                }
+                for i in range(10)
+            ],
+            'top10_display': [
+                (
+                    f'Top{i + 1}: {i + 1}, {i + 2}, {i + 3}'
+                )
+                for i in range(10)
+            ],
             'kill_zone': [10, 11],
             'metadata': {'analyzed_draws': len(draws)},
         }
@@ -154,6 +190,23 @@ def test_predict_cache_expired_refetches(monkeypatch) -> None:
             'target_period': latest + 1,
             'latest_period': latest,
             'top3': [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            'top10': [
+                {
+                    'rank': i + 1,
+                    'numbers': [i + 1, i + 2, i + 3],
+                    'score': float(100 - i),
+                    'confidence': float(max(0.0, 1 - i * 0.05)),
+                    'overlap_count_vs_previous': 0,
+                    'high_confidence_overlap': False,
+                }
+                for i in range(10)
+            ],
+            'top10_display': [
+                (
+                    f'Top{i + 1}: {i + 1}, {i + 2}, {i + 3}'
+                )
+                for i in range(10)
+            ],
             'kill_zone': [10, 11],
             'metadata': {'analyzed_draws': len(draws)},
         }
@@ -186,6 +239,23 @@ def test_predict_debug_false_metadata_is_trimmed(monkeypatch) -> None:
             'target_period': latest + 1,
             'latest_period': latest,
             'top3': [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            'top10': [
+                {
+                    'rank': i + 1,
+                    'numbers': [i + 1, i + 2, i + 3],
+                    'score': float(100 - i),
+                    'confidence': float(max(0.0, 1 - i * 0.05)),
+                    'overlap_count_vs_previous': 0,
+                    'high_confidence_overlap': False,
+                }
+                for i in range(10)
+            ],
+            'top10_display': [
+                (
+                    f'Top{i + 1}: {i + 1}, {i + 2}, {i + 3}'
+                )
+                for i in range(10)
+            ],
             'kill_zone': [10, 11],
             'metadata': (
                 {'regime_metrics_raw': {'k': 1}}
@@ -243,6 +313,23 @@ def test_predict_passes_active_config_to_fetcher(monkeypatch) -> None:
             "target_period": latest + 1,
             "latest_period": latest,
             "top3": [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            "top10": [
+                {
+                    "rank": i + 1,
+                    "numbers": [i + 1, i + 2, i + 3],
+                    "score": float(100 - i),
+                    "confidence": float(max(0.0, 1 - i * 0.05)),
+                    "overlap_count_vs_previous": 0,
+                    "high_confidence_overlap": False,
+                }
+                for i in range(10)
+            ],
+            "top10_display": [
+                (
+                    f"Top{i + 1}: {i + 1}, {i + 2}, {i + 3}"
+                )
+                for i in range(10)
+            ],
             "kill_zone": [10, 11],
             "metadata": {"analyzed_draws": len(draws)},
         },

@@ -74,16 +74,27 @@ def signed_min_offset(pred: list[int], actual: list[int]) -> float:
     return sum(offsets) / len(offsets)
 
 
-def metrics_from_triplets(top3: list[list[int]], actual: list[int]) -> dict[str, float]:
+def metrics_from_triplets(
+    top3: list[list[int]],
+    actual: list[int],
+    top10_triplets: list[list[int]] | None = None,
+) -> dict[str, float]:
     top1 = sorted(top3[0])
     top10 = sorted({n for tri in top3 for n in tri})[:10]
     top20 = sorted({n for tri in top3 for n in tri})[:20]
 
     hits_each = [hit_count(sorted(tri), actual) for tri in top3]
+    top10_hits_each = [
+        hit_count(sorted(tri), actual)
+        for tri in (top10_triplets or top3)
+    ]
     best3 = max(hits_each)
 
     return {
         "same_triplet_2hit_rate": 1.0 if best3 >= 2 else 0.0,
+        "top10_same_triplet_2hit_rate": (
+            1.0 if max(top10_hits_each) >= 2 else 0.0
+        ),
         "top1_2hit_rate": 1.0 if hits_each[0] >= 2 else 0.0,
         "same_triplet_3hit_rate": 1.0 if best3 >= 3 else 0.0,
         "top3_at_least_one_hit": 1.0 if best3 >= 1 else 0.0,
@@ -283,7 +294,14 @@ def eval_config(
             except PredictError:
                 continue
             top3 = [sorted(x) for x in pred["top3"]]
-            model_m = metrics_from_triplets(top3, actual)
+            top10_triplets = [
+                sorted(list(item["numbers"])) for item in pred["top10"]
+            ]
+            model_m = metrics_from_triplets(
+                top3,
+                actual,
+                top10_triplets=top10_triplets,
+            )
             top1 = sorted(top3[0])
             uni = sorted(rng_uni.sample(range(1, 81), 3))
             frq = freq_baseline(history)

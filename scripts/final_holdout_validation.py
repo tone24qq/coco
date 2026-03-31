@@ -31,6 +31,7 @@ REQUIRED_SUMMARY_KEYS = {
     "chosen_config",
     "final_metrics",
     "final_same_triplet_2hit_rate",
+    "final_top10_same_triplet_2hit_rate",
     "final_top1_2hit_rate",
     "final_same_triplet_3hit_rate",
     "baseline_metrics",
@@ -145,12 +146,20 @@ def min_distance(pred: list[int], actual: list[int]) -> int:
     return min(min(abs(p - a) for a in actual) for p in pred)
 
 
-def metrics_from_top3(top3: list[list[int]], actual: list[int]) -> dict[str, float]:
+def metrics_from_top3(
+    top3: list[list[int]],
+    actual: list[int],
+    top10_triplets: list[list[int]] | None = None,
+) -> dict[str, float]:
     top1 = sorted(top3[0])
     unique = sorted({n for tri in top3 for n in tri})
     top10 = unique[:10]
     top20 = unique[:20]
     hits_by_triplet = [hit_count(sorted(t), actual) for t in top3]
+    top10_hits_by_triplet = [
+        hit_count(sorted(t), actual)
+        for t in (top10_triplets or top3)
+    ]
     offsets = signed_offsets(top1, actual)
 
     strict_adj = sum(
@@ -161,6 +170,9 @@ def metrics_from_top3(top3: list[list[int]], actual: list[int]) -> dict[str, flo
 
     return {
         "same_triplet_2hit_rate": 1.0 if max(hits_by_triplet) >= 2 else 0.0,
+        "top10_same_triplet_2hit_rate": (
+            1.0 if max(top10_hits_by_triplet) >= 2 else 0.0
+        ),
         "top1_2hit_rate": 1.0 if hits_by_triplet[0] >= 2 else 0.0,
         "same_triplet_3hit_rate": 1.0 if max(hits_by_triplet) >= 3 else 0.0,
         "top3_at_least_one_hit_rate": 1.0 if max(hits_by_triplet) >= 1 else 0.0,
@@ -443,14 +455,21 @@ def evaluate_window(
         latest_period = periods[t - 1]
         pred = predict_top3(history, latest_period, cfg)
         top3 = [sorted(x) for x in pred["top3"]]
-
-        model_metrics = metrics_from_top3(top3, actual)
+        top10_triplets = [
+            sorted(list(item["numbers"])) for item in pred["top10"]
+        ]
+        model_metrics = metrics_from_top3(
+            top3,
+            actual,
+            top10_triplets=top10_triplets,
+        )
         buckets["model"].append(model_metrics)
 
         row: dict[str, Any] = {
             "issue": periods[t],
             "latest_period": latest_period,
             "model_top3": json.dumps(top3, ensure_ascii=False),
+            "model_top10": json.dumps(top10_triplets, ensure_ascii=False),
             "actual": json.dumps(actual, ensure_ascii=False),
             "model_regime": str(pred["metadata"].get("regime", "unknown")),
             "model_detector_band": str(
@@ -825,6 +844,9 @@ def main() -> None:
 
     final_metrics = aggregate(final_b["model"])
     final_same_triplet_2hit_rate = final_metrics["same_triplet_2hit_rate"]
+    final_top10_same_triplet_2hit_rate = final_metrics[
+        "top10_same_triplet_2hit_rate"
+    ]
     final_top1_2hit_rate = final_metrics["top1_2hit_rate"]
     final_same_triplet_3hit_rate = final_metrics["same_triplet_3hit_rate"]
     baseline_metrics = {k: aggregate(v) for k, v in final_b.items() if k != "model"}
@@ -904,7 +926,11 @@ def main() -> None:
         },
         "final_metrics": final_metrics,
         "final_same_triplet_2hit_rate": final_same_triplet_2hit_rate,
+        "final_top10_same_triplet_2hit_rate": final_top10_same_triplet_2hit_rate,
         "final_top1_2hit_rate": final_top1_2hit_rate,
+        "top10_vs_top1_2hit_rate_gap": (
+            final_top10_same_triplet_2hit_rate - final_top1_2hit_rate
+        ),
         "final_same_triplet_3hit_rate": final_same_triplet_3hit_rate,
         "baseline_metrics": baseline_metrics,
         "block_metrics": block_metrics,
@@ -934,7 +960,15 @@ def main() -> None:
                 f"- validation_issue_range: {summary['validation_issue_range']}",
                 f"- final_holdout_issue_range: {summary['final_holdout_issue_range']}",
                 f"- final_same_triplet_2hit_rate: {summary['final_same_triplet_2hit_rate']:.6f}",
+                (
+                    "- final_top10_same_triplet_2hit_rate: "
+                    f"{summary['final_top10_same_triplet_2hit_rate']:.6f}"
+                ),
                 f"- final_top1_2hit_rate: {summary['final_top1_2hit_rate']:.6f}",
+                (
+                    "- top10_vs_top1_2hit_rate_gap: "
+                    f"{summary['top10_vs_top1_2hit_rate_gap']:.6f}"
+                ),
                 f"- final_same_triplet_3hit_rate: {summary['final_same_triplet_3hit_rate']:.6f}",
                 f"- final_top3_at_least_one_hit_rate: {summary['final_metrics']['top3_at_least_one_hit_rate']:.6f}",
                 f"- final_exact_hit@3: {summary['final_metrics']['exact_hit@3']:.6f}",
