@@ -13,7 +13,7 @@ from typing import Any
 
 import requests
 
-from winwin_service.config import AppConfig
+from winwin_service.config import AppConfig, RECENT_WINDOW_MAX, RECENT_WINDOW_MIN, normalize_recent_window
 from winwin_service.fetcher import parse_draws_from_json
 from winwin_service.scoring import PredictError, predict_top3
 
@@ -193,11 +193,15 @@ def previous_neighbor_baseline(prev_draw: list[int], k: int = 3) -> list[int]:
     return sorted(pool)[:k]
 
 
-def build_config(params: dict[str, int]) -> AppConfig:
+def build_config(params: dict[str, float]) -> AppConfig:
+    recent, max_recent = normalize_recent_window(
+        params["recent_draws_count"],
+        params["max_recent_draws_count"],
+    )
     return AppConfig(
         min_prediction_draws=10,
-        recent_draws_count=params["recent_draws_count"],
-        max_recent_draws_count=params["max_recent_draws_count"],
+        recent_draws_count=recent,
+        max_recent_draws_count=max_recent,
         min_score_threshold=params["min_score_threshold"],
         skip_kill_threshold=params["skip_kill_threshold"],
         streak_kill_threshold=params["streak_kill_threshold"],
@@ -206,17 +210,65 @@ def build_config(params: dict[str, int]) -> AppConfig:
         warm_skip_max=params["warm_skip_max"],
         streak_min=params["streak_min"],
         streak_max=params["streak_max"],
+        streak_score_len1_hit1=float(params["streak_score_len1_hit1"]),
+        streak_score_len1_hit2=float(params["streak_score_len1_hit2"]),
+        streak_score_len1_hit3=float(params["streak_score_len1_hit3"]),
+        streak_score_len2=float(params["streak_score_len2"]),
+        streak_score_len3=float(params["streak_score_len3"]),
+        warm_score_len1_skip3=float(params["warm_score_len1_skip3"]),
+        warm_score_len1_skip4=float(params["warm_score_len1_skip4"]),
+        warm_score_len1_skip5=float(params["warm_score_len1_skip5"]),
+        warm_score_len2=float(params["warm_score_len2"]),
+        warm_score_len3=float(params["warm_score_len3"]),
+        momentum_score_cap=float(params["momentum_score_cap"]),
+        transition_score_multiplier=float(params["transition_score_multiplier"]),
+        coarse_number_count_weight=float(params["coarse_number_count_weight"]),
+        coarse_skip_weight=float(params["coarse_skip_weight"]),
+        coarse_streak_weight=float(params["coarse_streak_weight"]),
+        coarse_streak_cap=int(params["coarse_streak_cap"]),
+        coarse_transition_weight=float(params["coarse_transition_weight"]),
+        regime_hot_momentum_weight=float(params["regime_hot_momentum_weight"]),
+        regime_hot_streak_weight=float(params["regime_hot_streak_weight"]),
+        regime_warm_skip_weight=float(params["regime_warm_skip_weight"]),
+        regime_concentrated_pair_weight=float(params["regime_concentrated_pair_weight"]),
+        regime_concentrated_tail_weight=float(params["regime_concentrated_tail_weight"]),
+        regime_concentrated_tens_weight=float(params["regime_concentrated_tens_weight"]),
+        regime_dispersed_tail_weight=float(params["regime_dispersed_tail_weight"]),
+        regime_dispersed_tens_weight=float(params["regime_dispersed_tens_weight"]),
+        regime_signal_hot_multiplier=float(params["regime_signal_hot_multiplier"]),
+        regime_signal_warm_multiplier=float(params["regime_signal_warm_multiplier"]),
+        regime_signal_concentrated_multiplier=float(params["regime_signal_concentrated_multiplier"]),
+        regime_signal_dispersed_multiplier=float(params["regime_signal_dispersed_multiplier"]),
+        regime_delta_base_ratio=float(params["regime_delta_base_ratio"]),
+        regime_delta_min_abs=float(params["regime_delta_min_abs"]),
+        regime=AppConfig().regime.__class__(
+            **{
+                **AppConfig().regime.__dict__,
+                "quick_overlap_prev_warning": float(params["quick_overlap_prev_warning"]),
+                "quick_overlap_prev_anomaly": float(params["quick_overlap_prev_anomaly"]),
+                "quick_overlap_prev_low_warning": float(params["quick_overlap_prev_low_warning"]),
+                "quick_overlap_prev_low_anomaly": float(params["quick_overlap_prev_low_anomaly"]),
+                "quick_skip_concentration_warning": float(params["quick_skip_concentration_warning"]),
+                "quick_skip_concentration_anomaly": float(params["quick_skip_concentration_anomaly"]),
+                "quick_pair_concentration_warning": float(params["quick_pair_concentration_warning"]),
+                "quick_pair_concentration_anomaly": float(params["quick_pair_concentration_anomaly"]),
+            }
+        ),
     )
 
 
-def sample_params(rng: random.Random) -> dict[str, int]:
+def sample_params(rng: random.Random) -> dict[str, float]:
     warm_min = rng.randint(1, 4)
     warm_max = rng.randint(max(4, warm_min + 1), 8)
     streak_min = rng.randint(1, 2)
     streak_max = rng.randint(max(2, streak_min + 1), 5)
+    recent, max_recent = normalize_recent_window(
+        rng.randint(RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+        rng.randint(RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+    )
     return {
-        "recent_draws_count": rng.randint(20, 90),
-        "max_recent_draws_count": rng.randint(20, 90),
+        "recent_draws_count": recent,
+        "max_recent_draws_count": max_recent if max_recent is not None else RECENT_WINDOW_MAX,
         "min_score_threshold": rng.randint(35, 85),
         "skip_kill_threshold": rng.randint(6, 15),
         "streak_kill_threshold": rng.randint(3, 7),
@@ -225,10 +277,49 @@ def sample_params(rng: random.Random) -> dict[str, int]:
         "warm_skip_max": warm_max,
         "streak_min": streak_min,
         "streak_max": streak_max,
+        "streak_score_len1_hit1": rng.randint(12, 28),
+        "streak_score_len1_hit2": rng.randint(6, 16),
+        "streak_score_len1_hit3": rng.randint(2, 10),
+        "streak_score_len2": rng.randint(0, 10),
+        "streak_score_len3": -rng.randint(8, 28),
+        "warm_score_len1_skip3": rng.randint(12, 28),
+        "warm_score_len1_skip4": rng.randint(6, 16),
+        "warm_score_len1_skip5": rng.randint(2, 10),
+        "warm_score_len2": rng.randint(0, 10),
+        "warm_score_len3": -rng.randint(8, 28),
+        "momentum_score_cap": rng.randint(8, 25),
+        "transition_score_multiplier": round(rng.uniform(0.15, 0.65), 2),
+        "coarse_number_count_weight": round(rng.uniform(1.0, 3.2), 2),
+        "coarse_skip_weight": round(rng.uniform(0.4, 1.8), 2),
+        "coarse_streak_weight": round(rng.uniform(0.8, 3.2), 2),
+        "coarse_streak_cap": rng.randint(1, 5),
+        "coarse_transition_weight": round(rng.uniform(0.8, 2.6), 2),
+        "regime_hot_momentum_weight": round(rng.uniform(0.2, 1.0), 2),
+        "regime_hot_streak_weight": round(rng.uniform(2.0, 6.0), 2),
+        "regime_warm_skip_weight": round(rng.uniform(2.0, 7.0), 2),
+        "regime_concentrated_pair_weight": round(rng.uniform(0.3, 1.2), 2),
+        "regime_concentrated_tail_weight": round(rng.uniform(1.5, 6.0), 2),
+        "regime_concentrated_tens_weight": round(rng.uniform(1.5, 6.0), 2),
+        "regime_dispersed_tail_weight": round(rng.uniform(2.0, 7.0), 2),
+        "regime_dispersed_tens_weight": round(rng.uniform(2.0, 7.0), 2),
+        "regime_signal_hot_multiplier": round(rng.uniform(0.6, 1.6), 2),
+        "regime_signal_warm_multiplier": round(rng.uniform(0.6, 1.6), 2),
+        "regime_signal_concentrated_multiplier": round(rng.uniform(0.6, 1.6), 2),
+        "regime_signal_dispersed_multiplier": round(rng.uniform(0.6, 1.6), 2),
+        "regime_delta_base_ratio": round(rng.uniform(0.05, 0.18), 3),
+        "regime_delta_min_abs": round(rng.uniform(0.8, 2.0), 2),
+        "quick_overlap_prev_warning": rng.randint(7, 9),
+        "quick_overlap_prev_anomaly": rng.randint(8, 10),
+        "quick_overlap_prev_low_warning": rng.randint(1, 3),
+        "quick_overlap_prev_low_anomaly": rng.randint(1, 2),
+        "quick_skip_concentration_warning": round(rng.uniform(0.12, 0.20), 3),
+        "quick_skip_concentration_anomaly": round(rng.uniform(0.16, 0.24), 3),
+        "quick_pair_concentration_warning": round(rng.uniform(0.65, 0.82), 3),
+        "quick_pair_concentration_anomaly": round(rng.uniform(0.74, 0.90), 3),
     }
 
 
-def refine_params(base: dict[str, int], rng: random.Random, scale: int) -> dict[str, int]:
+def refine_params(base: dict[str, float], rng: random.Random, scale: int) -> dict[str, float]:
     def clamp(v: int, lo: int, hi: int) -> int:
         return max(lo, min(hi, v))
 
@@ -237,9 +328,14 @@ def refine_params(base: dict[str, int], rng: random.Random, scale: int) -> dict[
     streak_min = clamp(base["streak_min"] + rng.randint(-1, 1), 1, 3)
     streak_max = clamp(base["streak_max"] + rng.randint(-scale, scale), streak_min + 1, 6)
 
+    recent, max_recent = normalize_recent_window(
+        clamp(base["recent_draws_count"] + rng.randint(-1, 1), RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+        clamp(base["max_recent_draws_count"] + rng.randint(-1, 1), RECENT_WINDOW_MIN, RECENT_WINDOW_MAX),
+    )
+
     return {
-        "recent_draws_count": clamp(base["recent_draws_count"] + rng.randint(-scale * 4, scale * 4), 15, 100),
-        "max_recent_draws_count": clamp(base["max_recent_draws_count"] + rng.randint(-scale * 4, scale * 4), 15, 100),
+        "recent_draws_count": recent,
+        "max_recent_draws_count": max_recent if max_recent is not None else RECENT_WINDOW_MAX,
         "min_score_threshold": clamp(base["min_score_threshold"] + rng.randint(-scale * 3, scale * 3), 20, 95),
         "skip_kill_threshold": clamp(base["skip_kill_threshold"] + rng.randint(-scale, scale), 4, 20),
         "streak_kill_threshold": clamp(base["streak_kill_threshold"] + rng.randint(-1, 1), 2, 8),
@@ -248,6 +344,45 @@ def refine_params(base: dict[str, int], rng: random.Random, scale: int) -> dict[
         "warm_skip_max": warm_max,
         "streak_min": streak_min,
         "streak_max": streak_max,
+        "streak_score_len1_hit1": clamp(int(base["streak_score_len1_hit1"]) + rng.randint(-2, 2), 10, 30),
+        "streak_score_len1_hit2": clamp(int(base["streak_score_len1_hit2"]) + rng.randint(-2, 2), 4, 18),
+        "streak_score_len1_hit3": clamp(int(base["streak_score_len1_hit3"]) + rng.randint(-2, 2), 1, 12),
+        "streak_score_len2": clamp(int(base["streak_score_len2"]) + rng.randint(-2, 2), -2, 12),
+        "streak_score_len3": clamp(int(base["streak_score_len3"]) + rng.randint(-3, 3), -30, -5),
+        "warm_score_len1_skip3": clamp(int(base["warm_score_len1_skip3"]) + rng.randint(-2, 2), 10, 30),
+        "warm_score_len1_skip4": clamp(int(base["warm_score_len1_skip4"]) + rng.randint(-2, 2), 4, 18),
+        "warm_score_len1_skip5": clamp(int(base["warm_score_len1_skip5"]) + rng.randint(-2, 2), 1, 12),
+        "warm_score_len2": clamp(int(base["warm_score_len2"]) + rng.randint(-2, 2), -2, 12),
+        "warm_score_len3": clamp(int(base["warm_score_len3"]) + rng.randint(-3, 3), -30, -5),
+        "momentum_score_cap": clamp(int(base["momentum_score_cap"]) + rng.randint(-2, 2), 6, 28),
+        "transition_score_multiplier": round(max(0.1, min(0.8, float(base["transition_score_multiplier"]) + rng.uniform(-0.08, 0.08))), 2),
+        "coarse_number_count_weight": round(max(0.6, min(3.6, float(base["coarse_number_count_weight"]) + rng.uniform(-0.2, 0.2))), 2),
+        "coarse_skip_weight": round(max(0.2, min(2.2, float(base["coarse_skip_weight"]) + rng.uniform(-0.2, 0.2))), 2),
+        "coarse_streak_weight": round(max(0.5, min(3.6, float(base["coarse_streak_weight"]) + rng.uniform(-0.2, 0.2))), 2),
+        "coarse_streak_cap": clamp(int(base["coarse_streak_cap"]) + rng.randint(-1, 1), 1, 6),
+        "coarse_transition_weight": round(max(0.4, min(3.0, float(base["coarse_transition_weight"]) + rng.uniform(-0.2, 0.2))), 2),
+        "regime_hot_momentum_weight": round(max(0.1, min(1.4, float(base["regime_hot_momentum_weight"]) + rng.uniform(-0.1, 0.1))), 2),
+        "regime_hot_streak_weight": round(max(1.0, min(7.0, float(base["regime_hot_streak_weight"]) + rng.uniform(-0.4, 0.4))), 2),
+        "regime_warm_skip_weight": round(max(1.0, min(8.0, float(base["regime_warm_skip_weight"]) + rng.uniform(-0.4, 0.4))), 2),
+        "regime_concentrated_pair_weight": round(max(0.2, min(1.4, float(base["regime_concentrated_pair_weight"]) + rng.uniform(-0.1, 0.1))), 2),
+        "regime_concentrated_tail_weight": round(max(0.8, min(7.0, float(base["regime_concentrated_tail_weight"]) + rng.uniform(-0.4, 0.4))), 2),
+        "regime_concentrated_tens_weight": round(max(0.8, min(7.0, float(base["regime_concentrated_tens_weight"]) + rng.uniform(-0.4, 0.4))), 2),
+        "regime_dispersed_tail_weight": round(max(1.0, min(8.0, float(base["regime_dispersed_tail_weight"]) + rng.uniform(-0.4, 0.4))), 2),
+        "regime_dispersed_tens_weight": round(max(1.0, min(8.0, float(base["regime_dispersed_tens_weight"]) + rng.uniform(-0.4, 0.4))), 2),
+        "regime_signal_hot_multiplier": round(max(0.4, min(1.8, float(base["regime_signal_hot_multiplier"]) + rng.uniform(-0.1, 0.1))), 2),
+        "regime_signal_warm_multiplier": round(max(0.4, min(1.8, float(base["regime_signal_warm_multiplier"]) + rng.uniform(-0.1, 0.1))), 2),
+        "regime_signal_concentrated_multiplier": round(max(0.4, min(1.8, float(base["regime_signal_concentrated_multiplier"]) + rng.uniform(-0.1, 0.1))), 2),
+        "regime_signal_dispersed_multiplier": round(max(0.4, min(1.8, float(base["regime_signal_dispersed_multiplier"]) + rng.uniform(-0.1, 0.1))), 2),
+        "regime_delta_base_ratio": round(max(0.03, min(0.22, float(base["regime_delta_base_ratio"]) + rng.uniform(-0.015, 0.015))), 3),
+        "regime_delta_min_abs": round(max(0.5, min(2.5, float(base["regime_delta_min_abs"]) + rng.uniform(-0.15, 0.15))), 2),
+        "quick_overlap_prev_warning": clamp(int(base["quick_overlap_prev_warning"]) + rng.randint(-1, 1), 6, 10),
+        "quick_overlap_prev_anomaly": clamp(int(base["quick_overlap_prev_anomaly"]) + rng.randint(-1, 1), 7, 11),
+        "quick_overlap_prev_low_warning": clamp(int(base["quick_overlap_prev_low_warning"]) + rng.randint(-1, 1), 1, 4),
+        "quick_overlap_prev_low_anomaly": clamp(int(base["quick_overlap_prev_low_anomaly"]) + rng.randint(-1, 1), 0, 3),
+        "quick_skip_concentration_warning": round(max(0.08, min(0.24, float(base["quick_skip_concentration_warning"]) + rng.uniform(-0.01, 0.01))), 3),
+        "quick_skip_concentration_anomaly": round(max(0.10, min(0.28, float(base["quick_skip_concentration_anomaly"]) + rng.uniform(-0.01, 0.01))), 3),
+        "quick_pair_concentration_warning": round(max(0.55, min(0.90, float(base["quick_pair_concentration_warning"]) + rng.uniform(-0.015, 0.015))), 3),
+        "quick_pair_concentration_anomaly": round(max(0.60, min(0.95, float(base["quick_pair_concentration_anomaly"]) + rng.uniform(-0.015, 0.015))), 3),
     }
 
 
@@ -353,7 +488,7 @@ def evaluate_window(
     return out_rows, buckets
 
 
-def candidate_key(params: dict[str, int]) -> tuple[int, ...]:
+def candidate_key(params: dict[str, float]) -> tuple[float, ...]:
     return (
         params["recent_draws_count"],
         params["max_recent_draws_count"],
@@ -365,6 +500,45 @@ def candidate_key(params: dict[str, int]) -> tuple[int, ...]:
         params["warm_skip_max"],
         params["streak_min"],
         params["streak_max"],
+        params["streak_score_len1_hit1"],
+        params["streak_score_len1_hit2"],
+        params["streak_score_len1_hit3"],
+        params["streak_score_len2"],
+        params["streak_score_len3"],
+        params["warm_score_len1_skip3"],
+        params["warm_score_len1_skip4"],
+        params["warm_score_len1_skip5"],
+        params["warm_score_len2"],
+        params["warm_score_len3"],
+        params["momentum_score_cap"],
+        params["transition_score_multiplier"],
+        params["coarse_number_count_weight"],
+        params["coarse_skip_weight"],
+        params["coarse_streak_weight"],
+        params["coarse_streak_cap"],
+        params["coarse_transition_weight"],
+        params["regime_hot_momentum_weight"],
+        params["regime_hot_streak_weight"],
+        params["regime_warm_skip_weight"],
+        params["regime_concentrated_pair_weight"],
+        params["regime_concentrated_tail_weight"],
+        params["regime_concentrated_tens_weight"],
+        params["regime_dispersed_tail_weight"],
+        params["regime_dispersed_tens_weight"],
+        params["regime_signal_hot_multiplier"],
+        params["regime_signal_warm_multiplier"],
+        params["regime_signal_concentrated_multiplier"],
+        params["regime_signal_dispersed_multiplier"],
+        params["regime_delta_base_ratio"],
+        params["regime_delta_min_abs"],
+        params["quick_overlap_prev_warning"],
+        params["quick_overlap_prev_anomaly"],
+        params["quick_overlap_prev_low_warning"],
+        params["quick_overlap_prev_low_anomaly"],
+        params["quick_skip_concentration_warning"],
+        params["quick_skip_concentration_anomaly"],
+        params["quick_pair_concentration_warning"],
+        params["quick_pair_concentration_anomaly"],
     )
 
 
@@ -590,7 +764,7 @@ def main() -> None:
     best = validated[0]
 
     chosen_params = {
-        k: int(best[k])
+        k: best[k]
         for k in [
             "recent_draws_count",
             "max_recent_draws_count",
@@ -602,6 +776,45 @@ def main() -> None:
             "warm_skip_max",
             "streak_min",
             "streak_max",
+            "streak_score_len1_hit1",
+            "streak_score_len1_hit2",
+            "streak_score_len1_hit3",
+            "streak_score_len2",
+            "streak_score_len3",
+            "warm_score_len1_skip3",
+            "warm_score_len1_skip4",
+            "warm_score_len1_skip5",
+            "warm_score_len2",
+            "warm_score_len3",
+            "momentum_score_cap",
+            "transition_score_multiplier",
+            "coarse_number_count_weight",
+            "coarse_skip_weight",
+            "coarse_streak_weight",
+            "coarse_streak_cap",
+            "coarse_transition_weight",
+            "regime_hot_momentum_weight",
+            "regime_hot_streak_weight",
+            "regime_warm_skip_weight",
+            "regime_concentrated_pair_weight",
+            "regime_concentrated_tail_weight",
+            "regime_concentrated_tens_weight",
+            "regime_dispersed_tail_weight",
+            "regime_dispersed_tens_weight",
+            "regime_signal_hot_multiplier",
+            "regime_signal_warm_multiplier",
+            "regime_signal_concentrated_multiplier",
+            "regime_signal_dispersed_multiplier",
+            "regime_delta_base_ratio",
+            "regime_delta_min_abs",
+            "quick_overlap_prev_warning",
+            "quick_overlap_prev_anomaly",
+            "quick_overlap_prev_low_warning",
+            "quick_overlap_prev_low_anomaly",
+            "quick_skip_concentration_warning",
+            "quick_skip_concentration_anomaly",
+            "quick_pair_concentration_warning",
+            "quick_pair_concentration_anomaly",
         ]
     }
 
@@ -807,6 +1020,45 @@ def main() -> None:
                     "warm_skip_max",
                     "streak_min",
                     "streak_max",
+                    "streak_score_len1_hit1",
+                    "streak_score_len1_hit2",
+                    "streak_score_len1_hit3",
+                    "streak_score_len2",
+                    "streak_score_len3",
+                    "warm_score_len1_skip3",
+                    "warm_score_len1_skip4",
+                    "warm_score_len1_skip5",
+                    "warm_score_len2",
+                    "warm_score_len3",
+                    "momentum_score_cap",
+                    "transition_score_multiplier",
+                    "coarse_number_count_weight",
+                    "coarse_skip_weight",
+                    "coarse_streak_weight",
+                    "coarse_streak_cap",
+                    "coarse_transition_weight",
+                    "regime_hot_momentum_weight",
+                    "regime_hot_streak_weight",
+                    "regime_warm_skip_weight",
+                    "regime_concentrated_pair_weight",
+                    "regime_concentrated_tail_weight",
+                    "regime_concentrated_tens_weight",
+                    "regime_dispersed_tail_weight",
+                    "regime_dispersed_tens_weight",
+                    "regime_signal_hot_multiplier",
+                    "regime_signal_warm_multiplier",
+                    "regime_signal_concentrated_multiplier",
+                    "regime_signal_dispersed_multiplier",
+                    "regime_delta_base_ratio",
+                    "regime_delta_min_abs",
+                    "quick_overlap_prev_warning",
+                    "quick_overlap_prev_anomaly",
+                    "quick_overlap_prev_low_warning",
+                    "quick_overlap_prev_low_anomaly",
+                    "quick_skip_concentration_warning",
+                    "quick_skip_concentration_anomaly",
+                    "quick_pair_concentration_warning",
+                    "quick_pair_concentration_anomaly",
                 ],
                 "dead_knobs": [],
                 "metadata_only_knobs": [],

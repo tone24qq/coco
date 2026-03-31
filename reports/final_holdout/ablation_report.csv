@@ -1,4 +1,4 @@
 variant,same_triplet_2hit_rate,note
-baseline_default,0.36363636363636365,default config on search window
-chosen_config_validation,0.5555555555555556,selected by validation
-chosen_config_final,0.4444444444444444,final untouched holdout
+baseline_default,0.3,default config on search window
+chosen_config_validation,0.55,selected by validation
+chosen_config_final,0.5,final untouched holdout

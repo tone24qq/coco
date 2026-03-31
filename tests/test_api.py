@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from winwin_service.api import app
@@ -20,7 +23,7 @@ def test_predict_integration_mocked_network(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'fetch_latest_draws',
-        lambda: ([list(range(1, 21))] * 50, 114000123),
+        lambda *args, **kwargs: ([list(range(1, 21))] * 50, 114000123),
     )
     monkeypatch.setattr(
         api,
@@ -49,7 +52,9 @@ def test_predict_fail_fast(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'fetch_latest_draws',
-        lambda: (_ for _ in ()).throw(api.FetchError('upstream down')),
+        lambda *args, **kwargs: (
+            _ for _ in ()
+        ).throw(api.FetchError('upstream down')),
     )
 
     response = client.get('/predict')
@@ -66,7 +71,7 @@ def test_predict_fail_fast_predict_error(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'fetch_latest_draws',
-        lambda: ([list(range(1, 21))] * 20, 114000123),
+        lambda *args, **kwargs: ([list(range(1, 21))] * 20, 114000123),
     )
     monkeypatch.setattr(
         api,
@@ -91,7 +96,7 @@ def test_predict_cache_hit_without_recompute(monkeypatch) -> None:
     base_time = {"now": 1000.0}
     monkeypatch.setattr(api.time, 'time', lambda: base_time["now"])
 
-    def _fake_fetch():
+    def _fake_fetch(*args, **kwargs):
         calls["fetch"] += 1
         return ([list(range(1, 21))] * 20, 114000200)
 
@@ -134,7 +139,7 @@ def test_predict_cache_expired_refetches(monkeypatch) -> None:
     base_time = {"now": 2000.0}
     monkeypatch.setattr(api.time, 'time', lambda: base_time["now"])
 
-    def _fake_fetch():
+    def _fake_fetch(*args, **kwargs):
         calls["fetch"] += 1
         return ([list(range(1, 21))] * 20, 114000210)
 
@@ -172,7 +177,7 @@ def test_predict_debug_false_metadata_is_trimmed(monkeypatch) -> None:
     monkeypatch.setattr(
         api,
         'fetch_latest_draws',
-        lambda: ([list(range(1, 21))] * 20, 114000222),
+        lambda *args, **kwargs: ([list(range(1, 21))] * 20, 114000222),
     )
     monkeypatch.setattr(
         api,
@@ -192,3 +197,57 @@ def test_predict_debug_false_metadata_is_trimmed(monkeypatch) -> None:
     response = client.get('/predict')
     assert response.status_code == 200
     assert 'regime_metrics_raw' not in response.json()['metadata']
+
+
+def test_load_validated_config_rejects_legacy_long_window(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from winwin_service import api
+
+    payload = {
+        "params": {
+            "recent_draws_count": 50,
+            "max_recent_draws_count": 50,
+            "min_score_threshold": 60,
+        }
+    }
+    cfg_path = tmp_path / "best_config.json"
+    cfg_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(api, "_BEST_CONFIG_PATH", cfg_path)
+    loaded, source, matched = api._load_validated_config()
+
+    assert loaded.recent_draws_count <= 5
+    assert loaded.max_recent_draws_count is not None
+    assert loaded.max_recent_draws_count <= 5
+    assert source == "default_config_reject_long_window_best_config"
+    assert matched is False
+
+
+def test_predict_passes_active_config_to_fetcher(monkeypatch) -> None:
+    from winwin_service import api
+
+    api._PREDICTION_CACHE.clear()
+    captured = {}
+
+    def _fake_fetch(*args, **kwargs):
+        captured["config"] = kwargs.get("config")
+        return ([list(range(1, 21))] * 12, 114000300)
+
+    monkeypatch.setattr(api, "fetch_latest_draws", _fake_fetch)
+    monkeypatch.setattr(
+        api,
+        "predict_top3",
+        lambda draws, latest, config=None, include_regime_debug=False: {
+            "target_period": latest + 1,
+            "latest_period": latest,
+            "top3": [[1, 2, 3], [4, 5, 6], [7, 8, 9]],
+            "kill_zone": [10, 11],
+            "metadata": {"analyzed_draws": len(draws)},
+        },
+    )
+
+    response = client.get("/predict")
+    assert response.status_code == 200
+    assert captured["config"] == api._ACTIVE_CONFIG
