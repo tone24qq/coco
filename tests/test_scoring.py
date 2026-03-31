@@ -64,9 +64,10 @@ def test_predict_with_48_draws_still_allowed() -> None:
         config=AppConfig(min_prediction_draws=10),
     )
     assert len(result["top3"]) == 3
-    assert result["metadata"]["analyzed_draws"] == 48
-    assert result["metadata"]["effective_draws_used"] == 48
-    assert result["metadata"]["regime_window"] == 48
+    assert result["metadata"]["analyzed_draws"] == 3
+    assert result["metadata"]["effective_draws_used"] == 3
+    assert result["metadata"]["effective_recent_window"] == 3
+    assert result["metadata"]["regime_window"] == 3
 
 
 def test_diversified_strict_overlap() -> None:
@@ -233,29 +234,31 @@ def test_recent_window_with_less_than_50_uses_available_draws() -> None:
         latest_period=10,
         config=AppConfig(
             min_prediction_draws=10,
-            recent_draws_count=50,
+            recent_draws_count=5,
         ),
     )
     assert result["metadata"]["available_draws"] == 48
-    assert result["metadata"]["analyzed_draws"] == 48
-    assert result["metadata"]["effective_draws_used"] == 48
-    assert result["metadata"]["regime_window"] == 48
+    assert result["metadata"]["analyzed_draws"] == 5
+    assert result["metadata"]["effective_draws_used"] == 5
+    assert result["metadata"]["effective_recent_window"] == 5
+    assert result["metadata"]["regime_window"] == 5
 
 
-def test_recent_window_50_uses_latest_50_when_history_is_large() -> None:
+def test_recent_window_uses_latest_5_when_history_is_large() -> None:
     draws = (_baseline_draws() * 27)[:1348]
     result = predict_top3(
         draws,
         latest_period=10,
         config=AppConfig(
             min_prediction_draws=10,
-            recent_draws_count=50,
+            recent_draws_count=5,
         ),
     )
     assert result["metadata"]["available_draws"] == 1348
-    assert result["metadata"]["analyzed_draws"] == 50
-    assert result["metadata"]["effective_draws_used"] == 50
-    assert result["metadata"]["regime_window"] == 50
+    assert result["metadata"]["analyzed_draws"] == 5
+    assert result["metadata"]["effective_draws_used"] == 5
+    assert result["metadata"]["effective_recent_window"] == 5
+    assert result["metadata"]["regime_window"] == 5
 
 
 def test_regime_disabled_when_insufficient_history_but_predict_ok() -> None:
@@ -335,16 +338,17 @@ def test_max_recent_draws_count_caps_effective_window() -> None:
         latest_period=10,
         config=AppConfig(
             min_prediction_draws=10,
-            recent_draws_count=80,
-            max_recent_draws_count=30,
+            recent_draws_count=5,
+            max_recent_draws_count=4,
             min_score_threshold=10,
         ),
     )
-    assert result["metadata"]["analyzed_draws"] == 30
-    assert result["metadata"]["effective_draws_used"] == 30
+    assert result["metadata"]["analyzed_draws"] == 4
+    assert result["metadata"]["effective_draws_used"] == 4
 
 
-def test_max_recent_draws_count_never_below_min_prediction_draws() -> None:
+def test_effective_recent_window_never_exceeds_five_even_for_long_inputs(
+) -> None:
     draws = (_baseline_draws() * 5)[:120]
     result = predict_top3(
         draws,
@@ -352,9 +356,10 @@ def test_max_recent_draws_count_never_below_min_prediction_draws() -> None:
         config=AppConfig(
             min_prediction_draws=12,
             recent_draws_count=80,
-            max_recent_draws_count=5,
+            max_recent_draws_count=80,
             min_score_threshold=10,
         ),
     )
-    assert result["metadata"]["analyzed_draws"] == 12
-    assert result["metadata"]["effective_draws_used"] == 12
+    assert result["metadata"]["analyzed_draws"] == 5
+    assert result["metadata"]["effective_draws_used"] == 5
+    assert result["metadata"]["effective_recent_window"] == 5
