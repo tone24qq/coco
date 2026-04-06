@@ -1,0 +1,27 @@
+data:
+  path: samples/data/position_samples.json
+
+modules:
+  focus: true
+  skip: true
+  diff: true
+  mirror: true
+  connectivity: true
+  tail: true
+  a2: true
+  d3: true
+  f10: true
+
+eval:
+  folds: 3
+  random_repeats: 300
+  seed: 123
+
+search:
+  weight_grid: [0.0, 1.0]
+
+reports:
+  summary_report: reports/summary_report.json
+  per_case_predictions: reports/per_case_predictions.csv
+  best_config: reports/best_config.json
+  data_audit: reports/data_audit.json

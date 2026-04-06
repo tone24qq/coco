@@ -1,0 +1,176 @@
+{
+  "anti_leakage_checks": "passed",
+  "num_boards": 3,
+  "num_folds": 3,
+  "masking_repeats": 5,
+  "full_model": {
+    "top1_hit_rate": 0.016666666666666666,
+    "top3_hit_rate": 0.06166666666666667,
+    "top5_hit_rate": 0.11666666666666665,
+    "mean_rank": 20.723333333333333,
+    "median_rank": 20.833333333333332,
+    "mrr": 0.09727416877614904,
+    "normalized_rank": 0.5057264957264958,
+    "num_targets": 200.0,
+    "board_top1_mean": 0.016666666666666666,
+    "board_top3_mean": 0.06166666666666667,
+    "board_top5_mean": 0.11666666666666665,
+    "repeat_top1_variance": 6.666666666666667e-05
+  },
+  "baselines": {
+    "random": {
+      "top1_hit_rate": 0.03166666666666667,
+      "top3_hit_rate": 0.09999999999999999,
+      "top5_hit_rate": 0.135,
+      "mean_rank": 21.113333333333333,
+      "median_rank": 21.333333333333332,
+      "mrr": 0.11400071885443548,
+      "normalized_rank": 0.5157264957264958,
+      "num_targets": 200.0
+    },
+    "visible_frequency": {
+      "top1_hit_rate": 0.025000000000000005,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.1069635759734094,
+      "normalized_rank": 0.5,
+      "num_targets": 200.0
+    },
+    "local_rule": {
+      "top1_hit_rate": 0.043333333333333335,
+      "top3_hit_rate": 0.09000000000000001,
+      "top5_hit_rate": 0.13,
+      "mean_rank": 20.173333333333332,
+      "median_rank": 19.666666666666668,
+      "mrr": 0.12142448051873,
+      "normalized_rank": 0.49162393162393164,
+      "num_targets": 200.0
+    },
+    "position_only": {
+      "top1_hit_rate": 0.025000000000000005,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 200.0
+    }
+  },
+  "best_weights": {
+    "focus": 2.0,
+    "connectivity": 1.0,
+    "heatmap": 0.0,
+    "a2": 3.0,
+    "d3": 2.0,
+    "skip": 0.0,
+    "diff": 0.0,
+    "mirror": 0.0,
+    "tail": 1.0,
+    "f10": 2.0
+  },
+  "ablation": {
+    "drop_focus": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_connectivity": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_heatmap": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_a2": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_d3": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_skip": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_diff": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_mirror": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_tail": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    },
+    "drop_f10": {
+      "top1_hit_rate": 0.025,
+      "top3_hit_rate": 0.075,
+      "top5_hit_rate": 0.125,
+      "mean_rank": 20.5,
+      "median_rank": 20.5,
+      "mrr": 0.10696357597340939,
+      "normalized_rank": 0.5,
+      "num_targets": 240
+    }
+  }
+}

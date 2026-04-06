@@ -1,0 +1,14 @@
+{
+  "best_weights": {
+    "focus": 2.0,
+    "connectivity": 1.0,
+    "heatmap": 0.0,
+    "a2": 3.0,
+    "d3": 2.0,
+    "skip": 0.0,
+    "diff": 0.0,
+    "mirror": 0.0,
+    "tail": 1.0,
+    "f10": 2.0
+  }
+}
