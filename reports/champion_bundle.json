@@ -1,0 +1,44 @@
+{
+  "modules": [
+    "focus",
+    "connectivity",
+    "heatmap",
+    "a2",
+    "d3",
+    "skip",
+    "diff",
+    "mirror",
+    "tail",
+    "f10",
+    "local_arith_completion",
+    "local_delta_consistency"
+  ],
+  "metrics": {
+    "top1_hit_rate": 0.03333333333333333,
+    "top3_hit_rate": 0.13333333333333333,
+    "top5_hit_rate": 0.20000000000000004,
+    "mean_rank": 18.900000000000002,
+    "median_rank": 19.5,
+    "mrr": 0.13562494940433295,
+    "normalized_rank": 0.45897435897435895,
+    "num_targets": 40.0,
+    "board_top1_mean": 0.03333333333333333,
+    "board_top3_mean": 0.13333333333333333,
+    "board_top5_mean": 0.20000000000000004,
+    "repeat_top1_variance": 0.0
+  },
+  "best_weights": {
+    "focus": 3.0,
+    "connectivity": 1.0,
+    "heatmap": 2.0,
+    "a2": 1.0,
+    "d3": 1.0,
+    "skip": 1.0,
+    "diff": 3.0,
+    "mirror": 0.0,
+    "tail": 3.0,
+    "f10": 1.0,
+    "local_arith_completion": 1.0,
+    "local_delta_consistency": 1.0
+  }
+}

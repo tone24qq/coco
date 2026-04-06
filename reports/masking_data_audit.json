@@ -1,0 +1,7 @@
+{
+  "total_boards": 3,
+  "valid_boards": 3,
+  "invalid_boards": 0,
+  "invalid_reasons": {},
+  "anti_leakage_checks": "passed"
+}

@@ -1,0 +1,20 @@
+{
+  "total_samples": 19,
+  "valid_samples": 18,
+  "invalid_samples": 1,
+  "shape_distribution": {
+    "10x8": 19
+  },
+  "missing_count_distribution": {
+    "8": 4,
+    "9": 4,
+    "10": 4,
+    "11": 3,
+    "12": 3,
+    "0": 1
+  },
+  "invalid_reasons": {
+    "answer_not_missing_cell": 1
+  },
+  "coordinate_mode": "zero"
+}
