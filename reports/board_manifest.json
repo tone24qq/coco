@@ -1,0 +1,893 @@
+[
+  {
+    "sample_id": "IS23120130",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120130.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120131",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120131.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120132",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120132.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120133",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120133.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120134",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120134.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120135",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120135.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120136",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120136.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120137",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120137.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120138",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120138.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120139",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120139.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120140",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120140.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120141",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120141.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "IS23120142",
+    "size_class": "20",
+    "image_paths": [
+      "gogo/20/IS23120142.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/20",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505019",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505019.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505020",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505020.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505021",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505021.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505022",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505022.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505023",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505023.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505024",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505024.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505025",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505025.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505026",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505026.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505027",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505027.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505028",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505028.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230505029",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230505029.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516001",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516001.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516002",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516002.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516003",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516003.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516004",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516004.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516005",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516005.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516006",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516006.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516007",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516007.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516008",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516008.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516009",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516009.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516010",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516010.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516011",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516011.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516012",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516012.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516013",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516013.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516014",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516014.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516015",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516015.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516016",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516016.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516017",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516017.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516018",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516018.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516019",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516019.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516020",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516020.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516021",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516021.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516022",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516022.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516023",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516023.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516024",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516024.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516025",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516025.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516026",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516026.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516027",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516027.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516028",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516028.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516029",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516029.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516030",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516030.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516031",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516031.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516032",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516032.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NL230516033",
+    "size_class": "80",
+    "image_paths": [
+      "gogo/80/NL230516033.jpg"
+    ],
+    "page_count": 1,
+    "source_folder": "gogo/80",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516001",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516001_頁面_1.jpg",
+      "gogo/120/NG230516001_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516002",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516002_頁面_1.jpg",
+      "gogo/120/NG230516002_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516003",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516003_頁面_1.jpg",
+      "gogo/120/NG230516003_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516004",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516004_頁面_1.jpg",
+      "gogo/120/NG230516004_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516005",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516005_頁面_1.jpg",
+      "gogo/120/NG230516005_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516006",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516006_頁面_1.jpg",
+      "gogo/120/NG230516006_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516007",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516007_頁面_1.jpg",
+      "gogo/120/NG230516007_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516008",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516008_頁面_1.jpg",
+      "gogo/120/NG230516008_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516009",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516009_頁面_1.jpg",
+      "gogo/120/NG230516009_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516010",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516010_頁面_1.jpg",
+      "gogo/120/NG230516010_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516011",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516011_頁面_1.jpg",
+      "gogo/120/NG230516011_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516012",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516012_頁面_1.jpg",
+      "gogo/120/NG230516012_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516013",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516013_頁面_1.jpg",
+      "gogo/120/NG230516013_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516014",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516014_頁面_1.jpg",
+      "gogo/120/NG230516014_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516015",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516015_頁面_1.jpg",
+      "gogo/120/NG230516015_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516016",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516016_頁面_1.jpg",
+      "gogo/120/NG230516016_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516017",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516017_頁面_1.jpg",
+      "gogo/120/NG230516017_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516018",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516018_頁面_1.jpg",
+      "gogo/120/NG230516018_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516019",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516019_頁面_1.jpg",
+      "gogo/120/NG230516019_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516020",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516020_頁面_1.jpg",
+      "gogo/120/NG230516020_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516021",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516021_頁面_1.jpg",
+      "gogo/120/NG230516021_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  },
+  {
+    "sample_id": "NG230516022",
+    "size_class": "120",
+    "image_paths": [
+      "gogo/120/NG230516022_頁面_1.jpg",
+      "gogo/120/NG230516022_頁面_2.jpg"
+    ],
+    "page_count": 2,
+    "source_folder": "gogo/120",
+    "valid": true,
+    "invalid_reason": null
+  }
+]

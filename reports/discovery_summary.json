@@ -1,0 +1,18 @@
+{
+  "anti_leakage_checks": "passed",
+  "insufficient_data": true,
+  "num_candidates": 10,
+  "kept_modules": [],
+  "dropped_modules": [
+    "local_arith_completion",
+    "local_delta_consistency",
+    "mirror_agreement",
+    "directional_pattern_agreement",
+    "modulo_family",
+    "rank_gap_repair",
+    "neighborhood_uniqueness_pressure",
+    "a2_delta",
+    "d3_delta",
+    "f10_repair_delta"
+  ]
+}

@@ -224,10 +224,10 @@ BASE_MODULES = ["focus", "connectivity", "heatmap", "a2", "d3", "skip", "diff", 
 DISCOVERY_MODULES = [
     "local_arith_completion",
     "local_delta_consistency",
-    "mirror_pair_agreement",
+    "mirror_agreement",
     "rank_gap_repair",
     "modulo_family",
-    "neighborhood_uniqueness",
+    "neighborhood_uniqueness_pressure",
     "directional_pattern_agreement",
     "a2_delta",
     "d3_delta",
@@ -267,13 +267,13 @@ def compute_module_score(
         return local_arithmetic_completion_score(candidate_grid, target_cell)
     if name == "local_delta_consistency":
         return local_delta_consistency_score(candidate_grid, target_cell)
-    if name == "mirror_pair_agreement":
+    if name in {"mirror_pair_agreement", "mirror_agreement"}:
         return mirror_pair_agreement_score(candidate_grid, target_cell)
     if name == "rank_gap_repair":
         return rank_gap_repair_score(candidate_grid, target_cell)
     if name == "modulo_family":
         return modulo_family_score(masked_grid, target_cell, candidate_value)
-    if name == "neighborhood_uniqueness":
+    if name in {"neighborhood_uniqueness", "neighborhood_uniqueness_pressure"}:
         return neighborhood_uniqueness_pressure(candidate_grid, target_cell)
     if name == "directional_pattern_agreement":
         return directional_pattern_agreement(candidate_grid, target_cell)

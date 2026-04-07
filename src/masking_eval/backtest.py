@@ -14,9 +14,9 @@ from .data_loader import BoardSample
 
 def build_folds(samples: Sequence[BoardSample], n_folds: int) -> List[Tuple[List[int], List[int], List[int]]]:
     idxs = list(range(len(samples)))
-    ordered = all(s.order_index is not None for s in samples)
+    ordered = all(getattr(s, "order_index", None) is not None for s in samples)
     if ordered:
-        idxs = sorted(idxs, key=lambda i: samples[i].order_index or 0)
+        idxs = sorted(idxs, key=lambda i: getattr(samples[i], "order_index") or 0)
     bins = [idxs[i::n_folds] for i in range(n_folds)]
     folds = []
     for i in range(n_folds):
@@ -25,27 +25,42 @@ def build_folds(samples: Sequence[BoardSample], n_folds: int) -> List[Tuple[List
         if len(train_valid) < 2 or len(test) == 0:
             continue
         cut = max(1, int(len(train_valid) * 0.75))
-        train = train_valid[:cut]
+        train = train_valid[:cut] or train_valid[:1]
         valid = train_valid[cut:] or train_valid[-1:]
-        if not train:
-            train = train_valid[:1]
         folds.append((train, valid, test))
     return folds
 
 
-def build_heatmap_prior(train_boards: Sequence[BoardSample], repeats: int, seed: int) -> np.ndarray:
+def build_heatmap_prior(train_boards: Sequence[BoardSample], repeats: int, seed: int) -> np.ndarray | None:
+    if not train_boards:
+        return None
+    shape = train_boards[0].grid.shape
+    if any(b.grid.shape != shape for b in train_boards):
+        return None
     rng = np.random.default_rng(seed)
-    heatmap = np.zeros((10, 8), dtype=float)
+    heatmap = np.zeros(shape, dtype=float)
+    cells = [(r, c) for r in range(shape[0]) for c in range(shape[1])]
+    masked_n = len(cells) // 2
     for _board in train_boards:
-        cells = [(r, c) for r in range(10) for c in range(8)]
         for _ in range(repeats):
             rng.shuffle(cells)
-            for r, c in cells[:40]:
+            for r, c in cells[:masked_n]:
                 heatmap[r, c] += 1.0
     return heatmap / max(float(np.max(heatmap)), 1.0)
 
 
 def _metrics_from_ranks(ranks: List[int], num_candidates: List[int]) -> Dict[str, float]:
+    if not ranks:
+        return {
+            "top1_hit_rate": 0.0,
+            "top3_hit_rate": 0.0,
+            "top5_hit_rate": 0.0,
+            "mean_rank": 0.0,
+            "median_rank": 0.0,
+            "mrr": 0.0,
+            "normalized_rank": 0.0,
+            "num_targets": 0,
+        }
     arr = np.array(ranks)
     normalized = [(r - 1) / max(c - 1, 1) for r, c in zip(ranks, num_candidates)]
     return {
@@ -62,9 +77,9 @@ def _metrics_from_ranks(ranks: List[int], num_candidates: List[int]) -> Dict[str
 
 def generate_masked(board: np.ndarray, rng: np.random.Generator) -> Tuple[np.ndarray, List[Tuple[int, int]]]:
     masked = board.copy()
-    cells = [(r, c) for r in range(10) for c in range(8)]
+    cells = [(r, c) for r in range(board.shape[0]) for c in range(board.shape[1])]
     rng.shuffle(cells)
-    masked_cells = cells[:40]
+    masked_cells = cells[: len(cells) // 2]
     for r, c in masked_cells:
         masked[r, c] = -1
     return masked, masked_cells
@@ -87,19 +102,13 @@ def evaluate_with_weights(
 
     for board in boards:
         board_top1, board_top3, board_top5 = [], [], []
+        local_prior = heatmap_prior if (heatmap_prior is not None and heatmap_prior.shape == board.grid.shape) else None
         for rep in range(repeats):
             masked, targets = generate_masked(board.grid, rng)
             rep_hits = []
             for r, c in targets:
                 true_val = int(board.grid[r, c])
-                rank, score_true = rank_candidates(
-                    masked,
-                    (r, c),
-                    true_val,
-                    weights,
-                    heatmap_prior,
-                    modules,
-                )
+                rank, score_true = rank_candidates(masked, (r, c), true_val, weights, local_prior, modules)
                 nc = int(np.sum(masked == -1))
                 h1, h3, h5 = int(rank <= 1), int(rank <= 3), int(rank <= 5)
                 ranks.append(rank)
@@ -134,7 +143,7 @@ def evaluate_with_weights(
 
     metrics = _metrics_from_ranks(ranks, num_cands)
     board_stats = {
-        f"{k}_mean": float(np.mean([b[k] for b in board_rows]))
+        f"{k}_mean": float(np.mean([b[k] for b in board_rows])) if board_rows else 0.0
         for k in ["board_top1", "board_top3", "board_top5"]
     }
     repeat_stats = {"repeat_top1_variance": float(np.var(repeat_rows)) if repeat_rows else 0.0}
@@ -169,14 +178,7 @@ def tune_weights(
         w = {m: float(rng.integers(0, 4)) for m in modules}
         if sum(w.values()) == 0:
             continue
-        m, _, _, _ = evaluate_with_weights(
-            valid_boards,
-            max(2, repeats // 2),
-            seed + 1,
-            w,
-            heatmap,
-            modules,
-        )
+        m, _, _, _ = evaluate_with_weights(valid_boards, max(2, repeats // 2), seed + 1, w, heatmap, modules)
         key = (m["top1_hit_rate"], m["top3_hit_rate"], m["mrr"], -m["mean_rank"])
         if best is None or key > best[0]:
             best = (key, w)
@@ -197,7 +199,8 @@ def run_backtest(
 ) -> Dict:
     split = build_folds(boards, folds)
     if not split:
-        return {"insufficient_data": True, "anti_leakage_checks": "passed"}
+        return {"insufficient_data": True, "anti_leakage_checks": "passed", "predictions": []}
+
     full_fold, rand_fold, vis_fold, local_fold, pos_fold = [], [], [], [], []
     all_preds: List[TargetPrediction] = []
 
@@ -282,8 +285,8 @@ def write_outputs(result: Dict, summary_path: Path, pred_path: Path, config_path
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_payload = {k: v for k, v in result.items() if k != "predictions"}
     summary_path.write_text(json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8")
-    pd.DataFrame(result["predictions"]).to_csv(pred_path, index=False)
+    pd.DataFrame(result.get("predictions", [])).to_csv(pred_path, index=False)
     config_path.write_text(
-        json.dumps({"best_weights": result["best_weights"]}, indent=2, ensure_ascii=False),
+        json.dumps({"best_weights": result.get("best_weights", {})}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
