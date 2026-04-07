@@ -20,28 +20,46 @@ from src.board_export import (
     grid_to_text,
     write_board_csv,
     write_board_json,
+    write_overlay,
 )  # noqa: E402
 from src.board_query import find_number_positions  # noqa: E402
 from src.board_structurer import BoardParseResult, structure_board  # noqa: E402
-from src.grid_detector import GridDetectionError, detect_grid  # noqa: E402
+from src.grid_detector import (
+    GridDetection,
+    GridDetectionError,
+    detect_grid,
+)  # noqa: E402
 from src.manual_board_input import (
     ManualInputError,
     apply_overrides,
     load_manual_grid,
 )  # noqa: E402
-from src.ticket_specs import detect_size_class_from_path, get_ticket_spec  # noqa: E402
+from src.ticket_specs import TicketSpec, resolve_ticket_spec  # noqa: E402
 
 
 def _manual_result_from_grid(
-    image_path: str, size_class: str, grid: list[list[int | None]]
+    image_path: str, spec: TicketSpec, grid: list[list[int | None]]
 ) -> BoardParseResult:
-    rows = len(grid)
-    cols = len(grid[0]) if rows else 0
+    rows, cols = len(grid), len(grid[0]) if grid else 0
     black_cells = []
+    cell_boxes = []
     for r, row in enumerate(grid):
         for c, v in enumerate(row):
             if v is None:
                 black_cells.append({"row": r + 1, "col": c + 1})
+            cell_boxes.append(
+                {
+                    "row_1based": r + 1,
+                    "col_1based": c + 1,
+                    "x0": 0,
+                    "y0": 0,
+                    "x1": 0,
+                    "y1": 0,
+                    "label": "manual",
+                    "value": v,
+                    "confidence": 1.0,
+                }
+            )
     return BoardParseResult(
         sample_id=Path(image_path).stem,
         shape=f"{rows}x{cols}",
@@ -52,7 +70,7 @@ def _manual_result_from_grid(
         low_confidence_cells=[],
         parse_confidence=1.0,
         image_path=image_path,
-        ticket_type=size_class,
+        ticket_type=spec.size_class,
         board_confidence=1.0,
         warp_confidence=1.0,
         shape_confidence=1.0,
@@ -62,42 +80,51 @@ def _manual_result_from_grid(
         final_parse_confidence=1.0,
         numbers_all=sorted([int(v) for row in grid for v in row if v is not None]),
         value_to_position={},
-        missing_values=[],
+        missing_values=sorted(
+            list(
+                spec.legal_values
+                - {int(v) for row in grid for v in row if v is not None}
+            )
+        ),
         black_cells=black_cells,
         pending_cells=[],
         parse_diagnostics={"manual_override": True, "ocr_backend": "manual"},
+        cell_boxes=cell_boxes,
     )
 
 
 def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
-    size_class = args.size_class or detect_size_class_from_path(args.image)
-    spec = get_ticket_spec(size_class)
-
+    spec = resolve_ticket_spec(
+        size_class=getattr(args, "size_class", None),
+        rows=getattr(args, "rows", None),
+        cols=getattr(args, "cols", None),
+        image_path=args.image,
+    )
     gray = cv2.imread(args.image, cv2.IMREAD_GRAYSCALE)
     if gray is None:
-        raise ValueError(f"cannot_read_image: {args.image}")
+        raise ValueError(f"cannot_read_image:{args.image}")
 
     source_mode = "auto"
     base_result: BoardParseResult | None = None
+    detection: GridDetection | None = None
     auto_error: str | None = None
     try:
-        det = detect_grid(gray, spec)
+        detection = detect_grid(gray, spec)
         base_result = structure_board(
             sample_id=Path(args.image).stem,
             image_path=args.image,
-            detection=det,
+            detection=detection,
             spec=spec,
-            ticket_type=size_class,
+            ticket_type=spec.size_class,
         )
     except GridDetectionError as exc:
         auto_error = str(exc)
 
-    manual_grid = load_manual_grid(args.manual_grid)
+    manual_grid = load_manual_grid(getattr(args, "manual_grid", None))
     if base_result is None:
         if manual_grid is None:
-            status = auto_error or "needs_manual_review"
             return {
-                "status": status,
+                "status": auto_error or "needs_manual_review",
                 "source_mode": "auto",
                 "contract_passed": False,
                 "needs_manual_review": True,
@@ -111,14 +138,13 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
         base_grid = manual_grid
         source_mode = "manual"
 
-    if args.override is not None:
+    override_audit = []
+    if getattr(args, "override", None):
         base_grid, override_audit = apply_overrides(base_grid, args.override)
         source_mode = "hybrid" if base_result is not None else "manual"
-    else:
-        override_audit = []
 
     final_result = (
-        _manual_result_from_grid(args.image, size_class, base_grid)
+        _manual_result_from_grid(args.image, spec, base_grid)
         if source_mode != "auto"
         else base_result
     )
@@ -131,9 +157,8 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
         low_confidence_cells=final_result.low_confidence_cells,
         min_confidence=0.55,
         max_low_conf_cells=8,
-        strict=args.strict,
+        strict=getattr(args, "strict", False),
     )
-
     status = "ok" if contract.contract_passed else contract.status
     payload = build_output_schema(
         status=status,
@@ -147,8 +172,13 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
         parse_diagnostics={
             **final_result.parse_diagnostics,
             "override_audit": override_audit,
+            "board_bbox": detection.board_bbox if detection else None,
         },
     )
+    payload["cell_boxes"] = final_result.cell_boxes
+    payload["bounding_boxes"] = {
+        "board_bbox": detection.board_bbox if detection else None
+    }
 
     query_number = getattr(args, "query_number", None)
     if query_number is not None:
@@ -156,20 +186,40 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
             final_result.grid, int(query_number)
         )
 
+    if payload.get("contract_passed"):
+        out_json = getattr(args, "output_json", "reports/parsed_board.json")
+        out_csv = getattr(args, "output_csv", "reports/parsed_board.csv")
+        write_board_json(final_result, Path(out_json))
+        write_board_csv(final_result, Path(out_csv))
+        output_overlay = getattr(
+            args, "output_overlay", "reports/parsed_board_overlay.png"
+        )
+        if (
+            not getattr(args, "no_overlay", False)
+            and output_overlay
+            and detection is not None
+        ):
+            write_overlay(final_result, detection, args.image, Path(output_overlay))
+            payload["overlay_path"] = output_overlay
+
+    payload = json.loads(json.dumps(payload, default=lambda o: int(o)))
     return payload
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True)
+    parser.add_argument("--rows", type=int, default=None)
+    parser.add_argument("--cols", type=int, default=None)
     parser.add_argument("--size-class", choices=["20", "80", "120"], default=None)
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--manual-grid", default=None)
     parser.add_argument("--override", default=None)
     parser.add_argument("--query-number", type=int, default=None)
-    parser.add_argument("--no-overlay", action="store_true")
     parser.add_argument("--output-json", default="reports/parsed_board.json")
     parser.add_argument("--output-csv", default="reports/parsed_board.csv")
+    parser.add_argument("--output-overlay", default="reports/parsed_board_overlay.png")
+    parser.add_argument("--no-overlay", action="store_true")
     args = parser.parse_args()
 
     try:
@@ -182,24 +232,6 @@ def main() -> None:
         )
         raise SystemExit(2)
 
-    if payload.get("contract_passed"):
-        write_board_json(
-            _manual_result_from_grid(
-                args.image,
-                args.size_class or detect_size_class_from_path(args.image),
-                payload["grid"],
-            ),
-            Path(args.output_json),
-        )
-        write_board_csv(
-            _manual_result_from_grid(
-                args.image,
-                args.size_class or detect_size_class_from_path(args.image),
-                payload["grid"],
-            ),
-            Path(args.output_csv),
-        )
-
     print("=== GRID ===")
     print(grid_to_text(payload.get("grid", [])))
     print("=== NUMBERS ===")
@@ -207,8 +239,7 @@ def main() -> None:
     if "query_result" in payload:
         print("=== QUERY ===")
         print(json.dumps(payload["query_result"], ensure_ascii=False))
-
-    print(json.dumps(payload, ensure_ascii=False))
+    print(json.dumps(payload, ensure_ascii=False, default=lambda o: int(o)))
     if not payload.get("contract_passed"):
         raise SystemExit(2)
 

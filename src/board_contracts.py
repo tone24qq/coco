@@ -18,6 +18,8 @@ class ContractResult:
     complete_grid: bool
     missing_values: List[int]
     duplicate_values: List[int]
+    rows: int
+    cols: int
 
 
 def evaluate_board_contract(
@@ -45,10 +47,10 @@ def evaluate_board_contract(
         status = "shape_mismatch"
     elif not confidence_ok:
         status = "low_confidence_parse"
-    elif strict and not complete:
-        status = "incomplete_grid"
     elif strict and (dupes or illegal):
         status = "contract_violation"
+    elif strict and not complete:
+        status = "incomplete_grid"
     elif not low_conf_ok:
         status = "needs_manual_review"
     else:
@@ -71,6 +73,8 @@ def evaluate_board_contract(
         complete_grid=complete,
         missing_values=missing,
         duplicate_values=dupes + illegal,
+        rows=rows,
+        cols=cols,
     )
 
 
@@ -92,11 +96,15 @@ def build_output_schema(
         "status": status,
         "source_mode": source_mode,
         "shape": shape,
+        "rows": contract.rows,
+        "cols": contract.cols,
         "grid": grid,
         "numbers_all": numbers_all,
         "value_to_position": value_to_position,
         "black_cells": black_cells,
         "missing_values": contract.missing_values,
+        "legal_value_min": 1,
+        "legal_value_max": contract.rows * contract.cols,
         "low_confidence_cells": low_confidence_cells,
         "parse_confidence": parse_confidence,
         "contract_passed": contract.contract_passed,

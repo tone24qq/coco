@@ -37,6 +37,7 @@ class BoardParseResult:
     black_cells: List[Dict[str, int]]
     pending_cells: List[Dict[str, object]]
     parse_diagnostics: Dict[str, object]
+    cell_boxes: List[Dict[str, object]]
 
 
 class BoardStructureError(ValueError):
@@ -80,6 +81,7 @@ def structure_board(
     cell_candidates: Dict[tuple[int, int], List[int]] = {}
     cell_labels: Dict[tuple[int, int], str] = {}
     ocr_backend = "fallback_template"
+    cell_boxes: List[Dict[str, object]] = []
 
     for r in range(rows):
         for c in range(cols):
@@ -88,6 +90,19 @@ def structure_board(
             cell = _cell_crop(detection.board_image, y0, y1, x0, x1)
             cls = classify_cell(cell)
             class_conf.append(cls.confidence)
+            cell_boxes.append(
+                {
+                    "row_1based": r + 1,
+                    "col_1based": c + 1,
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "y1": y1,
+                    "label": cls.label,
+                    "value": None,
+                    "confidence": float(cls.confidence),
+                }
+            )
             cell_labels[(r, c)] = cls.label
             conf[r][c] = cls.confidence
             if cls.label == "blank":
@@ -111,6 +126,8 @@ def structure_board(
                 )
                 continue
             grid[r][c] = int(digit.value)
+            cell_boxes[-1]["value"] = int(digit.value)
+            cell_boxes[-1]["confidence"] = float(conf[r][c])
             if cls.needs_review:
                 low.append(
                     {
@@ -174,4 +191,5 @@ def structure_board(
         black_cells=black_cells,
         pending_cells=solved.pending_cells,
         parse_diagnostics={"ocr_backend": ocr_backend, "duplicates": solved.duplicates},
+        cell_boxes=cell_boxes,
     )

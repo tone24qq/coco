@@ -59,7 +59,8 @@ def test_board_parser_auto_fail_without_manual() -> None:
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode != 0
-    payload = json.loads(proc.stdout.strip().splitlines()[-1])
+    lines = [x for x in proc.stdout.splitlines() if x.strip().startswith("{")]
+    payload = json.loads(lines[-1])
     assert payload["status"] in (
         "needs_manual_review",
         "shape_mismatch",

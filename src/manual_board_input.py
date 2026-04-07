@@ -12,7 +12,10 @@ class ManualInputError(ValueError):
 def _read_json(path: str | None) -> object | None:
     if path is None:
         return None
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    raw = str(path).strip()
+    if raw.startswith("{") or raw.startswith("["):
+        return json.loads(raw)
+    return json.loads(Path(raw).read_text(encoding="utf-8"))
 
 
 def _normalize_grid_payload(payload: object) -> List[List[Optional[int]]]:

@@ -20,6 +20,7 @@ class GridDetection:
     board_confidence: float
     warp_confidence: float
     shape_confidence: float
+    cell_boxes: list[dict[str, int]]
 
 
 class GridDetectionError(ValueError):
@@ -50,24 +51,15 @@ def _find_board_quad(
         x0, x1 = int(xs.min()), int(xs.max())
         y0, y1 = int(ys.min()), int(ys.max())
         approx = np.array(
-            [
-                [[x0, y0]],
-                [[x1, y0]],
-                [[x1, y1]],
-                [[x0, y1]],
-            ],
-            dtype=np.int32,
+            [[[x0, y0]], [[x1, y0]], [[x1, y1]], [[x0, y1]]], dtype=np.int32
         )
-        x, y, bw, bh = x0, y0, (x1 - x0), (y1 - y0)
-        area_ratio = float((bw * bh) / max(img_area, 1.0))
-
+        x, y, bw, bh = x0, y0, x1 - x0, y1 - y0
     if len(approx) != 4:
         hull = cv2.convexHull(best)
         peri2 = cv2.arcLength(hull, True)
         approx = cv2.approxPolyDP(hull, 0.02 * peri2, True)
     if len(approx) != 4:
         raise GridDetectionError("perspective_unstable")
-
     pts = approx.reshape(4, 2).astype(np.float32)
     return pts, (x, y, bw, bh), min(1.0, area_ratio + 0.1)
 
@@ -120,6 +112,20 @@ def detect_grid(gray: np.ndarray, spec: TicketSpec) -> GridDetection:
     if shape_conf < 0.05:
         raise GridDetectionError("shape_mismatch")
 
+    cell_boxes = []
+    for r in range(row_count):
+        for c in range(col_count):
+            cell_boxes.append(
+                {
+                    "row_1based": r + 1,
+                    "col_1based": c + 1,
+                    "x0": col_lines[c],
+                    "y0": row_lines[r],
+                    "x1": col_lines[c + 1],
+                    "y1": row_lines[r + 1],
+                }
+            )
+
     return GridDetection(
         board_image=warped,
         board_bbox=bbox,
@@ -130,4 +136,5 @@ def detect_grid(gray: np.ndarray, spec: TicketSpec) -> GridDetection:
         board_confidence=board_conf,
         warp_confidence=warp_conf,
         shape_confidence=shape_conf,
+        cell_boxes=cell_boxes,
     )

@@ -48,7 +48,7 @@ class ParseAuditRow:
 
 
 def _merge_pages(image_paths: List[str], size_class: str) -> np.ndarray:
-    validate_page_contract(size_class, image_paths)
+    validate_page_contract(get_ticket_spec(size_class), image_paths)
     imgs = [cv2.imread(p, cv2.IMREAD_GRAYSCALE) for p in image_paths]
     if any(im is None for im in imgs):
         raise ValueError("image_read_failed")
