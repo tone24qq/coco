@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 SizeClass = Literal["20", "80", "120"]
 
@@ -17,6 +17,8 @@ class ManifestEntry:
     source_folder: str
     valid: bool
     invalid_reason: str | None = None
+    manual_grid: Optional[str] = None
+    override: Optional[str] = None
 
 
 @dataclass
