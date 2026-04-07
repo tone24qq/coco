@@ -1,20 +1,45 @@
 {
-  "total_samples": 19,
-  "valid_samples": 18,
-  "invalid_samples": 1,
-  "shape_distribution": {
-    "10x8": 19
+  "manifest_audit": {
+    "total_images": 101,
+    "total_samples": 79,
+    "valid_samples": 79,
+    "invalid_samples": 0,
+    "invalid_reasons": {}
   },
-  "missing_count_distribution": {
-    "8": 4,
-    "9": 4,
-    "10": 4,
-    "11": 3,
-    "12": 3,
-    "0": 1
+  "scanned_images_by_size": {
+    "20": 13,
+    "80": 44,
+    "120": 44
   },
-  "invalid_reasons": {
-    "answer_not_missing_cell": 1
+  "scanned_samples_by_size": {
+    "20": 13,
+    "80": 44,
+    "120": 22
   },
-  "coordinate_mode": "zero"
+  "valid_sample_count_by_size": {
+    "20": 0,
+    "80": 0,
+    "120": 0
+  },
+  "parse_counts_by_size": {
+    "20": {
+      "success": 13,
+      "failed": 0
+    },
+    "80": {
+      "success": 44,
+      "failed": 0
+    },
+    "120": {
+      "success": 22,
+      "failed": 0
+    }
+  },
+  "pending_counts_by_size": {
+    "20": 13,
+    "80": 44,
+    "120": 22
+  },
+  "parse_failure_reasons": {},
+  "anti_leakage_checks": "passed"
 }

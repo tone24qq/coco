@@ -1,0 +1,39 @@
+{
+  "anti_leakage_checks": "passed",
+  "valid_sample_count_by_size": {
+    "20": 0,
+    "80": 0,
+    "120": 0
+  },
+  "parse_counts_by_size": {
+    "20": {
+      "success": 13,
+      "failed": 0
+    },
+    "80": {
+      "success": 44,
+      "failed": 0
+    },
+    "120": {
+      "success": 22,
+      "failed": 0
+    }
+  },
+  "results": {
+    "20": {
+      "insufficient_data": true,
+      "num_boards": 0,
+      "anti_leakage_checks": "passed"
+    },
+    "80": {
+      "insufficient_data": true,
+      "num_boards": 0,
+      "anti_leakage_checks": "passed"
+    },
+    "120": {
+      "insufficient_data": true,
+      "num_boards": 0,
+      "anti_leakage_checks": "passed"
+    }
+  }
+}

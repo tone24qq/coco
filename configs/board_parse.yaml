@@ -1,0 +1,7 @@
+parser:
+  min_confidence: 0.45
+  low_cell_confidence: 0.55
+outputs:
+  json: reports/parsed_board.json
+  csv: reports/parsed_board.csv
+  overlay: reports/parsed_board_overlay.png

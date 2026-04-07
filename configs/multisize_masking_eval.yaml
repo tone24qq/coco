@@ -1,0 +1,55 @@
+data:
+  repo_root: .
+  annotation_manifest: samples/data/image_board_annotations.json
+  parsed_boards_output: reports/parsed_boards.json
+
+parser:
+  min_confidence: 0.25
+
+eval:
+  folds: 3
+  masking_repeats: 20
+  seed: 2026
+  min_samples_per_size: 2
+
+search:
+  n_trials: 8
+
+modules:
+  - focus
+  - connectivity
+  - heatmap
+  - a2
+  - d3
+  - skip
+  - diff
+  - mirror
+  - tail
+  - f10
+
+discovery:
+  repeats: 5
+  n_trials: 3
+  candidate_modules:
+    - local_arith_completion
+    - local_delta_consistency
+    - mirror_agreement
+    - directional_pattern_agreement
+    - modulo_family
+    - rank_gap_repair
+    - neighborhood_uniqueness_pressure
+    - a2_delta
+    - d3_delta
+    - f10_repair_delta
+
+reports:
+  manifest: reports/board_manifest.json
+  parse_audit: reports/parse_audit.json
+  pending_annotations: reports/pending_annotations.json
+  pending_review: reports/pending_review.json
+  data_audit: reports/data_audit.json
+  per_size_summary: reports/per_size_summary.json
+  overall_summary: reports/overall_summary.json
+  module_leaderboard: reports/module_leaderboard.json
+  champion_bundle: reports/champion_bundle.json
+  discovery_summary: reports/discovery_summary.json

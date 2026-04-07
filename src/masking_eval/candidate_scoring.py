@@ -29,7 +29,8 @@ class TargetPrediction:
 
 def legal_candidates(masked_grid: np.ndarray) -> List[int]:
     visible = set(int(v) for v in masked_grid[masked_grid != -1].tolist())
-    return sorted(list(set(range(1, 81)) - visible))
+    total = int(masked_grid.shape[0] * masked_grid.shape[1])
+    return sorted(list(set(range(1, total + 1)) - visible))
 
 
 def score_candidate(
