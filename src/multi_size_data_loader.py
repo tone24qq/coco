@@ -8,7 +8,12 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .board_manifest import build_multisize_manifest
-from .image_board_parser import parse_manifest_entries, write_boards, write_parse_audit, write_pending
+from .image_board_parser import (
+    parse_manifest_entries,
+    write_boards,
+    write_parse_audit,
+    write_pending,
+)
 
 
 @dataclass
@@ -35,20 +40,41 @@ def _is_complete_grid(grid: List[List[Optional[int]]]) -> bool:
 def load_multisize_samples(config: Dict) -> ParseArtifacts:
     repo_root = Path(config["data"]["repo_root"])
     manifest, manifest_audit = build_multisize_manifest(repo_root)
+    max_per_size = int(config.get("parser", {}).get("max_samples_per_size", 0) or 0)
+    if max_per_size > 0:
+        keep: Dict[str, int] = {"20": 0, "80": 0, "120": 0}
+        filtered = []
+        for m in manifest:
+            if keep.get(m.size_class, 0) >= max_per_size:
+                continue
+            filtered.append(m)
+            keep[m.size_class] = keep.get(m.size_class, 0) + 1
+        manifest = filtered
     boards, parse_audit, pending, _ = parse_manifest_entries(
         manifest=manifest,
         min_confidence=float(config["parser"]["min_confidence"]),
+        strict=False,
     )
 
     samples: List[MultiSizeBoardSample] = []
     for b in boards:
-        if not _is_complete_grid(b.grid):
+        complete = _is_complete_grid(b.grid)
+        usable = bool(b.metadata.get("usable_for_backtest", False)) and complete
+        if not usable:
             pending.append(
                 {
                     "sample_id": b.sample_id,
                     "size_class": b.size_class,
-                    "reason": "incomplete_grid",
-                    "parse_confidence": b.metadata.get("parse_confidence", 0.0),
+                    "reason": (
+                        "pending_review"
+                        if b.metadata.get("low_confidence_cells")
+                        else "incomplete_grid"
+                    ),
+                    "parse_success": True,
+                    "complete_grid": complete,
+                    "usable_for_backtest": usable,
+                    "pending_review": True,
+                    "hard_fail": False,
                 }
             )
             continue
@@ -69,7 +95,9 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
         sample_counts_by_size[m.size_class] += 1
         image_counts_by_size[m.size_class] += len(m.image_paths)
 
-    parse_counts: Dict[str, Dict[str, int]] = {k: {"success": 0, "failed": 0} for k in ("20", "80", "120")}
+    parse_counts: Dict[str, Dict[str, int]] = {
+        k: {"success": 0, "failed": 0} for k in ("20", "80", "120")
+    }
     pending_counts: Dict[str, int] = {k: 0 for k in ("20", "80", "120")}
     valid_count_by_size: Dict[str, int] = {k: 0 for k in ("20", "80", "120")}
     reasons: Dict[str, int] = {}
@@ -102,12 +130,22 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
         "parse_counts_by_size": parse_counts,
         "pending_counts_by_size": pending_counts,
         "parse_failure_reasons": reasons,
+        "status_flags": {
+            "parse_success": [x.parse_success for x in parse_audit],
+            "complete_grid": [x.complete_grid for x in parse_audit],
+            "usable_for_backtest": [x.usable_for_backtest for x in parse_audit],
+            "pending_review": [x.pending_review for x in parse_audit],
+            "hard_fail": [x.hard_fail for x in parse_audit],
+        },
         "anti_leakage_checks": "passed",
     }
 
-    Path(config["reports"]["data_audit"]).write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
+    Path(config["reports"]["data_audit"]).write_text(
+        json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     Path(config["reports"]["manifest"]).write_text(
-        json.dumps([x.__dict__ for x in manifest], indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps([x.__dict__ for x in manifest], indent=2, ensure_ascii=False),
+        encoding="utf-8",
     )
     write_parse_audit(parse_audit, Path(config["reports"]["parse_audit"]))
     write_pending(pending, Path(config["reports"]["pending_annotations"]))
