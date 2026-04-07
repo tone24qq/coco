@@ -104,48 +104,52 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
     if gray is None:
         raise ValueError(f"cannot_read_image:{args.image}")
 
+    manual_grid = load_manual_grid(getattr(args, "manual_grid", None))
+    override_path = getattr(args, "override", None)
     source_mode = "auto"
     base_result: BoardParseResult | None = None
     detection: GridDetection | None = None
     auto_error: str | None = None
-    try:
-        detection = detect_grid(gray, spec)
-        base_result = structure_board(
-            sample_id=Path(args.image).stem,
-            image_path=args.image,
-            detection=detection,
-            spec=spec,
-            ticket_type=spec.size_class,
-        )
-    except GridDetectionError as exc:
-        auto_error = str(exc)
 
-    manual_grid = load_manual_grid(getattr(args, "manual_grid", None))
-    if base_result is None:
-        if manual_grid is None:
-            return {
-                "status": auto_error or "needs_manual_review",
-                "source_mode": "auto",
-                "contract_passed": False,
-                "needs_manual_review": True,
-            }
-        base_grid = manual_grid
+    # manual-first: if manual-grid is provided, do not depend on auto parsing as the main source.
+    if manual_grid is not None:
         source_mode = "manual"
+        base_grid = manual_grid
+        # optional detection for bbox/overlay only; never blocks manual flow
+        try:
+            detection = detect_grid(gray, spec)
+        except GridDetectionError:
+            detection = None
     else:
-        base_grid = [row[:] for row in base_result.grid]
-
-    if manual_grid is not None and source_mode == "auto":
-        base_grid = manual_grid
-        source_mode = "manual"
+        try:
+            detection = detect_grid(gray, spec)
+            base_result = structure_board(
+                sample_id=Path(args.image).stem,
+                image_path=args.image,
+                detection=detection,
+                spec=spec,
+                ticket_type=spec.size_class,
+            )
+            base_grid = [row[:] for row in base_result.grid]
+        except GridDetectionError as exc:
+            auto_error = str(exc)
+            if override_path is None:
+                return {
+                    "status": auto_error or "needs_manual_review",
+                    "source_mode": "auto",
+                    "contract_passed": False,
+                    "needs_manual_review": True,
+                }
+            raise
 
     override_audit = []
-    if getattr(args, "override", None):
-        base_grid, override_audit = apply_overrides(base_grid, args.override)
-        source_mode = "hybrid" if base_result is not None else "manual"
+    if override_path:
+        base_grid, override_audit = apply_overrides(base_grid, override_path)
+        source_mode = "hybrid" if source_mode in ("manual", "auto") else source_mode
 
     final_result = (
         _manual_result_from_grid(args.image, spec, base_grid)
-        if source_mode != "auto"
+        if source_mode in ("manual", "hybrid")
         else base_result
     )
     assert final_result is not None
@@ -173,6 +177,7 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
             **final_result.parse_diagnostics,
             "override_audit": override_audit,
             "board_bbox": detection.board_bbox if detection else None,
+            "parse_policy": "manual_first",
         },
     )
     payload["cell_boxes"] = final_result.cell_boxes
