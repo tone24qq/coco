@@ -1,0 +1,38 @@
+[
+  {
+    "image": "gogo/20/IS23120130.jpg",
+    "expected_shape": "5x4",
+    "shape": "5x4",
+    "shape_correct": true,
+    "grid_complete_rate": 0.35,
+    "numbers_all_valid": true,
+    "query_status": "predicted",
+    "top5_count": 5,
+    "overlay_returned": true,
+    "api_status_code": 200
+  },
+  {
+    "image": "gogo/80/NL230505019.jpg",
+    "expected_shape": "10x8",
+    "shape": "10x8",
+    "shape_correct": true,
+    "grid_complete_rate": 0.1125,
+    "numbers_all_valid": false,
+    "query_status": "predicted",
+    "top5_count": 5,
+    "overlay_returned": true,
+    "api_status_code": 200
+  },
+  {
+    "image": "gogo/120/NG230516001_頁面_1.jpg",
+    "expected_shape": "12x10",
+    "shape": "12x10",
+    "shape_correct": true,
+    "grid_complete_rate": 0.825,
+    "numbers_all_valid": false,
+    "query_status": "exact_found",
+    "top5_count": 1,
+    "overlay_returned": true,
+    "api_status_code": 200
+  }
+]
