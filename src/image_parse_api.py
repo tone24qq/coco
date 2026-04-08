@@ -4,7 +4,7 @@ import base64
 from argparse import Namespace
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 
 from scripts.parse_board_image import parse_image_hybrid
 from src.number_position_predictor import predict_number_positions
@@ -57,8 +57,7 @@ def board_parse(
         no_overlay=no_overlay,
     )
     payload = parse_image_hybrid(args)
-    if not payload.get("contract_passed"):
-        raise HTTPException(status_code=422, detail=payload)
+    payload["needs_review"] = bool(payload.get("needs_manual_review"))
     return _attach_overlay_payload(payload)
 
 
@@ -90,9 +89,8 @@ def predict_number_position(
         no_overlay=no_overlay,
     )
     payload = parse_image_hybrid(args)
-    if not payload.get("contract_passed"):
-        raise HTTPException(status_code=422, detail=payload)
     payload = _attach_overlay_payload(payload)
+    payload["needs_review"] = bool(payload.get("needs_manual_review"))
 
     query = predict_number_positions(
         grid=payload["grid"],

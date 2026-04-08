@@ -35,6 +35,7 @@ from src.manual_board_input import (
     load_manual_grid_with_states,
 )  # noqa: E402
 from src.ticket_specs import TicketSpec, resolve_ticket_spec  # noqa: E402
+from src.ticket_specs import TICKET_SPECS, get_ticket_spec  # noqa: E402
 
 
 def _manual_result_from_grid(
@@ -103,19 +104,108 @@ def _manual_result_from_grid(
 
 
 def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
-    spec = resolve_ticket_spec(
-        size_class=getattr(args, "size_class", None),
-        rows=getattr(args, "rows", None),
-        cols=getattr(args, "cols", None),
-        image_path=args.image,
-    )
     gray = cv2.imread(args.image, cv2.IMREAD_GRAYSCALE)
     if gray is None:
         raise ValueError(f"cannot_read_image:{args.image}")
-
     manual_grid, manual_states = load_manual_grid_with_states(
         getattr(args, "manual_grid", None)
     )
+    detection_pref: GridDetection | None = None
+    base_result_pref: BoardParseResult | None = None
+    if any(
+        getattr(args, key, None) is not None for key in ("size_class", "rows", "cols")
+    ):
+        spec = resolve_ticket_spec(
+            size_class=getattr(args, "size_class", None),
+            rows=getattr(args, "rows", None),
+            cols=getattr(args, "cols", None),
+            image_path=args.image,
+        )
+    else:
+        img_h, img_w = gray.shape[:2]
+        original_filename = str(getattr(args, "original_filename", "") or "")
+        size_class_candidates = list(TICKET_SPECS.keys())
+        preferred_size = None
+        if img_h <= 1300 and img_w <= 1900:
+            spec = get_ticket_spec("20")
+            try:
+                detection_pref = detect_grid(gray, spec)
+            except GridDetectionError:
+                detection_pref = None
+            candidates: list[
+                tuple[float, TicketSpec, GridDetection, BoardParseResult | None]
+            ] = []
+            if detection_pref is not None and manual_grid is None:
+                try:
+                    base_result_pref = structure_board(
+                        sample_id=Path(args.image).stem,
+                        image_path=args.image,
+                        detection=detection_pref,
+                        spec=spec,
+                        ticket_type=spec.size_class,
+                    )
+                except Exception:
+                    base_result_pref = None
+            # short-circuit for 20-shape paper format
+            if detection_pref is not None:
+                candidates = [(1.0, spec, detection_pref, base_result_pref)]
+                size_class_candidates = []
+        else:
+            is_multipage_hint = "頁面_" in original_filename or "頁面_" in str(args.image)
+            preferred_size = "120" if is_multipage_hint else "80"
+            size_class_candidates = [preferred_size] + [
+                x for x in TICKET_SPECS if x != preferred_size
+            ]
+            candidates = []
+        for size_class in size_class_candidates:
+            candidate_spec = get_ticket_spec(size_class)
+            try:
+                candidate_det = detect_grid(gray, candidate_spec)
+            except GridDetectionError:
+                continue
+            candidate_result: BoardParseResult | None = None
+            if manual_grid is None:
+                try:
+                    candidate_result = structure_board(
+                        sample_id=Path(args.image).stem,
+                        image_path=args.image,
+                        detection=candidate_det,
+                        spec=candidate_spec,
+                        ticket_type=candidate_spec.size_class,
+                    )
+                except Exception:
+                    candidate_result = None
+            if candidate_result is not None:
+                total = max(
+                    1, candidate_spec.expected_rows * candidate_spec.expected_cols
+                )
+                numbers = [int(v) for row in candidate_result.grid for v in row if v is not None]
+                complete_ratio = len(numbers) / float(total)
+                dup_count = min(
+                    len(candidate_result.parse_diagnostics.get("duplicates", [])), total
+                )
+                illegal_count = len([v for v in numbers if v < 1 or v > total])
+                low_count = min(len(candidate_result.low_confidence_cells), total)
+                score = (
+                    0.35 * float(candidate_result.final_parse_confidence)
+                    + 0.50 * complete_ratio
+                    - 0.25 * (dup_count / float(total))
+                    - 0.35 * (illegal_count / float(total))
+                    - 0.20 * (low_count / float(total))
+                )
+            else:
+                score = (
+                    0.4 * float(candidate_det.board_confidence)
+                    + 0.3 * float(candidate_det.warp_confidence)
+                    + 0.3 * float(candidate_det.shape_confidence)
+                )
+            if preferred_size is not None and size_class == preferred_size:
+                score += 0.03
+            candidates.append((score, candidate_spec, candidate_det, candidate_result))
+        if not candidates:
+            raise GridDetectionError("shape_resolution_failed")
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, spec, detection_pref, base_result_pref = candidates[0]
     override_path = getattr(args, "override", None)
     source_mode = "auto"
     base_result: BoardParseResult | None = None
@@ -127,20 +217,24 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
         source_mode = "manual"
         base_grid = manual_grid
         # optional detection for bbox/overlay only; never blocks manual flow
-        try:
-            detection = detect_grid(gray, spec)
-        except GridDetectionError:
-            detection = None
+        detection = detection_pref
+        if detection is None:
+            try:
+                detection = detect_grid(gray, spec)
+            except GridDetectionError:
+                detection = None
     else:
         try:
-            detection = detect_grid(gray, spec)
-            base_result = structure_board(
-                sample_id=Path(args.image).stem,
-                image_path=args.image,
-                detection=detection,
-                spec=spec,
-                ticket_type=spec.size_class,
-            )
+            detection = detection_pref or detect_grid(gray, spec)
+            base_result = base_result_pref
+            if base_result is None:
+                base_result = structure_board(
+                    sample_id=Path(args.image).stem,
+                    image_path=args.image,
+                    detection=detection,
+                    spec=spec,
+                    ticket_type=spec.size_class,
+                )
             base_grid = [row[:] for row in base_result.grid]
         except GridDetectionError as exc:
             auto_error = str(exc)
@@ -204,6 +298,17 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
     payload["bounding_boxes"] = {
         "board_bbox": detection.board_bbox if detection else None
     }
+    payload["confidence_summary"] = {
+        "board_confidence": float(final_result.board_confidence),
+        "warp_confidence": float(final_result.warp_confidence),
+        "shape_confidence": float(final_result.shape_confidence),
+        "cell_class_confidence_mean": float(final_result.cell_class_confidence_mean),
+        "digit_confidence_mean": float(final_result.digit_confidence_mean),
+        "global_consistency_confidence": float(
+            final_result.global_consistency_confidence
+        ),
+        "final_parse_confidence": float(final_result.final_parse_confidence),
+    }
 
     query_number = getattr(args, "query_number", None)
     if query_number is not None:
@@ -216,16 +321,16 @@ def parse_image_hybrid(args: argparse.Namespace) -> dict[str, object]:
         out_csv = getattr(args, "output_csv", "reports/parsed_board.csv")
         write_board_json(final_result, Path(out_json))
         write_board_csv(final_result, Path(out_csv))
-        output_overlay = getattr(
-            args, "output_overlay", "reports/parsed_board_overlay.png"
-        )
-        if (
-            not getattr(args, "no_overlay", False)
-            and output_overlay
-            and detection is not None
-        ):
-            write_overlay(final_result, detection, args.image, Path(output_overlay))
-            payload["overlay_path"] = output_overlay
+    output_overlay = getattr(
+        args, "output_overlay", "reports/parsed_board_overlay.png"
+    )
+    if (
+        not getattr(args, "no_overlay", False)
+        and output_overlay
+        and detection is not None
+    ):
+        write_overlay(final_result, detection, args.image, Path(output_overlay))
+        payload["overlay_path"] = output_overlay
 
     payload = json.loads(json.dumps(payload, default=lambda o: int(o)))
     return payload

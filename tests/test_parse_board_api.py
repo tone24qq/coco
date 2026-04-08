@@ -88,3 +88,30 @@ def test_board_parse_api_overlay_toggle(monkeypatch, tmp_path: Path) -> None:
     assert resp.status_code == 200
     payload = resp.json()
     assert "overlay_image_base64" in payload
+
+
+def test_predict_api_minimal_sop_payload(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def _stub(args: Namespace) -> dict[str, object]:
+        seen["rows"] = args.rows
+        seen["cols"] = args.cols
+        seen["size_class"] = args.size_class
+        return {
+            "contract_passed": True,
+            "grid": [[11]],
+            "missing_values": [],
+            "low_confidence_cells": [],
+            "black_cells": [],
+            "parse_diagnostics": {},
+        }
+
+    monkeypatch.setattr(image_parse_api, "parse_image_hybrid", _stub)
+    with Path("gogo/20/IS23120130.jpg").open("rb") as f:
+        resp = client.post(
+            "/board/predict-number-position",
+            files={"image": ("x.jpg", f, "image/jpeg")},
+            data={"query_number": "11", "strict": "true"},
+        )
+    assert resp.status_code == 200
+    assert seen == {"rows": None, "cols": None, "size_class": None}

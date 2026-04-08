@@ -56,12 +56,17 @@ def write_overlay(
         if (r0, c0) in pending:
             color = (0, 0, 255)
         cv2.rectangle(vis, p0, p1, color, 1)
-        if box.get("label") == "solid_black":
-            txt = "#"
+        label = str(box.get("label", "unknown"))
+        if label == "black":
+            txt = f"r{r0+1}c{c0+1} #"
         elif box.get("value") is None:
-            txt = "?"
+            txt = f"r{r0+1}c{c0+1} ? {label}"
         else:
-            txt = str(box["value"])
+            txt = (
+                f"r{r0+1}c{c0+1} "
+                f"{box['value']} "
+                f"{float(box.get('confidence', 0.0)):.2f}"
+            )
         cv2.putText(
             vis,
             txt,

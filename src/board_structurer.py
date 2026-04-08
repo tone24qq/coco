@@ -90,6 +90,12 @@ def structure_board(
             cell = _cell_crop(detection.board_image, y0, y1, x0, x1)
             cls = classify_cell(cell)
             class_conf.append(cls.confidence)
+            normalized_label = {
+                "blank": "empty",
+                "solid_black": "black",
+                "scratched_or_occluded": "unknown",
+                "printed_number": "number",
+            }.get(cls.label, "unknown")
             cell_boxes.append(
                 {
                     "row_1based": r + 1,
@@ -98,9 +104,10 @@ def structure_board(
                     "y0": y0,
                     "x1": x1,
                     "y1": y1,
-                    "label": cls.label,
+                    "label": normalized_label,
                     "value": None,
                     "confidence": float(cls.confidence),
+                    "top_candidates": [],
                 }
             )
             cell_labels[(r, c)] = cls.label
@@ -114,6 +121,7 @@ def structure_board(
             ocr_backend = digit.ocr_backend
             digit_conf.append(digit.confidence)
             cell_candidates[(r, c)] = [int(x["value"]) for x in digit.top_candidates]
+            cell_boxes[-1]["top_candidates"] = digit.top_candidates
             conf[r][c] = 0.4 * cls.confidence + 0.6 * digit.confidence
             if digit.value is None:
                 low.append(
@@ -124,6 +132,7 @@ def structure_board(
                         "needs_review": True,
                     }
                 )
+                cell_boxes[-1]["label"] = "unknown"
                 continue
             grid[r][c] = int(digit.value)
             cell_boxes[-1]["value"] = int(digit.value)
