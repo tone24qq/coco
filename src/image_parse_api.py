@@ -4,7 +4,6 @@ import base64
 from argparse import Namespace
 from pathlib import Path
 
-import cv2
 from fastapi import FastAPI, File, Form, UploadFile
 
 from scripts.parse_board_image import parse_image_hybrid
@@ -46,29 +45,22 @@ def _table_pipeline_payload(
     table0 = table_payload["tables"][0]
     rows = int(table0["rows"])
     cols = int(table0["cols"])
-    hint_name = str(original_filename or "")
-    pre = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if pre is not None:
-        h, w = pre.shape
-        if h <= 1300 and w <= 1900:
-            rows, cols = 5, 4
-        elif "頁面_" in hint_name:
-            rows, cols = 12, 10
-        else:
-            rows, cols = 10, 8
     cells = table0["cells"]
+    diagnostics = table0.get("diagnostics", {})
+
     grid: list[list[int | None]] = [[None for _ in range(cols)] for _ in range(rows)]
-    low_conf = []
+    low_conf = list(diagnostics.get("low_confidence_cells", []))
     black_cells = []
     for cell in cells:
         r = int(cell["row_index"])
         c = int(cell["col_index"])
         val = cell.get("normalized_value")
         grid[r][c] = int(val) if val is not None else None
-        if cell.get("review_needed"):
+        if cell.get("review_needed") and not any(x.get("row") == r and x.get("col") == c for x in low_conf):
             low_conf.append({"row": r, "col": c, "reason": "low_cell_confidence", "needs_review": True})
         if cell.get("label") == "black":
             black_cells.append({"row": r + 1, "col": c + 1})
+
     spec = build_ticket_spec(rows, cols)
     parse_conf = float(sum(float(c["confidence"]) for c in cells) / max(len(cells), 1))
     contract = evaluate_board_contract(
@@ -88,8 +80,15 @@ def _table_pipeline_payload(
         parse_confidence=parse_conf,
         contract=contract,
         parse_diagnostics={
-            "ocr_backend": "rapidocr_cell_first",
-            "pipeline": "table_structure_then_cell_ocr",
+            "ocr_backend": diagnostics.get("ocr_backends", []),
+            "pipeline": "table_structure_first_cell_ocr_global_decode",
+            "grid_source": diagnostics.get("grid_source", "detected_lines"),
+            "row_line_source": diagnostics.get("row_line_source"),
+            "col_line_source": diagnostics.get("col_line_source"),
+            "fallback_used": diagnostics.get("fallback_used", False),
+            "fallback_reason": diagnostics.get("fallback_reason"),
+            "decode_backend": diagnostics.get("decode_backend"),
+            "original_filename_hint": original_filename,
         },
     )
     payload["value_to_position"] = build_value_to_position(grid)
@@ -108,7 +107,11 @@ def _table_pipeline_payload(
         }
         for c in cells
     ]
-    payload["bounding_boxes"] = {"board_bbox": table0["board_bbox"]}
+    payload["bounding_boxes"] = {
+        "board_bbox": table0["board_bbox"],
+        "row_lines": diagnostics.get("row_lines", []),
+        "col_lines": diagnostics.get("col_lines", []),
+    }
     payload["confidence_summary"] = {"final_parse_confidence": parse_conf}
     payload["overlay_image_base64"] = table_payload.get("overlay_image_base64")
     if table_payload.get("overlay_path"):

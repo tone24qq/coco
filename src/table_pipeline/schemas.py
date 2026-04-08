@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -25,6 +25,7 @@ class TableRecord:
     rows: int
     cols: int
     cells: list[CellRecord]
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
