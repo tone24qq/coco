@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .cell_ocr import ocr_cell
+from .global_decode import decode_with_constraints
 from .postprocess import build_pipeline_record, render_overlay
 from .preprocess import preprocess_image
 from .schemas import CellRecord, TableRecord
@@ -22,10 +23,15 @@ def parse_tables(image_path: str, output_overlay: str | None = None) -> dict[str
     for ti, dt in enumerate(detected):
         cells: list[CellRecord] = []
         max_value = dt.row_count * dt.col_count
+        candidates: dict[tuple[int, int], list[dict[str, float | int]]] = {}
+        low_conf_cells: list[dict[str, object]] = []
+        ocr_backends: set[str] = set()
         for idx, box in enumerate(dt.cell_boxes):
             r = idx // dt.col_count
             c = idx % dt.col_count
             rec = ocr_cell(pre.enhanced, box, max_value=max_value)
+            candidates[(r, c)] = list(rec.get("top_candidates", []))
+            ocr_backends.add(str(rec.get("ocr_backend", "unknown")))
             cells.append(
                 CellRecord(
                     row_index=r,
@@ -40,6 +46,16 @@ def parse_tables(image_path: str, output_overlay: str | None = None) -> dict[str
                     top_candidates=list(rec["top_candidates"]),
                 )
             )
+
+        decoded = decode_with_constraints(dt.row_count, dt.col_count, candidates)
+        low_conf_cells.extend(decoded.low_confidence_cells)
+        for cell in cells:
+            val = decoded.grid[cell.row_index][cell.col_index]
+            cell.normalized_value = val
+            cell.text = str(val) if val is not None else ""
+            if val is None:
+                cell.review_needed = True
+
         tables.append(
             TableRecord(
                 table_index=ti,
@@ -47,6 +63,15 @@ def parse_tables(image_path: str, output_overlay: str | None = None) -> dict[str
                 rows=dt.row_count,
                 cols=dt.col_count,
                 cells=cells,
+                diagnostics={
+                    **dt.diagnostics,
+                    "preprocess": pre.diagnostics,
+                    "decode_backend": decoded.decode_backend,
+                    "ocr_backends": sorted(ocr_backends),
+                    "fallback_used": False,
+                    "fallback_reason": None,
+                    "low_confidence_cells": low_conf_cells,
+                },
             )
         )
 

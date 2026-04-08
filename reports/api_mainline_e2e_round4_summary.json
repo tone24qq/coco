@@ -1,6 +1,18 @@
 {
   "cases": 3,
   "shape_accuracy": 1.0,
-  "mean_complete_rate": 0.4292,
-  "overlay_rate": 1.0
+  "mean_complete_rate": 0.6819,
+  "overlay_rate": 1.0,
+  "numbers_all_valid_count": 3,
+  "old_vs_new": {
+    "old_mean_complete_rate": 0.4292,
+    "new_mean_complete_rate": 0.6819,
+    "old_numbers_all_valid_count": 1,
+    "new_numbers_all_valid_count": 3
+  },
+  "stats_diff": {
+    "duplicate_values_total": 0,
+    "illegal_values_total": 0,
+    "missing_values_total": 98
+  }
 }
