@@ -1,0 +1,41 @@
+[
+  {
+    "tag": "20",
+    "status_code": 200,
+    "shape": "5x4",
+    "shape_ok": true,
+    "grid_complete_rate": 0.3,
+    "numbers_all_valid": true,
+    "value_to_position_count": 6,
+    "query_status": "exact_found",
+    "top5_count": 1,
+    "overlay_returned": true,
+    "needs_review": true
+  },
+  {
+    "tag": "80",
+    "status_code": 200,
+    "shape": "10x8",
+    "shape_ok": true,
+    "grid_complete_rate": 0.05,
+    "numbers_all_valid": true,
+    "value_to_position_count": 4,
+    "query_status": "predicted",
+    "top5_count": 5,
+    "overlay_returned": true,
+    "needs_review": true
+  },
+  {
+    "tag": "120",
+    "status_code": 200,
+    "shape": "12x10",
+    "shape_ok": true,
+    "grid_complete_rate": 0.1083,
+    "numbers_all_valid": true,
+    "value_to_position_count": 13,
+    "query_status": "predicted",
+    "top5_count": 5,
+    "overlay_returned": true,
+    "needs_review": true
+  }
+]

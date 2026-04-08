@@ -1,0 +1,7 @@
+{
+  "cases": 6,
+  "shape_accuracy": 1.0,
+  "mean_complete_rate": 0.2368,
+  "overlay_rate": 1.0,
+  "rapidocr_cases": 0
+}
