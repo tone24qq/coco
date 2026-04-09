@@ -35,9 +35,7 @@ class InferTargetPositionRequest(BaseModel):
                 if not isinstance(cell, int):
                     raise ValueError(f"board[{r_idx}][{c_idx}] must be integer")
                 if cell == 0 or cell < -1:
-                    raise ValueError(
-                        f"board[{r_idx}][{c_idx}] must be -1 or positive integer"
-                    )
+                    raise ValueError(f"board[{r_idx}][{c_idx}] must be -1 or positive integer")
         return self
 
 
@@ -48,6 +46,7 @@ class Cell(BaseModel):
 
 class BestCell(Cell):
     score: float
+    confidence_1_to_100: float
 
 
 class CandidateCell(BestCell):
@@ -57,6 +56,15 @@ class CandidateCell(BestCell):
 class BoardShape(BaseModel):
     rows: int
     cols: int
+
+
+class InferenceMetadata(BaseModel):
+    score_type: str
+    confidence_type: str
+    confidence_1_to_100_type: str
+    confidence_1_to_100_is_probability: bool
+    source: str
+    version: str
 
 
 class InferTargetPositionResponse(BaseModel):
@@ -70,6 +78,6 @@ class InferTargetPositionResponse(BaseModel):
     confidence_score: float
     reasoning: List[str]
     module_contributions: Dict[str, float]
-    metadata: Dict[str, Any]
+    metadata: InferenceMetadata
 
     model_config = ConfigDict(extra="forbid")

@@ -28,6 +28,7 @@ def test_valid_small_board_4x5() -> None:
     assert payload["board_shape"] == {"rows": 4, "cols": 5}
     assert payload["best_cell"] is not None
     assert payload["confidence_score"] == payload["best_cell"]["score"]
+    assert payload["metadata"]["confidence_1_to_100_is_probability"] is False
 
 
 def test_valid_large_board_8x10() -> None:
@@ -54,7 +55,7 @@ def test_target_already_opened() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "already_opened"
-    assert payload["best_cell"] == {"row": 2, "col": 1, "score": 1.0}
+    assert payload["best_cell"] == {"row": 2, "col": 1, "score": 1.0, "confidence_1_to_100": 100.0}
 
 
 def test_target_not_opened() -> None:

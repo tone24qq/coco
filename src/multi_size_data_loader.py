@@ -26,6 +26,7 @@ class ParseArtifacts:
     samples: List[MultiSizeBoardSample]
     audit: Dict
     pending: List[Dict[str, object]]
+    cache_info: Dict[str, object]
 
 
 def _is_complete_grid(grid: List[List[Optional[int]]]) -> bool:
@@ -61,7 +62,19 @@ def _load_cached_artifacts(config: Dict) -> Optional[ParseArtifacts]:
                     parse_confidence=float(b.get("metadata", {}).get("parse_confidence", 1.0)),
                 )
             )
-        return ParseArtifacts(samples=samples, audit=raw_audit, pending=raw_pending)
+        return ParseArtifacts(
+            samples=samples,
+            audit=raw_audit,
+            pending=raw_pending,
+            cache_info={
+                "used_cache": True,
+                "cache_artifact_path": str(parsed_path),
+                "cache_audit_path": str(audit_path),
+                "cache_timestamp": parsed_path.stat().st_mtime,
+                "cache_sample_count": len(samples),
+                "fallback_parse": False,
+            },
+        )
     except Exception:
         return None
 
@@ -155,4 +168,16 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
         write_pending(pending, Path(config["reports"]["pending_review"]))
     write_boards(boards, Path(config["data"]["parsed_boards_output"]))
 
-    return ParseArtifacts(samples=samples, audit=audit, pending=pending)
+    return ParseArtifacts(
+        samples=samples,
+        audit=audit,
+        pending=pending,
+        cache_info={
+            "used_cache": False,
+            "cache_artifact_path": str(Path(config["data"]["parsed_boards_output"])),
+            "cache_audit_path": str(Path(config["reports"]["data_audit"])),
+            "cache_timestamp": None,
+            "cache_sample_count": len(samples),
+            "fallback_parse": True,
+        },
+    )
