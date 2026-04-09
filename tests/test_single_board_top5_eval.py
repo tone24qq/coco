@@ -36,6 +36,7 @@ def test_single_board_top5_eval_case() -> None:
         true_cell_0_based=true_cell_0_based,
     )
     assert validation["masked_count"] == 40
+    assert validation["shape"] == [8, 10]
     assert validation["target_cell_0_based"] == [1, 4]
 
     result = infer_target_position(masked_board, target_number, source="single_board_test")

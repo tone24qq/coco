@@ -104,6 +104,11 @@ def score_candidates(
     module_weights: Optional[Dict[str, float]] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, float], List[str]]:
     weights = module_weights or load_module_weights()
+    if module_weights is not None:
+        total = sum(float(v) for v in weights.values())
+        if total <= 0:
+            raise InferenceError("module_weights must sum to positive value")
+        weights = {k: float(v) / total for k, v in weights.items()}
     explanations: List[str] = []
 
     for module_name, weight in weights.items():
@@ -120,6 +125,8 @@ def score_candidates(
             cell = c["cell"]
             module_score = float(normalized.get(cell, 0.0))
             c["module_scores"][module_name] = module_score
+            c.setdefault("module_details", {})
+            c["module_details"][module_name] = (result.details or {}).get(cell, {})
             c["score"] += module_score * weight
 
     return candidates, weights, explanations
@@ -229,6 +236,10 @@ def run_inference(
                 "module_scores": {
                     k: round(float(v), 6) for k, v in sorted(cell["module_scores"].items())
                 },
+                "module_details": {
+                    k: {dk: round(float(dv), 6) for dk, dv in sorted(v.items())}
+                    for k, v in sorted(cell.get("module_details", {}).items())
+                },
             }
         )
 
@@ -255,6 +266,8 @@ def run_inference(
             board_shape=(parsed.rows, parsed.cols),
             candidates=baseline_candidate_cells,
             true_cell_1_based=None,
+            board=board,
+            target_number=target_number,
         )
         candidate_cells, rerank_meta = apply_reranker(baseline_candidate_cells, feature_rows)
 
