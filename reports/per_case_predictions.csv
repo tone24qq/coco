@@ -1,19 +1,97 @@
-sample_id,shape,num_missing,answer_row,answer_col,truth_rank,top1,top3,top5
-s1,10x8,8,7,0,8,"(5, 2)","[(5, 2), (8, 4), (3, 7)]","[(5, 2), (8, 4), (3, 7), (5, 4), (6, 2)]"
-s2,10x8,9,7,2,2,"(6, 4)","[(6, 4), (7, 2), (3, 5)]","[(6, 4), (7, 2), (3, 5), (2, 3), (4, 7)]"
-s3,10x8,10,0,1,10,"(4, 3)","[(4, 3), (6, 2), (7, 6)]","[(4, 3), (6, 2), (7, 6), (4, 7), (6, 4)]"
-s4,10x8,11,4,4,1,"(4, 4)","[(4, 4), (7, 4), (9, 6)]","[(4, 4), (7, 4), (9, 6), (2, 2), (1, 3)]"
-s5,10x8,12,4,4,2,"(4, 2)","[(4, 2), (4, 4), (8, 2)]","[(4, 2), (4, 4), (8, 2), (4, 6), (5, 1)]"
-s6,10x8,8,7,3,1,"(7, 3)","[(7, 3), (3, 6), (4, 2)]","[(7, 3), (3, 6), (4, 2), (6, 7), (9, 7)]"
-s7,10x8,9,5,4,1,"(5, 4)","[(5, 4), (7, 3), (2, 4)]","[(5, 4), (7, 3), (2, 4), (9, 6), (2, 1)]"
-s8,10x8,10,3,6,1,"(3, 6)","[(3, 6), (6, 7), (2, 6)]","[(3, 6), (6, 7), (2, 6), (4, 0), (1, 6)]"
-s9,10x8,11,4,5,6,"(3, 4)","[(3, 4), (2, 5), (4, 2)]","[(3, 4), (2, 5), (4, 2), (9, 6), (4, 1)]"
-s10,10x8,12,5,7,3,"(4, 4)","[(4, 4), (2, 3), (5, 7)]","[(4, 4), (2, 3), (5, 7), (5, 1), (2, 5)]"
-s11,10x8,8,8,7,6,"(4, 5)","[(4, 5), (3, 6), (9, 4)]","[(4, 5), (3, 6), (9, 4), (7, 7), (2, 1)]"
-s12,10x8,9,7,6,1,"(7, 6)","[(7, 6), (2, 6), (9, 4)]","[(7, 6), (2, 6), (9, 4), (3, 7), (4, 2)]"
-s13,10x8,10,4,4,1,"(4, 4)","[(4, 4), (7, 3), (5, 7)]","[(4, 4), (7, 3), (5, 7), (2, 3), (8, 7)]"
-s14,10x8,11,6,3,2,"(4, 5)","[(4, 5), (6, 3), (5, 3)]","[(4, 5), (6, 3), (5, 3), (3, 1), (8, 2)]"
-s15,10x8,12,6,6,8,"(3, 4)","[(3, 4), (5, 5), (4, 3)]","[(3, 4), (5, 5), (4, 3), (4, 2), (1, 3)]"
-s16,10x8,8,1,6,5,"(7, 4)","[(7, 4), (7, 5), (6, 7)]","[(7, 4), (7, 5), (6, 7), (2, 1), (1, 6)]"
-s17,10x8,9,6,5,2,"(3, 3)","[(3, 3), (6, 5), (6, 2)]","[(3, 3), (6, 5), (6, 2), (5, 4), (3, 4)]"
-s18,10x8,10,0,6,10,"(6, 4)","[(6, 4), (3, 2), (8, 3)]","[(6, 4), (3, 2), (8, 3), (7, 6), (3, 4)]"
+sample_id,strategy,size_class,source,mask_ratio,status,target_number,true_row,true_col,pred_row,pred_col,top1_score,top1_confidence_1_to_100,true_rank,candidate_count
+default_0,random_baseline,80,default_seeded,0.5,ok,11,2,7,6,6,0.134798,7.73,4,40
+default_1,random_baseline,80,default_seeded,0.5,ok,8,4,0,1,7,0.242942,23.62,16,40
+default_2,random_baseline,80,default_seeded,0.5,ok,56,6,5,2,5,0.356648,43.83,10,40
+default_3,random_baseline,80,default_seeded,0.5,ok,17,4,8,0,9,0.8,100.0,21,40
+default_4,random_baseline,80,default_seeded,0.5,ok,71,0,4,6,9,0.240243,17.43,36,40
+default_5,random_baseline,80,default_seeded,0.5,ok,13,4,4,0,9,0.416068,57.11,18,40
+default_6,random_baseline,80,default_seeded,0.5,ok,21,5,3,6,7,0.243739,23.02,32,40
+default_7,random_baseline,80,default_seeded,0.5,ok,26,0,5,6,7,0.213652,15.59,22,40
+default_8,random_baseline,80,default_seeded,0.5,ok,34,5,5,0,6,0.114506,8.07,18,40
+default_9,random_baseline,80,default_seeded,0.5,ok,29,1,8,5,0,0.114606,3.53,2,40
+default_10,random_baseline,80,default_seeded,0.5,ok,23,7,4,0,0,0.453595,47.53,26,40
+default_11,random_baseline,80,default_seeded,0.5,ok,55,4,7,1,5,0.205397,14.26,31,40
+default_0,uniform_baseline,80,default_seeded,0.5,ok,11,2,7,3,9,1.0,50.0,36,40
+default_1,uniform_baseline,80,default_seeded,0.5,ok,8,4,0,0,4,1.0,50.0,35,40
+default_2,uniform_baseline,80,default_seeded,0.5,ok,56,6,5,3,5,1.0,50.0,19,40
+default_3,uniform_baseline,80,default_seeded,0.5,ok,17,4,8,0,9,1.0,50.0,24,40
+default_4,uniform_baseline,80,default_seeded,0.5,ok,71,0,4,0,4,1.0,50.0,1,40
+default_5,uniform_baseline,80,default_seeded,0.5,ok,13,4,4,5,7,1.0,50.0,25,40
+default_6,uniform_baseline,80,default_seeded,0.5,ok,21,5,3,7,2,1.0,50.0,29,40
+default_7,uniform_baseline,80,default_seeded,0.5,ok,26,0,5,4,0,1.0,50.0,21,40
+default_8,uniform_baseline,80,default_seeded,0.5,ok,34,5,5,3,7,1.0,50.0,12,40
+default_9,uniform_baseline,80,default_seeded,0.5,ok,29,1,8,5,8,1.0,50.0,36,40
+default_10,uniform_baseline,80,default_seeded,0.5,ok,23,7,4,7,6,1.0,50.0,27,40
+default_11,uniform_baseline,80,default_seeded,0.5,ok,55,4,7,4,9,1.0,50.0,21,40
+default_0,center_prior_only,80,default_seeded,0.5,ok,11,2,7,4,4,1.0,100.0,11,40
+default_1,center_prior_only,80,default_seeded,0.5,ok,8,4,0,4,5,1.0,100.0,27,40
+default_2,center_prior_only,80,default_seeded,0.5,ok,56,6,5,3,4,1.0,100.0,14,40
+default_3,center_prior_only,80,default_seeded,0.5,ok,17,4,8,3,5,1.0,100.0,20,40
+default_4,center_prior_only,80,default_seeded,0.5,ok,71,0,4,3,4,1.0,100.0,13,40
+default_5,center_prior_only,80,default_seeded,0.5,ok,13,4,4,4,4,1.0,100.0,1,40
+default_6,center_prior_only,80,default_seeded,0.5,ok,21,5,3,4,4,1.0,100.0,12,40
+default_7,center_prior_only,80,default_seeded,0.5,ok,26,0,5,3,4,1.0,100.0,12,40
+default_8,center_prior_only,80,default_seeded,0.5,ok,34,5,5,4,4,1.0,100.0,8,40
+default_9,center_prior_only,80,default_seeded,0.5,ok,29,1,8,4,4,1.0,100.0,30,40
+default_10,center_prior_only,80,default_seeded,0.5,ok,23,7,4,4,4,1.0,100.0,20,40
+default_11,center_prior_only,80,default_seeded,0.5,ok,55,4,7,4,4,1.0,100.0,8,40
+default_0,logic_rule_only,80,default_seeded,0.5,ok,11,2,7,0,7,1.0,100.0,32,40
+default_1,logic_rule_only,80,default_seeded,0.5,ok,8,4,0,0,4,1.0,100.0,34,40
+default_2,logic_rule_only,80,default_seeded,0.5,ok,56,6,5,3,5,1.0,100.0,33,40
+default_3,logic_rule_only,80,default_seeded,0.5,ok,17,4,8,0,2,1.0,100.0,31,40
+default_4,logic_rule_only,80,default_seeded,0.5,ok,71,0,4,0,4,1.0,100.0,1,40
+default_5,logic_rule_only,80,default_seeded,0.5,ok,13,4,4,0,0,1.0,100.0,34,40
+default_6,logic_rule_only,80,default_seeded,0.5,ok,21,5,3,0,0,1.0,100.0,40,40
+default_7,logic_rule_only,80,default_seeded,0.5,ok,26,0,5,0,3,1.0,100.0,28,40
+default_8,logic_rule_only,80,default_seeded,0.5,ok,34,5,5,0,9,1.0,100.0,37,40
+default_9,logic_rule_only,80,default_seeded,0.5,ok,29,1,8,0,0,1.0,100.0,33,40
+default_10,logic_rule_only,80,default_seeded,0.5,ok,23,7,4,4,7,1.0,100.0,14,40
+default_11,logic_rule_only,80,default_seeded,0.5,ok,55,4,7,4,9,1.0,100.0,33,40
+default_0,pattern_model_only,80,default_seeded,0.5,ok,11,2,7,0,2,1.0,100.0,34,40
+default_1,pattern_model_only,80,default_seeded,0.5,ok,8,4,0,0,3,1.0,100.0,25,40
+default_2,pattern_model_only,80,default_seeded,0.5,ok,56,6,5,4,5,1.0,100.0,20,40
+default_3,pattern_model_only,80,default_seeded,0.5,ok,17,4,8,0,1,1.0,100.0,23,40
+default_4,pattern_model_only,80,default_seeded,0.5,ok,71,0,4,0,0,1.0,100.0,3,40
+default_5,pattern_model_only,80,default_seeded,0.5,ok,13,4,4,7,3,1.0,100.0,40,40
+default_6,pattern_model_only,80,default_seeded,0.5,ok,21,5,3,4,5,1.0,100.0,29,40
+default_7,pattern_model_only,80,default_seeded,0.5,ok,26,0,5,4,0,1.0,100.0,15,40
+default_8,pattern_model_only,80,default_seeded,0.5,ok,34,5,5,1,9,1.0,100.0,13,40
+default_9,pattern_model_only,80,default_seeded,0.5,ok,29,1,8,2,4,1.0,100.0,25,40
+default_10,pattern_model_only,80,default_seeded,0.5,ok,23,7,4,0,0,1.0,100.0,30,40
+default_11,pattern_model_only,80,default_seeded,0.5,ok,55,4,7,1,0,1.0,100.0,24,40
+default_0,prior_model_only,80,default_seeded,0.5,ok,11,2,7,4,4,1.0,100.0,11,40
+default_1,prior_model_only,80,default_seeded,0.5,ok,8,4,0,4,5,1.0,100.0,27,40
+default_2,prior_model_only,80,default_seeded,0.5,ok,56,6,5,3,4,1.0,100.0,14,40
+default_3,prior_model_only,80,default_seeded,0.5,ok,17,4,8,3,5,1.0,100.0,20,40
+default_4,prior_model_only,80,default_seeded,0.5,ok,71,0,4,3,4,1.0,100.0,13,40
+default_5,prior_model_only,80,default_seeded,0.5,ok,13,4,4,4,4,1.0,100.0,1,40
+default_6,prior_model_only,80,default_seeded,0.5,ok,21,5,3,4,4,1.0,100.0,12,40
+default_7,prior_model_only,80,default_seeded,0.5,ok,26,0,5,3,4,1.0,100.0,12,40
+default_8,prior_model_only,80,default_seeded,0.5,ok,34,5,5,4,4,1.0,100.0,8,40
+default_9,prior_model_only,80,default_seeded,0.5,ok,29,1,8,4,4,1.0,100.0,30,40
+default_10,prior_model_only,80,default_seeded,0.5,ok,23,7,4,4,4,1.0,100.0,20,40
+default_11,prior_model_only,80,default_seeded,0.5,ok,55,4,7,4,4,1.0,100.0,8,40
+default_0,full_fusion_baseline,80,default_seeded,0.5,ok,11,2,7,3,9,0.758442,100.0,36,40
+default_1,full_fusion_baseline,80,default_seeded,0.5,ok,8,4,0,0,4,0.787013,100.0,35,40
+default_2,full_fusion_baseline,80,default_seeded,0.5,ok,56,6,5,3,5,0.745455,100.0,19,40
+default_3,full_fusion_baseline,80,default_seeded,0.5,ok,17,4,8,0,9,0.8,100.0,24,40
+default_4,full_fusion_baseline,80,default_seeded,0.5,ok,71,0,4,0,4,0.914286,100.0,1,40
+default_5,full_fusion_baseline,80,default_seeded,0.5,ok,13,4,4,5,7,0.668132,100.0,25,40
+default_6,full_fusion_baseline,80,default_seeded,0.5,ok,21,5,3,7,2,0.764835,100.0,29,40
+default_7,full_fusion_baseline,80,default_seeded,0.5,ok,26,0,5,4,0,0.885714,100.0,21,40
+default_8,full_fusion_baseline,80,default_seeded,0.5,ok,34,5,5,3,7,0.782857,100.0,12,40
+default_9,full_fusion_baseline,80,default_seeded,0.5,ok,29,1,8,5,8,0.798214,100.0,36,40
+default_10,full_fusion_baseline,80,default_seeded,0.5,ok,23,7,4,7,6,0.885714,100.0,27,40
+default_11,full_fusion_baseline,80,default_seeded,0.5,ok,55,4,7,4,9,0.758442,100.0,21,40
+default_0,full_fusion_reranker,80,default_seeded,0.5,ok,11,2,7,3,9,0.758442,100.0,36,40
+default_1,full_fusion_reranker,80,default_seeded,0.5,ok,8,4,0,0,4,0.787013,100.0,35,40
+default_2,full_fusion_reranker,80,default_seeded,0.5,ok,56,6,5,3,5,0.745455,100.0,19,40
+default_3,full_fusion_reranker,80,default_seeded,0.5,ok,17,4,8,0,9,0.8,100.0,24,40
+default_4,full_fusion_reranker,80,default_seeded,0.5,ok,71,0,4,0,4,0.914286,100.0,1,40
+default_5,full_fusion_reranker,80,default_seeded,0.5,ok,13,4,4,5,7,0.668132,100.0,25,40
+default_6,full_fusion_reranker,80,default_seeded,0.5,ok,21,5,3,7,2,0.764835,100.0,29,40
+default_7,full_fusion_reranker,80,default_seeded,0.5,ok,26,0,5,4,0,0.885714,100.0,21,40
+default_8,full_fusion_reranker,80,default_seeded,0.5,ok,34,5,5,3,7,0.782857,100.0,12,40
+default_9,full_fusion_reranker,80,default_seeded,0.5,ok,29,1,8,5,8,0.798214,100.0,36,40
+default_10,full_fusion_reranker,80,default_seeded,0.5,ok,23,7,4,7,6,0.885714,100.0,27,40
+default_11,full_fusion_reranker,80,default_seeded,0.5,ok,55,4,7,4,9,0.758442,100.0,21,40

@@ -1,0 +1,11 @@
+modules:
+  enabled:
+    logic_rule: true
+    pattern_model: true
+    prior_model: true
+  weights:
+    logic_rule: 0.4
+    pattern_model: 0.4
+    prior_model: 0.2
+  aggregator:
+    type: weighted_average

@@ -1,0 +1,84 @@
+{
+  "data_issues": {
+    "invalid_cases": 0,
+    "annotation_mismatch_cases": 0,
+    "sample_count": 12
+  },
+  "parsing_normalization_issues": {
+    "cache_mode": "cached_parsed_boards",
+    "cache_fallback_parse": false
+  },
+  "candidate_ranking_issues": {
+    "true_cell_in_candidate_set_rate": 1.0,
+    "true_rank_distribution": {
+      "top1": 1,
+      "top3": 1,
+      "top5": 1,
+      "gt5": 11
+    }
+  },
+  "module_issues": {
+    "ablation": {
+      "random_baseline": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.166667,
+        "mean_reciprocal_rank": 0.103869,
+        "delta_top1_vs_random": 0.0
+      },
+      "uniform_baseline": {
+        "top1_hit_rate": 0.083333,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.122376,
+        "delta_top1_vs_random": 0.083333
+      },
+      "center_prior_only": {
+        "top1_hit_rate": 0.083333,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.152191,
+        "delta_top1_vs_random": 0.083333
+      },
+      "logic_rule_only": {
+        "top1_hit_rate": 0.083333,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.114368,
+        "delta_top1_vs_random": 0.083333
+      },
+      "pattern_model_only": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.067858,
+        "delta_top1_vs_random": 0.0
+      },
+      "prior_model_only": {
+        "top1_hit_rate": 0.083333,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.152191,
+        "delta_top1_vs_random": 0.083333
+      },
+      "full_fusion_baseline": {
+        "top1_hit_rate": 0.083333,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.122376,
+        "delta_top1_vs_random": 0.083333
+      },
+      "full_fusion_reranker": {
+        "top1_hit_rate": 0.083333,
+        "top3_hit_rate": 0.083333,
+        "top5_hit_rate": 0.083333,
+        "mean_reciprocal_rank": 0.122376,
+        "delta_top1_vs_random": 0.083333
+      }
+    },
+    "module_most_often_lowering_true_rank": "pattern_model (proxy by low standalone MRR)"
+  },
+  "structural_bias": {
+    "center_bias_top1_ratio": 0.083333
+  }
+}
