@@ -1,0 +1,21 @@
+[
+  "baseline_score",
+  "baseline_rank",
+  "score_gap_to_top1",
+  "score_gap_to_top3",
+  "candidate_count",
+  "row_norm",
+  "col_norm",
+  "dist_to_center",
+  "is_border",
+  "is_corner",
+  "module_consensus_top1",
+  "module_consensus_top3",
+  "module_consensus_top5",
+  "module_score_logic_rule",
+  "module_rank_logic_rule",
+  "module_score_pattern_model",
+  "module_rank_pattern_model",
+  "module_score_prior_model",
+  "module_rank_prior_model"
+]

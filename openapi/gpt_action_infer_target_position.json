@@ -1,0 +1,91 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Scratchcard Board Inference API",
+    "version": "1.0.0",
+    "description": "GPT 端先做讀圖與人工確認，API 僅處理結構化盤面推理。"
+  },
+  "servers": [
+    {"url": "https://your-api-host.example.com"}
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Service healthy"
+          }
+        }
+      }
+    },
+    "/infer_target_position": {
+      "post": {
+        "operationId": "inferTargetPosition",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InferRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Inference result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InferResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "InferRequest": {
+        "type": "object",
+        "required": ["board", "target_number"],
+        "properties": {
+          "board": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {"type": "integer"}
+            },
+            "description": "已開格為正整數，未開格為 -1"
+          },
+          "target_number": {"type": "integer"},
+          "source": {"type": "string", "default": "gpt_image_parse"},
+          "parse_snapshot": {
+            "type": "object",
+            "properties": {
+              "raw_cells": {"type": "array", "items": {}},
+              "notes": {"type": "string"}
+            }
+          }
+        }
+      },
+      "InferResponse": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string"},
+          "best_cell": {"type": ["object", "null"]},
+          "candidate_cells": {"type": "array", "items": {"type": "object"}},
+          "confidence_score": {"type": "number"},
+          "reasoning": {"type": "array", "items": {"type": "string"}},
+          "module_contributions": {"type": "object", "additionalProperties": {"type": "number"}}
+        }
+      }
+    }
+  }
+}

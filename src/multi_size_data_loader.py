@@ -26,13 +26,66 @@ class ParseArtifacts:
     samples: List[MultiSizeBoardSample]
     audit: Dict
     pending: List[Dict[str, object]]
+    cache_info: Dict[str, object]
 
 
 def _is_complete_grid(grid: List[List[Optional[int]]]) -> bool:
     return all(v is not None for row in grid for v in row)
 
 
+def _load_cached_artifacts(config: Dict) -> Optional[ParseArtifacts]:
+    parsed_path = Path(config["data"]["parsed_boards_output"])
+    audit_path = Path(config["reports"]["data_audit"])
+    pending_path = Path(config["reports"]["pending_annotations"])
+
+    if not parsed_path.exists() or not audit_path.exists():
+        return None
+
+    try:
+        raw_boards = json.loads(parsed_path.read_text(encoding="utf-8"))
+        raw_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        raw_pending = []
+        if pending_path.exists():
+            raw_pending = json.loads(pending_path.read_text(encoding="utf-8"))
+
+        samples: List[MultiSizeBoardSample] = []
+        for b in raw_boards:
+            raw_grid = [[(-1 if v is None else int(v)) for v in row] for row in b["grid"]]
+            grid = np.array(raw_grid, dtype=int)
+            samples.append(
+                MultiSizeBoardSample(
+                    sample_id=str(b["sample_id"]),
+                    board_id=f"{b['size_class']}:{b['sample_id']}",
+                    size_class=str(b["size_class"]),
+                    grid=grid,
+                    shape=str(b["shape"]),
+                    parse_confidence=float(b.get("metadata", {}).get("parse_confidence", 1.0)),
+                )
+            )
+        return ParseArtifacts(
+            samples=samples,
+            audit=raw_audit,
+            pending=raw_pending,
+            cache_info={
+                "used_cache": True,
+                "cache_artifact_path": str(parsed_path),
+                "cache_audit_path": str(audit_path),
+                "cache_timestamp": parsed_path.stat().st_mtime,
+                "cache_sample_count": len(samples),
+                "fallback_parse": False,
+            },
+        )
+    except Exception:
+        return None
+
+
 def load_multisize_samples(config: Dict) -> ParseArtifacts:
+    use_cache = bool(config.get("parser", {}).get("use_cached_first", True))
+    if use_cache:
+        cached = _load_cached_artifacts(config)
+        if cached is not None:
+            return cached
+
     repo_root = Path(config["data"]["repo_root"])
     manifest, manifest_audit = build_multisize_manifest(repo_root)
     boards, parse_audit, pending, _ = parse_manifest_entries(
@@ -115,4 +168,16 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
         write_pending(pending, Path(config["reports"]["pending_review"]))
     write_boards(boards, Path(config["data"]["parsed_boards_output"]))
 
-    return ParseArtifacts(samples=samples, audit=audit, pending=pending)
+    return ParseArtifacts(
+        samples=samples,
+        audit=audit,
+        pending=pending,
+        cache_info={
+            "used_cache": False,
+            "cache_artifact_path": str(Path(config["data"]["parsed_boards_output"])),
+            "cache_audit_path": str(Path(config["reports"]["data_audit"])),
+            "cache_timestamp": None,
+            "cache_sample_count": len(samples),
+            "fallback_parse": True,
+        },
+    )
