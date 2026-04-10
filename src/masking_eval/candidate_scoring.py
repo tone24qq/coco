@@ -15,6 +15,7 @@ Cell = Tuple[int, int]
 @dataclass
 class TargetPrediction:
     board_id: str
+    size_class: str
     repeat_id: int
     target_row: int
     target_col: int
@@ -24,6 +25,7 @@ class TargetPrediction:
     top1_hit: int
     top3_hit: int
     top5_hit: int
+    top10_hit: int
     ranking_score: float
 
 
@@ -65,16 +67,17 @@ def rank_candidates(
     weights: Dict[str, float],
     heatmap_prior: np.ndarray | None,
     modules: List[str],
-) -> Tuple[int, float]:
+) -> Tuple[int, float, List[int]]:
     candidates = legal_candidates(masked_grid)
     scores: List[Tuple[int, float]] = []
     for cand in candidates:
         feats = score_candidate(masked_grid, target_cell, cand, heatmap_prior, modules)
         scores.append((cand, fuse_scores(feats, weights)))
     scores.sort(key=lambda x: x[1], reverse=True)
-    rank = next(i for i, (cand, _) in enumerate(scores, start=1) if cand == true_value)
+    ranked_candidates = [cand for cand, _ in scores]
+    rank = ranked_candidates.index(true_value) + 1
     score_true = next(sc for cand, sc in scores if cand == true_value)
-    return rank, float(score_true)
+    return rank, float(score_true), ranked_candidates
 
 
 def random_rank(masked_grid: np.ndarray, true_value: int, rng: np.random.Generator) -> int:

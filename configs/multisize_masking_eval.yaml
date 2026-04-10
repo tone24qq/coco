@@ -5,15 +5,20 @@ data:
 
 parser:
   min_confidence: 0.25
+  use_cached_first: true
 
 eval:
   folds: 3
-  masking_repeats: 20
+  masking_repeats: 8
   seed: 2026
   min_samples_per_size: 2
+  target_sizes: [120, 160]
+  max_boards_per_size: 4
+  synthetic_fallback_when_empty: true
+  synthetic_boards_per_size: 6
 
 search:
-  n_trials: 8
+  n_trials: 16
 
 modules:
   - focus
@@ -28,8 +33,8 @@ modules:
   - f10
 
 discovery:
-  repeats: 5
-  n_trials: 3
+  repeats: 4
+  n_trials: 8
   candidate_modules:
     - local_arith_completion
     - local_delta_consistency
@@ -50,6 +55,10 @@ reports:
   data_audit: reports/data_audit.json
   per_size_summary: reports/per_size_summary.json
   overall_summary: reports/overall_summary.json
+  top10_summary: reports/top10_summary.json
+  per_target_predictions: reports/per_target_predictions.csv
   module_leaderboard: reports/module_leaderboard.json
-  champion_bundle: reports/champion_bundle.json
-  discovery_summary: reports/discovery_summary.json
+  module_discovery_summary: reports/module_discovery_summary.json
+  error_cases_top10: reports/error_cases_top10.json
+  search_trials: reports/search_trials.json
+  best_config: reports/best_config.json

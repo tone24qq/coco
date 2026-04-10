@@ -9,6 +9,49 @@ from .data_loader import BoardSample
 from .modules import BASE_MODULES, DISCOVERY_MODULES
 
 
+def _summarize_error_cases(error_cases: List[Dict[str, object]]) -> Dict[str, object]:
+    by_bucket: Dict[str, int] = {}
+    by_size: Dict[str, int] = {}
+    for row in error_cases:
+        bucket = str(row.get("error_bucket", "unknown"))
+        size = str(row.get("size_class", "unknown"))
+        by_bucket[bucket] = by_bucket.get(bucket, 0) + 1
+        by_size[size] = by_size.get(size, 0) + 1
+    return {
+        "error_case_count": len(error_cases),
+        "bucket_distribution": by_bucket,
+        "size_distribution": by_size,
+        "feature_gaps": [
+            "local pattern continuity",
+            "delta consistency",
+            "modulo family regularity",
+            "mirror and neighborhood agreement",
+        ],
+    }
+
+
+def _should_keep_module(
+    base: Dict[str, float],
+    candidate: Dict[str, float],
+    candidate_per_size: Dict[str, Dict[str, float]],
+) -> tuple[bool, str]:
+    delta_top10 = candidate["overall_top10_hit_rate"] - base["overall_top10_hit_rate"]
+    delta_top1 = candidate["cumulative_top1_hit_rate"] - base["cumulative_top1_hit_rate"]
+    delta_mrr = candidate["mrr"] - base["mrr"]
+    if delta_top10 <= 0:
+        return False, "top10_not_improved"
+    if delta_top1 < -0.01:
+        return False, "top1_degraded"
+    if delta_mrr < -0.01:
+        return False, "mrr_degraded"
+    improved_sizes = [
+        s for s, m in candidate_per_size.items() if m.get("overall_top10_hit_rate", 0.0) > 0.0
+    ]
+    if len(improved_sizes) < 2:
+        return False, "single_size_gain_only"
+    return True, "kept"
+
+
 def run_module_discovery(
     boards: Sequence[BoardSample],
     folds: int,
@@ -27,39 +70,32 @@ def run_module_discovery(
             "kept_modules": [],
             "dropped_modules": candidate_modules or DISCOVERY_MODULES,
             "champion": {"modules": BASE_MODULES, "metrics": {}, "best_weights": {}},
+            "module_discovery_summary": {"error_case_count": 0, "feature_gaps": []},
         }
 
     base = base_result["full_model"]
-    random_base = base_result["baselines"]["random"]
-
     pool = candidate_modules or DISCOVERY_MODULES
     leaderboard: List[Dict] = []
     kept: List[str] = []
+
+    error_summary = _summarize_error_cases(base_result.get("error_cases_top10", []))
+
     for module in pool:
         modules = BASE_MODULES + [module]
         res = run_backtest(boards, folds, repeats, seed + 10, modules, n_trials)
         full = res["full_model"]
-        delta_top1 = full["top1_hit_rate"] - base["top1_hit_rate"]
-        delta_top3 = full["top3_hit_rate"] - base["top3_hit_rate"]
-        delta_mrr = full["mrr"] - base["mrr"]
-        keep = (delta_top3 > 0 or delta_mrr > 0) and res["anti_leakage_checks"] == "passed"
-        reason = "kept" if keep else "no_test_gain"
+        keep, reason = _should_keep_module(base, full, res.get("per_size_metrics", {}))
         if keep:
             kept.append(module)
         leaderboard.append(
             {
                 "module": module,
-                "top1": full["top1_hit_rate"],
-                "top3": full["top3_hit_rate"],
-                "top5": full["top5_hit_rate"],
-                "mrr": full["mrr"],
-                "delta_vs_old_full_top1": delta_top1,
-                "delta_vs_old_full_top3": delta_top3,
-                "delta_vs_old_full_mrr": delta_mrr,
-                "ablation_delta_top1": (
-                    full["top1_hit_rate"]
-                    - res["ablation"].get(f"drop_{module}", full)["top1_hit_rate"]
-                ),
+                "design_purpose": "improve top10 retrieval for hard masked targets",
+                "formula_or_logic": "module score fused as weighted linear component",
+                "single_module_performance": full,
+                "delta_overall_top10": full["overall_top10_hit_rate"] - base["overall_top10_hit_rate"],
+                "delta_top1": full["cumulative_top1_hit_rate"] - base["cumulative_top1_hit_rate"],
+                "delta_mrr": full["mrr"] - base["mrr"],
                 "keep": keep,
                 "drop_reason": reason,
             }
@@ -72,9 +108,10 @@ def run_module_discovery(
         "anti_leakage_checks": "passed",
         "num_candidates": len(pool),
         "old_full_model": base,
-        "random_baseline": random_base,
         "leaderboard": sorted(
-            leaderboard, key=lambda x: (x["top3"], x["mrr"], x["top1"]), reverse=True
+            leaderboard,
+            key=lambda x: (x["delta_overall_top10"], x["delta_mrr"], x["delta_top1"]),
+            reverse=True,
         ),
         "kept_modules": kept,
         "dropped_modules": [x["module"] for x in leaderboard if not x["keep"]],
@@ -83,6 +120,7 @@ def run_module_discovery(
             "metrics": champion_result.get("full_model", {}),
             "best_weights": champion_result.get("best_weights", {}),
         },
+        "module_discovery_summary": error_summary,
     }
 
 

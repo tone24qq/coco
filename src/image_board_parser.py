@@ -5,14 +5,19 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
-import cv2
 import numpy as np
 
 from .board_manifest import ManifestEntry
 from .board_structurer import BoardParseResult, structure_board
 from .grid_detector import detect_grid
 
-SizeClass = Literal["20", "80", "120"]
+SizeClass = Literal["20", "80", "120", "160"]
+EXPECTED_SHAPES: Dict[str, tuple[int, int]] = {
+    "20": (4, 5),
+    "80": (10, 8),
+    "120": (10, 12),
+    "160": (10, 16),
+}
 
 
 @dataclass
@@ -39,6 +44,8 @@ class ParseAuditRow:
 
 
 def _merge_pages(image_paths: List[str]) -> np.ndarray:
+    import cv2
+
     imgs = [cv2.imread(p, cv2.IMREAD_GRAYSCALE) for p in image_paths]
     if any(im is None for im in imgs):
         raise ValueError("image_read_failed")
@@ -50,17 +57,31 @@ def _merge_pages(image_paths: List[str]) -> np.ndarray:
     return np.vstack(resized)
 
 
-def _validate_board(grid: List[List[Optional[int]]]) -> tuple[bool, bool, bool, str | None]:
+def _validate_board(grid: List[List[Optional[int]]], size_class: str) -> tuple[bool, bool, bool, str | None]:
     arr = np.array([[x if x is not None else -1 for x in row] for row in grid], dtype=int)
     if arr.ndim != 2 or arr.size == 0:
         return False, False, False, "invalid_grid_dim"
+    expected_shape = EXPECTED_SHAPES.get(size_class)
+    if expected_shape and tuple(arr.shape) != expected_shape:
+        return False, False, False, "shape_mismatch"
+
     total = arr.shape[0] * arr.shape[1]
     vals = [int(v) for v in arr.flatten().tolist() if v != -1]
     uniq_ok = len(set(vals)) == len(vals)
-    miss_ok = set(vals).issubset(set(range(1, total + 1)))
+    range_ok = all(1 <= v <= total for v in vals)
+    complete_ok = len(vals) == total
+    full_permutation_ok = range_ok and uniq_ok and complete_ok and set(vals) == set(range(1, total + 1))
+    reason = None
+    if not uniq_ok:
+        reason = "duplicate_values"
+    elif not range_ok:
+        reason = "out_of_range_values"
+    elif not complete_ok:
+        reason = "incomplete_grid"
+    elif not full_permutation_ok:
+        reason = "non_permutation_grid"
     maskable_ok = total >= 2
-    reason = None if (uniq_ok and miss_ok and maskable_ok) else "grid_value_mismatch"
-    return uniq_ok, miss_ok, maskable_ok, reason
+    return uniq_ok, full_permutation_ok, maskable_ok, reason
 
 
 def parse_manifest_entries(
@@ -107,7 +128,7 @@ def parse_manifest_entries(
                 ticket_type=entry.size_class,
             )
             detailed[entry.sample_id] = result
-            uniq_ok, miss_ok, maskable_ok, reason = _validate_board(result.grid)
+            uniq_ok, permutation_ok, maskable_ok, reason = _validate_board(result.grid, entry.size_class)
             if result.parse_confidence < min_confidence:
                 reason = "parse_confidence_low"
             parse_success = reason is None
@@ -119,7 +140,7 @@ def parse_manifest_entries(
                     parse_confidence=result.parse_confidence,
                     shape=result.shape,
                     unique_values_ok=uniq_ok,
-                    missing_values_ok=miss_ok,
+                    missing_values_ok=permutation_ok,
                     maskable_ok=maskable_ok,
                     invalid_reason=reason,
                 )

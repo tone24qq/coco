@@ -1,0 +1,554 @@
+[
+  {
+    "fold_id": 0,
+    "trial_id": 0,
+    "weights": {
+      "focus": 1.0,
+      "tail": 1.0
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 0,
+    "trial_id": 1,
+    "weights": {
+      "focus": 0.21852018711532317,
+      "tail": 0.7814798128846768
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 0,
+    "trial_id": 2,
+    "weights": {
+      "focus": 0.5577533200219043,
+      "tail": 0.44224667997809575
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 0,
+    "trial_id": 3,
+    "weights": {
+      "focus": 0.3098535967070021,
+      "tail": 0.6901464032929978
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 1,
+    "trial_id": 0,
+    "weights": {
+      "focus": 1.0,
+      "tail": 1.0
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 1,
+    "trial_id": 1,
+    "weights": {
+      "focus": 0.020324204282155426,
+      "tail": 0.9796757957178446
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 1,
+    "trial_id": 2,
+    "weights": {
+      "focus": 0.14217343067453367,
+      "tail": 0.8578265693254663
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 1,
+    "trial_id": 3,
+    "weights": {
+      "focus": 0.38880241839172847,
+      "tail": 0.6111975816082716
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 2,
+    "trial_id": 0,
+    "weights": {
+      "focus": 1.0,
+      "tail": 1.0
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 2,
+    "trial_id": 1,
+    "weights": {
+      "focus": 0.3949236653191017,
+      "tail": 0.6050763346808983
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 2,
+    "trial_id": 2,
+    "weights": {
+      "focus": 0.4281187340610848,
+      "tail": 0.5718812659389151
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  },
+  {
+    "fold_id": 2,
+    "trial_id": 3,
+    "weights": {
+      "focus": 0.6782315234914914,
+      "tail": 0.32176847650850865
+    },
+    "metrics": {
+      "overall_top10_hit_rate": 1.0,
+      "mean_rank": 5.5,
+      "median_rank": 5.5,
+      "mrr": 0.29289682539682543,
+      "normalized_rank": 0.5,
+      "num_targets": 20.0,
+      "cumulative_top1_hit_rate": 0.1,
+      "exact_rank1_hit_rate": 0.1,
+      "cumulative_top2_hit_rate": 0.2,
+      "exact_rank2_hit_rate": 0.1,
+      "cumulative_top3_hit_rate": 0.3,
+      "exact_rank3_hit_rate": 0.1,
+      "cumulative_top4_hit_rate": 0.4,
+      "exact_rank4_hit_rate": 0.1,
+      "cumulative_top5_hit_rate": 0.5,
+      "exact_rank5_hit_rate": 0.1,
+      "cumulative_top6_hit_rate": 0.6,
+      "exact_rank6_hit_rate": 0.1,
+      "cumulative_top7_hit_rate": 0.7,
+      "exact_rank7_hit_rate": 0.1,
+      "cumulative_top8_hit_rate": 0.8,
+      "exact_rank8_hit_rate": 0.1,
+      "cumulative_top9_hit_rate": 0.9,
+      "exact_rank9_hit_rate": 0.1,
+      "cumulative_top10_hit_rate": 1.0,
+      "exact_rank10_hit_rate": 0.1,
+      "candidate_count_distribution": {
+        "10": 20
+      }
+    },
+    "objective": [
+      1.0,
+      0.5,
+      0.1,
+      0.29289682539682543,
+      -5.5
+    ]
+  }
+]

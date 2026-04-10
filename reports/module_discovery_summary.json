@@ -1,36 +1,16 @@
 {
-  "anti_leakage_checks": "passed",
-  "num_candidates": 4,
-  "old_full_model": {
-    "top1_hit_rate": 0.025000000000000005,
-    "top3_hit_rate": 0.075,
-    "top5_hit_rate": 0.125,
-    "mean_rank": 20.791666666666664,
-    "median_rank": 20.5,
-    "mrr": 0.10506181980165734,
-    "normalized_rank": 0.5074786324786325,
-    "num_targets": 40.0,
-    "board_top1_mean": 0.025000000000000005,
-    "board_top3_mean": 0.075,
-    "board_top5_mean": 0.125,
-    "repeat_top1_variance": 0.0
+  "error_case_count": 110,
+  "bucket_distribution": {
+    "rank_2_to_10": 110
   },
-  "random_baseline": {
-    "top1_hit_rate": 0.05000000000000001,
-    "top3_hit_rate": 0.11666666666666665,
-    "top5_hit_rate": 0.15833333333333335,
-    "mean_rank": 19.983333333333334,
-    "median_rank": 19.0,
-    "mrr": 0.13467986769568682,
-    "normalized_rank": 0.48675213675213674,
-    "num_targets": 40.0
+  "size_distribution": {
+    "120": 56,
+    "160": 54
   },
-  "kept_modules": [
-    "local_arith_completion",
-    "local_delta_consistency"
-  ],
-  "dropped_modules": [
-    "modulo_family",
-    "a2_delta"
+  "feature_gaps": [
+    "local pattern continuity",
+    "delta consistency",
+    "modulo family regularity",
+    "mirror and neighborhood agreement"
   ]
 }
