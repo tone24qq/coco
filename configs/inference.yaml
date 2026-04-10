@@ -3,9 +3,18 @@ modules:
     logic_rule: true
     pattern_model: true
     prior_model: true
+    directional_consistency: true
+    line_consistency: true
+    global_assignment_prior: true
   weights:
-    logic_rule: 0.4
-    pattern_model: 0.4
-    prior_model: 0.2
+    logic_rule: 0.24
+    pattern_model: 0.16
+    prior_model: 0.12
+    directional_consistency: 0.2
+    line_consistency: 0.18
+    global_assignment_prior: 0.1
+  settings:
+    global_assignment_prior:
+      assignment_mode: exact
   aggregator:
     type: weighted_average

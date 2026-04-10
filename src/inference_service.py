@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.inference_config import load_module_weights
+from src.inference_config import load_module_settings, load_module_weights
 from src.ranking_features import build_candidate_feature_rows
 from src.reranker import apply_reranker
-from src.scoring_modules import MODULES, Cell, ModuleScoreResult
+from src.scoring_modules import Cell, ModuleScoreResult, build_modules
 
 
 @dataclass
@@ -81,6 +81,7 @@ def build_cell_candidates(
             "cell": cell,
             "score": 0.0,
             "module_scores": {},
+            "module_details": {},
         }
         for cell in unopened_cells
     ]
@@ -93,7 +94,7 @@ def _normalize_scores(raw_scores: Dict[Cell, float]) -> Dict[Cell, float]:
     min_v = min(values)
     max_v = max(values)
     if abs(max_v - min_v) < 1e-12:
-        return {k: 1.0 for k in raw_scores}
+        return {k: 0.5 for k in raw_scores}
     return {k: (v - min_v) / (max_v - min_v) for k, v in raw_scores.items()}
 
 
@@ -102,14 +103,17 @@ def score_candidates(
     candidates: List[Dict[str, object]],
     target_number: int,
     module_weights: Optional[Dict[str, float]] = None,
+    module_settings: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, float], List[str]]:
     weights = module_weights or load_module_weights()
+    settings = module_settings if module_settings is not None else load_module_settings()
+    modules = build_modules(settings)
     explanations: List[str] = []
 
     for module_name, weight in weights.items():
-        if module_name not in MODULES:
+        if module_name not in modules:
             raise InferenceError(f"Unknown module in weights: {module_name}")
-        result: ModuleScoreResult = MODULES[module_name].score(
+        result: ModuleScoreResult = modules[module_name].score(
             board,
             [c["cell"] for c in candidates],
             target_number,
@@ -120,6 +124,8 @@ def score_candidates(
             cell = c["cell"]
             module_score = float(normalized.get(cell, 0.0))
             c["module_scores"][module_name] = module_score
+            if result.details:
+                c["module_details"][module_name] = result.details.get(cell, {})
             c["score"] += module_score * weight
 
     return candidates, weights, explanations
@@ -162,6 +168,7 @@ def run_inference(
     target_number: int,
     source: str,
     module_weights: Optional[Dict[str, float]] = None,
+    module_settings: Optional[Dict[str, Dict[str, object]]] = None,
     version: str = "v1",
     apply_reranker_stage: bool = True,
 ) -> Dict[str, Any]:
@@ -209,7 +216,13 @@ def run_inference(
         raise InferenceError("board has no unopened cells")
 
     candidates = build_cell_candidates(parsed.unopened_cells)
-    scored, weights, module_explanations = score_candidates(board, candidates, target_number, module_weights)
+    scored, weights, module_explanations = score_candidates(
+        board,
+        candidates,
+        target_number,
+        module_weights=module_weights,
+        module_settings=module_settings,
+    )
     ranked = rank_candidates(scored)
     best = ranked[0]
 
@@ -229,6 +242,7 @@ def run_inference(
                 "module_scores": {
                     k: round(float(v), 6) for k, v in sorted(cell["module_scores"].items())
                 },
+                "module_details": cell.get("module_details", {}),
             }
         )
 
@@ -255,6 +269,8 @@ def run_inference(
             board_shape=(parsed.rows, parsed.cols),
             candidates=baseline_candidate_cells,
             true_cell_1_based=None,
+            board=board,
+            target_number=target_number,
         )
         candidate_cells, rerank_meta = apply_reranker(baseline_candidate_cells, feature_rows)
 
