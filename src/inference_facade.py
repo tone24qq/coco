@@ -2,11 +2,23 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from src.inference_service import run_inference
+from src.inference_service import run_inference, run_multi_target_inference
 
 
 def infer_target_position(board: List[List[int]], target_number: int, source: str = "manual") -> Dict[str, Any]:
     return run_inference(board=board, target_number=target_number, source=source)
+
+
+def infer_multi_target_positions(
+    board: List[List[int]],
+    target_numbers: List[int],
+    source: str = "manual",
+) -> Dict[str, Any]:
+    return run_multi_target_inference(
+        board=board,
+        target_numbers=target_numbers,
+        source=source,
+    )
 
 
 def map_score_to_confidence_1_100(score: float, min_score: float, max_score: float) -> float:

@@ -15,6 +15,7 @@
 ## API
 - `GET /health`
 - `POST /infer_target_position`
+- `POST /infer_multi_target_positions`
 
 ### Request example
 ```json
