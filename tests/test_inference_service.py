@@ -209,3 +209,13 @@ def test_best_confidence_rises_with_larger_margin() -> None:
         collapsed_score_flag=False,
     )
     assert high > low
+
+
+def test_confidence_score_not_equal_ranking_score_contract() -> None:
+    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    assert result["best_ranking_score"] == result["best_cell"]["score"]
+    assert result["best_confidence_score"] == result["confidence_score"]
+    assert result["metadata"]["score_type"] == "ranking_score"
+    assert result["metadata"]["score_can_be_negative"] is True
+    assert result["metadata"]["confidence_score_is_not_ranking_score"] is True
+    assert result["best_cell"]["confidence_1_to_100"] == result["metadata"]["best_cell_confidence_1_to_100"]

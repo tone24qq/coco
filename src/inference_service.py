@@ -385,16 +385,20 @@ def run_inference(
             },
             "candidate_cells": [],
             "confidence_score": 1.0,
+            "best_ranking_score": 1.0,
+            "best_confidence_score": 1.0,
             "reasoning": [
                 f"盤面總格數為 {parsed.rows * parsed.cols}，合法數字集合為 1..{parsed.rows * parsed.cols}",
                 f"target_number={target_number} 已經在已開格",
             ],
             "module_contributions": {},
             "metadata": {
-                "score_type": "position_confidence_score",
+                "score_type": "ranking_score",
                 "confidence_type": "deterministic_when_already_opened",
                 "confidence_1_to_100_type": "fixed_100_for_already_opened",
                 "confidence_1_to_100_is_probability": False,
+                "score_can_be_negative": False,
+                "confidence_score_is_not_ranking_score": True,
                 "source": source,
                 "version": version,
                 "ranking_stage": "baseline_only",
@@ -500,6 +504,7 @@ def run_inference(
 
     best_cell_payload = candidate_cells[0]
     best_score = round(float(best_cell_payload["score"]), 6)
+    best_confidence_score = round(best_confidence_1_to_100 / 100.0, 6)
     return {
         "status": "ok",
         "board_shape": {"rows": parsed.rows, "cols": parsed.cols},
@@ -513,15 +518,19 @@ def run_inference(
             "confidence_1_to_100": best_confidence_1_to_100,
         },
         "candidate_cells": candidate_cells,
-        "confidence_score": best_score,
+        "confidence_score": best_confidence_score,
+        "best_ranking_score": best_score,
+        "best_confidence_score": best_confidence_score,
         "reasoning": reasoning,
         "module_contributions": weights,
         "metadata": {
-            "score_type": "position_confidence_score",
+            "score_type": "ranking_score",
             "confidence_type": "margin_and_elimination_aware",
             "confidence_1_to_100_type": "gap_density_mapping_non_calibrated",
             "confidence_1_to_100_is_probability": False,
             "best_cell_confidence_1_to_100": best_confidence_1_to_100,
+            "score_can_be_negative": True,
+            "confidence_score_is_not_ranking_score": True,
             "margin_to_top2": round(float(margin_to_top2), 6),
             "effective_candidate_count": effective_candidate_count,
             "gated_candidate_count": gated_candidate_count,

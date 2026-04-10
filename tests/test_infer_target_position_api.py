@@ -27,7 +27,8 @@ def test_valid_small_board_4x5() -> None:
     assert payload["status"] == "ok"
     assert payload["board_shape"] == {"rows": 4, "cols": 5}
     assert payload["best_cell"] is not None
-    assert payload["confidence_score"] == payload["best_cell"]["score"]
+    assert payload["confidence_score"] == payload["best_confidence_score"]
+    assert payload["best_ranking_score"] == payload["best_cell"]["score"]
     assert payload["metadata"]["confidence_1_to_100_is_probability"] is False
 
 

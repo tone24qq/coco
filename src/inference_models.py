@@ -90,6 +90,8 @@ class BoardShape(BaseModel):
 
 class InferenceMetadata(BaseModel):
     score_type: str
+    score_can_be_negative: Optional[bool] = None
+    confidence_score_is_not_ranking_score: Optional[bool] = None
     confidence_type: str
     confidence_1_to_100_type: str
     confidence_1_to_100_is_probability: bool
@@ -129,6 +131,8 @@ class InferTargetPositionResponse(BaseModel):
     best_cell: Optional[BestCell]
     candidate_cells: List[CandidateCell]
     confidence_score: float
+    best_ranking_score: Optional[float] = None
+    best_confidence_score: Optional[float] = None
     reasoning: List[str]
     module_contributions: Dict[str, float]
     metadata: InferenceMetadata
