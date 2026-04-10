@@ -4,7 +4,9 @@ from src.inference_service import (
     _normalize_scores,
     aggregate_candidate_scores,
     build_cell_candidates,
+    map_best_confidence_1_100,
     rank_candidates,
+    run_inference,
     score_candidates,
 )
 
@@ -85,6 +87,12 @@ def test_normalization_disabled_keeps_weak_signals_close() -> None:
     assert out == raw
 
 
+def test_normalization_light_mode_runs_and_preserves_ordering() -> None:
+    raw = {(0, 0): 0.51, (0, 1): 0.5, (1, 1): 0.49}
+    out = _normalize_scores(raw, mode="light")
+    assert out[(0, 0)] > out[(0, 1)] > out[(1, 1)]
+
+
 def test_hard_gate_can_eliminate_high_support_candidate() -> None:
     candidates = [
         {
@@ -143,6 +151,61 @@ def test_contradiction_penalty_changes_ranking() -> None:
     aggregate_candidate_scores(
         candidates,
         {"logic_rule": 0.5, "line_consistency": 0.5},
-        {"type": "gate_then_weighted_sum", "gating_enabled": True},
+        {"type": "gate_then_weighted_sum", "gating_enabled": True, "score_spread_enabled": True},
     )
     assert rank_candidates(candidates)[0]["cell"] == (0, 1)
+
+
+def test_score_spread_expands_but_preserves_ranking_order() -> None:
+    candidates = [
+        {"cell": (0, 0), "score": 0.0, "module_scores": {"logic_rule": 0.501}, "module_details": {}},
+        {"cell": (0, 1), "score": 0.0, "module_scores": {"logic_rule": 0.5}, "module_details": {}},
+        {"cell": (1, 1), "score": 0.0, "module_scores": {"logic_rule": 0.499}, "module_details": {}},
+    ]
+    diagnostics = aggregate_candidate_scores(
+        candidates,
+        {"logic_rule": 1.0},
+        {"type": "gate_then_weighted_sum", "gating_enabled": False, "score_spread_enabled": True},
+    )
+    ranked = rank_candidates(candidates)
+    assert [c["cell"] for c in ranked] == [(0, 0), (0, 1), (1, 1)]
+    assert diagnostics["final_score_std"] > diagnostics["raw_score_std"]
+
+
+def test_candidate_confidence_not_all_identical() -> None:
+    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    confs = {c["confidence_1_to_100"] for c in result["candidate_cells"]}
+    assert len(confs) > 1
+
+
+def test_collapsed_score_flag_true_on_flat_scores() -> None:
+    candidates = [
+        {"cell": (0, 0), "score": 0.0, "module_scores": {"logic_rule": 0.5}, "module_details": {}},
+        {"cell": (0, 1), "score": 0.0, "module_scores": {"logic_rule": 0.5}, "module_details": {}},
+    ]
+    diagnostics = aggregate_candidate_scores(
+        candidates,
+        {"logic_rule": 1.0},
+        {"type": "gate_then_weighted_sum", "gating_enabled": False, "score_spread_enabled": False},
+    )
+    assert diagnostics["collapsed_score_flag"] is True
+
+
+def test_best_confidence_rises_with_larger_margin() -> None:
+    low = map_best_confidence_1_100(
+        margin_to_top2=0.01,
+        top1_top5_mean_gap=0.01,
+        effective_candidate_count=5,
+        gated_candidate_count=5,
+        score_entropy_like=0.95,
+        collapsed_score_flag=True,
+    )
+    high = map_best_confidence_1_100(
+        margin_to_top2=0.2,
+        top1_top5_mean_gap=0.15,
+        effective_candidate_count=5,
+        gated_candidate_count=2,
+        score_entropy_like=0.4,
+        collapsed_score_flag=False,
+    )
+    assert high > low

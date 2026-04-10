@@ -78,6 +78,7 @@ class CandidateCell(BestCell):
     support_score: float = 0.0
     contradiction_penalty: float = 0.0
     gated_score: float = 0.0
+    ranking_score: float = 0.0
     final_score: float = 0.0
     gate_multiplier: float = 1.0
 
@@ -92,10 +93,21 @@ class InferenceMetadata(BaseModel):
     confidence_type: str
     confidence_1_to_100_type: str
     confidence_1_to_100_is_probability: bool
+    best_cell_confidence_1_to_100: Optional[float] = None
     margin_to_top2: Optional[float] = None
     effective_candidate_count: Optional[int] = None
     gated_candidate_count: Optional[int] = None
     confidence_reason: Optional[str] = None
+    raw_score_min: Optional[float] = None
+    raw_score_max: Optional[float] = None
+    raw_score_std: Optional[float] = None
+    final_score_min: Optional[float] = None
+    final_score_max: Optional[float] = None
+    final_score_std: Optional[float] = None
+    top1_top2_margin: Optional[float] = None
+    top1_top5_mean_gap: Optional[float] = None
+    score_entropy_like: Optional[float] = None
+    collapsed_score_flag: Optional[bool] = None
     source: str
     version: str
     aggregation_type: Optional[str] = None

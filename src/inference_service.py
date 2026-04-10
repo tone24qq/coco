@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+import math
 
 from src.inference_config import (
     load_aggregator_config,
@@ -186,13 +187,16 @@ def aggregate_candidate_scores(
     candidates: List[Dict[str, object]],
     weights: Dict[str, float],
     aggregator_cfg: Dict[str, object],
-) -> None:
+) -> Dict[str, float]:
     agg_type = str(aggregator_cfg.get("type", "weighted_average"))
     gating_enabled = bool(aggregator_cfg.get("gating_enabled", True))
     contradiction_weight = float(aggregator_cfg.get("contradiction_penalty_weight", 1.0))
     hard_violation_threshold = float(aggregator_cfg.get("hard_violation_threshold", 2.0))
     hard_gate_multiplier = float(aggregator_cfg.get("hard_gate_multiplier", 0.05))
     soft_gate_floor = float(aggregator_cfg.get("soft_gate_floor", 0.25))
+    spread_enabled = bool(aggregator_cfg.get("score_spread_enabled", True))
+    spread_temperature = float(aggregator_cfg.get("score_spread_temperature", 0.2))
+    ranking_scores: List[float] = []
 
     for c in candidates:
         module_scores = c["module_scores"]
@@ -225,17 +229,109 @@ def aggregate_candidate_scores(
                 gate_multiplier = max(soft_gate_floor, 1.0 - 0.25 * contradiction_penalty)
 
         if agg_type == "weighted_average":
-            final_score = support_fusion
             gated_score = support_fusion
+            ranking_score = support_fusion
         else:
             gated_score = gate_multiplier * support_fusion
-            final_score = _clip(gated_score - contradiction_weight * contradiction_penalty)
+            ranking_score = gated_score - contradiction_weight * contradiction_penalty
 
         c["support_score"] = support_fusion
         c["contradiction_penalty"] = contradiction_penalty
         c["gated_score"] = gated_score
         c["gate_multiplier"] = gate_multiplier
+        c["ranking_score"] = ranking_score
+        ranking_scores.append(ranking_score)
+
+    if not candidates:
+        return {}
+
+    raw_mean = sum(ranking_scores) / len(ranking_scores)
+    raw_var = sum((s - raw_mean) ** 2 for s in ranking_scores) / len(ranking_scores)
+    raw_std = math.sqrt(raw_var)
+    raw_min = min(ranking_scores)
+    raw_max = max(ranking_scores)
+
+    spread_factor = 1.0
+    if spread_enabled:
+        spread_factor = 1.0 + min(2.0, spread_temperature / max(raw_std, 0.03))
+
+    final_scores: List[float] = []
+    for c in candidates:
+        ranking_score = float(c.get("ranking_score", 0.0))
+        if spread_enabled:
+            final_score = raw_mean + (ranking_score - raw_mean) * spread_factor
+        else:
+            final_score = ranking_score
         c["score"] = final_score
+        final_scores.append(final_score)
+
+    final_mean = sum(final_scores) / len(final_scores)
+    final_var = sum((s - final_mean) ** 2 for s in final_scores) / len(final_scores)
+    final_std = math.sqrt(final_var)
+    top_sorted = sorted(final_scores, reverse=True)
+    top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
+    topk = top_sorted[: min(5, len(top_sorted))]
+    top1_top5_mean_gap = 0.0 if not topk else top_sorted[0] - (sum(topk) / len(topk))
+
+    tau = max(0.05, final_std)
+    exp_values = [math.exp((s - top_sorted[0]) / tau) for s in top_sorted]
+    z = sum(exp_values) or 1.0
+    probs = [x / z for x in exp_values]
+    entropy = -sum(p * math.log(max(p, 1e-12)) for p in probs)
+    max_entropy = math.log(max(len(probs), 1))
+    entropy_like = entropy / max(max_entropy, 1e-12)
+    collapsed = final_std < 0.02 or top1_top2_margin < 0.01
+    return {
+        "raw_score_min": raw_min,
+        "raw_score_max": raw_max,
+        "raw_score_std": raw_std,
+        "final_score_min": min(final_scores),
+        "final_score_max": max(final_scores),
+        "final_score_std": final_std,
+        "top1_top2_margin": top1_top2_margin,
+        "top1_top5_mean_gap": top1_top5_mean_gap,
+        "score_entropy_like": entropy_like,
+        "collapsed_score_flag": collapsed,
+    }
+
+
+def _candidate_confidence_1_to_100(
+    candidate_score: float,
+    top_score: float,
+    best_confidence: float,
+    score_std: float,
+    gate_multiplier: float,
+    contradiction_penalty: float,
+) -> float:
+    if score_std <= 1e-9:
+        gap_factor = 1.0 if abs(candidate_score - top_score) < 1e-9 else 0.0
+    else:
+        rel_gap = max(0.0, top_score - candidate_score) / max(score_std, 0.01)
+        gap_factor = math.exp(-rel_gap)
+    confidence = best_confidence * gap_factor
+    confidence *= max(0.2, min(1.0, gate_multiplier))
+    confidence *= max(0.2, 1.0 - 0.4 * contradiction_penalty)
+    return round(_clip(confidence, 1.0, 99.0), 2)
+
+
+def map_best_confidence_1_100(
+    margin_to_top2: float,
+    top1_top5_mean_gap: float,
+    effective_candidate_count: int,
+    gated_candidate_count: int,
+    score_entropy_like: float,
+    collapsed_score_flag: bool,
+) -> float:
+    if effective_candidate_count <= 1:
+        return 99.0
+    margin_factor = _clip(margin_to_top2 / 0.2)
+    topk_gap_factor = _clip(top1_top5_mean_gap / 0.2)
+    density_factor = 1.0 - _clip((gated_candidate_count - 1) / max(effective_candidate_count - 1, 1))
+    concentration = 1.0 - _clip(score_entropy_like)
+    collapse_penalty = 0.2 if collapsed_score_flag else 0.0
+    raw = 20.0 + 35.0 * margin_factor + 20.0 * topk_gap_factor + 15.0 * concentration + 10.0 * density_factor
+    raw *= 1.0 - collapse_penalty
+    return round(_clip(raw, 1.0, 99.0), 2)
 
 
 def build_explanation(
@@ -321,7 +417,7 @@ def run_inference(
         module_settings=module_settings,
         normalization_mode=str(aggregator_cfg.get("normalization_mode", "disabled")),
     )
-    aggregate_candidate_scores(scored, weights, aggregator_cfg)
+    diagnostics = aggregate_candidate_scores(scored, weights, aggregator_cfg)
     ranked = rank_candidates(scored)
     best = ranked[0]
 
@@ -331,10 +427,13 @@ def run_inference(
     )
     effective_candidate_count = len(ranked)
     gated_candidate_count = sum(1 for c in ranked if float(c.get("gate_multiplier", 1.0)) > 0.2)
-    confidence_1_to_100 = map_score_to_confidence_1_100(
+    best_confidence_1_to_100 = map_best_confidence_1_100(
         margin_to_top2,
+        float(diagnostics.get("top1_top5_mean_gap", 0.0)),
         effective_candidate_count,
         gated_candidate_count,
+        float(diagnostics.get("score_entropy_like", 1.0)),
+        bool(diagnostics.get("collapsed_score_flag", 0.0)),
     )
     confidence_reason = (
         "strong_elimination_after_gating"
@@ -350,13 +449,21 @@ def run_inference(
                 "row": cell["cell"][0] + 1,
                 "col": cell["cell"][1] + 1,
                 "score": score,
-                "confidence_1_to_100": confidence_1_to_100,
+                "confidence_1_to_100": _candidate_confidence_1_to_100(
+                    candidate_score=score,
+                    top_score=float(ranked[0]["score"]),
+                    best_confidence=best_confidence_1_to_100,
+                    score_std=float(diagnostics.get("final_score_std", 0.0)),
+                    gate_multiplier=float(cell.get("gate_multiplier", 1.0)),
+                    contradiction_penalty=float(cell.get("contradiction_penalty", 0.0)),
+                ),
                 "module_scores": {
                     k: round(float(v), 6) for k, v in sorted(cell["module_scores"].items())
                 },
                 "support_score": round(float(cell.get("support_score", score)), 6),
                 "contradiction_penalty": round(float(cell.get("contradiction_penalty", 0.0)), 6),
                 "gated_score": round(float(cell.get("gated_score", score)), 6),
+                "ranking_score": round(float(cell.get("ranking_score", score)), 6),
                 "final_score": score,
                 "gate_multiplier": round(float(cell.get("gate_multiplier", 1.0)), 6),
                 "module_details": cell.get("module_details", {}),
@@ -403,7 +510,7 @@ def run_inference(
             "row": best_cell_payload["row"],
             "col": best_cell_payload["col"],
             "score": best_score,
-            "confidence_1_to_100": best_cell_payload["confidence_1_to_100"],
+            "confidence_1_to_100": best_confidence_1_to_100,
         },
         "candidate_cells": candidate_cells,
         "confidence_score": best_score,
@@ -414,10 +521,12 @@ def run_inference(
             "confidence_type": "margin_and_elimination_aware",
             "confidence_1_to_100_type": "gap_density_mapping_non_calibrated",
             "confidence_1_to_100_is_probability": False,
+            "best_cell_confidence_1_to_100": best_confidence_1_to_100,
             "margin_to_top2": round(float(margin_to_top2), 6),
             "effective_candidate_count": effective_candidate_count,
             "gated_candidate_count": gated_candidate_count,
             "confidence_reason": confidence_reason,
+            **{k: (round(v, 6) if isinstance(v, float) else bool(v)) for k, v in diagnostics.items()},
             "source": source,
             "version": version,
             "aggregation_type": str(aggregator_cfg.get("type", "weighted_average")),
