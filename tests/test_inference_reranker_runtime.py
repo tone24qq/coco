@@ -31,7 +31,7 @@ def test_reranker_keeps_candidate_set() -> None:
             {
                 "enabled": True,
                 "version": "test",
-                "feature_schema_version": "ranking_features_v1",
+                "feature_schema_version": "ranking_features_v2",
                 "feature_columns": ["baseline_score"],
                 "weights": {"baseline_score": 1.0},
             }
