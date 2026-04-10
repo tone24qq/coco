@@ -97,3 +97,13 @@ def test_candidate_cells_sorted_descending() -> None:
     cells = response.json()["candidate_cells"]
     scores = [cell["score"] for cell in cells]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_multi_target_api_returns_unique_assignments() -> None:
+    board = [[1, -1], [-1, 4]]
+    response = client.post("/infer_multi_target_positions", json={"board": board, "target_numbers": [2, 3]})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    cells = {(a["row"], a["col"]) for a in payload["assignments"]}
+    assert len(cells) == 2

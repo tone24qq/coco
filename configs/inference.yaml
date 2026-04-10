@@ -17,4 +17,20 @@ modules:
     global_assignment_prior:
       assignment_mode: exact
   aggregator:
-    type: weighted_average
+    type: gate_then_weighted_sum
+    normalization_mode: disabled
+    gating_enabled: true
+    contradiction_penalty_weight: 1.0
+    hard_violation_threshold: 2.0
+    hard_gate_multiplier: 0.05
+    soft_gate_floor: 0.25
+    elimination_version: v2
+
+joint_assignment:
+  enabled: true
+  assignment_mode: exact
+  contradiction_alpha: 0.35
+  gate_beta: 0.2
+  dedup_enabled: true
+  top_k_per_target: 10
+  version: v1

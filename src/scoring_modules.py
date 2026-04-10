@@ -43,17 +43,43 @@ class LogicRuleModule:
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         rows, cols = len(board), len(board[0])
         result: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
         for r, c in unopened_cells:
             neighbors = []
+            contradiction_votes = 0
             for rr, cc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
                 if 0 <= rr < rows and 0 <= cc < cols and board[rr][cc] != -1:
-                    neighbors.append(board[rr][cc])
+                    v = board[rr][cc]
+                    neighbors.append(v)
+                    if rr == r and cc < c and v > target_number:
+                        contradiction_votes += 1
+                    if rr == r and cc > c and v < target_number:
+                        contradiction_votes += 1
+                    if cc == c and rr < r and v > target_number:
+                        contradiction_votes += 1
+                    if cc == c and rr > r and v < target_number:
+                        contradiction_votes += 1
             if not neighbors:
                 result[(r, c)] = 0.5
+                details[(r, c)] = {
+                    "local_support_score": 0.5,
+                    "local_contradiction_penalty": 0.0,
+                    "neighbor_count": 0.0,
+                    "contradiction_votes": 0.0,
+                }
                 continue
             mean_abs_delta = sum(abs(v - target_number) for v in neighbors) / len(neighbors)
-            result[(r, c)] = 1.0 / (1.0 + mean_abs_delta)
-        return ModuleScoreResult(result, "logic_rule: 根據鄰近已開數字與 target 距離評分")
+            local_support = 1.0 / (1.0 + mean_abs_delta)
+            contradiction_penalty = _clip(contradiction_votes / max(len(neighbors), 1))
+            score = _clip(local_support - 0.7 * contradiction_penalty)
+            result[(r, c)] = score
+            details[(r, c)] = {
+                "local_support_score": local_support,
+                "local_contradiction_penalty": contradiction_penalty,
+                "neighbor_count": float(len(neighbors)),
+                "contradiction_votes": float(contradiction_votes),
+            }
+        return ModuleScoreResult(result, "logic_rule: 以局部 support 與局部矛盾懲罰共同評分", details=details)
 
 
 class PatternModelModule:
@@ -201,6 +227,8 @@ def _directional_components(board: Board, candidate: Cell, target_number: int) -
     row_vals = [board[r][cc] for cc in range(cols) if board[r][cc] != -1] + [target_number]
     col_vals = [board[rr][c] for rr in range(rows) if board[rr][c] != -1] + [target_number]
     board_size = rows * cols
+    row_violation_count = sum(1 for v in left if v > target_number) + sum(1 for v in right if v < target_number)
+    col_violation_count = sum(1 for v in up if v > target_number) + sum(1 for v in down if v < target_number)
     components = {
         "left_order_score": _order_score(left, target_number, expect_less=True),
         "right_order_score": _order_score(right, target_number, expect_less=False),
@@ -212,8 +240,15 @@ def _directional_components(board: Board, candidate: Cell, target_number: int) -
         "down_distance_score": _distance_score(down, target_number, board_size),
         "row_balance_score": _smoothness_score(row_vals),
         "col_balance_score": _smoothness_score(col_vals),
+        "row_violation_count": float(row_violation_count),
+        "col_violation_count": float(col_violation_count),
     }
-    components["directional_consistency"] = sum(components.values()) / len(components)
+    support_keys = [k for k in components.keys() if k.endswith("_score")]
+    support = sum(components[k] for k in support_keys) / max(len(support_keys), 1)
+    violation_penalty = _clip((row_violation_count + col_violation_count) / 4.0)
+    components["directional_support_score"] = support
+    components["directional_contradiction_penalty"] = violation_penalty
+    components["directional_consistency"] = _clip(support - 0.8 * violation_penalty)
     return components
 
 
@@ -257,6 +292,32 @@ def _line_components(board: Board, candidate: Cell, target_number: int) -> Dict[
             continue
         diag_percentiles.append(_percentile_fit(vals, target_number, len(diag_cells), diag_idx, board_size))
 
+    diag_violation_count = 0
+    if main_diag:
+        for rr, cc in main_diag:
+            v = board[rr][cc]
+            if v == -1 or (rr, cc) == candidate:
+                continue
+            if (rr < r and cc < c and v > target_number) or (rr > r and cc > c and v < target_number):
+                diag_violation_count += 1
+    if anti_diag:
+        for rr, cc in anti_diag:
+            v = board[rr][cc]
+            if v == -1 or (rr, cc) == candidate:
+                continue
+            if (rr < r and cc > c and v > target_number) or (rr > r and cc < c and v < target_number):
+                diag_violation_count += 1
+
+    monotonic_break_flag = float(
+        (row_mono < 0.5) or (col_mono < 0.5) or (sum(diag_monotonicity) / len(diag_monotonicity) < 0.5)
+    )
+    percentile_outlier_flag = float(
+        (row_pct < 0.25) or (col_pct < 0.25) or (sum(diag_percentiles) / len(diag_percentiles) < 0.25)
+    )
+    gap_outlier_flag = float(
+        (row_residual < 0.25) or (col_residual < 0.25) or (sum(diag_scores) / len(diag_scores) < 0.25)
+    )
+
     components = {
         "row_residual_score": row_residual,
         "col_residual_score": col_residual,
@@ -268,8 +329,22 @@ def _line_components(board: Board, candidate: Cell, target_number: int) -> Dict[
         "row_percentile_fit": row_pct,
         "col_percentile_fit": col_pct,
         "diag_percentile_fit": sum(diag_percentiles) / len(diag_percentiles),
+        "diag_violation_count": float(diag_violation_count),
+        "monotonic_break_flag": monotonic_break_flag,
+        "percentile_outlier_flag": percentile_outlier_flag,
+        "gap_outlier_flag": gap_outlier_flag,
     }
-    components["line_consistency"] = sum(components.values()) / len(components)
+    support_keys = [k for k in components.keys() if k.endswith("_score") or k.endswith("_fit")]
+    support = sum(components[k] for k in support_keys) / max(len(support_keys), 1)
+    penalty = _clip(
+        (diag_violation_count / 3.0)
+        + 0.35 * monotonic_break_flag
+        + 0.25 * percentile_outlier_flag
+        + 0.25 * gap_outlier_flag
+    )
+    components["line_support_score"] = support
+    components["line_contradiction_penalty"] = _clip(penalty)
+    components["line_consistency"] = _clip(support - 0.75 * components["line_contradiction_penalty"])
     return components
 
 
@@ -325,38 +400,40 @@ class GlobalAssignmentPriorModule:
         self.assignment_mode = assignment_mode
 
     @staticmethod
-    def _greedy_assignment_score(
+    def _greedy_assignment_cost(
         board: Board,
         cells: List[Cell],
         numbers: List[int],
-    ) -> float:
+    ) -> Optional[float]:
         if not cells or not numbers:
-            return NEUTRAL_SCORE
+            return 0.0
+        if len(cells) != len(numbers):
+            return None
         ranked_pairs = []
         for number in numbers:
             for cell in cells:
                 compat = _cell_number_compatibility(board, cell, number)
-                ranked_pairs.append((compat, number, cell))
-        ranked_pairs.sort(reverse=True, key=lambda x: x[0])
+                ranked_pairs.append((1.0 - compat, number, cell))
+        ranked_pairs.sort(key=lambda x: x[0])
         used_cells: set[Cell] = set()
         used_numbers: set[int] = set()
         total = 0.0
         count = 0
-        for compat, number, cell in ranked_pairs:
+        for cost, number, cell in ranked_pairs:
             if number in used_numbers or cell in used_cells:
                 continue
             used_numbers.add(number)
             used_cells.add(cell)
-            total += compat
+            total += cost
             count += 1
             if len(used_cells) == len(cells):
                 break
-        if count == 0:
-            return NEUTRAL_SCORE
+        if count == 0 or count != len(cells):
+            return None
         return total / count
 
     @staticmethod
-    def _exact_assignment_score(
+    def _exact_assignment_cost(
         board: Board,
         cells: List[Cell],
         numbers: List[int],
@@ -373,10 +450,10 @@ class GlobalAssignmentPriorModule:
         row_idx, col_idx = linear_sum_assignment(matrix)
         if len(row_idx) == 0:
             return None
-        compat_total = 0.0
+        cost_total = 0.0
         for r_idx, c_idx in zip(row_idx.tolist(), col_idx.tolist()):
-            compat_total += 1.0 - matrix[r_idx][c_idx]
-        return compat_total / len(row_idx)
+            cost_total += matrix[r_idx][c_idx]
+        return cost_total / len(row_idx)
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         if len(unopened_cells) <= 1:
@@ -386,8 +463,8 @@ class GlobalAssignmentPriorModule:
             )
         rows, cols = len(board), len(board[0])
         n_total = rows * cols
-        scores: Dict[Cell, float] = {}
-        details: Dict[Cell, Dict[str, float]] = {}
+        anchor_costs: Dict[Cell, float] = {}
+        anchor_details: Dict[Cell, Dict[str, float]] = {}
         for anchor in unopened_cells:
             board_with_anchor = [list(row) for row in board]
             board_with_anchor[anchor[0]][anchor[1]] = target_number
@@ -401,23 +478,42 @@ class GlobalAssignmentPriorModule:
             pool = [x for x in range(1, n_total + 1) if x not in opened_with_anchor]
             used_exact = 0
             used_greedy = 0
-            assignment_score = None
+            assignment_cost = None
             if self.assignment_mode == "exact":
-                assignment_score = self._exact_assignment_score(board_with_anchor, others, pool)
-                used_exact = int(assignment_score is not None)
-            if assignment_score is None:
-                assignment_score = self._greedy_assignment_score(board_with_anchor, others, pool)
+                assignment_cost = self._exact_assignment_cost(board_with_anchor, others, pool)
+                used_exact = int(assignment_cost is not None)
+            if assignment_cost is None:
+                assignment_cost = self._greedy_assignment_cost(board_with_anchor, others, pool)
                 used_greedy = 1
-            anchor_compat = _cell_number_compatibility(board, anchor, target_number)
-            final_score = _clip(0.5 * assignment_score + 0.5 * anchor_compat)
-            scores[anchor] = final_score
-            details[anchor] = {
+            infeasible = assignment_cost is None
+            if infeasible:
+                assignment_cost = 1.0
+            anchor_costs[anchor] = float(assignment_cost)
+            anchor_details[anchor] = {
                 "global_assignment_mode": 1.0 if self.assignment_mode == "exact" else 0.0,
                 "used_exact_assignment": float(used_exact),
                 "used_greedy_fallback": float(used_greedy),
-                "global_assignment_score": final_score,
-                "global_anchor_compatibility": anchor_compat,
-                "global_remaining_assignment_score": assignment_score,
+                "forced_anchor_total_assignment_cost": float(assignment_cost * max(len(others), 1)),
+                "forced_anchor_avg_assignment_cost": float(assignment_cost),
+                "infeasible_or_high_cost_flag": float(infeasible),
+            }
+
+        best_cost = min(anchor_costs.values()) if anchor_costs else 1.0
+        scores: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
+        for anchor, avg_cost in anchor_costs.items():
+            delta = max(0.0, avg_cost - best_cost)
+            high_cost_flag = float(avg_cost >= 0.75 or delta >= 0.2)
+            score = _clip(1.0 - (avg_cost + 1.2 * delta + 0.6 * high_cost_flag))
+            scores[anchor] = score
+            details[anchor] = {
+                **anchor_details[anchor],
+                "anchor_cost_delta_vs_best": float(delta),
+                "infeasible_or_high_cost_flag": max(
+                    anchor_details[anchor]["infeasible_or_high_cost_flag"],
+                    high_cost_flag,
+                ),
+                "global_assignment_score": score,
             }
 
         return ModuleScoreResult(

@@ -140,6 +140,7 @@ def test_global_assignment_exact_path() -> None:
     cell_details = result.details[(0, 1)]
     assert cell_details["used_exact_assignment"] in (0.0, 1.0)
     assert cell_details["global_assignment_mode"] == 1.0
+    assert "forced_anchor_avg_assignment_cost" in cell_details
 
 
 def test_global_assignment_greedy_fallback_path() -> None:
@@ -148,6 +149,20 @@ def test_global_assignment_greedy_fallback_path() -> None:
         result = module.score([[1, -1], [-1, 4]], [(0, 1), (1, 0)], 2)
     details = result.details[(0, 1)]
     assert details["used_greedy_fallback"] == 1.0
+
+
+def test_global_assignment_cost_delta_penalizes_wrong_anchor() -> None:
+    board = [[1, -1, 3], [-1, 5, -1], [7, 8, 9]]
+    module = MODULES["global_assignment_prior"].__class__(assignment_mode="exact")
+    result = module.score(board, [(0, 1), (1, 0), (1, 2)], 4)
+    deltas = [result.details[cell]["anchor_cost_delta_vs_best"] for cell in result.details]
+    assert max(deltas) > 0.0
+
+
+def test_confidence_not_artificially_high_when_gap_small() -> None:
+    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    assert result["metadata"]["margin_to_top2"] >= 0.0
+    assert result["best_cell"]["confidence_1_to_100"] <= 95.0
 
 
 def test_discover_full_boards_skips_bad_json_csv_txt_without_crashing(tmp_path: Path) -> None:

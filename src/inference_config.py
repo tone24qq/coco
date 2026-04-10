@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 import yaml
 
@@ -9,9 +9,13 @@ import yaml
 DEFAULT_CONFIG_PATH = Path("configs/inference.yaml")
 
 
-def load_module_weights(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, float]:
+def _load_raw_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
     with config_path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
+        return yaml.safe_load(fh) or {}
+
+
+def load_module_weights(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, float]:
+    data = _load_raw_config(config_path)
 
     modules = data.get("modules", {})
     enabled = modules.get("enabled", {})
@@ -39,10 +43,26 @@ def load_module_weights(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, fl
 
 
 def load_module_settings(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Dict[str, object]]:
-    with config_path.open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
+    data = _load_raw_config(config_path)
     modules = data.get("modules", {})
     settings = modules.get("settings", {})
     if not isinstance(settings, dict):
         raise ValueError("modules.settings must be a mapping")
     return settings
+
+
+def load_aggregator_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+    data = _load_raw_config(config_path)
+    modules = data.get("modules", {})
+    aggregator = modules.get("aggregator", {})
+    if not isinstance(aggregator, dict):
+        raise ValueError("modules.aggregator must be a mapping")
+    return aggregator
+
+
+def load_joint_assignment_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+    data = _load_raw_config(config_path)
+    cfg = data.get("joint_assignment", {})
+    if not isinstance(cfg, dict):
+        raise ValueError("joint_assignment must be a mapping")
+    return cfg
