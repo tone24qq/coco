@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Literal
 
-SizeClass = Literal["20", "80", "120"]
+SizeClass = Literal["20", "80", "120", "160"]
 
 
 @dataclass
@@ -36,7 +36,7 @@ def build_multisize_manifest(repo_root: Path) -> tuple[List[ManifestEntry], Mani
     invalid_reasons: Dict[str, int] = {}
     total_images = 0
 
-    for size in ("20", "80"):
+    for size in ("20", "80", "160"):
         folder = repo_root / "gogo" / size
         if not folder.exists():
             continue

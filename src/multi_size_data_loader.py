@@ -8,7 +8,10 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from .board_manifest import build_multisize_manifest
-from .image_board_parser import parse_manifest_entries, write_boards, write_parse_audit, write_pending
+from .image_board_parser import EXPECTED_SHAPES, parse_manifest_entries, write_boards, write_parse_audit, write_pending
+
+
+SIZE_CLASSES = ("20", "80", "120", "160")
 
 
 @dataclass
@@ -29,8 +32,21 @@ class ParseArtifacts:
     cache_info: Dict[str, object]
 
 
-def _is_complete_grid(grid: List[List[Optional[int]]]) -> bool:
-    return all(v is not None for row in grid for v in row)
+def _validate_complete_grid(grid: np.ndarray, size_class: str) -> str | None:
+    if grid.ndim != 2 or grid.size == 0:
+        return "invalid_grid_dim"
+    expected_shape = EXPECTED_SHAPES.get(size_class)
+    if expected_shape and tuple(grid.shape) != expected_shape:
+        return "shape_mismatch"
+    total = int(grid.shape[0] * grid.shape[1])
+    vals = [int(v) for v in grid.flatten().tolist()]
+    if len(set(vals)) != len(vals):
+        return "duplicate_values"
+    if any(v < 1 or v > total for v in vals):
+        return "out_of_range_values"
+    if set(vals) != set(range(1, total + 1)):
+        return "non_permutation_grid"
+    return None
 
 
 def _load_cached_artifacts(config: Dict) -> Optional[ParseArtifacts]:
@@ -44,6 +60,15 @@ def _load_cached_artifacts(config: Dict) -> Optional[ParseArtifacts]:
     try:
         raw_boards = json.loads(parsed_path.read_text(encoding="utf-8"))
         raw_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        for field, default_value in (
+            ("parse_counts_by_size", {k: {"success": 0, "failed": 0} for k in SIZE_CLASSES}),
+            ("valid_sample_count_by_size", {k: 0 for k in SIZE_CLASSES}),
+            ("pending_counts_by_size", {k: 0 for k in SIZE_CLASSES}),
+        ):
+            existing = raw_audit.get(field, {})
+            merged = dict(default_value)
+            merged.update(existing)
+            raw_audit[field] = merged
         raw_pending = []
         if pending_path.exists():
             raw_pending = json.loads(pending_path.read_text(encoding="utf-8"))
@@ -52,6 +77,9 @@ def _load_cached_artifacts(config: Dict) -> Optional[ParseArtifacts]:
         for b in raw_boards:
             raw_grid = [[(-1 if v is None else int(v)) for v in row] for row in b["grid"]]
             grid = np.array(raw_grid, dtype=int)
+            issue = _validate_complete_grid(grid, str(b["size_class"]))
+            if issue is not None:
+                continue
             samples.append(
                 MultiSizeBoardSample(
                     sample_id=str(b["sample_id"]),
@@ -94,13 +122,17 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
     )
 
     samples: List[MultiSizeBoardSample] = []
+    fail_fast_counts: Dict[str, int] = {}
     for b in boards:
-        if not _is_complete_grid(b.grid):
+        grid_arr = np.array(b.grid, dtype=int)
+        issue = _validate_complete_grid(grid_arr, b.size_class)
+        if issue:
+            fail_fast_counts[issue] = fail_fast_counts.get(issue, 0) + 1
             pending.append(
                 {
                     "sample_id": b.sample_id,
                     "size_class": b.size_class,
-                    "reason": "incomplete_grid",
+                    "reason": issue,
                     "parse_confidence": b.metadata.get("parse_confidence", 0.0),
                 }
             )
@@ -110,21 +142,21 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
                 sample_id=b.sample_id,
                 board_id=f"{b.size_class}:{b.sample_id}",
                 size_class=b.size_class,
-                grid=np.array(b.grid, dtype=int),
+                grid=grid_arr,
                 shape=b.shape,
                 parse_confidence=float(b.metadata.get("parse_confidence", 1.0)),
             )
         )
 
-    image_counts_by_size: Dict[str, int] = {k: 0 for k in ("20", "80", "120")}
-    sample_counts_by_size: Dict[str, int] = {k: 0 for k in ("20", "80", "120")}
+    image_counts_by_size: Dict[str, int] = {k: 0 for k in SIZE_CLASSES}
+    sample_counts_by_size: Dict[str, int] = {k: 0 for k in SIZE_CLASSES}
     for m in manifest:
         sample_counts_by_size[m.size_class] += 1
         image_counts_by_size[m.size_class] += len(m.image_paths)
 
-    parse_counts: Dict[str, Dict[str, int]] = {k: {"success": 0, "failed": 0} for k in ("20", "80", "120")}
-    pending_counts: Dict[str, int] = {k: 0 for k in ("20", "80", "120")}
-    valid_count_by_size: Dict[str, int] = {k: 0 for k in ("20", "80", "120")}
+    parse_counts: Dict[str, Dict[str, int]] = {k: {"success": 0, "failed": 0} for k in SIZE_CLASSES}
+    pending_counts: Dict[str, int] = {k: 0 for k in SIZE_CLASSES}
+    valid_count_by_size: Dict[str, int] = {k: 0 for k in SIZE_CLASSES}
     reasons: Dict[str, int] = {}
     for row in parse_audit:
         key = row.size_class
@@ -140,6 +172,9 @@ def load_multisize_samples(config: Dict) -> ParseArtifacts:
             pending_counts[key] += 1
     for s in samples:
         valid_count_by_size[s.size_class] += 1
+
+    for reason, count in fail_fast_counts.items():
+        reasons[f"loader_{reason}"] = reasons.get(f"loader_{reason}", 0) + count
 
     audit = {
         "manifest_audit": {
