@@ -6,6 +6,7 @@ import math
 
 from src.inference_config import (
     load_aggregator_config,
+    load_fast_path_config,
     load_joint_assignment_config,
     load_module_settings,
     load_module_weights,
@@ -126,6 +127,22 @@ def score_candidates(
 ) -> Tuple[List[Dict[str, object]], Dict[str, float], List[str]]:
     weights = module_weights or load_module_weights()
     settings = module_settings if module_settings is not None else load_module_settings()
+    fast_cfg = load_fast_path_config()
+    if bool(fast_cfg.get("enabled", True)):
+        use_numba = bool(fast_cfg.get("use_numba", True))
+        for module_name in ("logic_rule", "prior_model", "directional_consistency", "line_consistency"):
+            settings.setdefault(module_name, {})
+            settings[module_name].setdefault("fast_enabled", use_numba)
+        settings.setdefault("global_assignment_prior", {})
+        settings["global_assignment_prior"].setdefault(
+            "top_m_candidates",
+            int(fast_cfg.get("pairwise_top_m_candidates_for_assignment", 8)),
+        )
+        settings.setdefault("pairwise_conditional_consistency", {})
+        settings["pairwise_conditional_consistency"].setdefault(
+            "top_m_candidates_for_assignment",
+            int(fast_cfg.get("pairwise_top_m_candidates_for_assignment", 8)),
+        )
     modules = build_modules(settings)
     explanations: List[str] = []
 
@@ -355,7 +372,7 @@ def build_explanation(
     return reasoning
 
 
-def run_inference(
+def _run_inference_detailed(
     board: List[List[int]],
     target_number: int,
     source: str,
@@ -668,7 +685,7 @@ def run_multi_target_inference(
     joint_cfg = load_joint_assignment_config()
     per_target_results: Dict[int, Dict[str, Any]] = {}
     for target in target_numbers:
-        per_target_results[target] = run_inference(
+        per_target_results[target] = _run_inference_detailed(
             board=board,
             target_number=target,
             source=source,
@@ -724,3 +741,61 @@ def run_multi_target_inference(
             "joint_assignment_version": str(joint_cfg.get("version", "v1")),
         },
     }
+
+
+def compact_top10_response(result: Dict[str, Any]) -> Dict[str, Any]:
+    if "candidate_cells" not in result:
+        raise InferenceError("missing candidate_cells in inference result")
+    if not result["candidate_cells"] and result.get("best_cell"):
+        best = result["best_cell"]
+        return {
+            "top10": [
+                {
+                    "row": int(best["row"]),
+                    "col": int(best["col"]),
+                    "confidence_1_to_100": round(float(best.get("confidence_1_to_100", 100.0)), 2),
+                }
+            ],
+            "best_confidence_1_to_100": round(float(best.get("confidence_1_to_100", 100.0)), 2),
+        }
+    ranked = sorted(
+        list(result["candidate_cells"]),
+        key=lambda x: float(x.get("confidence_1_to_100", 0.0)),
+        reverse=True,
+    )
+    top10 = []
+    for cand in ranked[:10]:
+        top10.append(
+            {
+                "row": int(cand["row"]),
+                "col": int(cand["col"]),
+                "confidence_1_to_100": round(float(cand["confidence_1_to_100"]), 2),
+            }
+        )
+    if not top10:
+        raise InferenceError("empty candidate_cells is not allowed in compact response")
+    return {
+        "top10": top10,
+        "best_confidence_1_to_100": float(top10[0]["confidence_1_to_100"]),
+    }
+
+
+def run_inference(
+    board: List[List[int]],
+    target_number: int,
+    source: str,
+    module_weights: Optional[Dict[str, float]] = None,
+    module_settings: Optional[Dict[str, Dict[str, object]]] = None,
+    version: str = "v1",
+    apply_reranker_stage: bool = True,
+) -> Dict[str, Any]:
+    detailed = _run_inference_detailed(
+        board=board,
+        target_number=target_number,
+        source=source,
+        module_weights=module_weights,
+        module_settings=module_settings,
+        version=version,
+        apply_reranker_stage=apply_reranker_stage,
+    )
+    return compact_top10_response(detailed)

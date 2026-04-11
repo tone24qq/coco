@@ -129,9 +129,9 @@ def _rank_of_true(candidates: List[Dict[str, Any]], true_cell: Tuple[int, int]) 
 
 
 def _run_strategy(case: BenchmarkCase, strategy: str, seed: int) -> Dict[str, Any]:
-    from src.inference_service import run_inference
+    from src.inference_service import _run_inference_detailed
     if strategy == "random_baseline":
-        result = run_inference(case.masked_board, case.target_number, source="benchmark_random")
+        result = _run_inference_detailed(case.masked_board, case.target_number, source="benchmark_random")
         candidates = list(result["candidate_cells"])
         rnd = random.Random(seed + hash(case.sample_id) % 100000)
         rnd.shuffle(candidates)
@@ -140,7 +140,7 @@ def _run_strategy(case: BenchmarkCase, strategy: str, seed: int) -> Dict[str, An
         return result
 
     if strategy == "uniform_baseline":
-        result = run_inference(case.masked_board, case.target_number, source="benchmark_uniform")
+        result = _run_inference_detailed(case.masked_board, case.target_number, source="benchmark_uniform")
         candidates = list(result["candidate_cells"])
         for c in candidates:
             c["score"] = 1.0
@@ -150,7 +150,7 @@ def _run_strategy(case: BenchmarkCase, strategy: str, seed: int) -> Dict[str, An
         return result
 
     if strategy == "full_fusion_baseline":
-        return run_inference(
+        return _run_inference_detailed(
             case.masked_board,
             case.target_number,
             source="benchmark_full_fusion_baseline",
@@ -158,7 +158,7 @@ def _run_strategy(case: BenchmarkCase, strategy: str, seed: int) -> Dict[str, An
         )
 
     if strategy == "full_fusion_reranker":
-        return run_inference(
+        return _run_inference_detailed(
             case.masked_board,
             case.target_number,
             source="benchmark_full_fusion_reranker",
@@ -174,7 +174,7 @@ def _run_strategy(case: BenchmarkCase, strategy: str, seed: int) -> Dict[str, An
     module_weights = weights_map.get(strategy)
     if module_weights is None:
         raise ValueError(f"unknown strategy: {strategy}")
-    return run_inference(
+    return _run_inference_detailed(
         case.masked_board,
         case.target_number,
         source=f"benchmark_{strategy}",

@@ -9,7 +9,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
-from src.inference_service import run_inference
+from src.inference_service import _run_inference_detailed
 
 Board = List[List[int]]
 Cell = Tuple[int, int]
@@ -232,7 +232,7 @@ def run_weighted_eval(
             masked, masked_cells = mask_full_board(rec.board, masking_ratio, seed + board_idx * 997 + rep)
             for target_cell in masked_cells:
                 target_number = int(rec.board[target_cell[0]][target_cell[1]])
-                result = run_inference(
+                result = _run_inference_detailed(
                     masked,
                     target_number=target_number,
                     source="mainline_eval",

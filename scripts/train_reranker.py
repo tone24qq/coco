@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.run_hit_benchmark import _build_cases_from_parsed_boards, _default_cases
-from src.inference_service import run_inference
+from src.inference_service import _run_inference_detailed
 from src.ranking_features import FEATURE_SCHEMA_VERSION, build_candidate_feature_rows, feature_columns_from_rows
 from src.reranker import ARTIFACTS_DIR, FEATURE_COLUMNS_PATH, MODEL_PATH, WEIGHTS_PATH
 
@@ -90,7 +90,7 @@ def main() -> None:
 
     all_rows: List[Dict[str, Any]] = []
     for case in cases:
-        result = run_inference(case.masked_board, case.target_number, source="train_reranker", apply_reranker_stage=False)
+        result = _run_inference_detailed(case.masked_board, case.target_number, source="train_reranker", apply_reranker_stage=False)
         rows = build_candidate_feature_rows(
             case_id=case.sample_id,
             board_shape=(len(case.masked_board), len(case.masked_board[0])),

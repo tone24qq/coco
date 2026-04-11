@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from scripts.run_hit_benchmark import BenchmarkCase, run_benchmark
 from src.api import app
 from src.inference_facade import infer_target_position
-from src.inference_service import run_inference
+from src.inference_service import _run_inference_detailed
 
 
 def _sample_board() -> list[list[int]]:
@@ -19,7 +19,7 @@ def test_api_and_facade_and_service_consistent_best_cell() -> None:
     board = _sample_board()
     target = 4
 
-    service = run_inference(board, target, source="service")
+    service = _run_inference_detailed(board, target, source="service")
     facade = infer_target_position(board, target, source="facade")
     client = TestClient(app)
     api_resp = client.post("/infer_target_position", json={"board": board, "target_number": target})
@@ -27,13 +27,13 @@ def test_api_and_facade_and_service_consistent_best_cell() -> None:
     assert api_resp.status_code == 200
     api = api_resp.json()
 
-    assert service["best_cell"]["row"] == facade["best_cell"]["row"] == api["best_cell"]["row"]
-    assert service["best_cell"]["col"] == facade["best_cell"]["col"] == api["best_cell"]["col"]
-    assert [c["row"] for c in service["candidate_cells"]] == [c["row"] for c in api["candidate_cells"]]
+    assert service["best_cell"]["row"] == facade["top10"][0]["row"] == api["top10"][0]["row"]
+    assert service["best_cell"]["col"] == facade["top10"][0]["col"] == api["top10"][0]["col"]
+    assert [c["row"] for c in service["candidate_cells"][:10]] == [c["row"] for c in api["top10"]]
 
 
 def test_contract_metadata_non_probability() -> None:
-    result = run_inference(_sample_board(), 4, source="test")
+    result = _run_inference_detailed(_sample_board(), 4, source="test")
     md = result["metadata"]
     assert md["confidence_1_to_100_is_probability"] is False
     assert "non_calibrated" in md["confidence_1_to_100_type"]

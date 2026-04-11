@@ -66,3 +66,11 @@ def load_joint_assignment_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dic
     if not isinstance(cfg, dict):
         raise ValueError("joint_assignment must be a mapping")
     return cfg
+
+
+def load_fast_path_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
+    data = _load_raw_config(config_path)
+    cfg = data.get("fast_path", {})
+    if not isinstance(cfg, dict):
+        raise ValueError("fast_path must be a mapping")
+    return cfg

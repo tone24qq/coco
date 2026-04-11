@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass, field
 from statistics import median
 from typing import Any, Dict, List, Optional, Protocol, Tuple
+import numpy as np
 
 from src.board_geometry import (
     anti_diagonal_cells,
@@ -11,6 +12,12 @@ from src.board_geometry import (
     cell_on_main_diagonal,
     main_diagonal_cells,
     relative_rank_in_line,
+)
+from src.fast_scoring import (
+    evaluate_pairwise_gain_numba,
+    logic_rule_numba,
+    prepare_fast_inputs,
+    prior_model_fast,
 )
 
 try:
@@ -40,7 +47,18 @@ class ScoringModule(Protocol):
 class LogicRuleModule:
     name = "logic_rule"
 
+    def __init__(self, fast_enabled: bool = True) -> None:
+        self.fast_enabled = fast_enabled
+
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        fast_scores: Dict[Cell, float] = {}
+        if self.fast_enabled and unopened_cells:
+            try:
+                board_arr, rows_arr, cols_arr, _ = prepare_fast_inputs(board, unopened_cells)
+                arr = logic_rule_numba(board_arr, rows_arr, cols_arr, int(target_number))
+                fast_scores = {cell: float(arr[i]) for i, cell in enumerate(unopened_cells)}
+            except Exception:
+                fast_scores = {}
         rows, cols = len(board), len(board[0])
         result: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}
@@ -60,7 +78,7 @@ class LogicRuleModule:
                     if cc == c and rr > r and v < target_number:
                         contradiction_votes += 1
             if not neighbors:
-                result[(r, c)] = 0.5
+                result[(r, c)] = fast_scores.get((r, c), 0.5)
                 details[(r, c)] = {
                     "local_support_score": 0.5,
                     "local_contradiction_penalty": 0.0,
@@ -72,7 +90,7 @@ class LogicRuleModule:
             local_support = 1.0 / (1.0 + mean_abs_delta)
             contradiction_penalty = _clip(contradiction_votes / max(len(neighbors), 1))
             score = _clip(local_support - 0.7 * contradiction_penalty)
-            result[(r, c)] = score
+            result[(r, c)] = fast_scores.get((r, c), score)
             details[(r, c)] = {
                 "local_support_score": local_support,
                 "local_contradiction_penalty": contradiction_penalty,
@@ -112,8 +130,21 @@ class PatternModelModule:
 class PriorModelModule:
     name = "prior_model"
 
+    def __init__(self, fast_enabled: bool = True) -> None:
+        self.fast_enabled = fast_enabled
+
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         del target_number
+        if self.fast_enabled and unopened_cells:
+            try:
+                board_arr, rows_arr, cols_arr, _ = prepare_fast_inputs(board, unopened_cells)
+                scores_arr = prior_model_fast(board_arr, rows_arr, cols_arr)
+                return ModuleScoreResult(
+                    {cell: float(scores_arr[i]) for i, cell in enumerate(unopened_cells)},
+                    "prior_model: 使用位置先驗（中心偏好）評分",
+                )
+            except Exception:
+                pass
         rows, cols = len(board), len(board[0])
         center_r = (rows - 1) / 2
         center_c = (cols - 1) / 2
@@ -362,12 +393,16 @@ def _cell_number_compatibility(board: Board, cell: Cell, number: int) -> float:
 class DirectionalConsistencyModule:
     name = "directional_consistency"
 
+    def __init__(self, fast_enabled: bool = True) -> None:
+        self.fast_enabled = fast_enabled
+
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}
+        fast_scores: Dict[Cell, float] = {}
         for cell in unopened_cells:
             components = _directional_components(board, cell, target_number)
-            scores[cell] = components["directional_consistency"]
+            scores[cell] = fast_scores.get(cell, components["directional_consistency"])
             details[cell] = components
         return ModuleScoreResult(
             scores,
@@ -379,12 +414,16 @@ class DirectionalConsistencyModule:
 class LineConsistencyModule:
     name = "line_consistency"
 
+    def __init__(self, fast_enabled: bool = True) -> None:
+        self.fast_enabled = fast_enabled
+
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}
+        fast_scores: Dict[Cell, float] = {}
         for cell in unopened_cells:
             components = _line_components(board, cell, target_number)
-            scores[cell] = components["line_consistency"]
+            scores[cell] = fast_scores.get(cell, components["line_consistency"])
             details[cell] = components
         return ModuleScoreResult(
             scores,
@@ -396,8 +435,9 @@ class LineConsistencyModule:
 class GlobalAssignmentPriorModule:
     name = "global_assignment_prior"
 
-    def __init__(self, assignment_mode: str = "exact") -> None:
+    def __init__(self, assignment_mode: str = "exact", top_m_candidates: int = 8) -> None:
         self.assignment_mode = assignment_mode
+        self.top_m_candidates = max(1, int(top_m_candidates))
 
     @staticmethod
     def _greedy_assignment_cost(
@@ -465,7 +505,18 @@ class GlobalAssignmentPriorModule:
         n_total = rows * cols
         anchor_costs: Dict[Cell, float] = {}
         anchor_details: Dict[Cell, Dict[str, float]] = {}
-        for anchor in unopened_cells:
+        directional_scores = DirectionalConsistencyModule().score(board, unopened_cells, target_number).scores
+        line_scores = LineConsistencyModule().score(board, unopened_cells, target_number).scores
+        prior_scores = PriorModelModule().score(board, unopened_cells, target_number).scores
+        pre_ranked = sorted(
+            unopened_cells,
+            key=lambda cell: (
+                directional_scores.get(cell, 0.5) + line_scores.get(cell, 0.5) + prior_scores.get(cell, 0.5)
+            ),
+            reverse=True,
+        )
+        active_anchors = pre_ranked[: self.top_m_candidates]
+        for anchor in active_anchors:
             board_with_anchor = [list(row) for row in board]
             board_with_anchor[anchor[0]][anchor[1]] = target_number
             others = [cell for cell in unopened_cells if cell != anchor]
@@ -493,9 +544,12 @@ class GlobalAssignmentPriorModule:
                 "global_assignment_mode": 1.0 if self.assignment_mode == "exact" else 0.0,
                 "used_exact_assignment": float(used_exact),
                 "used_greedy_fallback": float(used_greedy),
+                "used_compatibility_fallback": 0.0,
                 "forced_anchor_total_assignment_cost": float(assignment_cost * max(len(others), 1)),
                 "forced_anchor_avg_assignment_cost": float(assignment_cost),
                 "infeasible_or_high_cost_flag": float(infeasible),
+                "reduced_assignment_path": float(len(active_anchors) < len(unopened_cells)),
+                "reduced_assignment_skipped": 0.0,
             }
 
         best_cost = min(anchor_costs.values()) if anchor_costs else 1.0
@@ -516,6 +570,24 @@ class GlobalAssignmentPriorModule:
                 "global_assignment_score": score,
             }
 
+        for anchor in unopened_cells:
+            if anchor in scores:
+                continue
+            cheap_score = _cell_number_compatibility(board, anchor, target_number)
+            scores[anchor] = _clip(0.85 * cheap_score + 0.15 * NEUTRAL_SCORE)
+            details[anchor] = {
+                "global_assignment_mode": 1.0 if self.assignment_mode == "exact" else 0.0,
+                "used_exact_assignment": 0.0,
+                "used_greedy_fallback": 0.0,
+                "used_compatibility_fallback": 1.0,
+                "forced_anchor_total_assignment_cost": 0.0,
+                "forced_anchor_avg_assignment_cost": 0.0,
+                "infeasible_or_high_cost_flag": 0.0,
+                "anchor_cost_delta_vs_best": 0.0,
+                "global_assignment_score": scores[anchor],
+                "reduced_assignment_path": 1.0,
+                "reduced_assignment_skipped": 1.0,
+            }
         return ModuleScoreResult(
             scores,
             "global_assignment_prior: 固定 target 後估計剩餘數字全局唯一分配一致性",
@@ -523,14 +595,225 @@ class GlobalAssignmentPriorModule:
         )
 
 
+class PairwiseConditionalConsistencyModule:
+    name = "pairwise_conditional_consistency"
+
+    def __init__(
+        self,
+        anchor_top_k_cells: int = 5,
+        anchor_top_k_values: int = 5,
+        max_pair_trials_per_candidate: int = 20,
+        gating_enabled: bool = True,
+        contradiction_penalty_weight: float = 1.0,
+        hard_violation_threshold: float = 2.0,
+        hard_gate_multiplier: float = 0.05,
+        soft_gate_floor: float = 0.25,
+        submodule_weights: Optional[Dict[str, float]] = None,
+    ) -> None:
+        self.anchor_top_k_cells = max(1, anchor_top_k_cells)
+        self.anchor_top_k_values = max(1, anchor_top_k_values)
+        self.max_pair_trials_per_candidate = max(1, max_pair_trials_per_candidate)
+        self.gating_enabled = gating_enabled
+        self.contradiction_penalty_weight = contradiction_penalty_weight
+        self.hard_violation_threshold = hard_violation_threshold
+        self.hard_gate_multiplier = hard_gate_multiplier
+        self.soft_gate_floor = soft_gate_floor
+        raw_weights = submodule_weights or {}
+        total = sum(max(0.0, float(v)) for v in raw_weights.values())
+        if total <= 0:
+            self.submodule_weights = {
+                "logic_rule": 0.35,
+                "directional_consistency": 0.25,
+                "line_consistency": 0.25,
+                "global_assignment_prior": 0.15,
+            }
+        else:
+            self.submodule_weights = {k: max(0.0, float(v)) / total for k, v in raw_weights.items()}
+        self.logic_module = LogicRuleModule()
+        self.directional_module = DirectionalConsistencyModule()
+        self.line_module = LineConsistencyModule()
+        self.global_module = GlobalAssignmentPriorModule(assignment_mode="exact")
+
+    def _candidate_composite(self, board: Board, unopened_cells: List[Cell], target_number: int, cell: Cell) -> float:
+        module_results = {
+            "logic_rule": self.logic_module.score(board, unopened_cells, target_number),
+            "directional_consistency": self.directional_module.score(board, unopened_cells, target_number),
+            "line_consistency": self.line_module.score(board, unopened_cells, target_number),
+            "global_assignment_prior": self.global_module.score(board, unopened_cells, target_number),
+        }
+        support = 0.0
+        contradiction = 0.0
+        weight_total = 0.0
+        details_by_module: Dict[str, Dict[str, float]] = {}
+        for name, result in module_results.items():
+            w = float(self.submodule_weights.get(name, 0.0))
+            if w <= 0:
+                continue
+            score = float(result.scores.get(cell, NEUTRAL_SCORE))
+            details = result.details.get(cell, {}) if result.details else {}
+            support += score * w
+            contradiction += _extract_pairwise_contradiction(name, score, details) * w
+            weight_total += w
+            details_by_module[name] = details
+        if weight_total <= 0:
+            return 0.0
+        contradiction_penalty = contradiction / weight_total
+        gate_multiplier = 1.0
+        row_v = float(details_by_module.get("directional_consistency", {}).get("row_violation_count", 0.0))
+        col_v = float(details_by_module.get("directional_consistency", {}).get("col_violation_count", 0.0))
+        diag_v = float(details_by_module.get("line_consistency", {}).get("diag_violation_count", 0.0))
+        line_flags = (
+            float(details_by_module.get("line_consistency", {}).get("monotonic_break_flag", 0.0))
+            + float(details_by_module.get("line_consistency", {}).get("percentile_outlier_flag", 0.0))
+            + float(details_by_module.get("line_consistency", {}).get("gap_outlier_flag", 0.0))
+        )
+        violation_score = row_v + col_v + diag_v + line_flags
+        if self.gating_enabled:
+            if violation_score >= self.hard_violation_threshold:
+                gate_multiplier = self.hard_gate_multiplier
+            else:
+                gate_multiplier = max(self.soft_gate_floor, 1.0 - 0.25 * contradiction_penalty)
+        gated = gate_multiplier * support
+        return gated - self.contradiction_penalty_weight * contradiction_penalty
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        if not unopened_cells:
+            return ModuleScoreResult({}, "pairwise_conditional_consistency: no unopened cells")
+        rows, cols = len(board), len(board[0])
+        n_total = rows * cols
+        opened_numbers = {board[r][c] for r in range(rows) for c in range(cols) if board[r][c] != -1}
+        remaining_numbers = [x for x in range(1, n_total + 1) if x not in opened_numbers and x != target_number]
+        target_support_scores = self.directional_module.score(board, unopened_cells, target_number).scores
+        ranked_anchor_cells = sorted(unopened_cells, key=lambda c: target_support_scores.get(c, 0.0), reverse=True)
+        anchor_cells = ranked_anchor_cells[: self.anchor_top_k_cells]
+        ranked_values = sorted(remaining_numbers, key=lambda x: abs(x - target_number))
+        anchor_values = ranked_values[: self.anchor_top_k_values]
+
+        board_arr, _, _, known_mask = prepare_fast_inputs(board, unopened_cells)
+        base_composite_cache: Dict[Cell, float] = {}
+        conditioned_composite_cache: Dict[Tuple[Cell, int, Cell], float] = {}
+        scores: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
+        for candidate in unopened_cells:
+            if candidate not in base_composite_cache:
+                base_composite_cache[candidate] = self._candidate_composite(
+                    board, unopened_cells, target_number, candidate
+                )
+            base_score = base_composite_cache[candidate]
+            anchor_rows = [a[0] for a in anchor_cells if a != candidate]
+            anchor_cols = [a[1] for a in anchor_cells if a != candidate]
+            gains = evaluate_pairwise_gain_numba(
+                board_arr,
+                known_mask,
+                int(candidate[0]),
+                int(candidate[1]),
+                np.asarray(anchor_rows, dtype=np.int32),
+                np.asarray(anchor_cols, dtype=np.int32),
+                np.asarray(anchor_values, dtype=np.int32),
+                int(target_number),
+                int(self.max_pair_trials_per_candidate),
+            )
+            heuristic_gain, best_anchor_idx, best_anchor_value, pair_trials = gains
+            best_gain = max(0.0, min(1.0, float(heuristic_gain)))
+            best_anchor = None
+            screened: List[Tuple[float, Cell, int]] = []
+            if best_anchor_idx >= 0 and best_anchor_idx < len(anchor_rows):
+                screened.append(
+                    (
+                        float(best_gain),
+                        (int(anchor_rows[best_anchor_idx]), int(anchor_cols[best_anchor_idx])),
+                        int(best_anchor_value),
+                    )
+                )
+            for anchor in anchor_cells:
+                if anchor == candidate:
+                    continue
+                for v in anchor_values[:2]:
+                    screened.append((0.0, anchor, int(v)))
+            screened = screened[: min(3, len(screened))]
+            for _, anchor, anchor_val in screened:
+                if anchor_val == target_number:
+                    continue
+                key = (anchor, int(anchor_val), candidate)
+                if key not in conditioned_composite_cache:
+                    board_with_anchor = [list(row) for row in board]
+                    board_with_anchor[anchor[0]][anchor[1]] = int(anchor_val)
+                    conditioned_composite_cache[key] = self._candidate_composite(
+                        board_with_anchor, unopened_cells, target_number, candidate
+                    )
+                cond_score = conditioned_composite_cache[key]
+                gain = max(0.0, cond_score - base_score)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_anchor = anchor
+                    best_anchor_value = anchor_val
+            scores[candidate] = _clip(best_gain)
+            details[candidate] = {
+                "best_anchor_row": float((best_anchor[0] + 1) if best_anchor else -1),
+                "best_anchor_col": float((best_anchor[1] + 1) if best_anchor else -1),
+                "best_anchor_value": float(best_anchor_value if best_anchor_value is not None else -1),
+                "conditional_gain": float(0.0 if math.isnan(best_gain) else best_gain),
+                "pair_trials_used": float(pair_trials),
+                "base_cache_hits": float(int(candidate in base_composite_cache)),
+                "conditioned_cache_size": float(len(conditioned_composite_cache)),
+            }
+
+        return ModuleScoreResult(
+            scores,
+            "pairwise_conditional_consistency: 估計在有限條件假設下 target 候選分數的最大增益",
+            details=details,
+        )
+
+
+def _extract_pairwise_contradiction(module_name: str, module_score: float, details: Dict[str, float]) -> float:
+    if module_name == "logic_rule":
+        return float(details.get("local_contradiction_penalty", 0.0))
+    if module_name == "directional_consistency":
+        return float(details.get("directional_contradiction_penalty", 0.0))
+    if module_name == "line_consistency":
+        return float(details.get("line_contradiction_penalty", 0.0))
+    if module_name == "global_assignment_prior":
+        return float(details.get("anchor_cost_delta_vs_best", 0.0)) + 0.5 * float(
+            details.get("infeasible_or_high_cost_flag", 0.0)
+        )
+    return _clip(1.0 - module_score)
+
+
 MODULE_FACTORIES = {
-    "logic_rule": lambda _cfg: LogicRuleModule(),
+    "logic_rule": lambda cfg: LogicRuleModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
     "pattern_model": lambda _cfg: PatternModelModule(),
-    "prior_model": lambda _cfg: PriorModelModule(),
-    "directional_consistency": lambda _cfg: DirectionalConsistencyModule(),
-    "line_consistency": lambda _cfg: LineConsistencyModule(),
+    "prior_model": lambda cfg: PriorModelModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
+    "directional_consistency": lambda cfg: DirectionalConsistencyModule(
+        fast_enabled=bool(cfg.get("fast_enabled", True))
+    ),
+    "line_consistency": lambda cfg: LineConsistencyModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
     "global_assignment_prior": lambda cfg: GlobalAssignmentPriorModule(
-        assignment_mode=str(cfg.get("assignment_mode", "exact"))
+        assignment_mode=str(cfg.get("assignment_mode", "exact")),
+        top_m_candidates=int(cfg.get("top_m_candidates", 8)),
+    ),
+    "pairwise_conditional_consistency": lambda cfg: PairwiseConditionalConsistencyModule(
+        anchor_top_k_cells=int(cfg.get("anchor_top_k_cells", 5)),
+        anchor_top_k_values=int(cfg.get("anchor_top_k_values", 5)),
+        max_pair_trials_per_candidate=int(cfg.get("max_pair_trials_per_candidate", 20)),
+        gating_enabled=bool(cfg.get("gating_enabled", True)),
+        contradiction_penalty_weight=float(cfg.get("contradiction_penalty_weight", 1.0)),
+        hard_violation_threshold=float(cfg.get("hard_violation_threshold", 2.0)),
+        hard_gate_multiplier=float(cfg.get("hard_gate_multiplier", 0.05)),
+        soft_gate_floor=float(cfg.get("soft_gate_floor", 0.25)),
+        submodule_weights={
+            str(k): float(v)
+            for k, v in dict(
+                cfg.get(
+                    "submodule_weights",
+                    {
+                        "logic_rule": 0.35,
+                        "directional_consistency": 0.25,
+                        "line_consistency": 0.25,
+                        "global_assignment_prior": 0.15,
+                    },
+                )
+            ).items()
+        },
     ),
 }
 

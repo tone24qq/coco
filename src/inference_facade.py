@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
-from src.inference_service import run_inference, run_multi_target_inference
+from src.inference_service import compact_top10_response, run_inference, run_multi_target_inference
 
 
 def infer_target_position(board: List[List[int]], target_number: int, source: str = "manual") -> Dict[str, Any]:
@@ -14,11 +14,24 @@ def infer_multi_target_positions(
     target_numbers: List[int],
     source: str = "manual",
 ) -> Dict[str, Any]:
-    return run_multi_target_inference(
+    result = run_multi_target_inference(
         board=board,
         target_numbers=target_numbers,
         source=source,
     )
+    assignments = result.get("assignments", [])
+    if not assignments:
+        raise ValueError("multi-target inference returned no assignments")
+    pseudo_candidates = [
+        {
+            "row": int(item["row"]),
+            "col": int(item["col"]),
+            "confidence_1_to_100": round(float(item.get("joint_score", 0.0)) * 100.0, 2),
+        }
+        for item in assignments
+    ]
+    pseudo_candidates.sort(key=lambda x: x["confidence_1_to_100"], reverse=True)
+    return compact_top10_response({"candidate_cells": pseudo_candidates})
 
 
 def map_score_to_confidence_1_100(score: float, min_score: float, max_score: float) -> float:
