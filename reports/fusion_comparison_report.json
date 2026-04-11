@@ -4,25 +4,25 @@
       "top1_hit_rate": 1.0,
       "top3_hit_rate": 1.0,
       "mrr": 1.0,
-      "avg_latency_ms": 167.758
+      "avg_latency_ms": 224.353
     },
     "vote_only": {
       "top1_hit_rate": 1.0,
       "top3_hit_rate": 1.0,
       "mrr": 1.0,
-      "avg_latency_ms": 162.142
+      "avg_latency_ms": 227.325
     },
     "weighted_plus_vote": {
       "top1_hit_rate": 1.0,
       "top3_hit_rate": 1.0,
       "mrr": 1.0,
-      "avg_latency_ms": 151.164
+      "avg_latency_ms": 216.578
     },
     "weighted_plus_vote_with_gate": {
       "top1_hit_rate": 1.0,
       "top3_hit_rate": 1.0,
       "mrr": 1.0,
-      "avg_latency_ms": 150.997
+      "avg_latency_ms": 213.869
     }
   },
   "recommended_default": "weighted_only",

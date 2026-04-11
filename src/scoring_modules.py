@@ -770,6 +770,10 @@ class PairwiseConditionalConsistencyModule:
             assignment_mode=global_assignment_mode,
             top_m_candidates=global_assignment_top_m_candidates,
         )
+        self.seed_ranked_candidates: List[Cell] = []
+
+    def set_seed_ranked_candidates(self, ranked: List[Cell]) -> None:
+        self.seed_ranked_candidates = list(ranked)
 
     def _candidate_composite_from_results(
         self,
@@ -836,7 +840,11 @@ class PairwiseConditionalConsistencyModule:
         }
         candidate_subset = set(unopened_cells)
         if self.runtime_mode == "fast":
-            baseline_ranked = sorted(unopened_cells, key=lambda c: base_composite_cache[c], reverse=True)
+            baseline_ranked = (
+                [c for c in self.seed_ranked_candidates if c in base_composite_cache]
+                if self.seed_ranked_candidates
+                else sorted(unopened_cells, key=lambda c: base_composite_cache[c], reverse=True)
+            )
             candidate_subset = set(baseline_ranked[: self.candidate_top_n])
         scores: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}

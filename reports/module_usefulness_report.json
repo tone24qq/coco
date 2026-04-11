@@ -5,7 +5,7 @@
     "top5_hit_rate": 1.0,
     "mrr": 1.0,
     "mean_true_rank": 1.0,
-    "avg_latency_ms": 292.115
+    "avg_latency_ms": 421.455
   },
   "standalone": {
     "logic_rule": {
@@ -14,7 +14,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 25.156
+      "avg_latency_ms": 42.459
     },
     "pattern_model": {
       "top1_hit_rate": 0.0,
@@ -22,7 +22,7 @@
       "top5_hit_rate": 0.571429,
       "mrr": 0.143032,
       "mean_true_rank": 15.285714,
-      "avg_latency_ms": 24.594
+      "avg_latency_ms": 41.328
     },
     "prior_model": {
       "top1_hit_rate": 0.0,
@@ -30,7 +30,7 @@
       "top5_hit_rate": 0.0,
       "mrr": 0.024322,
       "mean_true_rank": 42.0,
-      "avg_latency_ms": 23.941
+      "avg_latency_ms": 41.514
     },
     "directional_consistency": {
       "top1_hit_rate": 1.0,
@@ -38,7 +38,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 27.044
+      "avg_latency_ms": 45.365
     },
     "line_consistency": {
       "top1_hit_rate": 0.857143,
@@ -46,15 +46,15 @@
       "top5_hit_rate": 0.857143,
       "mrr": 0.875,
       "mean_true_rank": 2.0,
-      "avg_latency_ms": 25.469
+      "avg_latency_ms": 43.592
     },
     "global_assignment_prior": {
-      "top1_hit_rate": 0.714286,
-      "top3_hit_rate": 0.714286,
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
       "top5_hit_rate": 1.0,
-      "mrr": 0.771429,
-      "mean_true_rank": 2.142857,
-      "avg_latency_ms": 149.452
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 217.761
     },
     "pairwise_conditional_consistency": {
       "top1_hit_rate": 1.0,
@@ -62,7 +62,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 161.455
+      "avg_latency_ms": 229.5
     },
     "focus_score": {
       "top1_hit_rate": 0.0,
@@ -70,7 +70,7 @@
       "top5_hit_rate": 0.0,
       "mrr": 0.029074,
       "mean_true_rank": 36.428571,
-      "avg_latency_ms": 24.536
+      "avg_latency_ms": 42.043
     },
     "connectivity_heatmap": {
       "top1_hit_rate": 0.0,
@@ -78,7 +78,7 @@
       "top5_hit_rate": 0.0,
       "mrr": 0.023916,
       "mean_true_rank": 42.714286,
-      "avg_latency_ms": 24.067
+      "avg_latency_ms": 41.6
     },
     "difference_trend": {
       "top1_hit_rate": 1.0,
@@ -86,7 +86,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 24.275
+      "avg_latency_ms": 42.489
     },
     "skip_patterns": {
       "top1_hit_rate": 0.857143,
@@ -94,7 +94,7 @@
       "top5_hit_rate": 0.857143,
       "mrr": 0.880952,
       "mean_true_rank": 1.714286,
-      "avg_latency_ms": 24.514
+      "avg_latency_ms": 41.523
     },
     "mirror_sequences": {
       "top1_hit_rate": 0.142857,
@@ -102,7 +102,7 @@
       "top5_hit_rate": 0.142857,
       "mrr": 0.233211,
       "mean_true_rank": 8.428571,
-      "avg_latency_ms": 24.798
+      "avg_latency_ms": 41.586
     },
     "tail_analyzer": {
       "top1_hit_rate": 0.0,
@@ -110,49 +110,17 @@
       "top5_hit_rate": 0.571429,
       "mrr": 0.143032,
       "mean_true_rank": 15.285714,
-      "avg_latency_ms": 24.642
+      "avg_latency_ms": 41.516
     }
   },
   "incremental_plus": {
-    "tail_analyzer": {
-      "top1_hit_rate": 1.0,
-      "top3_hit_rate": 1.0,
-      "top5_hit_rate": 1.0,
-      "mrr": 1.0,
-      "mean_true_rank": 1.0,
-      "avg_latency_ms": 299.424
-    },
-    "focus_score": {
-      "top1_hit_rate": 1.0,
-      "top3_hit_rate": 1.0,
-      "top5_hit_rate": 1.0,
-      "mrr": 1.0,
-      "mean_true_rank": 1.0,
-      "avg_latency_ms": 288.801
-    },
-    "connectivity_heatmap": {
-      "top1_hit_rate": 1.0,
-      "top3_hit_rate": 1.0,
-      "top5_hit_rate": 1.0,
-      "mrr": 1.0,
-      "mean_true_rank": 1.0,
-      "avg_latency_ms": 293.133
-    },
-    "skip_patterns": {
-      "top1_hit_rate": 1.0,
-      "top3_hit_rate": 1.0,
-      "top5_hit_rate": 1.0,
-      "mrr": 1.0,
-      "mean_true_rank": 1.0,
-      "avg_latency_ms": 292.579
-    },
     "difference_trend": {
       "top1_hit_rate": 1.0,
       "top3_hit_rate": 1.0,
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 287.07
+      "avg_latency_ms": 419.486
     },
     "mirror_sequences": {
       "top1_hit_rate": 1.0,
@@ -160,7 +128,39 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 290.08
+      "avg_latency_ms": 426.448
+    },
+    "tail_analyzer": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 416.937
+    },
+    "skip_patterns": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 413.427
+    },
+    "focus_score": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 411.769
+    },
+    "connectivity_heatmap": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 412.051
     }
   },
   "incremental_minus": {
@@ -170,7 +170,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 291.969
+      "avg_latency_ms": 425.145
     },
     "pattern_model": {
       "top1_hit_rate": 1.0,
@@ -178,7 +178,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 290.519
+      "avg_latency_ms": 423.188
     },
     "prior_model": {
       "top1_hit_rate": 1.0,
@@ -186,7 +186,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 289.394
+      "avg_latency_ms": 420.528
     },
     "directional_consistency": {
       "top1_hit_rate": 1.0,
@@ -194,7 +194,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 289.219
+      "avg_latency_ms": 427.894
     },
     "line_consistency": {
       "top1_hit_rate": 1.0,
@@ -202,7 +202,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 301.329
+      "avg_latency_ms": 450.787
     },
     "global_assignment_prior": {
       "top1_hit_rate": 1.0,
@@ -210,7 +210,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 171.228
+      "avg_latency_ms": 249.443
     },
     "pairwise_conditional_consistency": {
       "top1_hit_rate": 1.0,
@@ -218,7 +218,7 @@
       "top5_hit_rate": 1.0,
       "mrr": 1.0,
       "mean_true_rank": 1.0,
-      "avg_latency_ms": 160.786
+      "avg_latency_ms": 234.689
     }
   },
   "pareto": {
@@ -226,6 +226,7 @@
     "neutral_modules": [
       "logic_rule",
       "directional_consistency",
+      "global_assignment_prior",
       "pairwise_conditional_consistency",
       "difference_trend"
     ],
@@ -233,7 +234,6 @@
       "pattern_model",
       "prior_model",
       "line_consistency",
-      "global_assignment_prior",
       "focus_score",
       "connectivity_heatmap",
       "skip_patterns",
@@ -241,8 +241,6 @@
       "tail_analyzer"
     ],
     "expensive_but_helpful": [],
-    "expensive_and_not_helpful": [
-      "global_assignment_prior"
-    ]
+    "expensive_and_not_helpful": []
   }
 }
