@@ -1,0 +1,132 @@
+{
+  "walk_forward_split_only": true,
+  "comparison": {
+    "current_hierarchical_fusion": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 484.043
+    },
+    "equal_weight_average": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 469.498
+    },
+    "weighted_rank_fusion": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 461.572
+    },
+    "vote_fusion": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 464.089
+    },
+    "learned_meta_judge": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 464.256
+    }
+  },
+  "judge_selected_feature_importance": {
+    "mean_score": 0.033129772050118265,
+    "std_score": 0.044027407966333795,
+    "top1_vote_count": 1.555355127026991,
+    "top3_vote_count": 0.8482634928975501,
+    "borda_score": 0.11564262198974869,
+    "rrf_score": 0.2402282484674713,
+    "disagreement_count": 0.8475915483546235,
+    "conflict_mass": 0.053135799318393476
+  },
+  "shape_mode_differences": {
+    "8x10": {
+      "current_hierarchical_fusion": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "equal_weight_average": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "weighted_rank_fusion": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "vote_fusion": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "learned_meta_judge": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    "10x16": {
+      "current_hierarchical_fusion": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "equal_weight_average": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "weighted_rank_fusion": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "vote_fusion": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "learned_meta_judge": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ]
+    }
+  },
+  "recommended_default": "weighted_rank_fusion"
+}

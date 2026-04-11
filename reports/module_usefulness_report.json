@@ -1,0 +1,426 @@
+{
+  "equal_start_competition": {
+    "metrics": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 437.48
+    },
+    "per_module_win_rate": {
+      "difference_trend": 1.0
+    },
+    "judge_selected_feature_importance": {
+      "module_directional_consistency_score": 1.0,
+      "module_logic_rule_score": 1.0,
+      "module_pairwise_conditional_consistency_score": 1.0,
+      "module_difference_trend_score": 0.998753,
+      "module_global_assignment_prior_score": 0.939054,
+      "module_skip_patterns_score": 0.665585,
+      "module_pattern_model_score": 0.508252,
+      "module_line_consistency_score": 0.5,
+      "module_tail_analyzer_score": 0.487308,
+      "module_mirror_sequences_score": 0.26088,
+      "module_focus_score_score": 0.15625,
+      "module_connectivity_heatmap_score": 0.112425,
+      "module_prior_model_score": 0.060714
+    },
+    "disagreement_vs_gain": {
+      "avg_disagreement": 3.25,
+      "avg_gain": 1.0
+    },
+    "fusion_mode": "weighted_rank_fusion",
+    "aggregator_type": "competitive_ensemble"
+  },
+  "competitive_fusion_weighted_rank": {
+    "metrics": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 440.552
+    },
+    "per_module_win_rate": {
+      "difference_trend": 1.0
+    },
+    "judge_selected_feature_importance": {
+      "module_directional_consistency_score": 1.0,
+      "module_logic_rule_score": 1.0,
+      "module_pairwise_conditional_consistency_score": 1.0,
+      "module_difference_trend_score": 0.998753,
+      "module_global_assignment_prior_score": 0.939054,
+      "module_skip_patterns_score": 0.665585,
+      "module_pattern_model_score": 0.508252,
+      "module_line_consistency_score": 0.5,
+      "module_tail_analyzer_score": 0.487308,
+      "module_mirror_sequences_score": 0.26088,
+      "module_focus_score_score": 0.15625,
+      "module_connectivity_heatmap_score": 0.112425,
+      "module_prior_model_score": 0.060714
+    },
+    "disagreement_vs_gain": {
+      "avg_disagreement": 3.25,
+      "avg_gain": 1.0
+    },
+    "fusion_mode": "weighted_rank_fusion",
+    "aggregator_type": "competitive_ensemble"
+  },
+  "competitive_fusion_vote": {
+    "metrics": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 431.3
+    },
+    "per_module_win_rate": {
+      "difference_trend": 1.0
+    },
+    "judge_selected_feature_importance": {
+      "module_directional_consistency_score": 1.0,
+      "module_logic_rule_score": 1.0,
+      "module_pairwise_conditional_consistency_score": 1.0,
+      "module_difference_trend_score": 0.998753,
+      "module_global_assignment_prior_score": 0.939054,
+      "module_skip_patterns_score": 0.665585,
+      "module_pattern_model_score": 0.508252,
+      "module_line_consistency_score": 0.5,
+      "module_tail_analyzer_score": 0.487308,
+      "module_mirror_sequences_score": 0.26088,
+      "module_focus_score_score": 0.15625,
+      "module_connectivity_heatmap_score": 0.112425,
+      "module_prior_model_score": 0.060714
+    },
+    "disagreement_vs_gain": {
+      "avg_disagreement": 3.25,
+      "avg_gain": 1.0
+    },
+    "fusion_mode": "vote_based_fusion",
+    "aggregator_type": "competitive_ensemble"
+  },
+  "competitive_fusion_meta_judge": {
+    "metrics": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 434.359
+    },
+    "per_module_win_rate": {
+      "difference_trend": 1.0
+    },
+    "judge_selected_feature_importance": {
+      "module_directional_consistency_score": 1.0,
+      "module_logic_rule_score": 1.0,
+      "module_pairwise_conditional_consistency_score": 1.0,
+      "module_difference_trend_score": 0.998753,
+      "module_global_assignment_prior_score": 0.939054,
+      "module_skip_patterns_score": 0.665585,
+      "module_pattern_model_score": 0.508252,
+      "module_line_consistency_score": 0.5,
+      "module_tail_analyzer_score": 0.487308,
+      "module_mirror_sequences_score": 0.26088,
+      "module_focus_score_score": 0.15625,
+      "module_connectivity_heatmap_score": 0.112425,
+      "module_prior_model_score": 0.060714
+    },
+    "disagreement_vs_gain": {
+      "avg_disagreement": 3.25,
+      "avg_gain": 1.0
+    },
+    "fusion_mode": "learned_meta_ranker",
+    "aggregator_type": "competitive_ensemble"
+  },
+  "standalone": {
+    "logic_rule": {
+      "metrics": {
+        "top1_hit_rate": 1.0,
+        "top3_hit_rate": 1.0,
+        "top5_hit_rate": 1.0,
+        "mrr": 1.0,
+        "mean_true_rank": 1.0,
+        "avg_latency_ms": 31.11
+      },
+      "per_module_win_rate": {
+        "logic_rule": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_logic_rule_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 1.0
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "pattern_model": {
+      "metrics": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.0,
+        "top5_hit_rate": 0.5,
+        "mrr": 0.129463,
+        "mean_true_rank": 17.0,
+        "avg_latency_ms": 30.086
+      },
+      "per_module_win_rate": {
+        "pattern_model": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_pattern_model_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.129463
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "prior_model": {
+      "metrics": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.0,
+        "top5_hit_rate": 0.0,
+        "mrr": 0.02406,
+        "mean_true_rank": 42.375,
+        "avg_latency_ms": 30.16
+      },
+      "per_module_win_rate": {
+        "prior_model": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_prior_model_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.02406
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "directional_consistency": {
+      "metrics": {
+        "top1_hit_rate": 1.0,
+        "top3_hit_rate": 1.0,
+        "top5_hit_rate": 1.0,
+        "mrr": 1.0,
+        "mean_true_rank": 1.0,
+        "avg_latency_ms": 34.206
+      },
+      "per_module_win_rate": {
+        "directional_consistency": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_directional_consistency_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 1.0
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "line_consistency": {
+      "metrics": {
+        "top1_hit_rate": 0.75,
+        "top3_hit_rate": 0.75,
+        "top5_hit_rate": 0.75,
+        "mrr": 0.766667,
+        "mean_true_rank": 4.5,
+        "avg_latency_ms": 32.423
+      },
+      "per_module_win_rate": {
+        "line_consistency": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_line_consistency_score": 0.75
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.766667
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "global_assignment_prior": {
+      "metrics": {
+        "top1_hit_rate": 0.75,
+        "top3_hit_rate": 0.75,
+        "top5_hit_rate": 1.0,
+        "mrr": 0.8,
+        "mean_true_rank": 2.0,
+        "avg_latency_ms": 213.682
+      },
+      "per_module_win_rate": {
+        "global_assignment_prior": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_global_assignment_prior_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.8
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "pairwise_conditional_consistency": {
+      "metrics": {
+        "top1_hit_rate": 1.0,
+        "top3_hit_rate": 1.0,
+        "top5_hit_rate": 1.0,
+        "mrr": 1.0,
+        "mean_true_rank": 1.0,
+        "avg_latency_ms": 221.725
+      },
+      "per_module_win_rate": {
+        "pairwise_conditional_consistency": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_pairwise_conditional_consistency_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 1.0
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "focus_score": {
+      "metrics": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.0,
+        "top5_hit_rate": 0.0,
+        "mrr": 0.02873,
+        "mean_true_rank": 36.625,
+        "avg_latency_ms": 31.063
+      },
+      "per_module_win_rate": {
+        "focus_score": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_focus_score_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.02873
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "connectivity_heatmap": {
+      "metrics": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.0,
+        "top5_hit_rate": 0.0,
+        "mrr": 0.023644,
+        "mean_true_rank": 43.125,
+        "avg_latency_ms": 31.528
+      },
+      "per_module_win_rate": {
+        "connectivity_heatmap": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_connectivity_heatmap_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.023644
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "difference_trend": {
+      "metrics": {
+        "top1_hit_rate": 0.875,
+        "top3_hit_rate": 1.0,
+        "top5_hit_rate": 1.0,
+        "mrr": 0.9375,
+        "mean_true_rank": 1.125,
+        "avg_latency_ms": 33.659
+      },
+      "per_module_win_rate": {
+        "difference_trend": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_difference_trend_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.9375
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "skip_patterns": {
+      "metrics": {
+        "top1_hit_rate": 0.75,
+        "top3_hit_rate": 0.75,
+        "top5_hit_rate": 0.75,
+        "mrr": 0.791667,
+        "mean_true_rank": 2.25,
+        "avg_latency_ms": 32.912
+      },
+      "per_module_win_rate": {
+        "skip_patterns": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_skip_patterns_score": 0.75
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.791667
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "mirror_sequences": {
+      "metrics": {
+        "top1_hit_rate": 0.125,
+        "top3_hit_rate": 0.125,
+        "top5_hit_rate": 0.125,
+        "mrr": 0.213675,
+        "mean_true_rank": 9.0,
+        "avg_latency_ms": 33.387
+      },
+      "per_module_win_rate": {
+        "mirror_sequences": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_mirror_sequences_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.213675
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    },
+    "tail_analyzer": {
+      "metrics": {
+        "top1_hit_rate": 0.0,
+        "top3_hit_rate": 0.0,
+        "top5_hit_rate": 0.5,
+        "mrr": 0.129463,
+        "mean_true_rank": 17.0,
+        "avg_latency_ms": 33.27
+      },
+      "per_module_win_rate": {
+        "tail_analyzer": 1.0
+      },
+      "judge_selected_feature_importance": {
+        "module_tail_analyzer_score": 1.0
+      },
+      "disagreement_vs_gain": {
+        "avg_disagreement": 0.0,
+        "avg_gain": 0.129463
+      },
+      "fusion_mode": "weighted_rank_fusion",
+      "aggregator_type": "competitive_ensemble"
+    }
+  }
+}
