@@ -45,7 +45,6 @@ modules:
         - line_consistency
         - difference_trend
         - skip_patterns
-        - pairwise_conditional_consistency
       global_assignment_mode: greedy
       global_assignment_top_m_candidates: 4
       gating_enabled: true
@@ -78,7 +77,9 @@ modules:
     normalization_mode: light
     fusion_mode: weighted_plus_vote_with_gate
     vote_alpha: 0.08
-    target_sensitive_modules:
+    ranking_contract_version: target_primary_v2
+    epsilon_primary: 0.02
+    target_primary_modules:
       - logic_rule
       - directional_consistency
       - line_consistency
@@ -86,6 +87,13 @@ modules:
       - skip_patterns
       - pairwise_conditional_consistency
       - pattern_model
+    tie_break_modules:
+      - prior_model
+      - focus_score
+      - connectivity_heatmap
+      - mirror_sequences
+      - tail_analyzer
+      - global_assignment_prior
     target_agnostic_modules:
       - prior_model
       - focus_score

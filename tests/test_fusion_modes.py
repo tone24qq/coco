@@ -44,6 +44,7 @@ def test_fusion_modes_produce_scores() -> None:
                 "fusion_mode": mode,
                 "vote_alpha": 0.2,
                 "gating_enabled": True,
+                "target_primary_modules": ["logic_rule", "directional_consistency"],
                 "target_sensitive_modules": ["logic_rule", "directional_consistency"],
             },
         )

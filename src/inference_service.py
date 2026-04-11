@@ -29,6 +29,17 @@ class InferenceError(ValueError):
     """Domain validation error for inference."""
 
 
+TARGET_DEPENDENT_MODULES = {
+    "logic_rule",
+    "directional_consistency",
+    "line_consistency",
+    "difference_trend",
+    "skip_patterns",
+    "pairwise_conditional_consistency",
+    "pattern_model",
+}
+
+
 def parse_board_input(board: List[List[int]]) -> ParsedBoard:
     if not board or not board[0]:
         raise InferenceError("board must be non-empty")
@@ -209,6 +220,16 @@ def score_candidates(
         )
         if not pairwise_seed_modules:
             raise InferenceError("pairwise_seed_modules must be non-empty")
+        agg_cfg_for_seed = load_aggregator_config()
+        configured_primary_modules = set(
+            agg_cfg_for_seed.get("target_primary_modules", agg_cfg_for_seed.get("target_sensitive_modules", []))
+        )
+        if configured_primary_modules:
+            illegal_seed_modules = [m for m in pairwise_seed_modules if m not in configured_primary_modules]
+            if illegal_seed_modules:
+                raise InferenceError(
+                    f"pairwise_seed_modules must come from target-primary modules: {illegal_seed_modules}"
+                )
         known_modules = set(build_modules().keys())
         missing_seed_modules = [m for m in pairwise_seed_modules if m not in known_modules]
         if missing_seed_modules:
@@ -245,6 +266,8 @@ def score_candidates(
 
 
 def rank_candidates(candidates: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    if candidates and "final_rank_position" in candidates[0]:
+        return sorted(candidates, key=lambda item: int(item.get("final_rank_position", 10**9)))
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
 
 
@@ -286,30 +309,57 @@ def aggregate_candidate_scores(
     hard_violation_threshold = float(aggregator_cfg.get("hard_violation_threshold", 2.0))
     hard_gate_multiplier = float(aggregator_cfg.get("hard_gate_multiplier", 0.05))
     soft_gate_floor = float(aggregator_cfg.get("soft_gate_floor", 0.25))
-    spread_enabled = bool(aggregator_cfg.get("score_spread_enabled", True))
-    spread_temperature = float(aggregator_cfg.get("score_spread_temperature", 0.2))
+    if "target_primary_modules" not in aggregator_cfg and "target_sensitive_modules" not in aggregator_cfg:
+        return _aggregate_candidate_scores_legacy(
+            candidates=candidates,
+            weights=weights,
+            agg_type=agg_type,
+            gating_enabled=gating_enabled,
+            contradiction_weight=contradiction_weight,
+            hard_violation_threshold=hard_violation_threshold,
+            hard_gate_multiplier=hard_gate_multiplier,
+            soft_gate_floor=soft_gate_floor,
+            spread_enabled=bool(aggregator_cfg.get("score_spread_enabled", True)),
+            spread_temperature=float(aggregator_cfg.get("score_spread_temperature", 0.2)),
+        )
     fusion_mode = str(aggregator_cfg.get("fusion_mode", "weighted_only"))
     vote_alpha = float(aggregator_cfg.get("vote_alpha", 0.15))
-    sensitive_modules = list(aggregator_cfg.get("target_sensitive_modules", list(weights.keys())))
+    default_primary = [m for m in weights.keys() if m in TARGET_DEPENDENT_MODULES] or list(weights.keys())
+    primary_modules = list(
+        aggregator_cfg.get(
+            "target_primary_modules",
+            aggregator_cfg.get("target_sensitive_modules", default_primary),
+        )
+    )
+    if not primary_modules:
+        raise InferenceError("target_primary_modules must be non-empty")
+    invalid_primary = [m for m in primary_modules if m not in TARGET_DEPENDENT_MODULES]
+    if invalid_primary:
+        raise InferenceError(f"Configured target_primary_modules violate target dependency contract: {invalid_primary}")
     agnostic_modules = list(aggregator_cfg.get("target_agnostic_modules", []))
+    tie_break_modules = list(aggregator_cfg.get("tie_break_modules", agnostic_modules))
     max_agnostic_share = float(aggregator_cfg.get("max_target_agnostic_weight_share", 0.2))
-    vote_include_modules = list(aggregator_cfg.get("vote_include_modules", sensitive_modules))
+    vote_include_modules = list(aggregator_cfg.get("vote_include_modules", primary_modules))
+    epsilon_primary = float(aggregator_cfg.get("epsilon_primary", 0.015))
     known_modules = set(build_modules().keys())
     unknown_vote_modules = [m for m in vote_include_modules if m not in known_modules]
     if unknown_vote_modules:
         raise InferenceError(f"vote_include_modules contain unknown modules: {unknown_vote_modules}")
-    ranking_scores: List[float] = []
-    vote_scores: Dict[Cell, float] = _compute_vote_scores(candidates, weights, aggregator_cfg, vote_include_modules)
+    vote_scores: Dict[Cell, float] = _compute_vote_scores(
+        candidates, weights, aggregator_cfg, vote_include_modules
+    )
+    stage_a_scores: Dict[Cell, float] = {}
+    tie_break_scores: Dict[Cell, float] = {}
 
     for c in candidates:
         cell = c["cell"]
         module_scores = c["module_scores"]
         module_details = c.get("module_details", {})
-        sensitive_weight = sum(float(weights.get(m, 0.0)) for m in sensitive_modules)
+        primary_weight = sum(float(weights.get(m, 0.0)) for m in primary_modules)
         agnostic_weight = sum(float(weights.get(m, 0.0)) for m in agnostic_modules)
-        target_sensitive_score = (
-            sum(float(module_scores.get(name, 0.0)) * float(weights.get(name, 0.0)) for name in sensitive_modules)
-            / max(sensitive_weight, 1e-12)
+        target_primary_score = (
+            sum(float(module_scores.get(name, 0.0)) * float(weights.get(name, 0.0)) for name in primary_modules)
+            / max(primary_weight, 1e-12)
         )
         target_agnostic_score_raw = (
             sum(float(module_scores.get(name, 0.0)) * float(weights.get(name, 0.0)) for name in agnostic_modules)
@@ -317,9 +367,14 @@ def aggregate_candidate_scores(
             if agnostic_weight > 0
             else 0.0
         )
-        max_agnostic = max_agnostic_share * max(target_sensitive_score, 1e-6) / max(1.0 - max_agnostic_share, 1e-6)
+        max_agnostic = max_agnostic_share * max(target_primary_score, 1e-6) / max(1.0 - max_agnostic_share, 1e-6)
         target_agnostic_score = min(target_agnostic_score_raw, max_agnostic)
-        support_fusion = target_sensitive_score + target_agnostic_score
+        tie_break_base = (
+            sum(float(module_scores.get(name, 0.0)) * float(weights.get(name, 0.0)) for name in tie_break_modules)
+            / max(sum(float(weights.get(name, 0.0)) for name in tie_break_modules), 1e-12)
+            if tie_break_modules
+            else target_agnostic_score
+        )
 
         contradiction = 0.0
         weighted = 0.0
@@ -347,58 +402,74 @@ def aggregate_candidate_scores(
                 gate_multiplier = max(soft_gate_floor, 1.0 - 0.25 * contradiction_penalty)
 
         if agg_type == "weighted_average":
-            gated_score = support_fusion
-            ranking_score = support_fusion
+            gated_score = tie_break_base
+            ranking_score = tie_break_base
         else:
-            gated_score = gate_multiplier * support_fusion
+            gated_score = gate_multiplier * tie_break_base
             ranking_score = gated_score - contradiction_weight * contradiction_penalty
         vote_bonus = float(vote_scores.get(cell, 0.0))
+        tie_break_score = ranking_score
         if fusion_mode == "vote_only":
-            ranking_score = vote_bonus
-            gated_score = vote_bonus
-        elif fusion_mode == "weighted_plus_vote":
-            ranking_score = support_fusion + vote_alpha * vote_bonus
-            gated_score = ranking_score
-        elif fusion_mode == "weighted_plus_vote_with_gate":
-            ranking_score = ranking_score + vote_alpha * vote_bonus
+            tie_break_score = vote_bonus
+        elif fusion_mode in ("weighted_plus_vote", "weighted_plus_vote_with_gate"):
+            tie_break_score = ranking_score + vote_alpha * vote_bonus
 
-        c["support_score"] = support_fusion
-        c["target_sensitive_score"] = target_sensitive_score
+        c["support_score"] = target_primary_score
+        c["target_primary_score"] = target_primary_score
+        c["target_sensitive_score"] = target_primary_score
         c["target_agnostic_score"] = target_agnostic_score
-        c["target_sensitivity_gap"] = target_sensitive_score - target_agnostic_score
+        c["target_sensitivity_gap"] = target_primary_score - target_agnostic_score
         c["contradiction_penalty"] = contradiction_penalty
-        c["gated_score"] = gated_score
+        c["gated_score"] = tie_break_score
         c["gate_multiplier"] = gate_multiplier
         c["vote_bonus"] = vote_bonus
-        c["ranking_score"] = ranking_score
-        ranking_scores.append(ranking_score)
+        c["tie_break_score"] = tie_break_score
+        stage_a_scores[cell] = target_primary_score
+        tie_break_scores[cell] = tie_break_score
 
     if not candidates:
         return {}
+    stage_a_sorted = sorted(candidates, key=lambda x: stage_a_scores[x["cell"]], reverse=True)
+    stage_a_top1 = stage_a_sorted[0]["cell"]
+    stage_a_top2_score = (
+        stage_a_scores[stage_a_sorted[1]["cell"]] if len(stage_a_sorted) > 1 else stage_a_scores[stage_a_top1]
+    )
+    stage_a_margin = stage_a_scores[stage_a_top1] - stage_a_top2_score
+    primary_locked_top1 = stage_a_margin > epsilon_primary
+    if primary_locked_top1:
+        locked = stage_a_sorted[0]
+        rest = sorted(
+            stage_a_sorted[1:],
+            key=lambda x: (stage_a_scores[x["cell"]], tie_break_scores[x["cell"]]),
+            reverse=True,
+        )
+        final_order = [locked] + rest
+    else:
+        def _bucket(v: float) -> int:
+            return int(round(v / max(epsilon_primary, 1e-9)))
 
-    raw_mean = sum(ranking_scores) / len(ranking_scores)
-    raw_var = sum((s - raw_mean) ** 2 for s in ranking_scores) / len(ranking_scores)
-    raw_std = math.sqrt(raw_var)
-    raw_min = min(ranking_scores)
-    raw_max = max(ranking_scores)
+        final_order = sorted(
+            candidates,
+            key=lambda x: (_bucket(stage_a_scores[x["cell"]]), tie_break_scores[x["cell"]]),
+            reverse=True,
+        )
 
-    spread_factor = 1.0
-    if spread_enabled:
-        spread_factor = 1.0 + min(2.0, spread_temperature / max(raw_std, 0.03))
+    for idx, cand in enumerate(final_order, start=1):
+        cand["stage_a_rank"] = int(
+            next(i for i, item in enumerate(stage_a_sorted, start=1) if item["cell"] == cand["cell"])
+        )
+        cand["final_rank_position"] = int(idx)
+        cand["was_reordered_by_tiebreak"] = bool(cand["stage_a_rank"] != idx)
+        cand["primary_locked_top1"] = bool(primary_locked_top1)
+        cand["stage_a_margin_to_top1"] = float(stage_a_scores[stage_a_top1] - stage_a_scores[cand["cell"]])
+        cand["final_score"] = float(stage_a_scores[cand["cell"]] + 0.001 * tie_break_scores[cand["cell"]])
+        cand["ranking_score"] = cand["final_score"]
+        cand["score"] = cand["final_score"]
 
-    final_scores: List[float] = []
-    for c in candidates:
-        ranking_score = float(c.get("ranking_score", 0.0))
-        if spread_enabled:
-            final_score = raw_mean + (ranking_score - raw_mean) * spread_factor
-        else:
-            final_score = ranking_score
-        c["score"] = final_score
-        final_scores.append(final_score)
-
-    final_mean = sum(final_scores) / len(final_scores)
-    final_var = sum((s - final_mean) ** 2 for s in final_scores) / len(final_scores)
-    final_std = math.sqrt(final_var)
+    final_scores = [float(c["score"]) for c in final_order]
+    raw_mean = sum(final_scores) / len(final_scores)
+    raw_var = sum((s - raw_mean) ** 2 for s in final_scores) / len(final_scores)
+    final_std = math.sqrt(raw_var)
     top_sorted = sorted(final_scores, reverse=True)
     top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
     topk = top_sorted[: min(5, len(top_sorted))]
@@ -413,9 +484,9 @@ def aggregate_candidate_scores(
     entropy_like = entropy / max(max_entropy, 1e-12)
     collapsed = final_std < 0.02 or top1_top2_margin < 0.01
     return {
-        "raw_score_min": raw_min,
-        "raw_score_max": raw_max,
-        "raw_score_std": raw_std,
+        "raw_score_min": min(final_scores),
+        "raw_score_max": max(final_scores),
+        "raw_score_std": final_std,
         "final_score_min": min(final_scores),
         "final_score_max": max(final_scores),
         "final_score_std": final_std,
@@ -424,6 +495,106 @@ def aggregate_candidate_scores(
         "score_entropy_like": entropy_like,
         "collapsed_score_flag": collapsed,
         "fusion_mode": fusion_mode,
+        "ranking_contract_version": "target_primary_v2",
+        "epsilon_primary": epsilon_primary,
+        "target_primary_modules": primary_modules,
+        "tie_break_modules": tie_break_modules,
+        "stage_a_top1_cell": stage_a_top1,
+        "final_top1_cell": final_order[0]["cell"],
+        "top1_changed_by_tiebreak": bool(stage_a_top1 != final_order[0]["cell"]),
+        "primary_locked_top1": bool(primary_locked_top1),
+    }
+
+
+def _aggregate_candidate_scores_legacy(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    agg_type: str,
+    gating_enabled: bool,
+    contradiction_weight: float,
+    hard_violation_threshold: float,
+    hard_gate_multiplier: float,
+    soft_gate_floor: float,
+    spread_enabled: bool,
+    spread_temperature: float,
+) -> Dict[str, float]:
+    ranking_scores: List[float] = []
+    for c in candidates:
+        module_scores = c["module_scores"]
+        module_details = c.get("module_details", {})
+        support_fusion = sum(float(module_scores.get(name, 0.0)) * weight for name, weight in weights.items())
+        contradiction = 0.0
+        weighted = 0.0
+        for name, weight in weights.items():
+            details = module_details.get(name, {}) if isinstance(module_details.get(name, {}), dict) else {}
+            contradiction += _extract_contradiction_penalty(name, float(module_scores.get(name, 0.0)), details) * weight
+            weighted += weight
+        contradiction_penalty = contradiction / max(weighted, 1e-12)
+        row_v = float(module_details.get("directional_consistency", {}).get("row_violation_count", 0.0))
+        col_v = float(module_details.get("directional_consistency", {}).get("col_violation_count", 0.0))
+        diag_v = float(module_details.get("line_consistency", {}).get("diag_violation_count", 0.0))
+        line_flags = (
+            float(module_details.get("line_consistency", {}).get("monotonic_break_flag", 0.0))
+            + float(module_details.get("line_consistency", {}).get("percentile_outlier_flag", 0.0))
+            + float(module_details.get("line_consistency", {}).get("gap_outlier_flag", 0.0))
+        )
+        violation_score = row_v + col_v + diag_v + line_flags
+        gate_multiplier = 1.0
+        if gating_enabled:
+            if violation_score >= hard_violation_threshold:
+                gate_multiplier = hard_gate_multiplier
+            else:
+                gate_multiplier = max(soft_gate_floor, 1.0 - 0.25 * contradiction_penalty)
+        if agg_type == "weighted_average":
+            ranking_score = support_fusion
+            gated_score = support_fusion
+        else:
+            gated_score = gate_multiplier * support_fusion
+            ranking_score = gated_score - contradiction_weight * contradiction_penalty
+        c["support_score"] = support_fusion
+        c["contradiction_penalty"] = contradiction_penalty
+        c["gated_score"] = gated_score
+        c["gate_multiplier"] = gate_multiplier
+        c["ranking_score"] = ranking_score
+        ranking_scores.append(ranking_score)
+    if not candidates:
+        return {}
+    raw_mean = sum(ranking_scores) / len(ranking_scores)
+    raw_var = sum((s - raw_mean) ** 2 for s in ranking_scores) / len(ranking_scores)
+    raw_std = math.sqrt(raw_var)
+    spread_factor = 1.0
+    if spread_enabled:
+        spread_factor = 1.0 + min(2.0, spread_temperature / max(raw_std, 0.03))
+    final_scores: List[float] = []
+    for c in candidates:
+        rs = float(c.get("ranking_score", 0.0))
+        c["score"] = raw_mean + (rs - raw_mean) * spread_factor if spread_enabled else rs
+        final_scores.append(float(c["score"]))
+    final_mean = sum(final_scores) / len(final_scores)
+    final_var = sum((s - final_mean) ** 2 for s in final_scores) / len(final_scores)
+    final_std = math.sqrt(final_var)
+    top_sorted = sorted(final_scores, reverse=True)
+    top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
+    topk = top_sorted[: min(5, len(top_sorted))]
+    top1_top5_mean_gap = 0.0 if not topk else top_sorted[0] - (sum(topk) / len(topk))
+    tau = max(0.05, final_std)
+    exp_values = [math.exp((s - top_sorted[0]) / tau) for s in top_sorted]
+    z = sum(exp_values) or 1.0
+    probs = [x / z for x in exp_values]
+    entropy = -sum(p * math.log(max(p, 1e-12)) for p in probs)
+    max_entropy = math.log(max(len(probs), 1))
+    return {
+        "raw_score_min": min(ranking_scores),
+        "raw_score_max": max(ranking_scores),
+        "raw_score_std": raw_std,
+        "final_score_min": min(final_scores),
+        "final_score_max": max(final_scores),
+        "final_score_std": final_std,
+        "top1_top2_margin": top1_top2_margin,
+        "top1_top5_mean_gap": top1_top5_mean_gap,
+        "score_entropy_like": entropy / max(max_entropy, 1e-12),
+        "collapsed_score_flag": final_std < 0.02 or top1_top2_margin < 0.01,
+        "fusion_mode": "weighted_only",
     }
 
 
@@ -652,8 +823,14 @@ def _run_inference_detailed(
                 "target_sensitive_score": round(float(cell.get("target_sensitive_score", 0.0)), 6),
                 "target_agnostic_score": round(float(cell.get("target_agnostic_score", 0.0)), 6),
                 "target_sensitivity_gap": round(float(cell.get("target_sensitivity_gap", 0.0)), 6),
+                "target_primary_score": round(float(cell.get("target_primary_score", 0.0)), 6),
                 "target_sensitive_rank": int(sensitive_rank_map.get(cell["cell"], idx)),
                 "final_rank": int(idx),
+                "stage_a_rank": int(cell.get("stage_a_rank", sensitive_rank_map.get(cell["cell"], idx))),
+                "stage_a_margin_to_top1": round(float(cell.get("stage_a_margin_to_top1", 0.0)), 6),
+                "was_reordered_by_tiebreak": bool(cell.get("was_reordered_by_tiebreak", False)),
+                "primary_locked_top1": bool(cell.get("primary_locked_top1", False)),
+                "tie_break_score": round(float(cell.get("tie_break_score", 0.0)), 6),
                 "module_details": cell.get("module_details", {}) if include_module_details else {},
             }
         )
