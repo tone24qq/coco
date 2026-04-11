@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.inference_service import run_inference
+from src.inference_service import _run_inference_detailed
 
 
 def test_reranker_fallback_when_artifact_missing(tmp_path: Path) -> None:
@@ -15,7 +15,7 @@ def test_reranker_fallback_when_artifact_missing(tmp_path: Path) -> None:
         backup = target.read_text()
         target.unlink()
 
-    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=True)
+    result = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=True)
     assert result["metadata"]["ranking_stage"] == "baseline_only"
     assert result["metadata"]["reranker_fallback_reason"] is not None
 
@@ -37,8 +37,8 @@ def test_reranker_keeps_candidate_set() -> None:
             }
         )
     )
-    baseline = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="b", apply_reranker_stage=False)
-    reranked = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="r", apply_reranker_stage=True)
+    baseline = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="b", apply_reranker_stage=False)
+    reranked = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="r", apply_reranker_stage=True)
 
     baseline_cells = {(c["row"], c["col"]) for c in baseline["candidate_cells"]}
     reranked_cells = {(c["row"], c["col"]) for c in reranked["candidate_cells"]}

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from src.board_geometry import anti_diagonal_cells, main_diagonal_cells
-from src.inference_service import run_inference
+from src.inference_service import _run_inference_detailed
 from src.mainline_eval import (
     CORE_MODULES,
     FullBoardRecord,
@@ -23,7 +23,7 @@ from src.scoring_modules import MODULES, _line_components
 
 def test_any_size_board_parse_infer_evaluate() -> None:
     board = [[1, 2, 3], [4, -1, 6], [7, 8, -1], [10, 11, 12]]
-    result = run_inference(board, target_number=5, source="test")
+    result = _run_inference_detailed(board, target_number=5, source="test")
     assert result["status"] == "ok"
     assert result["board_shape"] == {"rows": 4, "cols": 3}
     assert len(result["candidate_cells"]) == 2
@@ -71,7 +71,7 @@ def test_global_assignment_prior_safe_fallback() -> None:
 
 
 def test_baseline_only_path_not_broken() -> None:
-    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    result = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
     assert result["metadata"]["ranking_stage"] == "baseline_only"
 
 
@@ -123,7 +123,7 @@ def test_weight_search_eval_defaults_to_reranker_disabled() -> None:
             ]
         }
 
-    with patch("src.mainline_eval.run_inference", side_effect=_fake_run_inference):
+    with patch("src.mainline_eval._run_inference_detailed", side_effect=_fake_run_inference):
         run_weighted_eval(
             boards=[FullBoardRecord(board_id="b", board=[[1]], source="s")],
             weights={m: 1.0 / len(CORE_MODULES) for m in CORE_MODULES},
@@ -160,7 +160,7 @@ def test_global_assignment_cost_delta_penalizes_wrong_anchor() -> None:
 
 
 def test_confidence_not_artificially_high_when_gap_small() -> None:
-    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    result = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
     assert result["metadata"]["margin_to_top2"] >= 0.0
     assert result["best_cell"]["confidence_1_to_100"] <= 95.0
 

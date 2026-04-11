@@ -30,7 +30,7 @@ def _fake_single_result(top1_row: int, top1_col: int, alt_row: int, alt_col: int
 def test_joint_assignment_dedups_duplicate_individual_top1() -> None:
     board = [[1, -1], [-1, 4]]
     with patch(
-        "src.inference_service.run_inference",
+        "src.inference_service._run_inference_detailed",
         side_effect=[
             _fake_single_result(1, 2, 2, 1),
             _fake_single_result(1, 2, 2, 1),
@@ -46,7 +46,7 @@ def test_joint_assignment_dedups_duplicate_individual_top1() -> None:
 def test_joint_assignment_keeps_strong_individual_top1() -> None:
     board = [[1, -1], [-1, 4]]
     with patch(
-        "src.inference_service.run_inference",
+        "src.inference_service._run_inference_detailed",
         side_effect=[
             {
                 "status": "ok",

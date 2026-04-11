@@ -39,16 +39,15 @@ def test_single_board_top5_eval_case() -> None:
     assert validation["target_cell_0_based"] == [1, 4]
 
     result = infer_target_position(masked_board, target_number, source="single_board_test")
-    assert result["status"] == "ok"
-    assert len(result["candidate_cells"]) == 40
+    assert len(result["top10"]) <= 10
 
-    top5 = result["candidate_cells"][:5]
-    all_scores = [float(c["score"]) for c in result["candidate_cells"]]
-    min_score = min(all_scores)
-    max_score = max(all_scores)
+    top5 = result["top10"][:5]
+    all_confs = [float(c["confidence_1_to_100"]) for c in result["top10"]]
+    min_score = min(all_confs)
+    max_score = max(all_confs)
 
     for cell in top5:
-        conf = map_score_to_confidence_1_100(float(cell["score"]), min_score, max_score)
+        conf = map_score_to_confidence_1_100(float(cell["confidence_1_to_100"]), min_score, max_score)
         assert 1.0 <= conf <= 100.0
 
     ranked_cells = [(c["row"] - 1, c["col"] - 1) for c in top5]

@@ -4,8 +4,10 @@ from src.inference_service import (
     _normalize_scores,
     aggregate_candidate_scores,
     build_cell_candidates,
+    compact_top10_response,
     map_best_confidence_1_100,
     rank_candidates,
+    _run_inference_detailed,
     run_inference,
     score_candidates,
 )
@@ -173,7 +175,7 @@ def test_score_spread_expands_but_preserves_ranking_order() -> None:
 
 
 def test_candidate_confidence_not_all_identical() -> None:
-    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    result = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
     confs = {c["confidence_1_to_100"] for c in result["candidate_cells"]}
     assert len(confs) > 1
 
@@ -212,10 +214,42 @@ def test_best_confidence_rises_with_larger_margin() -> None:
 
 
 def test_confidence_score_not_equal_ranking_score_contract() -> None:
-    result = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    result = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
     assert result["best_ranking_score"] == result["best_cell"]["score"]
     assert result["best_confidence_score"] == result["confidence_score"]
     assert result["metadata"]["score_type"] == "ranking_score"
     assert result["metadata"]["score_can_be_negative"] is True
     assert result["metadata"]["confidence_score_is_not_ranking_score"] is True
     assert result["best_cell"]["confidence_1_to_100"] == result["metadata"]["best_cell_confidence_1_to_100"]
+
+
+def test_compact_response_schema_only_top10_and_best_confidence() -> None:
+    verbose = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    compact = compact_top10_response(verbose)
+    assert set(compact.keys()) == {"top10", "best_confidence_1_to_100"}
+    assert len(compact["top10"]) <= 10
+
+
+def test_compact_response_top10_sorted_desc_by_confidence() -> None:
+    compact = compact_top10_response(
+        {
+            "candidate_cells": [
+                {"row": 1, "col": 2, "confidence_1_to_100": 40.0},
+                {"row": 1, "col": 3, "confidence_1_to_100": 20.0},
+                {"row": 2, "col": 1, "confidence_1_to_100": 10.0},
+            ]
+        }
+    )
+    confs = [c["confidence_1_to_100"] for c in compact["top10"]]
+    assert confs == sorted(confs, reverse=True)
+
+
+def test_run_inference_public_contract_is_compact() -> None:
+    out = run_inference([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    assert set(out.keys()) == {"top10", "best_confidence_1_to_100"}
+
+
+def test_detailed_contract_still_contains_candidate_cells_and_metadata() -> None:
+    out = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    assert "candidate_cells" in out
+    assert "metadata" in out
