@@ -41,12 +41,29 @@ def _pick_target(board: list[list[int]]) -> int:
     return 1
 
 
-def _run_once_detailed(board: list[list[int]], target: int, fast_enabled: bool, pairwise_enabled: bool) -> dict:
+def _run_once_detailed(
+    board: list[list[int]],
+    target: int,
+    fast_enabled: bool,
+    pairwise_enabled: bool,
+    runtime_mode: str,
+) -> dict:
     module_settings = {
         "logic_rule": {"fast_enabled": fast_enabled},
         "prior_model": {"fast_enabled": fast_enabled},
         "directional_consistency": {"fast_enabled": fast_enabled},
         "line_consistency": {"fast_enabled": fast_enabled},
+        "global_assignment_prior": {
+            "assignment_mode": "greedy" if runtime_mode == "fast" else "exact",
+            "top_m_candidates": 4 if runtime_mode == "fast" else 8,
+            "exact_max_candidates": 20,
+        },
+        "pairwise_conditional_consistency": {
+            "runtime_mode": runtime_mode,
+            "candidate_top_n": 8,
+            "global_assignment_mode": "greedy",
+            "global_assignment_top_m_candidates": 4,
+        },
     }
     module_weights = None
     if not pairwise_enabled:
@@ -66,6 +83,7 @@ def _run_once_detailed(board: list[list[int]], target: int, fast_enabled: bool, 
             module_weights=module_weights,
             apply_reranker_stage=False,
         )
+    detailed["metadata"]["runtime_mode"] = runtime_mode
     return {"compact": compact_top10_response(detailed), "detailed": detailed}
 
 
@@ -75,12 +93,25 @@ def benchmark_case(
     rounds: int,
     fast_enabled: bool,
     pairwise_enabled: bool,
+    runtime_mode: str,
 ) -> tuple[float, dict]:
-    _run_once_detailed(board, target, fast_enabled=fast_enabled, pairwise_enabled=pairwise_enabled)
+    _run_once_detailed(
+        board,
+        target,
+        fast_enabled=fast_enabled,
+        pairwise_enabled=pairwise_enabled,
+        runtime_mode=runtime_mode,
+    )
     start = time.perf_counter()
     out = {}
     for _ in range(rounds):
-        out = _run_once_detailed(board, target, fast_enabled=fast_enabled, pairwise_enabled=pairwise_enabled)
+        out = _run_once_detailed(
+            board,
+            target,
+            fast_enabled=fast_enabled,
+            pairwise_enabled=pairwise_enabled,
+            runtime_mode=runtime_mode,
+        )
     elapsed = (time.perf_counter() - start) / rounds
     return elapsed, out
 
@@ -97,22 +128,22 @@ def main() -> None:
     t_large = _pick_target(large)
 
     small_baseline, out_small_a = benchmark_case(
-        deepcopy(small), t_small, args.rounds, fast_enabled=False, pairwise_enabled=True
+        deepcopy(small), t_small, args.rounds, fast_enabled=False, pairwise_enabled=True, runtime_mode="full"
     )
     small_fast, out_small_b = benchmark_case(
-        deepcopy(small), t_small, args.rounds, fast_enabled=True, pairwise_enabled=True
+        deepcopy(small), t_small, args.rounds, fast_enabled=True, pairwise_enabled=True, runtime_mode="fast"
     )
     large_baseline, out_large_a = benchmark_case(
-        deepcopy(large), t_large, args.rounds, fast_enabled=False, pairwise_enabled=True
+        deepcopy(large), t_large, args.rounds, fast_enabled=False, pairwise_enabled=True, runtime_mode="full"
     )
     large_fast, out_large_b = benchmark_case(
-        deepcopy(large), t_large, args.rounds, fast_enabled=True, pairwise_enabled=True
+        deepcopy(large), t_large, args.rounds, fast_enabled=True, pairwise_enabled=True, runtime_mode="fast"
     )
     small_pair_off, _ = benchmark_case(
-        deepcopy(small), t_small, args.rounds, fast_enabled=True, pairwise_enabled=False
+        deepcopy(small), t_small, args.rounds, fast_enabled=True, pairwise_enabled=False, runtime_mode="fast"
     )
     large_pair_off, _ = benchmark_case(
-        deepcopy(large), t_large, args.rounds, fast_enabled=True, pairwise_enabled=False
+        deepcopy(large), t_large, args.rounds, fast_enabled=True, pairwise_enabled=False, runtime_mode="fast"
     )
 
     def same_rank(a: dict, b: dict) -> tuple[bool, bool, float]:

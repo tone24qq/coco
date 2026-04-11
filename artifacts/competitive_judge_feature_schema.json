@@ -1,0 +1,19 @@
+{
+  "schema_version": "competitive_features_v1",
+  "feature_names": [
+    "mean_score",
+    "std_score",
+    "score_spread",
+    "top1_vote_count",
+    "top3_vote_count",
+    "top5_vote_count",
+    "borda_score",
+    "rrf_score",
+    "disagreement_count",
+    "rank_entropy_like",
+    "support_margin_to_next",
+    "conflict_mass"
+  ],
+  "created_at": "2026-04-11T19:17:52.366824+00:00",
+  "producer_script": "scripts/train_competitive_judge.py"
+}

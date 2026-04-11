@@ -7,22 +7,42 @@ modules:
     line_consistency: true
     global_assignment_prior: true
     pairwise_conditional_consistency: true
+    focus_score: true
+    connectivity_heatmap: true
+    difference_trend: true
+    skip_patterns: true
+    mirror_sequences: true
+    tail_analyzer: true
   weights:
-    logic_rule: 0.24
-    pattern_model: 0.16
-    prior_model: 0.12
+    logic_rule: 0.2
+    pattern_model: 0.04
+    prior_model: 0.03
     directional_consistency: 0.2
-    line_consistency: 0.18
-    global_assignment_prior: 0.1
-    pairwise_conditional_consistency: 0.05
+    line_consistency: 0.2
+    global_assignment_prior: 0.03
+    pairwise_conditional_consistency: 0.12
+    focus_score: 0.02
+    connectivity_heatmap: 0.02
+    difference_trend: 0.06
+    skip_patterns: 0.05
+    mirror_sequences: 0.01
+    tail_analyzer: 0.02
   settings:
     global_assignment_prior:
-      assignment_mode: exact
-      top_m_candidates: 8
+      assignment_mode: greedy
+      top_m_candidates: 4
+      exact_max_candidates: 20
     pairwise_conditional_consistency:
       anchor_top_k_cells: 5
       anchor_top_k_values: 5
       max_pair_trials_per_candidate: 20
+      runtime_mode: fast
+      candidate_top_n: 8
+      pairwise_seed_top_n: 8
+      pairwise_seed_modules:
+        - __all_enabled_modules__
+      global_assignment_mode: greedy
+      global_assignment_top_m_candidates: 4
       gating_enabled: true
       contradiction_penalty_weight: 1.0
       hard_violation_threshold: 2.0
@@ -38,12 +58,35 @@ modules:
     prior_model:
       fast_enabled: true
     directional_consistency:
-      fast_enabled: false
+      fast_enabled: true
     line_consistency:
-      fast_enabled: false
+      fast_enabled: true
+    focus_score:
+      window_size: 3
+    connectivity_heatmap:
+      decay: inverse_distance
+      decay_gamma: 0.35
+    tail_analyzer:
+      window_size: 3
   aggregator:
-    type: gate_then_weighted_sum
-    normalization_mode: light
+    type: competitive_ensemble
+    fusion_mode: learned_meta_ranker
+    competitor_normalization: per_module_minmax
+    include_vote_features: true
+    include_rank_features: true
+    include_score_features: true
+    judge_model_type: logistic_ranker
+    judge_feature_schema_version: competitive_features_v1
+    judge_artifact_path: artifacts/competitive_judge_artifact.json
+    fallback_mode: weighted_rank_fusion
+    preserve_diagnostics: true
+    rank_fusion_method: rrf
+    vote_top1_weight: 1.0
+    vote_top3_weight: 0.7
+    vote_top5_weight: 0.5
+    vote_rrf_weight: 0.8
+    vote_borda_weight: 0.6
+    vote_rrf_k: 10
     gating_enabled: true
     contradiction_penalty_weight: 1.0
     hard_violation_threshold: 2.0
@@ -64,7 +107,10 @@ joint_assignment:
 
 fast_path:
   enabled: true
+  runtime_mode: fast
   use_numba: true
   use_parallel: false
-  pairwise_top_m_candidates_for_assignment: 8
+  pairwise_candidate_top_n: 8
+  global_assignment_top_m_candidates: 4
+  exact_max_candidates: 20
   details_top_k: 10

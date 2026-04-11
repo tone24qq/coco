@@ -11,8 +11,21 @@ from src.inference_config import (
     load_module_settings,
     load_module_weights,
 )
+from src.competitive_fusion import (
+    aggregate_topk_votes,
+    build_meta_judge_feature_row,
+    borda_scores,
+    compute_dense_ranks,
+    compute_rank_entropy_like,
+    compute_vote_signals,
+    load_meta_judge_artifact,
+    normalize_scores_per_module,
+    rrf_scores,
+    score_with_logistic_artifact,
+    validate_meta_judge_artifact,
+)
 from src.ranking_features import build_candidate_feature_rows
-from src.reranker import apply_reranker
+from src.reranker import apply_reranker, load_reranker_artifact
 from src.scoring_modules import Cell, ModuleScoreResult, build_modules
 from src.scoring_modules import linear_sum_assignment
 
@@ -117,7 +130,7 @@ def _clip(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, v))
 
 
-def score_candidates(
+def score_candidates_raw(
     board: List[List[int]],
     candidates: List[Dict[str, object]],
     target_number: int,
@@ -128,32 +141,58 @@ def score_candidates(
     weights = module_weights or load_module_weights()
     settings = module_settings if module_settings is not None else load_module_settings()
     fast_cfg = load_fast_path_config()
+    runtime_mode = str(fast_cfg.get("runtime_mode", "fast"))
     if bool(fast_cfg.get("enabled", True)):
         use_numba = bool(fast_cfg.get("use_numba", True))
         for module_name in ("logic_rule", "prior_model", "directional_consistency", "line_consistency"):
             settings.setdefault(module_name, {})
             settings[module_name].setdefault("fast_enabled", use_numba)
         settings.setdefault("global_assignment_prior", {})
+        global_top_m = int(fast_cfg.get("global_assignment_top_m_candidates", 4))
+        settings["global_assignment_prior"].setdefault("top_m_candidates", global_top_m)
         settings["global_assignment_prior"].setdefault(
-            "top_m_candidates",
-            int(fast_cfg.get("pairwise_top_m_candidates_for_assignment", 8)),
+            "exact_max_candidates",
+            int(fast_cfg.get("exact_max_candidates", 20)),
         )
+        if runtime_mode == "fast":
+            settings["global_assignment_prior"].setdefault("assignment_mode", "greedy")
         settings.setdefault("pairwise_conditional_consistency", {})
+        settings["pairwise_conditional_consistency"].setdefault("runtime_mode", runtime_mode)
         settings["pairwise_conditional_consistency"].setdefault(
-            "top_m_candidates_for_assignment",
-            int(fast_cfg.get("pairwise_top_m_candidates_for_assignment", 8)),
+            "candidate_top_n",
+            int(fast_cfg.get("pairwise_candidate_top_n", 8)),
+        )
+        settings["pairwise_conditional_consistency"].setdefault("global_assignment_mode", "greedy")
+        settings["pairwise_conditional_consistency"].setdefault("global_assignment_top_m_candidates", global_top_m)
+        settings["pairwise_conditional_consistency"].setdefault(
+            "pairwise_seed_top_n",
+            int(fast_cfg.get("pairwise_seed_top_n", 8)),
+        )
+        settings["pairwise_conditional_consistency"].setdefault(
+            "pairwise_seed_modules",
+            list(
+                fast_cfg.get(
+                    "pairwise_seed_modules",
+                    [
+                        "logic_rule",
+                        "directional_consistency",
+                        "line_consistency",
+                        "difference_trend",
+                        "skip_patterns",
+                    ],
+                )
+            ),
         )
     modules = build_modules(settings)
     explanations: List[str] = []
-
+    pairwise_name = "pairwise_conditional_consistency"
+    candidate_cells = [c["cell"] for c in candidates]
     for module_name, weight in weights.items():
+        if module_name == pairwise_name:
+            continue
         if module_name not in modules:
             raise InferenceError(f"Unknown module in weights: {module_name}")
-        result: ModuleScoreResult = modules[module_name].score(
-            board,
-            [c["cell"] for c in candidates],
-            target_number,
-        )
+        result: ModuleScoreResult = modules[module_name].score(board, candidate_cells, target_number)
         explanations.append(result.explanation)
         normalized = _normalize_scores(result.scores, mode=normalization_mode)
         for c in candidates:
@@ -166,10 +205,100 @@ def score_candidates(
                 c["module_details"][module_name] = result.details.get(cell, {})
             c["score"] += module_score * weight
 
+    if pairwise_name in weights:
+        if pairwise_name not in modules:
+            raise InferenceError(f"Unknown module in weights: {pairwise_name}")
+        pairwise_seed_modules = list(
+            settings.get(pairwise_name, {}).get(
+                "pairwise_seed_modules",
+                [
+                    "logic_rule",
+                    "directional_consistency",
+                    "line_consistency",
+                    "difference_trend",
+                    "skip_patterns",
+                ],
+            )
+        )
+        if not pairwise_seed_modules:
+            raise InferenceError("pairwise_seed_modules must be non-empty")
+        if pairwise_seed_modules == ["__all_enabled_modules__"]:
+            pairwise_seed_modules = [m for m in weights if m != pairwise_name]
+        elif pairwise_seed_modules == ["__auto_top_competitors__"]:
+            non_pairwise_modules = [m for m in weights if m != pairwise_name]
+            neutral_cell_scores: Dict[Cell, float] = {}
+            for c in candidates:
+                cell = c["cell"]
+                vals = [float(c["module_scores"].get(m, 0.0)) for m in non_pairwise_modules]
+                neutral_cell_scores[cell] = sum(vals) / max(len(vals), 1)
+            top_cells = {
+                cell
+                for cell, _ in sorted(neutral_cell_scores.items(), key=lambda x: x[1], reverse=True)[
+                    : max(1, min(5, len(neutral_cell_scores)))
+                ]
+            }
+            module_alignment: List[Tuple[str, float]] = []
+            for m in non_pairwise_modules:
+                vals = [float(c["module_scores"].get(m, 0.0)) for c in candidates if c["cell"] in top_cells]
+                module_alignment.append((m, sum(vals) / max(len(vals), 1)))
+            module_alignment.sort(key=lambda x: x[1], reverse=True)
+            pairwise_seed_modules = [m for m, _ in module_alignment[: max(1, min(4, len(module_alignment)))]]
+        known_modules = set(build_modules().keys())
+        missing_seed_modules = [m for m in pairwise_seed_modules if m not in known_modules]
+        if missing_seed_modules:
+            raise InferenceError(f"pairwise_seed_modules contain unknown modules: {missing_seed_modules}")
+        seed_weight_sum = sum(float(weights.get(m, 0.0)) for m in pairwise_seed_modules)
+        seed_scores: Dict[Cell, float] = {}
+        for c in candidates:
+            cell = c["cell"]
+            v = 0.0
+            for m in pairwise_seed_modules:
+                v += float(c["module_scores"].get(m, 0.0)) * float(weights.get(m, 0.0))
+            seed_scores[cell] = v / max(seed_weight_sum, 1e-12)
+        seed_ranked = [cell for cell, _ in sorted(seed_scores.items(), key=lambda x: x[1], reverse=True)]
+        if seed_weight_sum > 0:
+            seed_top_n = int(settings.get(pairwise_name, {}).get("pairwise_seed_top_n", len(seed_ranked)))
+            seed_ranked = seed_ranked[: max(1, seed_top_n)]
+        else:
+            seed_ranked = []
+        pairwise_module = modules[pairwise_name]
+        if hasattr(pairwise_module, "set_seed_ranked_candidates"):
+            pairwise_module.set_seed_ranked_candidates(seed_ranked)
+        result = pairwise_module.score(board, candidate_cells, target_number)
+        explanations.append(result.explanation)
+        normalized = _normalize_scores(result.scores, mode=normalization_mode)
+        for c in candidates:
+            cell = c["cell"]
+            module_score = float(normalized.get(cell, 0.0))
+            c["module_scores"][pairwise_name] = module_score
+            if result.details:
+                c["module_details"][pairwise_name] = result.details.get(cell, {})
+            c["score"] += module_score * float(weights[pairwise_name])
+
     return candidates, weights, explanations
 
 
+def score_candidates(
+    board: List[List[int]],
+    candidates: List[Dict[str, object]],
+    target_number: int,
+    module_weights: Optional[Dict[str, float]] = None,
+    module_settings: Optional[Dict[str, Dict[str, object]]] = None,
+    normalization_mode: str = "disabled",
+) -> Tuple[List[Dict[str, object]], Dict[str, float], List[str]]:
+    return score_candidates_raw(
+        board=board,
+        candidates=candidates,
+        target_number=target_number,
+        module_weights=module_weights,
+        module_settings=module_settings,
+        normalization_mode=normalization_mode,
+    )
+
+
 def rank_candidates(candidates: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    if candidates and "final_rank_position" in candidates[0]:
+        return sorted(candidates, key=lambda item: int(item.get("final_rank_position", 10**9)))
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
 
 
@@ -200,91 +329,256 @@ def _extract_contradiction_penalty(module_name: str, module_score: float, detail
     return _clip(1.0 - module_score)
 
 
+def collect_module_outputs(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    aggregator_cfg: Dict[str, object],
+) -> Dict[str, object]:
+    module_names = sorted(weights.keys())
+    normalization = str(aggregator_cfg.get("competitor_normalization", "per_module_minmax"))
+    cells = [c["cell"] for c in candidates]
+    module_raw: Dict[str, Dict[Cell, float]] = {}
+    module_norm: Dict[str, Dict[Cell, float]] = {}
+    module_rank: Dict[str, Dict[Cell, int]] = {}
+    module_vote: Dict[str, Dict[Cell, Dict[str, float]]] = {}
+    for name in module_names:
+        raw = {c["cell"]: float(c.get("module_scores", {}).get(name, 0.0)) for c in candidates}
+        norm = normalize_scores_per_module(raw, mode=normalization)
+        rank = compute_dense_ranks(norm)
+        vote = compute_vote_signals(rank)
+        module_raw[name] = raw
+        module_norm[name] = norm
+        module_rank[name] = rank
+        module_vote[name] = vote
+    stage_a_score_by_cell = {
+        cell: sum(float(module_norm[m][cell]) for m in module_names) / max(len(module_names), 1)
+        for cell in cells
+    }
+    stage_a_rank_by_cell = compute_dense_ranks(stage_a_score_by_cell)
+    stage_a_top1_cell = max(stage_a_score_by_cell, key=stage_a_score_by_cell.get)
+    return {
+        "cells": cells,
+        "module_names": module_names,
+        "module_raw_score_by_cell": module_raw,
+        "module_norm_score_by_cell": module_norm,
+        "module_rank_by_cell": module_rank,
+        "module_vote_by_cell": module_vote,
+        "stage_a_score_by_cell": stage_a_score_by_cell,
+        "stage_a_rank_by_cell": stage_a_rank_by_cell,
+        "stage_a_top1_cell": stage_a_top1_cell,
+        "stage_a_top1_score": float(stage_a_score_by_cell[stage_a_top1_cell]),
+    }
+
+
+def build_competitive_fusion_features(
+    candidates: List[Dict[str, object]],
+    stage_a: Dict[str, object],
+    aggregator_cfg: Dict[str, object],
+) -> None:
+    include_votes = bool(aggregator_cfg.get("include_vote_features", True))
+    include_ranks = bool(aggregator_cfg.get("include_rank_features", True))
+    include_scores = bool(aggregator_cfg.get("include_score_features", True))
+    module_names: List[str] = list(stage_a["module_names"])
+    module_norm: Dict[str, Dict[Cell, float]] = stage_a["module_norm_score_by_cell"]
+    module_rank: Dict[str, Dict[Cell, int]] = stage_a["module_rank_by_cell"]
+    module_vote: Dict[str, Dict[Cell, Dict[str, float]]] = stage_a["module_vote_by_cell"]
+    vote_agg = aggregate_topk_votes(module_vote, stage_a["cells"])
+    borda = borda_scores(module_rank, stage_a["cells"])
+    rrf = rrf_scores(module_rank, stage_a["cells"], k=float(aggregator_cfg.get("vote_rrf_k", 10.0)))
+    for c in candidates:
+        cell = c["cell"]
+        scores = [float(module_norm[m][cell]) for m in module_names]
+        ranks = [int(module_rank[m][cell]) for m in module_names]
+        mean_score = sum(scores) / max(len(scores), 1)
+        var_score = sum((s - mean_score) ** 2 for s in scores) / max(len(scores), 1)
+        c["mean_score"] = mean_score
+        c["std_score"] = math.sqrt(var_score)
+        c["score_spread"] = max(scores) - min(scores) if scores else 0.0
+        c["borda_score"] = float(borda[cell])
+        c["rrf_score"] = float(rrf[cell])
+        c["top1_vote_count"] = float(vote_agg[cell]["top1_vote_count"])
+        c["top3_vote_count"] = float(vote_agg[cell]["top3_vote_count"])
+        c["top5_vote_count"] = float(vote_agg[cell]["top5_vote_count"])
+        c["disagreement_count"] = float(sum(1 for r in ranks if r > 3))
+        c["rank_entropy_like"] = float(compute_rank_entropy_like(ranks))
+        c["support_margin_to_next"] = float(
+            stage_a["stage_a_top1_score"] - float(stage_a["stage_a_score_by_cell"][cell])
+        )
+        c["conflict_mass"] = float(sum(abs(s - mean_score) for s in scores) / max(len(scores), 1))
+        if include_scores or include_ranks or include_votes:
+            for m in module_names:
+                if include_scores:
+                    c[f"module_{m}_score"] = float(module_norm[m][cell])
+                if include_ranks:
+                    c[f"module_{m}_rank"] = int(module_rank[m][cell])
+                if include_votes:
+                    c[f"module_{m}_is_top1"] = float(module_vote[m][cell]["is_top1"])
+                    c[f"module_{m}_is_top3"] = float(module_vote[m][cell]["is_top3"])
+                    c[f"module_{m}_is_top5"] = float(module_vote[m][cell]["is_top5"])
+                details_obj = c.get("module_details", {}).get(m, {})
+                details = details_obj if isinstance(details_obj, dict) else {}
+                c[f"module_{m}_contradiction_penalty"] = float(
+                    _extract_contradiction_penalty(m, float(c.get("module_scores", {}).get(m, 0.0)), details)
+                )
+                c[f"module_{m}_gate_multiplier"] = 1.0
+
+
+def apply_weighted_rank_fusion(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    stage_a: Dict[str, object],
+    aggregator_cfg: Dict[str, object],
+) -> None:
+    use_borda = str(aggregator_cfg.get("rank_fusion_method", "rrf")) == "borda"
+    module_rank: Dict[str, Dict[Cell, int]] = stage_a["module_rank_by_cell"]
+    cells: List[Cell] = stage_a["cells"]
+    rank_component = borda_scores(module_rank, cells) if use_borda else rrf_scores(module_rank, cells)
+    contradiction_weight = float(aggregator_cfg.get("contradiction_penalty_weight", 1.0))
+    for c in candidates:
+        cell = c["cell"]
+        module_details = c.get("module_details", {})
+        contradiction = 0.0
+        weighted = 0.0
+        for name, weight in weights.items():
+            details_obj = module_details.get(name, {})
+            details = details_obj if isinstance(details_obj, dict) else {}
+            contradiction += (
+                _extract_contradiction_penalty(name, float(c["module_scores"].get(name, 0.0)), details) * weight
+            )
+            weighted += weight
+        contradiction_penalty = contradiction / max(weighted, 1e-12)
+        c["contradiction_penalty"] = contradiction_penalty
+        c["gate_multiplier"] = 1.0
+        c["vote_bonus"] = float(c.get("top1_vote_count", 0.0))
+        c["gated_score"] = float(rank_component[cell])
+        c["score"] = float(rank_component[cell] - contradiction_weight * contradiction_penalty)
+
+
+def apply_vote_fusion(
+    candidates: List[Dict[str, object]],
+    stage_a: Dict[str, object],
+    aggregator_cfg: Dict[str, object],
+) -> None:
+    alpha1 = float(aggregator_cfg.get("vote_top1_weight", 1.0))
+    alpha3 = float(aggregator_cfg.get("vote_top3_weight", 0.7))
+    alpha5 = float(aggregator_cfg.get("vote_top5_weight", 0.5))
+    for c in candidates:
+        vote_score = (
+            alpha1 * float(c.get("top1_vote_count", 0.0))
+            + alpha3 * float(c.get("top3_vote_count", 0.0))
+            + alpha5 * float(c.get("top5_vote_count", 0.0))
+        )
+        c["contradiction_penalty"] = float(c.get("conflict_mass", 0.0))
+        c["gate_multiplier"] = 1.0
+        c["vote_bonus"] = vote_score
+        c["gated_score"] = vote_score
+        c["score"] = vote_score
+
+
+def apply_meta_judge(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    stage_a: Dict[str, object],
+    aggregator_cfg: Dict[str, object],
+) -> Optional[str]:
+    artifact_path = str(aggregator_cfg.get("judge_artifact_path", "artifacts/competitive_judge_artifact.json"))
+    expected_schema_version = str(aggregator_cfg.get("judge_feature_schema_version", "competitive_features_v1"))
+    fallback_mode = str(aggregator_cfg.get("fallback_mode", "weighted_rank_fusion"))
+    try:
+        artifact = load_meta_judge_artifact(artifact_path)
+        validate_meta_judge_artifact(artifact)
+        artifact_schema = str(artifact.get("schema_version", ""))
+        if artifact_schema != expected_schema_version:
+            raise ValueError(
+                f"judge schema mismatch: artifact={artifact_schema}, expected={expected_schema_version}"
+            )
+    except (FileNotFoundError, ValueError) as exc:
+        if fallback_mode == "weighted_rank_fusion":
+            apply_weighted_rank_fusion(candidates, weights, stage_a, aggregator_cfg)
+        elif fallback_mode == "vote_based_fusion":
+            apply_vote_fusion(candidates, stage_a, aggregator_cfg)
+        else:
+            raise InferenceError(f"Unsupported fallback_mode: {fallback_mode}") from exc
+        return f"meta_judge_fallback:{exc}"
+    feature_names = list(artifact.get("feature_names", []))
+    if not feature_names:
+        raise InferenceError("meta judge artifact has empty feature_names")
+    for c in candidates:
+        feature_row = build_meta_judge_feature_row(c, feature_names)
+        score = score_with_logistic_artifact(feature_row, artifact)
+        c["contradiction_penalty"] = float(c.get("conflict_mass", 0.0))
+        c["gate_multiplier"] = 1.0
+        c["vote_bonus"] = float(c.get("top1_vote_count", 0.0))
+        c["gated_score"] = score
+        c["score"] = score
+        c["judge_artifact_version"] = str(artifact.get("created_at", artifact.get("schema_version", "unknown")))
+        c["judge_feature_schema_version"] = str(artifact.get("schema_version", "unknown"))
+    return None
+
+
+def finalize_candidate_ranking(
+    candidates: List[Dict[str, object]],
+    stage_a: Dict[str, object],
+) -> List[Dict[str, object]]:
+    final_order = sorted(candidates, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    for idx, cand in enumerate(final_order, start=1):
+        cand["stage_a_rank"] = int(stage_a["stage_a_rank_by_cell"].get(cand["cell"], idx))
+        cand["final_rank_position"] = int(idx)
+        cand["was_reordered_by_tiebreak"] = bool(cand["stage_a_rank"] != idx)
+        cand["primary_locked_top1"] = False
+        cand["stage_a_margin_to_top1"] = float(
+            stage_a["stage_a_top1_score"] - float(stage_a["stage_a_score_by_cell"].get(cand["cell"], 0.0))
+        )
+        cand["final_score"] = float(cand["score"])
+        cand["ranking_score"] = float(cand["score"])
+        cand["support_score"] = float(stage_a["stage_a_score_by_cell"].get(cand["cell"], 0.0))
+        cand["target_sensitive_score"] = float(stage_a["stage_a_score_by_cell"].get(cand["cell"], 0.0))
+        cand["target_agnostic_score"] = float(cand.get("mean_score", 0.0))
+        cand["target_sensitivity_gap"] = float(cand["target_sensitive_score"] - cand["target_agnostic_score"])
+        cand["target_primary_score"] = float(cand["target_sensitive_score"])
+    return final_order
+
+
 def aggregate_candidate_scores(
     candidates: List[Dict[str, object]],
     weights: Dict[str, float],
     aggregator_cfg: Dict[str, object],
 ) -> Dict[str, float]:
-    agg_type = str(aggregator_cfg.get("type", "weighted_average"))
-    gating_enabled = bool(aggregator_cfg.get("gating_enabled", True))
-    contradiction_weight = float(aggregator_cfg.get("contradiction_penalty_weight", 1.0))
-    hard_violation_threshold = float(aggregator_cfg.get("hard_violation_threshold", 2.0))
-    hard_gate_multiplier = float(aggregator_cfg.get("hard_gate_multiplier", 0.05))
-    soft_gate_floor = float(aggregator_cfg.get("soft_gate_floor", 0.25))
-    spread_enabled = bool(aggregator_cfg.get("score_spread_enabled", True))
-    spread_temperature = float(aggregator_cfg.get("score_spread_temperature", 0.2))
-    ranking_scores: List[float] = []
-
-    for c in candidates:
-        module_scores = c["module_scores"]
-        module_details = c.get("module_details", {})
-        support_fusion = sum(float(module_scores.get(name, 0.0)) * weight for name, weight in weights.items())
-
-        contradiction = 0.0
-        weighted = 0.0
-        for name, weight in weights.items():
-            details = module_details.get(name, {}) if isinstance(module_details.get(name, {}), dict) else {}
-            p = _extract_contradiction_penalty(name, float(module_scores.get(name, 0.0)), details)
-            contradiction += p * weight
-            weighted += weight
-        contradiction_penalty = contradiction / max(weighted, 1e-12)
-
-        gate_multiplier = 1.0
-        row_v = float(module_details.get("directional_consistency", {}).get("row_violation_count", 0.0))
-        col_v = float(module_details.get("directional_consistency", {}).get("col_violation_count", 0.0))
-        diag_v = float(module_details.get("line_consistency", {}).get("diag_violation_count", 0.0))
-        line_flags = (
-            float(module_details.get("line_consistency", {}).get("monotonic_break_flag", 0.0))
-            + float(module_details.get("line_consistency", {}).get("percentile_outlier_flag", 0.0))
-            + float(module_details.get("line_consistency", {}).get("gap_outlier_flag", 0.0))
+    if str(aggregator_cfg.get("type", "competitive_ensemble")) != "competitive_ensemble":
+        return _aggregate_candidate_scores_legacy(
+            candidates=candidates,
+            weights=weights,
+            agg_type=str(aggregator_cfg.get("type", "weighted_average")),
+            gating_enabled=bool(aggregator_cfg.get("gating_enabled", True)),
+            contradiction_weight=float(aggregator_cfg.get("contradiction_penalty_weight", 1.0)),
+            hard_violation_threshold=float(aggregator_cfg.get("hard_violation_threshold", 2.0)),
+            hard_gate_multiplier=float(aggregator_cfg.get("hard_gate_multiplier", 0.05)),
+            soft_gate_floor=float(aggregator_cfg.get("soft_gate_floor", 0.25)),
+            spread_enabled=bool(aggregator_cfg.get("score_spread_enabled", True)),
+            spread_temperature=float(aggregator_cfg.get("score_spread_temperature", 0.2)),
         )
-        violation_score = row_v + col_v + diag_v + line_flags
-        if gating_enabled:
-            if violation_score >= hard_violation_threshold:
-                gate_multiplier = hard_gate_multiplier
-            else:
-                gate_multiplier = max(soft_gate_floor, 1.0 - 0.25 * contradiction_penalty)
-
-        if agg_type == "weighted_average":
-            gated_score = support_fusion
-            ranking_score = support_fusion
-        else:
-            gated_score = gate_multiplier * support_fusion
-            ranking_score = gated_score - contradiction_weight * contradiction_penalty
-
-        c["support_score"] = support_fusion
-        c["contradiction_penalty"] = contradiction_penalty
-        c["gated_score"] = gated_score
-        c["gate_multiplier"] = gate_multiplier
-        c["ranking_score"] = ranking_score
-        ranking_scores.append(ranking_score)
-
     if not candidates:
         return {}
+    stage_a = collect_module_outputs(candidates, weights, aggregator_cfg)
+    build_competitive_fusion_features(candidates, stage_a, aggregator_cfg)
+    fusion_mode = str(aggregator_cfg.get("fusion_mode", "weighted_rank_fusion"))
+    if fusion_mode == "weighted_rank_fusion":
+        apply_weighted_rank_fusion(candidates, weights, stage_a, aggregator_cfg)
+        fallback_reason = None
+    elif fusion_mode == "vote_based_fusion":
+        apply_vote_fusion(candidates, stage_a, aggregator_cfg)
+        fallback_reason = None
+    elif fusion_mode == "learned_meta_ranker":
+        fallback_reason = apply_meta_judge(candidates, weights, stage_a, aggregator_cfg)
+    else:
+        raise InferenceError(f"Unsupported competitive fusion mode: {fusion_mode}")
 
-    raw_mean = sum(ranking_scores) / len(ranking_scores)
-    raw_var = sum((s - raw_mean) ** 2 for s in ranking_scores) / len(ranking_scores)
-    raw_std = math.sqrt(raw_var)
-    raw_min = min(ranking_scores)
-    raw_max = max(ranking_scores)
+    final_order = finalize_candidate_ranking(candidates, stage_a)
 
-    spread_factor = 1.0
-    if spread_enabled:
-        spread_factor = 1.0 + min(2.0, spread_temperature / max(raw_std, 0.03))
-
-    final_scores: List[float] = []
-    for c in candidates:
-        ranking_score = float(c.get("ranking_score", 0.0))
-        if spread_enabled:
-            final_score = raw_mean + (ranking_score - raw_mean) * spread_factor
-        else:
-            final_score = ranking_score
-        c["score"] = final_score
-        final_scores.append(final_score)
-
-    final_mean = sum(final_scores) / len(final_scores)
-    final_var = sum((s - final_mean) ** 2 for s in final_scores) / len(final_scores)
-    final_std = math.sqrt(final_var)
+    final_scores = [float(c["score"]) for c in final_order]
+    raw_mean = sum(final_scores) / len(final_scores)
+    raw_var = sum((s - raw_mean) ** 2 for s in final_scores) / len(final_scores)
+    final_std = math.sqrt(raw_var)
     top_sorted = sorted(final_scores, reverse=True)
     top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
     topk = top_sorted[: min(5, len(top_sorted))]
@@ -299,9 +593,9 @@ def aggregate_candidate_scores(
     entropy_like = entropy / max(max_entropy, 1e-12)
     collapsed = final_std < 0.02 or top1_top2_margin < 0.01
     return {
-        "raw_score_min": raw_min,
-        "raw_score_max": raw_max,
-        "raw_score_std": raw_std,
+        "raw_score_min": min(final_scores),
+        "raw_score_max": max(final_scores),
+        "raw_score_std": final_std,
         "final_score_min": min(final_scores),
         "final_score_max": max(final_scores),
         "final_score_std": final_std,
@@ -309,7 +603,147 @@ def aggregate_candidate_scores(
         "top1_top5_mean_gap": top1_top5_mean_gap,
         "score_entropy_like": entropy_like,
         "collapsed_score_flag": collapsed,
+        "fusion_mode": fusion_mode,
+        "ranking_contract_version": "competitive_ensemble_v1",
+        "stage_a_top1_cell": stage_a["stage_a_top1_cell"],
+        "final_top1_cell": final_order[0]["cell"],
+        "top1_changed_by_tiebreak": bool(stage_a["stage_a_top1_cell"] != final_order[0]["cell"]),
+        "primary_locked_top1": False,
+        "stage_a_competitor_count": len(stage_a["module_names"]),
+        "fallback_reason": fallback_reason,
+        "judge_artifact_version": str(final_order[0].get("judge_artifact_version", "unknown")),
+        "judge_feature_schema_version": str(final_order[0].get("judge_feature_schema_version", "unknown")),
     }
+
+
+def _aggregate_candidate_scores_legacy(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    agg_type: str,
+    gating_enabled: bool,
+    contradiction_weight: float,
+    hard_violation_threshold: float,
+    hard_gate_multiplier: float,
+    soft_gate_floor: float,
+    spread_enabled: bool,
+    spread_temperature: float,
+) -> Dict[str, float]:
+    ranking_scores: List[float] = []
+    for c in candidates:
+        module_scores = c["module_scores"]
+        module_details = c.get("module_details", {})
+        support_fusion = sum(float(module_scores.get(name, 0.0)) * weight for name, weight in weights.items())
+        contradiction = 0.0
+        weighted = 0.0
+        for name, weight in weights.items():
+            details = module_details.get(name, {}) if isinstance(module_details.get(name, {}), dict) else {}
+            contradiction += _extract_contradiction_penalty(name, float(module_scores.get(name, 0.0)), details) * weight
+            weighted += weight
+        contradiction_penalty = contradiction / max(weighted, 1e-12)
+        row_v = float(module_details.get("directional_consistency", {}).get("row_violation_count", 0.0))
+        col_v = float(module_details.get("directional_consistency", {}).get("col_violation_count", 0.0))
+        diag_v = float(module_details.get("line_consistency", {}).get("diag_violation_count", 0.0))
+        line_flags = (
+            float(module_details.get("line_consistency", {}).get("monotonic_break_flag", 0.0))
+            + float(module_details.get("line_consistency", {}).get("percentile_outlier_flag", 0.0))
+            + float(module_details.get("line_consistency", {}).get("gap_outlier_flag", 0.0))
+        )
+        violation_score = row_v + col_v + diag_v + line_flags
+        gate_multiplier = 1.0
+        if gating_enabled:
+            if violation_score >= hard_violation_threshold:
+                gate_multiplier = hard_gate_multiplier
+            else:
+                gate_multiplier = max(soft_gate_floor, 1.0 - 0.25 * contradiction_penalty)
+        if agg_type == "weighted_average":
+            ranking_score = support_fusion
+            gated_score = support_fusion
+        else:
+            gated_score = gate_multiplier * support_fusion
+            ranking_score = gated_score - contradiction_weight * contradiction_penalty
+        c["support_score"] = support_fusion
+        c["contradiction_penalty"] = contradiction_penalty
+        c["gated_score"] = gated_score
+        c["gate_multiplier"] = gate_multiplier
+        c["ranking_score"] = ranking_score
+        ranking_scores.append(ranking_score)
+    if not candidates:
+        return {}
+    raw_mean = sum(ranking_scores) / len(ranking_scores)
+    raw_var = sum((s - raw_mean) ** 2 for s in ranking_scores) / len(ranking_scores)
+    raw_std = math.sqrt(raw_var)
+    spread_factor = 1.0
+    if spread_enabled:
+        spread_factor = 1.0 + min(2.0, spread_temperature / max(raw_std, 0.03))
+    final_scores: List[float] = []
+    for c in candidates:
+        rs = float(c.get("ranking_score", 0.0))
+        c["score"] = raw_mean + (rs - raw_mean) * spread_factor if spread_enabled else rs
+        final_scores.append(float(c["score"]))
+    final_mean = sum(final_scores) / len(final_scores)
+    final_var = sum((s - final_mean) ** 2 for s in final_scores) / len(final_scores)
+    final_std = math.sqrt(final_var)
+    top_sorted = sorted(final_scores, reverse=True)
+    top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
+    topk = top_sorted[: min(5, len(top_sorted))]
+    top1_top5_mean_gap = 0.0 if not topk else top_sorted[0] - (sum(topk) / len(topk))
+    tau = max(0.05, final_std)
+    exp_values = [math.exp((s - top_sorted[0]) / tau) for s in top_sorted]
+    z = sum(exp_values) or 1.0
+    probs = [x / z for x in exp_values]
+    entropy = -sum(p * math.log(max(p, 1e-12)) for p in probs)
+    max_entropy = math.log(max(len(probs), 1))
+    return {
+        "raw_score_min": min(ranking_scores),
+        "raw_score_max": max(ranking_scores),
+        "raw_score_std": raw_std,
+        "final_score_min": min(final_scores),
+        "final_score_max": max(final_scores),
+        "final_score_std": final_std,
+        "top1_top2_margin": top1_top2_margin,
+        "top1_top5_mean_gap": top1_top5_mean_gap,
+        "score_entropy_like": entropy / max(max_entropy, 1e-12),
+        "collapsed_score_flag": final_std < 0.02 or top1_top2_margin < 0.01,
+        "fusion_mode": "legacy_weighted_baseline",
+    }
+
+
+def _compute_vote_scores(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    aggregator_cfg: Dict[str, object],
+    vote_include_modules: Optional[List[str]] = None,
+) -> Dict[Cell, float]:
+    if not candidates:
+        return {}
+    module_names = [m for m in (vote_include_modules or list(weights.keys())) if m in weights]
+    top1_w = float(aggregator_cfg.get("vote_top1_weight", 1.0))
+    top3_w = float(aggregator_cfg.get("vote_top3_weight", 0.7))
+    rrf_w = float(aggregator_cfg.get("vote_rrf_weight", 0.8))
+    borda_w = float(aggregator_cfg.get("vote_borda_weight", 0.6))
+    k_rrf = float(aggregator_cfg.get("vote_rrf_k", 10.0))
+    cells = [c["cell"] for c in candidates]
+    vote_totals: Dict[Cell, float] = {cell: 0.0 for cell in cells}
+    for m in module_names:
+        ranked = sorted(candidates, key=lambda x: float(x["module_scores"].get(m, 0.0)), reverse=True)
+        n = len(ranked)
+        for idx, cand in enumerate(ranked):
+            cell = cand["cell"]
+            rank = idx + 1
+            vote = 0.0
+            if rank == 1:
+                vote += top1_w
+            if rank <= 3:
+                vote += top3_w / 3.0
+            vote += rrf_w * (1.0 / (k_rrf + rank))
+            vote += borda_w * ((n - idx) / max(n, 1))
+            vote_totals[cell] += vote
+    values = list(vote_totals.values())
+    min_v = min(values)
+    max_v = max(values)
+    if abs(max_v - min_v) < 1e-9:
+        return {k: 0.5 for k in vote_totals}
+    return {k: (v - min_v) / (max_v - min_v) for k, v in vote_totals.items()}
 
 
 def _candidate_confidence_1_to_100(
@@ -380,6 +814,8 @@ def _run_inference_detailed(
     module_settings: Optional[Dict[str, Dict[str, object]]] = None,
     version: str = "v1",
     apply_reranker_stage: bool = True,
+    include_module_details: bool = True,
+    aggregator_config: Optional[Dict[str, object]] = None,
 ) -> Dict[str, Any]:
     parsed = parse_board_input(board)
     remaining = compute_remaining_numbers(parsed)
@@ -429,7 +865,7 @@ def _run_inference_detailed(
         raise InferenceError("board has no unopened cells")
 
     candidates = build_cell_candidates(parsed.unopened_cells)
-    aggregator_cfg = load_aggregator_config()
+    aggregator_cfg = aggregator_config or load_aggregator_config()
     scored, weights, module_explanations = score_candidates(
         board,
         candidates,
@@ -462,11 +898,18 @@ def _run_inference_detailed(
         else "limited_elimination_power"
     )
 
+    sensitive_ranked = sorted(
+        ranked,
+        key=lambda x: float(x.get("target_sensitive_score", 0.0)),
+        reverse=True,
+    )
+    sensitive_rank_map = {item["cell"]: i + 1 for i, item in enumerate(sensitive_ranked)}
+
     candidate_cells = []
-    for cell in ranked:
+    preserve_diagnostics = bool(aggregator_cfg.get("preserve_diagnostics", True))
+    for idx, cell in enumerate(ranked, start=1):
         score = round(float(cell["score"]), 6)
-        candidate_cells.append(
-            {
+        payload = {
                 "row": cell["cell"][0] + 1,
                 "col": cell["cell"][1] + 1,
                 "score": score,
@@ -487,9 +930,41 @@ def _run_inference_detailed(
                 "ranking_score": round(float(cell.get("ranking_score", score)), 6),
                 "final_score": score,
                 "gate_multiplier": round(float(cell.get("gate_multiplier", 1.0)), 6),
-                "module_details": cell.get("module_details", {}),
-            }
-        )
+                "vote_bonus": round(float(cell.get("vote_bonus", 0.0)), 6),
+                "target_sensitive_score": round(float(cell.get("target_sensitive_score", 0.0)), 6),
+                "target_agnostic_score": round(float(cell.get("target_agnostic_score", 0.0)), 6),
+                "target_sensitivity_gap": round(float(cell.get("target_sensitivity_gap", 0.0)), 6),
+                "target_primary_score": round(float(cell.get("target_primary_score", 0.0)), 6),
+                "target_sensitive_rank": int(sensitive_rank_map.get(cell["cell"], idx)),
+                "final_rank": int(idx),
+                "stage_a_rank": int(cell.get("stage_a_rank", sensitive_rank_map.get(cell["cell"], idx))),
+                "stage_a_margin_to_top1": round(float(cell.get("stage_a_margin_to_top1", 0.0)), 6),
+                "was_reordered_by_tiebreak": bool(cell.get("was_reordered_by_tiebreak", False)),
+                "primary_locked_top1": bool(cell.get("primary_locked_top1", False)),
+                "tie_break_score": round(float(cell.get("tie_break_score", 0.0)), 6),
+                "module_details": cell.get("module_details", {}) if include_module_details else {},
+        }
+        if preserve_diagnostics:
+            for key in (
+                "mean_score",
+                "std_score",
+                "score_spread",
+                "top1_vote_count",
+                "top3_vote_count",
+                "top5_vote_count",
+                "borda_score",
+                "rrf_score",
+                "disagreement_count",
+                "rank_entropy_like",
+                "support_margin_to_next",
+                "conflict_mass",
+            ):
+                if key in cell:
+                    payload[key] = round(float(cell[key]), 6)
+            for key, value in cell.items():
+                if key.startswith("module_") and isinstance(value, (int, float)):
+                    payload[key] = round(float(value), 6)
+        candidate_cells.append(payload)
 
     reasoning = build_explanation(
         parsed.rows,
@@ -502,6 +977,7 @@ def _run_inference_detailed(
     )
 
     baseline_candidate_cells = list(candidate_cells)
+    runtime_mode = str(load_fast_path_config().get("runtime_mode", "fast"))
     rerank_meta = {
         "ranking_stage": "baseline_only",
         "reranker_version": None,
@@ -509,15 +985,24 @@ def _run_inference_detailed(
         "reranker_fallback_reason": "reranker_disabled_by_runtime_flag",
     }
     if apply_reranker_stage:
-        feature_rows = build_candidate_feature_rows(
-            case_id=f"runtime:{target_number}",
-            board_shape=(parsed.rows, parsed.cols),
-            candidates=baseline_candidate_cells,
-            true_cell_1_based=None,
-            board=board,
-            target_number=target_number,
-        )
-        candidate_cells, rerank_meta = apply_reranker(baseline_candidate_cells, feature_rows)
+        artifact, reason = load_reranker_artifact()
+        if artifact is None or not artifact.get("enabled", False):
+            rerank_meta = {
+                "ranking_stage": "baseline_only",
+                "reranker_version": None if artifact is None else artifact.get("version"),
+                "reranker_feature_schema_version": None if artifact is None else artifact.get("feature_schema_version"),
+                "reranker_fallback_reason": reason or "reranker_disabled",
+            }
+        else:
+            feature_rows = build_candidate_feature_rows(
+                case_id=f"runtime:{target_number}",
+                board_shape=(parsed.rows, parsed.cols),
+                candidates=baseline_candidate_cells,
+                true_cell_1_based=None,
+                board=board,
+                target_number=target_number,
+            )
+            candidate_cells, rerank_meta = apply_reranker(baseline_candidate_cells, feature_rows)
 
     best_cell_payload = candidate_cells[0]
     best_score = round(float(best_cell_payload["score"]), 6)
@@ -552,12 +1037,30 @@ def _run_inference_detailed(
             "effective_candidate_count": effective_candidate_count,
             "gated_candidate_count": gated_candidate_count,
             "confidence_reason": confidence_reason,
-            **{k: (round(v, 6) if isinstance(v, float) else bool(v)) for k, v in diagnostics.items()},
+            **{
+                k: (
+                    round(v, 6)
+                    if isinstance(v, float)
+                    else (bool(v) if isinstance(v, bool) else v)
+                )
+                for k, v in diagnostics.items()
+            },
             "source": source,
             "version": version,
             "aggregation_type": str(aggregator_cfg.get("type", "weighted_average")),
-            "normalization_mode": str(aggregator_cfg.get("normalization_mode", "disabled")),
+            "fusion_mode": str(aggregator_cfg.get("fusion_mode", "weighted_rank_fusion")),
+            "judge_model_type": str(aggregator_cfg.get("judge_model_type", "")),
+            "judge_artifact_path": str(aggregator_cfg.get("judge_artifact_path", "")),
+            "judge_artifact_version": str(diagnostics.get("judge_artifact_version", "unknown")),
+            "judge_feature_schema_version": str(diagnostics.get("judge_feature_schema_version", "unknown")),
+            "equal_start_enabled": bool(aggregator_cfg.get("type", "") == "competitive_ensemble"),
+            "legacy_weighted_path_used": bool(aggregator_cfg.get("type", "") != "competitive_ensemble"),
+            "normalization_mode": str(
+                aggregator_cfg.get("competitor_normalization", aggregator_cfg.get("normalization_mode", "disabled"))
+            ),
             "gating_enabled": bool(aggregator_cfg.get("gating_enabled", False)),
+            "runtime_mode": runtime_mode,
+            "fallback_reason": diagnostics.get("fallback_reason"),
             "elimination_version": str(aggregator_cfg.get("elimination_version", "v1")),
             "ranking_stage": rerank_meta["ranking_stage"],
             "reranker_version": rerank_meta["reranker_version"],
@@ -797,5 +1300,6 @@ def run_inference(
         module_settings=module_settings,
         version=version,
         apply_reranker_stage=apply_reranker_stage,
+        include_module_details=False,
     )
     return compact_top10_response(detailed)

@@ -1,0 +1,48 @@
+{
+  "walk_forward_only": true,
+  "trained_from_real_data": true,
+  "fold_results": [
+    {
+      "fold_index": 1,
+      "train_cases": 2,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 2,
+      "train_cases": 3,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 3,
+      "train_cases": 4,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 4,
+      "train_cases": 5,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 5,
+      "train_cases": 6,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 6,
+      "train_cases": 7,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 7,
+      "train_cases": 8,
+      "valid_rank": 1
+    },
+    {
+      "fold_index": 8,
+      "train_cases": 9,
+      "valid_rank": 1
+    }
+  ],
+  "top1_rate": 1.0,
+  "mrr": 1.0
+}
