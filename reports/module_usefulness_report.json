@@ -1,0 +1,248 @@
+{
+  "baseline": {
+    "top1_hit_rate": 1.0,
+    "top3_hit_rate": 1.0,
+    "top5_hit_rate": 1.0,
+    "mrr": 1.0,
+    "mean_true_rank": 1.0,
+    "avg_latency_ms": 292.115
+  },
+  "standalone": {
+    "logic_rule": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 25.156
+    },
+    "pattern_model": {
+      "top1_hit_rate": 0.0,
+      "top3_hit_rate": 0.0,
+      "top5_hit_rate": 0.571429,
+      "mrr": 0.143032,
+      "mean_true_rank": 15.285714,
+      "avg_latency_ms": 24.594
+    },
+    "prior_model": {
+      "top1_hit_rate": 0.0,
+      "top3_hit_rate": 0.0,
+      "top5_hit_rate": 0.0,
+      "mrr": 0.024322,
+      "mean_true_rank": 42.0,
+      "avg_latency_ms": 23.941
+    },
+    "directional_consistency": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 27.044
+    },
+    "line_consistency": {
+      "top1_hit_rate": 0.857143,
+      "top3_hit_rate": 0.857143,
+      "top5_hit_rate": 0.857143,
+      "mrr": 0.875,
+      "mean_true_rank": 2.0,
+      "avg_latency_ms": 25.469
+    },
+    "global_assignment_prior": {
+      "top1_hit_rate": 0.714286,
+      "top3_hit_rate": 0.714286,
+      "top5_hit_rate": 1.0,
+      "mrr": 0.771429,
+      "mean_true_rank": 2.142857,
+      "avg_latency_ms": 149.452
+    },
+    "pairwise_conditional_consistency": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 161.455
+    },
+    "focus_score": {
+      "top1_hit_rate": 0.0,
+      "top3_hit_rate": 0.0,
+      "top5_hit_rate": 0.0,
+      "mrr": 0.029074,
+      "mean_true_rank": 36.428571,
+      "avg_latency_ms": 24.536
+    },
+    "connectivity_heatmap": {
+      "top1_hit_rate": 0.0,
+      "top3_hit_rate": 0.0,
+      "top5_hit_rate": 0.0,
+      "mrr": 0.023916,
+      "mean_true_rank": 42.714286,
+      "avg_latency_ms": 24.067
+    },
+    "difference_trend": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 24.275
+    },
+    "skip_patterns": {
+      "top1_hit_rate": 0.857143,
+      "top3_hit_rate": 0.857143,
+      "top5_hit_rate": 0.857143,
+      "mrr": 0.880952,
+      "mean_true_rank": 1.714286,
+      "avg_latency_ms": 24.514
+    },
+    "mirror_sequences": {
+      "top1_hit_rate": 0.142857,
+      "top3_hit_rate": 0.142857,
+      "top5_hit_rate": 0.142857,
+      "mrr": 0.233211,
+      "mean_true_rank": 8.428571,
+      "avg_latency_ms": 24.798
+    },
+    "tail_analyzer": {
+      "top1_hit_rate": 0.0,
+      "top3_hit_rate": 0.0,
+      "top5_hit_rate": 0.571429,
+      "mrr": 0.143032,
+      "mean_true_rank": 15.285714,
+      "avg_latency_ms": 24.642
+    }
+  },
+  "incremental_plus": {
+    "tail_analyzer": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 299.424
+    },
+    "focus_score": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 288.801
+    },
+    "connectivity_heatmap": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 293.133
+    },
+    "skip_patterns": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 292.579
+    },
+    "difference_trend": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 287.07
+    },
+    "mirror_sequences": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 290.08
+    }
+  },
+  "incremental_minus": {
+    "logic_rule": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 291.969
+    },
+    "pattern_model": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 290.519
+    },
+    "prior_model": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 289.394
+    },
+    "directional_consistency": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 289.219
+    },
+    "line_consistency": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 301.329
+    },
+    "global_assignment_prior": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 171.228
+    },
+    "pairwise_conditional_consistency": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "top5_hit_rate": 1.0,
+      "mrr": 1.0,
+      "mean_true_rank": 1.0,
+      "avg_latency_ms": 160.786
+    }
+  },
+  "pareto": {
+    "useful_modules": [],
+    "neutral_modules": [
+      "logic_rule",
+      "directional_consistency",
+      "pairwise_conditional_consistency",
+      "difference_trend"
+    ],
+    "dragging_modules": [
+      "pattern_model",
+      "prior_model",
+      "line_consistency",
+      "global_assignment_prior",
+      "focus_score",
+      "connectivity_heatmap",
+      "skip_patterns",
+      "mirror_sequences",
+      "tail_analyzer"
+    ],
+    "expensive_but_helpful": [],
+    "expensive_and_not_helpful": [
+      "global_assignment_prior"
+    ]
+  }
+}

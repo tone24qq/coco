@@ -1,0 +1,33 @@
+{
+  "modes": {
+    "weighted_only": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 167.758
+    },
+    "vote_only": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 162.142
+    },
+    "weighted_plus_vote": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 151.164
+    },
+    "weighted_plus_vote_with_gate": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 150.997
+    }
+  },
+  "recommended_default": "weighted_only",
+  "conclusion": {
+    "voting_more_stable_than_weighted": true,
+    "voting_better_as_bonus": true
+  }
+}

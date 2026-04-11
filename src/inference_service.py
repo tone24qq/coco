@@ -12,7 +12,7 @@ from src.inference_config import (
     load_module_weights,
 )
 from src.ranking_features import build_candidate_feature_rows
-from src.reranker import apply_reranker
+from src.reranker import apply_reranker, load_reranker_artifact
 from src.scoring_modules import Cell, ModuleScoreResult, build_modules
 from src.scoring_modules import linear_sum_assignment
 
@@ -128,21 +128,29 @@ def score_candidates(
     weights = module_weights or load_module_weights()
     settings = module_settings if module_settings is not None else load_module_settings()
     fast_cfg = load_fast_path_config()
+    runtime_mode = str(fast_cfg.get("runtime_mode", "fast"))
     if bool(fast_cfg.get("enabled", True)):
         use_numba = bool(fast_cfg.get("use_numba", True))
         for module_name in ("logic_rule", "prior_model", "directional_consistency", "line_consistency"):
             settings.setdefault(module_name, {})
             settings[module_name].setdefault("fast_enabled", use_numba)
         settings.setdefault("global_assignment_prior", {})
+        global_top_m = int(fast_cfg.get("global_assignment_top_m_candidates", 4))
+        settings["global_assignment_prior"].setdefault("top_m_candidates", global_top_m)
         settings["global_assignment_prior"].setdefault(
-            "top_m_candidates",
-            int(fast_cfg.get("pairwise_top_m_candidates_for_assignment", 8)),
+            "exact_max_candidates",
+            int(fast_cfg.get("exact_max_candidates", 20)),
         )
+        if runtime_mode == "fast":
+            settings["global_assignment_prior"].setdefault("assignment_mode", "greedy")
         settings.setdefault("pairwise_conditional_consistency", {})
+        settings["pairwise_conditional_consistency"].setdefault("runtime_mode", runtime_mode)
         settings["pairwise_conditional_consistency"].setdefault(
-            "top_m_candidates_for_assignment",
-            int(fast_cfg.get("pairwise_top_m_candidates_for_assignment", 8)),
+            "candidate_top_n",
+            int(fast_cfg.get("pairwise_candidate_top_n", 8)),
         )
+        settings["pairwise_conditional_consistency"].setdefault("global_assignment_mode", "greedy")
+        settings["pairwise_conditional_consistency"].setdefault("global_assignment_top_m_candidates", global_top_m)
     modules = build_modules(settings)
     explanations: List[str] = []
 
@@ -213,9 +221,13 @@ def aggregate_candidate_scores(
     soft_gate_floor = float(aggregator_cfg.get("soft_gate_floor", 0.25))
     spread_enabled = bool(aggregator_cfg.get("score_spread_enabled", True))
     spread_temperature = float(aggregator_cfg.get("score_spread_temperature", 0.2))
+    fusion_mode = str(aggregator_cfg.get("fusion_mode", "weighted_only"))
+    vote_alpha = float(aggregator_cfg.get("vote_alpha", 0.15))
     ranking_scores: List[float] = []
+    vote_scores: Dict[Cell, float] = _compute_vote_scores(candidates, weights, aggregator_cfg)
 
     for c in candidates:
+        cell = c["cell"]
         module_scores = c["module_scores"]
         module_details = c.get("module_details", {})
         support_fusion = sum(float(module_scores.get(name, 0.0)) * weight for name, weight in weights.items())
@@ -251,11 +263,21 @@ def aggregate_candidate_scores(
         else:
             gated_score = gate_multiplier * support_fusion
             ranking_score = gated_score - contradiction_weight * contradiction_penalty
+        vote_bonus = float(vote_scores.get(cell, 0.0))
+        if fusion_mode == "vote_only":
+            ranking_score = vote_bonus
+            gated_score = vote_bonus
+        elif fusion_mode == "weighted_plus_vote":
+            ranking_score = support_fusion + vote_alpha * vote_bonus
+            gated_score = ranking_score
+        elif fusion_mode == "weighted_plus_vote_with_gate":
+            ranking_score = ranking_score + vote_alpha * vote_bonus
 
         c["support_score"] = support_fusion
         c["contradiction_penalty"] = contradiction_penalty
         c["gated_score"] = gated_score
         c["gate_multiplier"] = gate_multiplier
+        c["vote_bonus"] = vote_bonus
         c["ranking_score"] = ranking_score
         ranking_scores.append(ranking_score)
 
@@ -309,7 +331,45 @@ def aggregate_candidate_scores(
         "top1_top5_mean_gap": top1_top5_mean_gap,
         "score_entropy_like": entropy_like,
         "collapsed_score_flag": collapsed,
+        "fusion_mode": fusion_mode,
     }
+
+
+def _compute_vote_scores(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    aggregator_cfg: Dict[str, object],
+) -> Dict[Cell, float]:
+    if not candidates:
+        return {}
+    module_names = [m for m in weights.keys()]
+    top1_w = float(aggregator_cfg.get("vote_top1_weight", 1.0))
+    top3_w = float(aggregator_cfg.get("vote_top3_weight", 0.7))
+    rrf_w = float(aggregator_cfg.get("vote_rrf_weight", 0.8))
+    borda_w = float(aggregator_cfg.get("vote_borda_weight", 0.6))
+    k_rrf = float(aggregator_cfg.get("vote_rrf_k", 10.0))
+    cells = [c["cell"] for c in candidates]
+    vote_totals: Dict[Cell, float] = {cell: 0.0 for cell in cells}
+    for m in module_names:
+        ranked = sorted(candidates, key=lambda x: float(x["module_scores"].get(m, 0.0)), reverse=True)
+        n = len(ranked)
+        for idx, cand in enumerate(ranked):
+            cell = cand["cell"]
+            rank = idx + 1
+            vote = 0.0
+            if rank == 1:
+                vote += top1_w
+            if rank <= 3:
+                vote += top3_w / 3.0
+            vote += rrf_w * (1.0 / (k_rrf + rank))
+            vote += borda_w * ((n - idx) / max(n, 1))
+            vote_totals[cell] += vote
+    values = list(vote_totals.values())
+    min_v = min(values)
+    max_v = max(values)
+    if abs(max_v - min_v) < 1e-9:
+        return {k: 0.5 for k in vote_totals}
+    return {k: (v - min_v) / (max_v - min_v) for k, v in vote_totals.items()}
 
 
 def _candidate_confidence_1_to_100(
@@ -380,6 +440,7 @@ def _run_inference_detailed(
     module_settings: Optional[Dict[str, Dict[str, object]]] = None,
     version: str = "v1",
     apply_reranker_stage: bool = True,
+    include_module_details: bool = True,
 ) -> Dict[str, Any]:
     parsed = parse_board_input(board)
     remaining = compute_remaining_numbers(parsed)
@@ -487,7 +548,7 @@ def _run_inference_detailed(
                 "ranking_score": round(float(cell.get("ranking_score", score)), 6),
                 "final_score": score,
                 "gate_multiplier": round(float(cell.get("gate_multiplier", 1.0)), 6),
-                "module_details": cell.get("module_details", {}),
+                "module_details": cell.get("module_details", {}) if include_module_details else {},
             }
         )
 
@@ -502,6 +563,7 @@ def _run_inference_detailed(
     )
 
     baseline_candidate_cells = list(candidate_cells)
+    runtime_mode = str(load_fast_path_config().get("runtime_mode", "fast"))
     rerank_meta = {
         "ranking_stage": "baseline_only",
         "reranker_version": None,
@@ -509,15 +571,24 @@ def _run_inference_detailed(
         "reranker_fallback_reason": "reranker_disabled_by_runtime_flag",
     }
     if apply_reranker_stage:
-        feature_rows = build_candidate_feature_rows(
-            case_id=f"runtime:{target_number}",
-            board_shape=(parsed.rows, parsed.cols),
-            candidates=baseline_candidate_cells,
-            true_cell_1_based=None,
-            board=board,
-            target_number=target_number,
-        )
-        candidate_cells, rerank_meta = apply_reranker(baseline_candidate_cells, feature_rows)
+        artifact, reason = load_reranker_artifact()
+        if artifact is None or not artifact.get("enabled", False):
+            rerank_meta = {
+                "ranking_stage": "baseline_only",
+                "reranker_version": None if artifact is None else artifact.get("version"),
+                "reranker_feature_schema_version": None if artifact is None else artifact.get("feature_schema_version"),
+                "reranker_fallback_reason": reason or "reranker_disabled",
+            }
+        else:
+            feature_rows = build_candidate_feature_rows(
+                case_id=f"runtime:{target_number}",
+                board_shape=(parsed.rows, parsed.cols),
+                candidates=baseline_candidate_cells,
+                true_cell_1_based=None,
+                board=board,
+                target_number=target_number,
+            )
+            candidate_cells, rerank_meta = apply_reranker(baseline_candidate_cells, feature_rows)
 
     best_cell_payload = candidate_cells[0]
     best_score = round(float(best_cell_payload["score"]), 6)
@@ -552,12 +623,20 @@ def _run_inference_detailed(
             "effective_candidate_count": effective_candidate_count,
             "gated_candidate_count": gated_candidate_count,
             "confidence_reason": confidence_reason,
-            **{k: (round(v, 6) if isinstance(v, float) else bool(v)) for k, v in diagnostics.items()},
+            **{
+                k: (
+                    round(v, 6)
+                    if isinstance(v, float)
+                    else (bool(v) if isinstance(v, bool) else v)
+                )
+                for k, v in diagnostics.items()
+            },
             "source": source,
             "version": version,
             "aggregation_type": str(aggregator_cfg.get("type", "weighted_average")),
             "normalization_mode": str(aggregator_cfg.get("normalization_mode", "disabled")),
             "gating_enabled": bool(aggregator_cfg.get("gating_enabled", False)),
+            "runtime_mode": runtime_mode,
             "elimination_version": str(aggregator_cfg.get("elimination_version", "v1")),
             "ranking_stage": rerank_meta["ranking_stage"],
             "reranker_version": rerank_meta["reranker_version"],
@@ -797,5 +876,6 @@ def run_inference(
         module_settings=module_settings,
         version=version,
         apply_reranker_stage=apply_reranker_stage,
+        include_module_details=False,
     )
     return compact_top10_response(detailed)
