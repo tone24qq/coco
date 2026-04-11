@@ -3,150 +3,118 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple
+from statistics import mean
+from typing import Any, Dict, List, Tuple
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.inference_config import load_module_weights
+from src.inference_config import load_aggregator_config, load_module_weights
 from src.inference_service import _run_inference_detailed
 
-Cell = Tuple[int, int]
+
+Case = Dict[str, Any]
 
 
-def _make_case(seed: int, rows: int, cols: int, mask_mod: int = 2) -> dict:
+def _make_case(seed: int, rows: int, cols: int, mask_mod: int = 2) -> Case:
     board = []
     n = 1
     for r in range(rows):
         row = []
         for c in range(cols):
-            v = n
+            value = n
             n += 1
-            if (r + c + seed) % mask_mod == 0:
-                row.append(-1)
-            else:
-                row.append(v)
+            row.append(-1 if (r + c + seed) % mask_mod == 0 else value)
         board.append(row)
     opened = {v for row in board for v in row if v != -1}
     target = min(x for x in range(1, rows * cols + 1) if x not in opened)
-    true = None
-    for r in range(rows):
-        for c in range(cols):
-            if (r + c + seed) % mask_mod == 0 and (r * cols + c + 1) == target:
-                true = (r + 1, c + 1)
-                break
-        if true is not None:
-            break
-    return {"board": board, "target": target, "true": true}
+    true_cell = ((target - 1) // cols + 1, (target - 1) % cols + 1)
+    return {"board": board, "target": target, "true": true_cell, "shape": f"{rows}x{cols}"}
 
 
-def _rank_metrics(rows: List[dict]) -> Dict[str, float]:
-    n = len(rows)
-    top1 = sum(1 for x in rows if x["rank"] == 1) / max(n, 1)
-    top3 = sum(1 for x in rows if x["rank"] <= 3) / max(n, 1)
-    top5 = sum(1 for x in rows if x["rank"] <= 5) / max(n, 1)
-    mrr = sum(1.0 / x["rank"] for x in rows) / max(n, 1)
-    mean_rank = sum(x["rank"] for x in rows) / max(n, 1)
-    mean_lat = sum(x["latency_ms"] for x in rows) / max(n, 1)
+def _metrics(rows: List[Dict[str, float]]) -> Dict[str, float]:
+    n = max(len(rows), 1)
     return {
-        "top1_hit_rate": round(top1, 6),
-        "top3_hit_rate": round(top3, 6),
-        "top5_hit_rate": round(top5, 6),
-        "mrr": round(mrr, 6),
-        "mean_true_rank": round(mean_rank, 6),
-        "avg_latency_ms": round(mean_lat, 3),
+        "top1_hit_rate": round(sum(1 for r in rows if r["rank"] == 1) / n, 6),
+        "top3_hit_rate": round(sum(1 for r in rows if r["rank"] <= 3) / n, 6),
+        "top5_hit_rate": round(sum(1 for r in rows if r["rank"] <= 5) / n, 6),
+        "mrr": round(sum(1.0 / r["rank"] for r in rows) / n, 6),
+        "mean_true_rank": round(sum(r["rank"] for r in rows) / n, 6),
+        "avg_latency_ms": round(sum(r["latency_ms"] for r in rows) / n, 3),
     }
 
 
-def _eval_cases(cases: List[dict], weights: Dict[str, float]) -> Dict[str, float]:
-    rows = []
+def _evaluate(cases: List[Case], module_weights: Dict[str, float], fusion_mode: str, agg_type: str = "competitive_ensemble") -> Dict[str, Any]:
+    rows: List[Dict[str, float]] = []
+    win_counter: Dict[str, int] = {}
+    feature_importance: Dict[str, float] = {}
+    disagreements: List[float] = []
+    gains: List[float] = []
     for case in cases:
+        aggregator_cfg = load_aggregator_config()
+        aggregator_cfg["type"] = agg_type
+        aggregator_cfg["fusion_mode"] = fusion_mode
         t0 = time.perf_counter()
         out = _run_inference_detailed(
             case["board"],
             case["target"],
             source="ablation",
-            module_weights=weights,
+            module_weights=module_weights,
             apply_reranker_stage=False,
             include_module_details=False,
+            aggregator_config=aggregator_cfg,
         )
-        lat_ms = (time.perf_counter() - t0) * 1000.0
+        latency_ms = (time.perf_counter() - t0) * 1000.0
         rank = 999
-        if case["true"] is not None:
-            for i, cand in enumerate(out["candidate_cells"], start=1):
-                if (cand["row"], cand["col"]) == case["true"]:
-                    rank = i
-                    break
-        rows.append({"rank": rank, "latency_ms": lat_ms})
-    return _rank_metrics(rows)
-
-
-def _weight_of(module: str, base: Dict[str, float]) -> Dict[str, float]:
-    return {module: 1.0} if module in base else {module: 1.0}
+        for i, cand in enumerate(out["candidate_cells"], start=1):
+            if (cand["row"], cand["col"]) == case["true"]:
+                rank = i
+                break
+        rows.append({"rank": rank, "latency_ms": latency_ms})
+        top = out["candidate_cells"][0]
+        winner = max(top["module_scores"].items(), key=lambda kv: kv[1])[0]
+        win_counter[winner] = win_counter.get(winner, 0) + 1
+        disagreements.append(float(top.get("disagreement_count", 0.0)))
+        gains.append(1.0 / rank)
+        for k, v in top.items():
+            if k.startswith("module_") and k.endswith("_score"):
+                feature_importance[k] = feature_importance.get(k, 0.0) + float(v)
+    metrics = _metrics(rows)
+    n = max(len(cases), 1)
+    return {
+        "metrics": metrics,
+        "per_module_win_rate": {k: round(v / n, 6) for k, v in sorted(win_counter.items())},
+        "judge_selected_feature_importance": {
+            k: round(v / n, 6) for k, v in sorted(feature_importance.items(), key=lambda kv: kv[1], reverse=True)[:20]
+        },
+        "disagreement_vs_gain": {
+            "avg_disagreement": round(mean(disagreements) if disagreements else 0.0, 6),
+            "avg_gain": round(mean(gains) if gains else 0.0, 6),
+        },
+        "fusion_mode": fusion_mode,
+        "aggregator_type": agg_type,
+    }
 
 
 def main() -> None:
     base_weights = load_module_weights()
     modules = list(base_weights.keys())
-    new_modules = {
-        "focus_score",
-        "connectivity_heatmap",
-        "difference_trend",
-        "skip_patterns",
-        "mirror_sequences",
-        "tail_analyzer",
-    }
-    cases = []
-    for s in range(4):
-        cases.append(_make_case(s, 8, 10, mask_mod=2))
-    for s in range(3):
-        cases.append(_make_case(10 + s, 10, 16, mask_mod=3))
+    cases = [_make_case(s, 8, 10, 2) for s in range(4)] + [_make_case(10 + s, 10, 16, 3) for s in range(4)]
 
-    standalone = {m: _eval_cases(cases, _weight_of(m, base_weights)) for m in modules}
-    baseline = _eval_cases(cases, base_weights)
-
-    plus = {}
-    minus = {}
-    core_modules = [m for m in modules if m not in new_modules]
-    for m in new_modules:
-        if m not in modules:
-            continue
-        w = dict(base_weights)
-        w[m] = max(w.get(m, 0.0), 0.05)
-        plus[m] = _eval_cases(cases, w)
-    for m in core_modules:
-        w = dict(base_weights)
-        w.pop(m, None)
-        if not w:
-            continue
-        total = sum(w.values())
-        w = {k: v / total for k, v in w.items()}
-        minus[m] = _eval_cases(cases, w)
-
-    useful, neutral, dragging = [], [], []
-    for m, stats in standalone.items():
-        gain = stats["top1_hit_rate"] - baseline["top1_hit_rate"]
-        if gain > 0.02:
-            useful.append(m)
-        elif gain < -0.02:
-            dragging.append(m)
-        else:
-            neutral.append(m)
+    standalone = {m: _evaluate(cases, {m: 1.0}, "weighted_rank_fusion") for m in modules}
+    baseline_equal = _evaluate(cases, {m: 1.0 / len(modules) for m in modules}, "weighted_rank_fusion")
+    weighted_rank = _evaluate(cases, base_weights, "weighted_rank_fusion")
+    vote_fusion = _evaluate(cases, base_weights, "vote_based_fusion")
+    meta_judge = _evaluate(cases, base_weights, "learned_meta_ranker")
 
     report = {
-        "baseline": baseline,
+        "equal_start_competition": baseline_equal,
+        "competitive_fusion_weighted_rank": weighted_rank,
+        "competitive_fusion_vote": vote_fusion,
+        "competitive_fusion_meta_judge": meta_judge,
         "standalone": standalone,
-        "incremental_plus": plus,
-        "incremental_minus": minus,
-        "pareto": {
-            "useful_modules": useful,
-            "neutral_modules": neutral,
-            "dragging_modules": dragging,
-            "expensive_but_helpful": [m for m, s in standalone.items() if s["avg_latency_ms"] > 120 and m in useful],
-            "expensive_and_not_helpful": [m for m, s in standalone.items() if s["avg_latency_ms"] > 120 and m in dragging],
-        },
     }
     Path("reports").mkdir(exist_ok=True)
     out = Path("reports/module_usefulness_report.json")

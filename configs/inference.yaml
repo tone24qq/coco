@@ -40,11 +40,7 @@ modules:
       candidate_top_n: 8
       pairwise_seed_top_n: 8
       pairwise_seed_modules:
-        - logic_rule
-        - directional_consistency
-        - line_consistency
-        - difference_trend
-        - skip_patterns
+        - __all_enabled_modules__
       global_assignment_mode: greedy
       global_assignment_top_m_candidates: 4
       gating_enabled: true
@@ -73,44 +69,20 @@ modules:
     tail_analyzer:
       window_size: 3
   aggregator:
-    type: gate_then_weighted_sum
-    normalization_mode: light
-    fusion_mode: weighted_plus_vote_with_gate
-    vote_alpha: 0.08
-    ranking_contract_version: target_primary_v2
-    epsilon_primary: 0.02
-    target_primary_modules:
-      - logic_rule
-      - directional_consistency
-      - line_consistency
-      - difference_trend
-      - skip_patterns
-      - pairwise_conditional_consistency
-      - pattern_model
-    tie_break_modules:
-      - prior_model
-      - focus_score
-      - connectivity_heatmap
-      - mirror_sequences
-      - tail_analyzer
-      - global_assignment_prior
-    target_agnostic_modules:
-      - prior_model
-      - focus_score
-      - connectivity_heatmap
-      - mirror_sequences
-      - tail_analyzer
-      - global_assignment_prior
-    max_target_agnostic_weight_share: 0.2
-    vote_include_modules:
-      - logic_rule
-      - directional_consistency
-      - line_consistency
-      - difference_trend
-      - skip_patterns
-      - pairwise_conditional_consistency
+    type: competitive_ensemble
+    fusion_mode: learned_meta_ranker
+    competitor_normalization: per_module_minmax
+    include_vote_features: true
+    include_rank_features: true
+    include_score_features: true
+    judge_model_type: logistic_ranker
+    judge_artifact_path: artifacts/competitive_judge_artifact.json
+    fallback_mode: weighted_rank_fusion
+    preserve_diagnostics: true
+    rank_fusion_method: rrf
     vote_top1_weight: 1.0
     vote_top3_weight: 0.7
+    vote_top5_weight: 0.5
     vote_rrf_weight: 0.8
     vote_borda_weight: 0.6
     vote_rrf_k: 10

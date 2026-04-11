@@ -1,0 +1,26 @@
+{
+  "model_type": "logistic_ranker",
+  "schema_version": "competitive_meta_v1",
+  "feature_names": [
+    "mean_score",
+    "std_score",
+    "top1_vote_count",
+    "top3_vote_count",
+    "borda_score",
+    "rrf_score",
+    "disagreement_count",
+    "conflict_mass"
+  ],
+  "coef": [
+    0.033129772050118265,
+    0.044027407966333795,
+    1.555355127026991,
+    0.8482634928975501,
+    0.11564262198974869,
+    0.2402282484674713,
+    -0.8475915483546235,
+    0.053135799318393476
+  ],
+  "intercept": -12.708634011045877,
+  "training_split": "walk_forward_time_series"
+}

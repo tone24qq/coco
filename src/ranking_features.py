@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.board_geometry import anti_diagonal_cells, cell_on_anti_diagonal, cell_on_main_diagonal, main_diagonal_cells
 
-FEATURE_SCHEMA_VERSION = "ranking_features_v2"
+FEATURE_SCHEMA_VERSION = "ranking_features_v3"
 TOP_KS = (1, 3, 5)
 
 
@@ -171,9 +171,41 @@ def build_candidate_feature_rows(
             "label": int(true_cell_1_based == (row, col)) if true_cell_1_based else None,
         }
 
+        candidate_score_values = [float(module_scores.get(m, 0.0)) for m in module_names]
+        candidate_rank_values = [int(module_ranks[m][idx]) for m in module_names]
+        mean_score = sum(candidate_score_values) / max(len(candidate_score_values), 1)
+        variance = sum((s - mean_score) ** 2 for s in candidate_score_values) / max(len(candidate_score_values), 1)
+        feature["mean_score"] = float(candidate.get("mean_score", mean_score))
+        feature["std_score"] = float(candidate.get("std_score", variance ** 0.5))
+        spread_default = (max(candidate_score_values) - min(candidate_score_values)) if candidate_score_values else 0.0
+        feature["score_spread"] = float(candidate.get("score_spread", spread_default))
+        feature["top1_vote_count"] = float(candidate.get("top1_vote_count", consensus["module_consensus_top1"]))
+        feature["top3_vote_count"] = float(candidate.get("top3_vote_count", consensus["module_consensus_top3"]))
+        feature["borda_score"] = float(candidate.get("borda_score", 0.0))
+        feature["rrf_score"] = float(candidate.get("rrf_score", 0.0))
+        feature["disagreement_count"] = float(
+            candidate.get("disagreement_count", sum(1 for r in candidate_rank_values if r > 3))
+        )
+        feature["rank_entropy_like"] = float(candidate.get("rank_entropy_like", 0.0))
+        feature["support_margin_to_next"] = float(candidate.get("support_margin_to_next", 0.0))
+        feature["conflict_mass"] = float(candidate.get("conflict_mass", 0.0))
+
         for m in module_names:
-            feature[f"module_score_{m}"] = float(module_scores.get(m, 0.0))
-            feature[f"module_rank_{m}"] = module_ranks[m][idx]
+            score_value = float(module_scores.get(m, 0.0))
+            rank_value = int(module_ranks[m][idx])
+            feature[f"module_score_{m}"] = score_value
+            feature[f"module_rank_{m}"] = rank_value
+            feature[f"module_{m}_score"] = score_value
+            feature[f"module_{m}_rank"] = rank_value
+            feature[f"module_{m}_is_top1"] = 1.0 if rank_value <= 1 else 0.0
+            feature[f"module_{m}_is_top3"] = 1.0 if rank_value <= 3 else 0.0
+            feature[f"module_{m}_is_top5"] = 1.0 if rank_value <= 5 else 0.0
+            details = module_details.get(m, {}) if isinstance(module_details.get(m, {}), dict) else {}
+            contradiction = float(details.get("contradiction_penalty", max(0.0, 1.0 - score_value)))
+            feature[f"module_{m}_contradiction_penalty"] = contradiction
+            feature[f"module_{m}_gate_multiplier"] = float(
+                details.get("gate_multiplier", candidate.get("gate_multiplier", 1.0))
+            )
 
         out.append(feature)
 
