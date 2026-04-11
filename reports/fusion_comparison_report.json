@@ -1,0 +1,27 @@
+{
+  "modes": {
+    "weighted_rank_fusion": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 224.104
+    },
+    "vote_based_fusion": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 222.921
+    },
+    "learned_meta_ranker": {
+      "top1_hit_rate": 1.0,
+      "top3_hit_rate": 1.0,
+      "mrr": 1.0,
+      "avg_latency_ms": 218.976
+    }
+  },
+  "recommended_default": "weighted_rank_fusion",
+  "conclusion": {
+    "vote_vs_weighted_rank": true,
+    "meta_vs_weighted_rank": true
+  }
+}

@@ -14,10 +14,20 @@ from src.board_geometry import (
     relative_rank_in_line,
 )
 from src.fast_scoring import (
+    directional_consistency_numba,
     evaluate_pairwise_gain_numba,
+    line_consistency_numba,
     logic_rule_numba,
     prepare_fast_inputs,
     prior_model_fast,
+)
+from src.vector_modules import (
+    connectivity_heatmap_vectorized,
+    difference_trend_vectorized,
+    focus_score_vectorized,
+    mirror_sequences_vectorized,
+    skip_patterns_vectorized,
+    tail_analyzer_vectorized,
 )
 
 try:
@@ -154,6 +164,68 @@ class PriorModelModule:
             dist = abs(r - center_r) + abs(c - center_c)
             result[(r, c)] = 1.0 - (dist / max_dist)
         return ModuleScoreResult(result, "prior_model: 使用位置先驗（中心偏好）評分")
+
+
+class FocusScoreModule:
+    name = "focus_score"
+
+    def __init__(self, window_size: int = 3) -> None:
+        self.window_size = max(1, int(window_size))
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        del target_number
+        scores = focus_score_vectorized(board, unopened_cells, window_size=self.window_size)
+        return ModuleScoreResult(scores, "focus_score: 局部視窗已知格密度")
+
+
+class ConnectivityHeatmapModule:
+    name = "connectivity_heatmap"
+
+    def __init__(self, decay: str = "inverse_distance", decay_gamma: float = 0.35) -> None:
+        self.decay = str(decay)
+        self.decay_gamma = float(decay_gamma)
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        del target_number
+        scores = connectivity_heatmap_vectorized(
+            board, unopened_cells, decay=self.decay, decay_gamma=self.decay_gamma
+        )
+        return ModuleScoreResult(scores, "connectivity_heatmap: 與已知格連通熱度")
+
+
+class DifferenceTrendModule:
+    name = "difference_trend"
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        scores = difference_trend_vectorized(board, unopened_cells, target_number)
+        return ModuleScoreResult(scores, "difference_trend: 行列差值趨勢一致性")
+
+
+class SkipPatternsModule:
+    name = "skip_patterns"
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        scores = skip_patterns_vectorized(board, unopened_cells, target_number)
+        return ModuleScoreResult(scores, "skip_patterns: 行列跳格規律支持度")
+
+
+class MirrorSequencesModule:
+    name = "mirror_sequences"
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        scores = mirror_sequences_vectorized(board, unopened_cells, target_number)
+        return ModuleScoreResult(scores, "mirror_sequences: 水平/垂直/對角鏡像支持度")
+
+
+class TailAnalyzerModule:
+    name = "tail_analyzer"
+
+    def __init__(self, window_size: int = 3) -> None:
+        self.window_size = max(1, int(window_size))
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        scores = tail_analyzer_vectorized(board, unopened_cells, target_number, window_size=self.window_size)
+        return ModuleScoreResult(scores, "tail_analyzer: 尾數分布局部相容性")
 
 
 def _clip(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -390,6 +462,18 @@ def _cell_number_compatibility(board: Board, cell: Cell, number: int) -> float:
     return _clip(0.4 * directional + 0.4 * line + 0.2 * prior)
 
 
+def _cell_number_compatibility_cached(
+    board: Board,
+    cell: Cell,
+    number: int,
+    cache: Dict[Tuple[Cell, int], float],
+) -> float:
+    key = (cell, int(number))
+    if key not in cache:
+        cache[key] = _cell_number_compatibility(board, cell, number)
+    return cache[key]
+
+
 class DirectionalConsistencyModule:
     name = "directional_consistency"
 
@@ -397,13 +481,26 @@ class DirectionalConsistencyModule:
         self.fast_enabled = fast_enabled
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
-        scores: Dict[Cell, float] = {}
+        py_scores: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}
         fast_scores: Dict[Cell, float] = {}
+        if self.fast_enabled and unopened_cells:
+            try:
+                board_arr, rows_arr, cols_arr, _ = prepare_fast_inputs(board, unopened_cells)
+                arr = directional_consistency_numba(board_arr, rows_arr, cols_arr, int(target_number))
+                fast_scores = {cell: float(arr[i]) for i, cell in enumerate(unopened_cells)}
+            except Exception:
+                fast_scores = {}
         for cell in unopened_cells:
             components = _directional_components(board, cell, target_number)
-            scores[cell] = fast_scores.get(cell, components["directional_consistency"])
+            py_scores[cell] = components["directional_consistency"]
             details[cell] = components
+        scores = dict(py_scores)
+        if fast_scores and unopened_cells:
+            py_top1 = max(unopened_cells, key=lambda c: py_scores.get(c, 0.0))
+            fast_top1 = max(unopened_cells, key=lambda c: fast_scores.get(c, 0.0))
+            if py_top1 == fast_top1:
+                scores = {cell: fast_scores.get(cell, py_scores[cell]) for cell in unopened_cells}
         return ModuleScoreResult(
             scores,
             "directional_consistency: 以左右上下順序、距離與列欄平滑性評估",
@@ -418,13 +515,26 @@ class LineConsistencyModule:
         self.fast_enabled = fast_enabled
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
-        scores: Dict[Cell, float] = {}
+        py_scores: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}
         fast_scores: Dict[Cell, float] = {}
+        if self.fast_enabled and unopened_cells:
+            try:
+                board_arr, rows_arr, cols_arr, _ = prepare_fast_inputs(board, unopened_cells)
+                arr = line_consistency_numba(board_arr, rows_arr, cols_arr, int(target_number))
+                fast_scores = {cell: float(arr[i]) for i, cell in enumerate(unopened_cells)}
+            except Exception:
+                fast_scores = {}
         for cell in unopened_cells:
             components = _line_components(board, cell, target_number)
-            scores[cell] = fast_scores.get(cell, components["line_consistency"])
+            py_scores[cell] = components["line_consistency"]
             details[cell] = components
+        scores = dict(py_scores)
+        if fast_scores and unopened_cells:
+            py_top1 = max(unopened_cells, key=lambda c: py_scores.get(c, 0.0))
+            fast_top1 = max(unopened_cells, key=lambda c: fast_scores.get(c, 0.0))
+            if py_top1 == fast_top1:
+                scores = {cell: fast_scores.get(cell, py_scores[cell]) for cell in unopened_cells}
         return ModuleScoreResult(
             scores,
             "line_consistency: 以整行整列與對角殘差/單調性/分位吻合度評估",
@@ -435,24 +545,32 @@ class LineConsistencyModule:
 class GlobalAssignmentPriorModule:
     name = "global_assignment_prior"
 
-    def __init__(self, assignment_mode: str = "exact", top_m_candidates: int = 8) -> None:
+    def __init__(
+        self,
+        assignment_mode: str = "exact",
+        top_m_candidates: int = 8,
+        exact_max_candidates: int = 20,
+    ) -> None:
         self.assignment_mode = assignment_mode
         self.top_m_candidates = max(1, int(top_m_candidates))
+        self.exact_max_candidates = max(2, int(exact_max_candidates))
 
     @staticmethod
     def _greedy_assignment_cost(
         board: Board,
         cells: List[Cell],
         numbers: List[int],
+        compatibility_cache: Optional[Dict[Tuple[Cell, int], float]] = None,
     ) -> Optional[float]:
         if not cells or not numbers:
             return 0.0
         if len(cells) != len(numbers):
             return None
         ranked_pairs = []
+        compat_cache = compatibility_cache if compatibility_cache is not None else {}
         for number in numbers:
             for cell in cells:
-                compat = _cell_number_compatibility(board, cell, number)
+                compat = _cell_number_compatibility_cached(board, cell, number, compat_cache)
                 ranked_pairs.append((1.0 - compat, number, cell))
         ranked_pairs.sort(key=lambda x: x[0])
         used_cells: set[Cell] = set()
@@ -477,14 +595,16 @@ class GlobalAssignmentPriorModule:
         board: Board,
         cells: List[Cell],
         numbers: List[int],
+        compatibility_cache: Optional[Dict[Tuple[Cell, int], float]] = None,
     ) -> Optional[float]:
         if linear_sum_assignment is None or not cells or not numbers or len(cells) != len(numbers):
             return None
         matrix = []
+        compat_cache = compatibility_cache if compatibility_cache is not None else {}
         for cell in cells:
             row_costs = []
             for number in numbers:
-                compatibility = _cell_number_compatibility(board, cell, number)
+                compatibility = _cell_number_compatibility_cached(board, cell, number, compat_cache)
                 row_costs.append(1.0 - compatibility)
             matrix.append(row_costs)
         row_idx, col_idx = linear_sum_assignment(matrix)
@@ -516,6 +636,7 @@ class GlobalAssignmentPriorModule:
             reverse=True,
         )
         active_anchors = pre_ranked[: self.top_m_candidates]
+        compatibility_cache: Dict[Tuple[Cell, int], float] = {}
         for anchor in active_anchors:
             board_with_anchor = [list(row) for row in board]
             board_with_anchor[anchor[0]][anchor[1]] = target_number
@@ -530,20 +651,26 @@ class GlobalAssignmentPriorModule:
             used_exact = 0
             used_greedy = 0
             assignment_cost = None
-            if self.assignment_mode == "exact":
-                assignment_cost = self._exact_assignment_cost(board_with_anchor, others, pool)
+            exact_allowed = self.assignment_mode == "exact" and len(unopened_cells) <= self.exact_max_candidates
+            if exact_allowed:
+                assignment_cost = self._exact_assignment_cost(
+                    board_with_anchor, others, pool, compatibility_cache=compatibility_cache
+                )
                 used_exact = int(assignment_cost is not None)
             if assignment_cost is None:
-                assignment_cost = self._greedy_assignment_cost(board_with_anchor, others, pool)
+                assignment_cost = self._greedy_assignment_cost(
+                    board_with_anchor, others, pool, compatibility_cache=compatibility_cache
+                )
                 used_greedy = 1
             infeasible = assignment_cost is None
             if infeasible:
                 assignment_cost = 1.0
             anchor_costs[anchor] = float(assignment_cost)
             anchor_details[anchor] = {
-                "global_assignment_mode": 1.0 if self.assignment_mode == "exact" else 0.0,
+                "global_assignment_mode": 1.0 if exact_allowed else 0.0,
                 "used_exact_assignment": float(used_exact),
                 "used_greedy_fallback": float(used_greedy),
+                "exact_forced_off_by_candidate_count": float(self.assignment_mode == "exact" and not exact_allowed),
                 "used_compatibility_fallback": 0.0,
                 "forced_anchor_total_assignment_cost": float(assignment_cost * max(len(others), 1)),
                 "forced_anchor_avg_assignment_cost": float(assignment_cost),
@@ -573,12 +700,13 @@ class GlobalAssignmentPriorModule:
         for anchor in unopened_cells:
             if anchor in scores:
                 continue
-            cheap_score = _cell_number_compatibility(board, anchor, target_number)
+            cheap_score = _cell_number_compatibility_cached(board, anchor, target_number, compatibility_cache)
             scores[anchor] = _clip(0.85 * cheap_score + 0.15 * NEUTRAL_SCORE)
             details[anchor] = {
                 "global_assignment_mode": 1.0 if self.assignment_mode == "exact" else 0.0,
                 "used_exact_assignment": 0.0,
                 "used_greedy_fallback": 0.0,
+                "exact_forced_off_by_candidate_count": 0.0,
                 "used_compatibility_fallback": 1.0,
                 "forced_anchor_total_assignment_cost": 0.0,
                 "forced_anchor_avg_assignment_cost": 0.0,
@@ -609,6 +737,10 @@ class PairwiseConditionalConsistencyModule:
         hard_gate_multiplier: float = 0.05,
         soft_gate_floor: float = 0.25,
         submodule_weights: Optional[Dict[str, float]] = None,
+        runtime_mode: str = "full",
+        candidate_top_n: int = 8,
+        global_assignment_mode: str = "greedy",
+        global_assignment_top_m_candidates: int = 4,
     ) -> None:
         self.anchor_top_k_cells = max(1, anchor_top_k_cells)
         self.anchor_top_k_values = max(1, anchor_top_k_values)
@@ -618,6 +750,8 @@ class PairwiseConditionalConsistencyModule:
         self.hard_violation_threshold = hard_violation_threshold
         self.hard_gate_multiplier = hard_gate_multiplier
         self.soft_gate_floor = soft_gate_floor
+        self.runtime_mode = str(runtime_mode)
+        self.candidate_top_n = max(1, int(candidate_top_n))
         raw_weights = submodule_weights or {}
         total = sum(max(0.0, float(v)) for v in raw_weights.values())
         if total <= 0:
@@ -632,15 +766,20 @@ class PairwiseConditionalConsistencyModule:
         self.logic_module = LogicRuleModule()
         self.directional_module = DirectionalConsistencyModule()
         self.line_module = LineConsistencyModule()
-        self.global_module = GlobalAssignmentPriorModule(assignment_mode="exact")
+        self.global_module = GlobalAssignmentPriorModule(
+            assignment_mode=global_assignment_mode,
+            top_m_candidates=global_assignment_top_m_candidates,
+        )
+        self.seed_ranked_candidates: List[Cell] = []
 
-    def _candidate_composite(self, board: Board, unopened_cells: List[Cell], target_number: int, cell: Cell) -> float:
-        module_results = {
-            "logic_rule": self.logic_module.score(board, unopened_cells, target_number),
-            "directional_consistency": self.directional_module.score(board, unopened_cells, target_number),
-            "line_consistency": self.line_module.score(board, unopened_cells, target_number),
-            "global_assignment_prior": self.global_module.score(board, unopened_cells, target_number),
-        }
+    def set_seed_ranked_candidates(self, ranked: List[Cell]) -> None:
+        self.seed_ranked_candidates = list(ranked)
+
+    def _candidate_composite_from_results(
+        self,
+        module_results: Dict[str, ModuleScoreResult],
+        cell: Cell,
+    ) -> float:
         support = 0.0
         contradiction = 0.0
         weight_total = 0.0
@@ -683,23 +822,48 @@ class PairwiseConditionalConsistencyModule:
         n_total = rows * cols
         opened_numbers = {board[r][c] for r in range(rows) for c in range(cols) if board[r][c] != -1}
         remaining_numbers = [x for x in range(1, n_total + 1) if x not in opened_numbers and x != target_number]
-        target_support_scores = self.directional_module.score(board, unopened_cells, target_number).scores
+        module_results = {
+            "logic_rule": self.logic_module.score(board, unopened_cells, target_number),
+            "directional_consistency": self.directional_module.score(board, unopened_cells, target_number),
+            "line_consistency": self.line_module.score(board, unopened_cells, target_number),
+            "global_assignment_prior": self.global_module.score(board, unopened_cells, target_number),
+        }
+        target_support_scores = module_results["directional_consistency"].scores
         ranked_anchor_cells = sorted(unopened_cells, key=lambda c: target_support_scores.get(c, 0.0), reverse=True)
         anchor_cells = ranked_anchor_cells[: self.anchor_top_k_cells]
         ranked_values = sorted(remaining_numbers, key=lambda x: abs(x - target_number))
         anchor_values = ranked_values[: self.anchor_top_k_values]
 
         board_arr, _, _, known_mask = prepare_fast_inputs(board, unopened_cells)
-        base_composite_cache: Dict[Cell, float] = {}
-        conditioned_composite_cache: Dict[Tuple[Cell, int, Cell], float] = {}
+        base_composite_cache: Dict[Cell, float] = {
+            c: self._candidate_composite_from_results(module_results, c) for c in unopened_cells
+        }
+        candidate_subset = set(unopened_cells)
+        if self.runtime_mode == "fast":
+            baseline_ranked = (
+                [c for c in self.seed_ranked_candidates if c in base_composite_cache]
+                if self.seed_ranked_candidates
+                else sorted(unopened_cells, key=lambda c: base_composite_cache[c], reverse=True)
+            )
+            candidate_subset = set(baseline_ranked[: self.candidate_top_n])
         scores: Dict[Cell, float] = {}
         details: Dict[Cell, Dict[str, float]] = {}
         for candidate in unopened_cells:
-            if candidate not in base_composite_cache:
-                base_composite_cache[candidate] = self._candidate_composite(
-                    board, unopened_cells, target_number, candidate
-                )
             base_score = base_composite_cache[candidate]
+            if candidate not in candidate_subset:
+                scores[candidate] = 0.0
+                details[candidate] = {
+                    "best_anchor_row": -1.0,
+                    "best_anchor_col": -1.0,
+                    "best_anchor_value": -1.0,
+                    "conditional_gain": 0.0,
+                    "pair_trials_used": 0.0,
+                    "base_cache_hits": 1.0,
+                    "conditioned_cache_size": 0.0,
+                    "runtime_reduced_path": 1.0,
+                    "runtime_mode_fast": 1.0,
+                }
+                continue
             anchor_rows = [a[0] for a in anchor_cells if a != candidate]
             anchor_cols = [a[1] for a in anchor_cells if a != candidate]
             gains = evaluate_pairwise_gain_numba(
@@ -731,18 +895,11 @@ class PairwiseConditionalConsistencyModule:
                 for v in anchor_values[:2]:
                     screened.append((0.0, anchor, int(v)))
             screened = screened[: min(3, len(screened))]
-            for _, anchor, anchor_val in screened:
-                if anchor_val == target_number:
-                    continue
-                key = (anchor, int(anchor_val), candidate)
-                if key not in conditioned_composite_cache:
-                    board_with_anchor = [list(row) for row in board]
-                    board_with_anchor[anchor[0]][anchor[1]] = int(anchor_val)
-                    conditioned_composite_cache[key] = self._candidate_composite(
-                        board_with_anchor, unopened_cells, target_number, candidate
-                    )
-                cond_score = conditioned_composite_cache[key]
-                gain = max(0.0, cond_score - base_score)
+            for heuristic_gain, anchor, anchor_val in screened:
+                locality = 1.0 / (1.0 + abs(anchor[0] - candidate[0]) + abs(anchor[1] - candidate[1]))
+                value_closeness = 1.0 / (1.0 + abs(anchor_val - target_number))
+                gain = max(0.0, min(1.0, 0.65 * float(heuristic_gain) + 0.25 * locality + 0.10 * value_closeness))
+                gain = max(0.0, gain - 0.2 * max(0.0, 0.5 - base_score))
                 if gain > best_gain:
                     best_gain = gain
                     best_anchor = anchor
@@ -755,7 +912,9 @@ class PairwiseConditionalConsistencyModule:
                 "conditional_gain": float(0.0 if math.isnan(best_gain) else best_gain),
                 "pair_trials_used": float(pair_trials),
                 "base_cache_hits": float(int(candidate in base_composite_cache)),
-                "conditioned_cache_size": float(len(conditioned_composite_cache)),
+                "conditioned_cache_size": 0.0,
+                "runtime_reduced_path": float(self.runtime_mode == "fast"),
+                "runtime_mode_fast": float(self.runtime_mode == "fast"),
             }
 
         return ModuleScoreResult(
@@ -790,6 +949,7 @@ MODULE_FACTORIES = {
     "global_assignment_prior": lambda cfg: GlobalAssignmentPriorModule(
         assignment_mode=str(cfg.get("assignment_mode", "exact")),
         top_m_candidates=int(cfg.get("top_m_candidates", 8)),
+        exact_max_candidates=int(cfg.get("exact_max_candidates", 20)),
     ),
     "pairwise_conditional_consistency": lambda cfg: PairwiseConditionalConsistencyModule(
         anchor_top_k_cells=int(cfg.get("anchor_top_k_cells", 5)),
@@ -800,6 +960,10 @@ MODULE_FACTORIES = {
         hard_violation_threshold=float(cfg.get("hard_violation_threshold", 2.0)),
         hard_gate_multiplier=float(cfg.get("hard_gate_multiplier", 0.05)),
         soft_gate_floor=float(cfg.get("soft_gate_floor", 0.25)),
+        runtime_mode=str(cfg.get("runtime_mode", "full")),
+        candidate_top_n=int(cfg.get("candidate_top_n", 8)),
+        global_assignment_mode=str(cfg.get("global_assignment_mode", "greedy")),
+        global_assignment_top_m_candidates=int(cfg.get("global_assignment_top_m_candidates", 4)),
         submodule_weights={
             str(k): float(v)
             for k, v in dict(
@@ -815,6 +979,15 @@ MODULE_FACTORIES = {
             ).items()
         },
     ),
+    "focus_score": lambda cfg: FocusScoreModule(window_size=int(cfg.get("window_size", 3))),
+    "connectivity_heatmap": lambda cfg: ConnectivityHeatmapModule(
+        decay=str(cfg.get("decay", "inverse_distance")),
+        decay_gamma=float(cfg.get("decay_gamma", 0.35)),
+    ),
+    "difference_trend": lambda _cfg: DifferenceTrendModule(),
+    "skip_patterns": lambda _cfg: SkipPatternsModule(),
+    "mirror_sequences": lambda _cfg: MirrorSequencesModule(),
+    "tail_analyzer": lambda cfg: TailAnalyzerModule(window_size=int(cfg.get("window_size", 3))),
 }
 
 
