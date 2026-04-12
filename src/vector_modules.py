@@ -18,6 +18,67 @@ def _unopened_indices(unopened_cells: List[Cell]) -> tuple[np.ndarray, np.ndarra
     return rows, cols
 
 
+def _compute_local_tail_evidence(
+    board: Board,
+    candidate: Cell,
+    target_number: int,
+    window_size: int = 3,
+) -> Dict[str, float]:
+    rows = len(board)
+    cols = len(board[0])
+    r, c = candidate
+    k = max(1, int(window_size))
+    if k % 2 == 0:
+        k += 1
+    radius = k // 2
+    target_tail = int(target_number) % 10
+
+    known_neighbors = 0
+    same_tail_neighbors = 0
+    near_value_neighbors = 0
+    same_decade_neighbors = 0
+    row_same_tail_count = 0
+    col_same_tail_count = 0
+
+    for rr in range(max(0, r - radius), min(rows, r + radius + 1)):
+        for cc in range(max(0, c - radius), min(cols, c + radius + 1)):
+            if rr == r and cc == c:
+                continue
+            value = board[rr][cc]
+            if value == -1:
+                continue
+            known_neighbors += 1
+            if value % 10 == target_tail:
+                same_tail_neighbors += 1
+                if rr == r:
+                    row_same_tail_count += 1
+                if cc == c:
+                    col_same_tail_count += 1
+            if abs(value - target_number) in {1, 2}:
+                near_value_neighbors += 1
+            if (value - 1) // 10 == (target_number - 1) // 10:
+                same_decade_neighbors += 1
+
+    local_tail_ratio = float(same_tail_neighbors) / max(float(known_neighbors), 1.0)
+    has_structural_anchor = float((row_same_tail_count + col_same_tail_count) > 0 or near_value_neighbors > 0)
+    strong_tail_signal = (
+        (same_tail_neighbors >= 2 and known_neighbors >= 4 and (row_same_tail_count >= 1 or col_same_tail_count >= 1))
+        or (near_value_neighbors >= 1 and same_tail_neighbors >= 1 and known_neighbors >= 3)
+        or (local_tail_ratio >= 0.40 and (row_same_tail_count + col_same_tail_count) >= 2)
+    )
+    return {
+        "known_neighbors": float(known_neighbors),
+        "same_tail_neighbors": float(same_tail_neighbors),
+        "row_same_tail_count": float(row_same_tail_count),
+        "col_same_tail_count": float(col_same_tail_count),
+        "near_value_neighbors": float(near_value_neighbors),
+        "same_decade_neighbors": float(same_decade_neighbors),
+        "local_tail_ratio": float(local_tail_ratio),
+        "has_structural_anchor": float(has_structural_anchor),
+        "strong_tail_signal": float(strong_tail_signal),
+    }
+
+
 def focus_score_vectorized(board: Board, unopened_cells: List[Cell], window_size: int = 3) -> Dict[Cell, float]:
     if not unopened_cells:
         return {}
@@ -232,4 +293,12 @@ def tail_analyzer_vectorized(
     ratio = (match_cnt + 1.0) / (known_cnt + 2.0)
     rr, cc = _unopened_indices(unopened_cells)
     vals = _clip01(ratio[rr, cc])
-    return {cell: float(vals[i]) for i, cell in enumerate(unopened_cells)}
+    out: Dict[Cell, float] = {}
+    for i, cell in enumerate(unopened_cells):
+        evidence = _compute_local_tail_evidence(board, cell, target_number, window_size=window_size)
+        if evidence["strong_tail_signal"] < 0.5:
+            out[cell] = 0.5
+            continue
+        normalized_tail_ratio = max(0.0, min(1.0, (float(vals[i]) - 0.5) / 0.5))
+        out[cell] = float(max(0.5, min(0.72, 0.50 + 0.22 * normalized_tail_ratio)))
+    return out
