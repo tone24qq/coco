@@ -34,6 +34,7 @@ from src.scoring_modules import (
     build_modules,
 )
 from src.scoring_modules import linear_sum_assignment
+from src.vector_modules import support_profile, with_fairness_diagnostics
 
 
 @dataclass
@@ -232,6 +233,19 @@ def score_candidates_raw(
             c["module_scores"][module_name] = module_score
             if result.details:
                 c["module_details"][module_name] = result.details.get(cell, {})
+            else:
+                c["module_details"][module_name] = {}
+            if not isinstance(c["module_details"][module_name], dict):
+                c["module_details"][module_name] = {}
+            if "zone_type" not in c["module_details"][module_name]:
+                fair = with_fairness_diagnostics(
+                    board,
+                    cell,
+                    raw_score=float(result.scores.get(cell, 0.5)),
+                    bias_corrected_score=module_score,
+                    local_radius=1,
+                )
+                c["module_details"][module_name].update(fair)
             c["module_informative"][module_name] = _get_informative_value(result, cell)
             c["score"] += module_score * weight
 
@@ -303,6 +317,19 @@ def score_candidates_raw(
             c["module_scores"][pairwise_name] = module_score
             if result.details:
                 c["module_details"][pairwise_name] = result.details.get(cell, {})
+            else:
+                c["module_details"][pairwise_name] = {}
+            if not isinstance(c["module_details"][pairwise_name], dict):
+                c["module_details"][pairwise_name] = {}
+            if "zone_type" not in c["module_details"][pairwise_name]:
+                fair = with_fairness_diagnostics(
+                    board,
+                    cell,
+                    raw_score=float(result.scores.get(cell, 0.5)),
+                    bias_corrected_score=module_score,
+                    local_radius=1,
+                )
+                c["module_details"][pairwise_name].update(fair)
             c.setdefault("module_informative", {})
             c["module_informative"][pairwise_name] = _get_informative_value(result, cell)
             c["score"] += module_score * float(weights[pairwise_name])
@@ -752,8 +779,6 @@ def finalize_candidate_ranking(
             float(x.get("final_score", x.get("score", 0.0))),
             float(x.get("target_sensitive_score", stage_a["stage_a_score_by_cell"].get(x["cell"], 0.0))),
             float(x.get("support_score", stage_a["stage_a_score_by_cell"].get(x["cell"], 0.0))),
-            -int(x["cell"][0]),
-            -int(x["cell"][1]),
         ),
         reverse=True,
     )
@@ -1216,6 +1241,29 @@ def _run_inference_detailed(
     preserve_diagnostics = bool(aggregator_cfg.get("preserve_diagnostics", True))
     for idx, cell in enumerate(ranked, start=1):
         score = round(float(cell["score"]), 6)
+        cell_profile = support_profile(board, cell["cell"], local_radius=1)
+        final_confidence = round(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    0.65 * float(cell_profile["coverage_ratio"])
+                    + 0.35
+                    * float(
+                        sum(float(v) for v in cell.get("module_informative", {}).values())
+                        / max(len(cell.get("module_informative", {})), 1)
+                    ),
+                ),
+            ),
+            6,
+        )
+        edge_bias_adjustment = round(
+            float(max(0.0, 0.5 - cell_profile["coverage_ratio"]))
+            if cell_profile["zone_type"] in {"corner", "edge"}
+            else 0.0,
+            6,
+        )
+        board_coverage_adjustment = round(float(cell_profile["global_support"] - 0.5), 6)
         payload = {
                 "row": cell["cell"][0] + 1,
                 "col": cell["cell"][1] + 1,
@@ -1237,6 +1285,9 @@ def _run_inference_detailed(
                 "module_informative": {
                     k: round(float(v), 6) for k, v in sorted(cell.get("module_informative", {}).items())
                 },
+                "module_confidences": {
+                    k: round(float(v), 6) for k, v in sorted(cell.get("module_informative", {}).items())
+                },
                 "module_effective_weights": {
                     k: round(float(v), 6) for k, v in sorted(cell.get("module_effective_weights", {}).items())
                 },
@@ -1245,6 +1296,7 @@ def _run_inference_detailed(
                 "gated_score": round(float(cell.get("gated_score", score)), 6),
                 "ranking_score": round(float(cell.get("ranking_score", score)), 6),
                 "final_score": score,
+                "final_confidence": final_confidence,
                 "committee_score": round(float(cell.get("committee_score", score)), 6),
                 "stage1_base_score": round(float(cell.get("stage1_base_score", score)), 6),
                 "assignment_delta": round(float(cell.get("assignment_delta", 0.0)), 6),
@@ -1270,6 +1322,9 @@ def _run_inference_detailed(
                 "primary_locked_top1": bool(cell.get("primary_locked_top1", False)),
                 "tie_break_score": round(float(cell.get("tie_break_score", 0.0)), 6),
                 "module_details": cell.get("module_details", {}) if include_module_details else {},
+                "zone_type": cell_profile["zone_type"],
+                "edge_bias_adjustment": edge_bias_adjustment,
+                "board_coverage_adjustment": board_coverage_adjustment,
         }
         if preserve_diagnostics:
             for key in (

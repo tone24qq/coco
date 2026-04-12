@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
+from src.vector_modules import support_profile, with_fairness_diagnostics
 
 Board = List[List[int]]
 Cell = Tuple[int, int]
@@ -246,6 +247,13 @@ class NeighborhoodAssociationModule:
 
         if len(seeds) < self.min_seed_count:
             for cell in unopened_cells:
+                fair = with_fairness_diagnostics(
+                    board,
+                    cell,
+                    raw_score=self.neutral_score_when_no_seed,
+                    bias_corrected_score=self.neutral_score_when_no_seed,
+                    local_radius=self.radius,
+                )
                 scores[cell] = _clip(self.neutral_score_when_no_seed, self.floor_score, self.ceil_score)
                 details[cell] = {
                     "seed_count": float(len(seeds)),
@@ -263,6 +271,7 @@ class NeighborhoodAssociationModule:
                     "top_seed_row": -1.0,
                     "top_seed_col": -1.0,
                     "top_seed_value": -1.0,
+                    **fair,
                 }
                 informative_cells[cell] = 0.0
             return ModuleScoreResult(
@@ -310,11 +319,24 @@ class NeighborhoodAssociationModule:
             only_scores = [x[0] for x in similarities]
             sim_mean = sum(only_scores) / max(len(only_scores), 1)
             sim_max = max(only_scores) if only_scores else 0.0
-            final_score = sim_max if self.seed_aggregation == "max" else sim_mean
+            local_layer = sim_max if self.seed_aggregation == "max" else sim_mean
+            fair_support = support_profile(board, cell, local_radius=self.radius)
+            row_layer = fair_support["row_support"]
+            col_layer = fair_support["col_support"]
+            global_layer = fair_support["global_support"]
+            raw_score = 0.50 * local_layer + 0.20 * row_layer + 0.20 * col_layer + 0.10 * global_layer
+            final_score = raw_score
             final_score = _clip(final_score, self.floor_score, self.ceil_score)
             scores[cell] = final_score
 
             top_sim, top_seed = max(similarities, key=lambda x: x[0]) if similarities else (0.0, None)
+            fair_diag = with_fairness_diagnostics(
+                board,
+                cell,
+                raw_score=raw_score,
+                bias_corrected_score=final_score,
+                local_radius=self.radius,
+            )
             details[cell] = {
                 "seed_count": float(len(seeds)),
                 "effective_seed_count": float(effective_seed_count),
@@ -332,8 +354,13 @@ class NeighborhoodAssociationModule:
                 "top_seed_col": float(top_seed.col + 1) if top_seed else -1.0,
                 "top_seed_value": float(top_seed.value) if top_seed else -1.0,
                 "top_seed_similarity": float(top_sim),
+                "local_layer_score": float(local_layer),
+                "row_layer_score": float(row_layer),
+                "col_layer_score": float(col_layer),
+                "global_layer_score": float(global_layer),
+                **fair_diag,
             }
-            informative_cells[cell] = 1.0
+            informative_cells[cell] = max(0.2, float(fair_diag["coverage_ratio"]))
         return ModuleScoreResult(
             scores,
             "neighborhood_association: 以 target 關聯 family 的局部鄰域共現支持度評分",

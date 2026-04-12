@@ -10,6 +10,7 @@ from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from src.inference_service import _run_inference_detailed
+from src.vector_modules import zone_type_for_cell
 
 Board = List[List[int]]
 Cell = Tuple[int, int]
@@ -232,6 +233,13 @@ def run_weighted_eval(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
     per_case: List[Dict[str, Any]] = []
     ranks: List[int] = []
+    zone_ranks: Dict[str, List[int]] = {"corner": [], "edge": [], "center": []}
+    top10_zone_counts: Dict[str, int] = {"corner": 0, "edge": 0, "center": 0}
+    top10_total = 0
+    zone_score_sums: Dict[str, float] = {"corner": 0.0, "edge": 0.0, "center": 0.0}
+    zone_score_counts: Dict[str, int] = {"corner": 0, "edge": 0, "center": 0}
+    zone_conf_sums: Dict[str, float] = {"corner": 0.0, "edge": 0.0, "center": 0.0}
+    zone_conf_counts: Dict[str, int] = {"corner": 0, "edge": 0, "center": 0}
     for board_idx, rec in enumerate(boards):
         for rep in range(repeats):
             masked, masked_cells = mask_full_board(rec.board, masking_ratio, seed + board_idx * 997 + rep)
@@ -245,7 +253,39 @@ def run_weighted_eval(
                     apply_reranker_stage=apply_reranker_stage,
                 )
                 rank, score, confidence = _rank_of_cell(result["candidate_cells"], target_cell)
+                zone = zone_type_for_cell(len(rec.board), len(rec.board[0]), target_cell)
                 ranks.append(rank)
+                zone_ranks[zone].append(rank)
+                for cand in result["candidate_cells"][: min(10, len(result["candidate_cells"]))]:
+                    cz = str(
+                        cand.get(
+                            "zone_type",
+                            zone_type_for_cell(
+                                len(rec.board),
+                                len(rec.board[0]),
+                                (cand["row"] - 1, cand["col"] - 1),
+                            ),
+                        )
+                    )
+                    top10_zone_counts[cz] = top10_zone_counts.get(cz, 0) + 1
+                    top10_total += 1
+                for cand in result["candidate_cells"]:
+                    cz = str(
+                        cand.get(
+                            "zone_type",
+                            zone_type_for_cell(
+                                len(rec.board),
+                                len(rec.board[0]),
+                                (cand["row"] - 1, cand["col"] - 1),
+                            ),
+                        )
+                    )
+                    zone_score_sums[cz] = zone_score_sums.get(cz, 0.0) + float(cand.get("score", 0.0))
+                    zone_score_counts[cz] = zone_score_counts.get(cz, 0) + 1
+                    zone_conf_sums[cz] = zone_conf_sums.get(cz, 0.0) + float(
+                        cand.get("final_confidence", cand.get("confidence_1_to_100", 0.0) / 100.0)
+                    )
+                    zone_conf_counts[cz] = zone_conf_counts.get(cz, 0) + 1
                 per_case.append(
                     {
                         "board_id": rec.board_id,
@@ -262,9 +302,28 @@ def run_weighted_eval(
                         "top1_hit": int(rank <= 1),
                         "top3_hit": int(rank <= 3),
                         "top5_hit": int(rank <= 5),
+                        "top10_hit": int(rank <= 10),
+                        "zone_type": zone,
                     }
                 )
-    return per_case, aggregate_metrics(ranks)
+    summary: Dict[str, float] = aggregate_metrics(ranks)
+    summary["top10_hit_rate"] = sum(1 for x in ranks if x <= 10) / max(len(ranks), 1)
+    for zone in ("corner", "edge", "center"):
+        zr = zone_ranks[zone]
+        zmetrics = aggregate_metrics(zr)
+        summary[f"{zone}_top1_hit_rate"] = zmetrics["top1_hit_rate"]
+        summary[f"{zone}_top3_hit_rate"] = zmetrics["top3_hit_rate"]
+        summary[f"{zone}_top5_hit_rate"] = zmetrics["top5_hit_rate"]
+        summary[f"{zone}_top10_hit_rate"] = sum(1 for x in zr if x <= 10) / max(len(zr), 1)
+        summary[f"{zone}_mean_true_rank"] = zmetrics["mean_rank"]
+        summary[f"{zone}_sample_count"] = len(zr)
+        summary[f"{zone}_top10_candidate_share"] = top10_zone_counts.get(zone, 0) / max(top10_total, 1)
+        summary[f"{zone}_avg_candidate_score"] = zone_score_sums.get(zone, 0.0) / max(zone_score_counts.get(zone, 0), 1)
+        summary[f"{zone}_avg_candidate_confidence"] = zone_conf_sums.get(zone, 0.0) / max(
+            zone_conf_counts.get(zone, 0),
+            1,
+        )
+    return per_case, summary
 
 
 def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
