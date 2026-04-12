@@ -81,7 +81,7 @@ def test_committee_mode_uses_only_module_sum_for_primary_top() -> None:
     aggregate_candidate_scores(candidates, {"m1": 0.5, "m2": 0.5}, _committee_cfg())
     ranked = sorted(candidates, key=lambda c: c["final_rank_position"])
     assert ranked[0]["cell"] == (0, 1)
-    assert ranked[0]["top_decision_source"] == "committee_weighted_sum"
+    assert ranked[0]["top_decision_source"] == "stage3_pairwise_adjusted_score"
 
 
 def test_meta_judge_cannot_override_committee_primary_score() -> None:
@@ -173,3 +173,77 @@ def test_neighborhood_association_affects_score_when_seed_exists() -> None:
     s1 = {c["cell"]: c["module_scores"]["neighborhood_association"] for c in with_module}
     s2 = {c["cell"]: c["module_scores"].get("neighborhood_association", -1.0) for c in without_module}
     assert s1 != s2
+
+
+def test_no_duplicate_scoring_family_in_committee() -> None:
+    try:
+        _run_inference_detailed(
+            [[1, -1, 3], [-1, 5, -1]],
+            4,
+            source="t",
+            apply_reranker_stage=False,
+            module_weights={"structural_consistency": 0.5, "directional_consistency": 0.5},
+            aggregator_config=_committee_cfg(),
+        )
+    except Exception as exc:
+        assert "structural_consistency" in str(exc)
+        return
+    raise AssertionError("Expected fail-fast for duplicated structural family in committee stage-1")
+
+
+def test_structural_consistency_replaces_directional_and_line() -> None:
+    scored, _, _ = score_candidates(
+        [[1, -1, 3], [-1, 5, -1]],
+        build_cell_candidates([(0, 1), (1, 0), (1, 2)]),
+        target_number=4,
+        module_weights={"structural_consistency": 1.0},
+    )
+    assert "structural_consistency" in scored[0]["module_scores"]
+    assert "directional_consistency" not in scored[0]["module_scores"]
+    assert "line_consistency" not in scored[0]["module_scores"]
+
+
+def test_global_assignment_is_stage2_only() -> None:
+    out = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    cell = out["candidate_cells"][0]
+    assert "global_assignment_prior" not in cell["module_scores"]
+    assert "assignment_delta" in cell and "assignment_penalty" in cell
+
+
+def test_pairwise_is_stage2_only() -> None:
+    out = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    cell = out["candidate_cells"][0]
+    assert "pairwise_conditional_consistency" not in cell["module_scores"]
+    assert "pairwise_delta" in cell and "pairwise_penalty" in cell
+
+
+def test_score_chain_contract() -> None:
+    out = _run_inference_detailed([[1, -1, 3], [-1, 5, -1]], 4, source="t", apply_reranker_stage=False)
+    cell = out["candidate_cells"][0]
+    assert "score_chain" in cell
+    chain = cell["score_chain"]
+    assert "stage1_base_score" in chain
+    assert "stage2_assignment_adjusted_score" in chain
+    assert "stage3_pairwise_adjusted_score" in chain
+    assert "final_score" in chain
+
+
+def test_final_score_depends_on_single_stage1_base_path() -> None:
+    board = [[1, -1, 3], [-1, 5, -1]]
+    out = _run_inference_detailed(
+        board,
+        4,
+        source="t",
+        apply_reranker_stage=False,
+        module_weights={"logic_rule": 0.5, "structural_consistency": 0.5},
+        aggregator_config=_committee_cfg(),
+    )
+    cell = out["candidate_cells"][0]
+    expected = (
+        float(cell["stage1_base_score"])
+        + float(cell["assignment_delta"])
+        - float(cell["assignment_penalty"])
+        + float(cell["pairwise_delta"])
+        - float(cell["pairwise_penalty"])
+    )
+    assert abs(float(cell["final_score"]) - expected) < 1e-6

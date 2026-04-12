@@ -16,11 +16,16 @@ Cell = Tuple[int, int]
 
 CORE_MODULES = [
     "logic_rule",
+    "structural_consistency",
     "pattern_model",
     "prior_model",
-    "directional_consistency",
-    "line_consistency",
-    "global_assignment_prior",
+    "focus_score",
+    "connectivity_heatmap",
+    "difference_trend",
+    "skip_patterns",
+    "mirror_sequences",
+    "tail_analyzer",
+    "neighborhood_association",
 ]
 
 

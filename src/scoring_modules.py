@@ -544,6 +544,47 @@ class LineConsistencyModule:
         )
 
 
+class StructuralConsistencyModule:
+    name = "structural_consistency"
+
+    def __init__(self, fast_enabled: bool = True) -> None:
+        self.directional_module = DirectionalConsistencyModule(fast_enabled=fast_enabled)
+        self.line_module = LineConsistencyModule(fast_enabled=fast_enabled)
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        directional = self.directional_module.score(board, unopened_cells, target_number)
+        line = self.line_module.score(board, unopened_cells, target_number)
+        scores: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
+        for cell in unopened_cells:
+            d_score = float(directional.scores.get(cell, NEUTRAL_SCORE))
+            l_score = float(line.scores.get(cell, NEUTRAL_SCORE))
+            combined = _clip(0.5 * d_score + 0.5 * l_score)
+            scores[cell] = combined
+            d_details = directional.details.get(cell, {}) if directional.details else {}
+            l_details = line.details.get(cell, {}) if line.details else {}
+            cell_details: Dict[str, float] = {
+                "structural_consistency": combined,
+                "directional_component_score": d_score,
+                "line_component_score": l_score,
+            }
+            cell_details.update({f"directional_{k}": float(v) for k, v in d_details.items()})
+            cell_details.update({f"line_{k}": float(v) for k, v in l_details.items()})
+            details[cell] = cell_details
+        return ModuleScoreResult(
+            scores,
+            "structural_consistency: 整合 directional 與 line 一次性結構一致性評分",
+            details=details,
+            informative_cells={
+                cell: min(
+                    float(directional.informative_cells.get(cell, 1.0)),
+                    float(line.informative_cells.get(cell, 1.0)),
+                )
+                for cell in unopened_cells
+            },
+        )
+
+
 class GlobalAssignmentPriorModule:
     name = "global_assignment_prior"
 
@@ -944,6 +985,9 @@ MODULE_FACTORIES = {
     "logic_rule": lambda cfg: LogicRuleModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
     "pattern_model": lambda _cfg: PatternModelModule(),
     "prior_model": lambda cfg: PriorModelModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
+    "structural_consistency": lambda cfg: StructuralConsistencyModule(
+        fast_enabled=bool(cfg.get("fast_enabled", True))
+    ),
     "directional_consistency": lambda cfg: DirectionalConsistencyModule(
         fast_enabled=bool(cfg.get("fast_enabled", True))
     ),
