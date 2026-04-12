@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
+import math
 
 Board = List[List[int]]
 Cell = Tuple[int, int]
@@ -175,6 +176,67 @@ def _profile_similarity(seed_profile: NeighborhoodProfile, candidate_profile: Ne
     return _clip(1.0 - mean_abs_diff)
 
 
+def _board_profile(
+    board: Board,
+    target_number: int,
+    enabled_neighbor_families: Sequence[str],
+    neighbor_value_deltas: Sequence[int],
+) -> NeighborhoodProfile:
+    weighted_sums: Dict[str, float] = {}
+    total_weight = 0.0
+    neighbor_count = 0
+    for r, row in enumerate(board):
+        for c, value in enumerate(row):
+            if value == -1:
+                continue
+            feats = neighbor_relation_features(value, target_number, enabled_neighbor_families, neighbor_value_deltas)
+            for key, val in feats.items():
+                weighted_sums[key] = weighted_sums.get(key, 0.0) + float(val)
+            total_weight += 1.0
+            neighbor_count += 1
+    if total_weight <= 0:
+        return NeighborhoodProfile(feature_values={}, neighbor_count=0, total_weight=0.0)
+    return NeighborhoodProfile(
+        feature_values={k: v / total_weight for k, v in weighted_sums.items()},
+        neighbor_count=neighbor_count,
+        total_weight=total_weight,
+    )
+
+
+def _line_profile(
+    board: Board,
+    row: int,
+    col: int,
+    target_number: int,
+    enabled_neighbor_families: Sequence[str],
+    neighbor_value_deltas: Sequence[int],
+    axis: str,
+) -> NeighborhoodProfile:
+    weighted_sums: Dict[str, float] = {}
+    total_weight = 0.0
+    neighbor_count = 0
+    if axis == "row":
+        iterator = [(row, cc) for cc in range(len(board[0])) if cc != col]
+    else:
+        iterator = [(rr, col) for rr in range(len(board)) if rr != row]
+    for rr, cc in iterator:
+        value = board[rr][cc]
+        if value == -1:
+            continue
+        feats = neighbor_relation_features(value, target_number, enabled_neighbor_families, neighbor_value_deltas)
+        for key, val in feats.items():
+            weighted_sums[key] = weighted_sums.get(key, 0.0) + float(val)
+        total_weight += 1.0
+        neighbor_count += 1
+    if total_weight <= 0:
+        return NeighborhoodProfile(feature_values={}, neighbor_count=0, total_weight=0.0)
+    return NeighborhoodProfile(
+        feature_values={k: v / total_weight for k, v in weighted_sums.items()},
+        neighbor_count=neighbor_count,
+        total_weight=total_weight,
+    )
+
+
 class NeighborhoodAssociationModule:
     name = "neighborhood_association"
 
@@ -263,6 +325,16 @@ class NeighborhoodAssociationModule:
                     "top_seed_row": -1.0,
                     "top_seed_col": -1.0,
                     "top_seed_value": -1.0,
+                    "available_support_count": 0.0,
+                    "normalized_support": 0.0,
+                    "local_support": 0.0,
+                    "row_support": 0.0,
+                    "col_support": 0.0,
+                    "global_support": 0.0,
+                    "coverage_ratio": 0.0,
+                    "zone_type": -1.0,
+                    "raw_score_before_normalization": float(self.neutral_score_when_no_seed),
+                    "bias_corrected_score": float(self.neutral_score_when_no_seed),
                 }
                 informative_cells[cell] = 0.0
             return ModuleScoreResult(
@@ -272,9 +344,12 @@ class NeighborhoodAssociationModule:
                 informative_cells=informative_cells,
             )
 
-        seed_profiles: List[Tuple[SeedInfo, NeighborhoodProfile]] = []
+        seed_profiles: List[Tuple[SeedInfo, NeighborhoodProfile, NeighborhoodProfile, NeighborhoodProfile]] = []
+        board_prof = _board_profile(
+            board, target_number, self.enabled_neighbor_families, self.neighbor_value_deltas
+        )
         for seed in seeds:
-            profile = _build_profile(
+            local_profile = _build_profile(
                 board,
                 seed.row,
                 seed.col,
@@ -286,12 +361,30 @@ class NeighborhoodAssociationModule:
                 self.enabled_neighbor_families,
                 self.neighbor_value_deltas,
             )
-            seed_profiles.append((seed, profile))
+            row_profile = _line_profile(
+                board,
+                seed.row,
+                seed.col,
+                target_number,
+                self.enabled_neighbor_families,
+                self.neighbor_value_deltas,
+                axis="row",
+            )
+            col_profile = _line_profile(
+                board,
+                seed.row,
+                seed.col,
+                target_number,
+                self.enabled_neighbor_families,
+                self.neighbor_value_deltas,
+                axis="col",
+            )
+            seed_profiles.append((seed, local_profile, row_profile, col_profile))
 
-        effective_seed_count = sum(1 for _, p in seed_profiles if p.neighbor_count > 0)
+        effective_seed_count = sum(1 for _, p, _, _ in seed_profiles if p.neighbor_count > 0)
 
         for cell in unopened_cells:
-            candidate_profile = _build_profile(
+            candidate_local = _build_profile(
                 board,
                 cell[0],
                 cell[1],
@@ -303,37 +396,90 @@ class NeighborhoodAssociationModule:
                 self.enabled_neighbor_families,
                 self.neighbor_value_deltas,
             )
-            similarities: List[Tuple[float, SeedInfo]] = [
-                (_profile_similarity(seed_profile, candidate_profile), seed)
-                for seed, seed_profile in seed_profiles
+            candidate_row = _line_profile(
+                board,
+                cell[0],
+                cell[1],
+                target_number,
+                self.enabled_neighbor_families,
+                self.neighbor_value_deltas,
+                axis="row",
+            )
+            candidate_col = _line_profile(
+                board,
+                cell[0],
+                cell[1],
+                target_number,
+                self.enabled_neighbor_families,
+                self.neighbor_value_deltas,
+                axis="col",
+            )
+            local_sims: List[Tuple[float, SeedInfo]] = [
+                (_profile_similarity(seed_local, candidate_local), seed) for seed, seed_local, _, _ in seed_profiles
             ]
-            only_scores = [x[0] for x in similarities]
+            row_sims = [_profile_similarity(seed_row, candidate_row) for _, _, seed_row, _ in seed_profiles]
+            col_sims = [_profile_similarity(seed_col, candidate_col) for _, _, _, seed_col in seed_profiles]
+            global_sim = _profile_similarity(board_prof, candidate_local)
+            only_scores = [x[0] for x in local_sims]
             sim_mean = sum(only_scores) / max(len(only_scores), 1)
             sim_max = max(only_scores) if only_scores else 0.0
-            final_score = sim_max if self.seed_aggregation == "max" else sim_mean
+            row_mean = sum(row_sims) / max(len(row_sims), 1)
+            col_mean = sum(col_sims) / max(len(col_sims), 1)
+            local_mean = sim_max if self.seed_aggregation == "max" else sim_mean
+            final_score = 0.40 * local_mean + 0.20 * row_mean + 0.20 * col_mean + 0.20 * global_sim
             final_score = _clip(final_score, self.floor_score, self.ceil_score)
             scores[cell] = final_score
 
-            top_sim, top_seed = max(similarities, key=lambda x: x[0]) if similarities else (0.0, None)
+            top_sim, top_seed = max(local_sims, key=lambda x: x[0]) if local_sims else (0.0, None)
+            rows, cols = len(board), len(board[0])
+            r, c = cell
+            if r in (0, rows - 1) and c in (0, cols - 1):
+                zone_type = "corner"
+            elif r in (0, rows - 1) or c in (0, cols - 1):
+                zone_type = "edge"
+            else:
+                zone_type = "center"
+            local_h = min(rows - 1, r + self.radius) - max(0, r - self.radius) + 1
+            local_w = min(cols - 1, c + self.radius) - max(0, c - self.radius) + 1
+            local_avail = float(local_h * local_w - 1)
+            local_support = float(candidate_local.neighbor_count) / max(local_avail, 1.0)
+            row_support = float(candidate_row.neighbor_count) / max(float(cols - 1), 1.0)
+            col_support = float(candidate_col.neighbor_count) / max(float(rows - 1), 1.0)
+            global_support = float(board_prof.neighbor_count) / max(float(rows * cols), 1.0)
+            normalized_support = (local_support + row_support + col_support + global_support) / 4.0
+            confidence = math.sqrt(max(normalized_support, 0.0))
             details[cell] = {
                 "seed_count": float(len(seeds)),
                 "effective_seed_count": float(effective_seed_count),
-                "candidate_neighbor_count": float(candidate_profile.neighbor_count),
+                "candidate_neighbor_count": float(candidate_local.neighbor_count),
                 "matched_seed_similarity_mean": float(sim_mean),
                 "matched_seed_similarity_max": float(sim_max),
-                "same_decade_support": float(candidate_profile.feature_values.get("same_decade_support", 0.0)),
-                "same_tail_support": float(candidate_profile.feature_values.get("same_tail_support", 0.0)),
-                "near_value_support": float(candidate_profile.feature_values.get("near_value_support", 0.0)),
+                "row_similarity_mean": float(row_mean),
+                "col_similarity_mean": float(col_mean),
+                "global_similarity": float(global_sim),
+                "same_decade_support": float(candidate_local.feature_values.get("same_decade_support", 0.0)),
+                "same_tail_support": float(candidate_local.feature_values.get("same_tail_support", 0.0)),
+                "near_value_support": float(candidate_local.feature_values.get("near_value_support", 0.0)),
                 "used_radius": float(self.radius),
                 "used_diagonal": float(self.use_diagonal),
                 "no_seed_fallback_used": 0.0,
                 "abstain_flag": 0.0,
+                "available_support_count": float(local_avail + (rows - 1) + (cols - 1) + rows * cols),
+                "normalized_support": float(normalized_support),
+                "local_support": float(local_support),
+                "row_support": float(row_support),
+                "col_support": float(col_support),
+                "global_support": float(global_support),
+                "coverage_ratio": float(normalized_support),
+                "zone_type": 0.0 if zone_type == "corner" else (1.0 if zone_type == "edge" else 2.0),
+                "raw_score_before_normalization": float(final_score),
+                "bias_corrected_score": float(final_score),
                 "top_seed_row": float(top_seed.row + 1) if top_seed else -1.0,
                 "top_seed_col": float(top_seed.col + 1) if top_seed else -1.0,
                 "top_seed_value": float(top_seed.value) if top_seed else -1.0,
                 "top_seed_similarity": float(top_sim),
             }
-            informative_cells[cell] = 1.0
+            informative_cells[cell] = float(confidence)
         return ModuleScoreResult(
             scores,
             "neighborhood_association: 以 target 關聯 family 的局部鄰域共現支持度評分",

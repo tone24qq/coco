@@ -28,6 +28,7 @@ from src.vector_modules import (
     difference_trend_vectorized,
     focus_score_vectorized,
     mirror_sequences_vectorized,
+    support_context,
     skip_patterns_vectorized,
     tail_analyzer_vectorized,
 )
@@ -180,7 +181,16 @@ class FocusScoreModule:
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         del target_number
         scores = focus_score_vectorized(board, unopened_cells, window_size=self.window_size)
-        return ModuleScoreResult(scores, "focus_score: 局部視窗已知格密度")
+        details = {}
+        for cell in unopened_cells:
+            ctx = support_context(board, cell, local_radius=max(1, self.window_size // 2))
+            raw = float(scores.get(cell, 0.5))
+            details[cell] = {
+                **ctx,
+                "raw_score_before_normalization": raw,
+                "bias_corrected_score": raw,
+            }
+        return ModuleScoreResult(scores, "focus_score: coverage-normalized 全盤焦點密度", details=details)
 
 
 class ConnectivityHeatmapModule:
@@ -195,7 +205,16 @@ class ConnectivityHeatmapModule:
         scores = connectivity_heatmap_vectorized(
             board, unopened_cells, decay=self.decay, decay_gamma=self.decay_gamma
         )
-        return ModuleScoreResult(scores, "connectivity_heatmap: 與已知格連通熱度")
+        details = {}
+        for cell in unopened_cells:
+            ctx = support_context(board, cell, local_radius=2)
+            raw = float(scores.get(cell, 0.5))
+            details[cell] = {
+                **ctx,
+                "raw_score_before_normalization": raw,
+                "bias_corrected_score": raw,
+            }
+        return ModuleScoreResult(scores, "connectivity_heatmap: 全盤連通熱度(coverage corrected)", details=details)
 
 
 class DifferenceTrendModule:
@@ -203,7 +222,16 @@ class DifferenceTrendModule:
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores = difference_trend_vectorized(board, unopened_cells, target_number)
-        return ModuleScoreResult(scores, "difference_trend: 行列差值趨勢一致性")
+        details = {}
+        for cell in unopened_cells:
+            ctx = support_context(board, cell, local_radius=2)
+            raw = float(scores.get(cell, 0.5))
+            details[cell] = {
+                **ctx,
+                "raw_score_before_normalization": raw,
+                "bias_corrected_score": raw,
+            }
+        return ModuleScoreResult(scores, "difference_trend: 行列趨勢（區分不可觀測與反證）", details=details)
 
 
 class SkipPatternsModule:
@@ -211,7 +239,16 @@ class SkipPatternsModule:
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores = skip_patterns_vectorized(board, unopened_cells, target_number)
-        return ModuleScoreResult(scores, "skip_patterns: 行列跳格規律支持度")
+        details = {}
+        for cell in unopened_cells:
+            ctx = support_context(board, cell, local_radius=2)
+            raw = float(scores.get(cell, 0.5))
+            details[cell] = {
+                **ctx,
+                "raw_score_before_normalization": raw,
+                "bias_corrected_score": raw,
+            }
+        return ModuleScoreResult(scores, "skip_patterns: 跳格規律支持度（無觀測僅降信心）", details=details)
 
 
 class MirrorSequencesModule:
@@ -219,7 +256,16 @@ class MirrorSequencesModule:
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores = mirror_sequences_vectorized(board, unopened_cells, target_number)
-        return ModuleScoreResult(scores, "mirror_sequences: 水平/垂直/對角鏡像支持度")
+        details = {}
+        for cell in unopened_cells:
+            ctx = support_context(board, cell, local_radius=2)
+            raw = float(scores.get(cell, 0.5))
+            details[cell] = {
+                **ctx,
+                "raw_score_before_normalization": raw,
+                "bias_corrected_score": raw,
+            }
+        return ModuleScoreResult(scores, "mirror_sequences: 鏡像支持度（缺鏡像只降信心）", details=details)
 
 
 class TailAnalyzerModule:
@@ -233,9 +279,16 @@ class TailAnalyzerModule:
         informative_cells = {}
         details = {}
         for cell in unopened_cells:
+            ctx = support_context(board, cell, local_radius=max(1, self.window_size // 2))
             evidence = _compute_local_tail_evidence(board, cell, target_number, window_size=self.window_size)
             informative_cells[cell] = 1.0 if evidence["strong_tail_signal"] >= 0.5 else 0.0
-            details[cell] = evidence
+            raw = float(scores.get(cell, 0.5))
+            details[cell] = {
+                **evidence,
+                **ctx,
+                "raw_score_before_normalization": raw,
+                "bias_corrected_score": raw,
+            }
         return ModuleScoreResult(
             scores,
             "tail_analyzer: 通過局部 tail-evidence gate 後提供輔助分數",

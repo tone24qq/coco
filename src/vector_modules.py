@@ -18,6 +18,47 @@ def _unopened_indices(unopened_cells: List[Cell]) -> tuple[np.ndarray, np.ndarra
     return rows, cols
 
 
+def zone_type_for_cell(rows: int, cols: int, cell: Cell) -> str:
+    r, c = cell
+    if (r in (0, rows - 1)) and (c in (0, cols - 1)):
+        return "corner"
+    if r in (0, rows - 1) or c in (0, cols - 1):
+        return "edge"
+    return "center"
+
+
+def support_context(board: Board, cell: Cell, local_radius: int = 1) -> Dict[str, float]:
+    rows = len(board)
+    cols = len(board[0])
+    r, c = cell
+    known = np.asarray(board, dtype=np.int32) != -1
+    row_known = float(np.sum(known[r, :]))
+    col_known = float(np.sum(known[:, c]))
+    global_known = float(np.sum(known))
+    row_avail = float(cols)
+    col_avail = float(rows)
+    global_avail = float(rows * cols)
+    lr = max(1, int(local_radius))
+    rr0, rr1 = max(0, r - lr), min(rows, r + lr + 1)
+    cc0, cc1 = max(0, c - lr), min(cols, c + lr + 1)
+    local_block = known[rr0:rr1, cc0:cc1]
+    local_avail = float(local_block.size - 1)
+    local_known = float(np.sum(local_block) - (1.0 if known[r, c] else 0.0))
+    available_support = row_avail + col_avail + global_avail + max(local_avail, 0.0)
+    observed_support = row_known + col_known + global_known + max(local_known, 0.0)
+    coverage = observed_support / max(available_support, 1.0)
+    return {
+        "available_support_count": available_support,
+        "normalized_support": coverage,
+        "local_support": local_known / max(local_avail, 1.0),
+        "row_support": row_known / max(row_avail, 1.0),
+        "col_support": col_known / max(col_avail, 1.0),
+        "global_support": global_known / max(global_avail, 1.0),
+        "coverage_ratio": coverage,
+        "zone_type": zone_type_for_cell(rows, cols, cell),
+    }
+
+
 def _compute_local_tail_evidence(
     board: Board,
     candidate: Cell,
@@ -99,7 +140,18 @@ def focus_score_vectorized(board: Board, unopened_cells: List[Cell], window_size
             c0 = c
             c1 = c + k
             window_sum[r, c] = prefix[r1, c1] - prefix[r0, c1] - prefix[r1, c0] + prefix[r0, c0]
-    density = _clip01(window_sum / float(k * k))
+    coverage = np.zeros_like(known)
+    for r in range(h):
+        r0 = max(0, r - rad)
+        r1 = min(h, r + rad + 1)
+        for c in range(w):
+            c0 = max(0, c - rad)
+            c1 = min(w, c + rad + 1)
+            coverage[r, c] = float((r1 - r0) * (c1 - c0))
+    density = window_sum / np.maximum(coverage, 1.0)
+    board_baseline = float(np.mean(known))
+    corrected = 0.5 + (density - board_baseline)
+    density = _clip01(corrected)
     rr, cc = _unopened_indices(unopened_cells)
     values = density[rr, cc]
     return {cell: float(values[i]) for i, cell in enumerate(unopened_cells)}
@@ -129,7 +181,11 @@ def connectivity_heatmap_vectorized(
         contrib = np.exp(-float(decay_gamma) * manhattan)
     else:
         contrib = 1.0 / np.maximum(1.0, manhattan)
-    score = _clip01(contrib.mean(axis=1) * 2.0)
+    observed_density = float(np.mean(board_arr != -1))
+    raw = contrib.mean(axis=1)
+    baseline = np.median(raw) if raw.size else 0.0
+    coverage_corrected = raw - baseline
+    score = _clip01(0.5 + coverage_corrected / max(observed_density + 1e-6, 1e-3))
     return {cell: float(score[i]) for i, cell in enumerate(unopened_cells)}
 
 
@@ -185,7 +241,17 @@ def difference_trend_vectorized(board: Board, unopened_cells: List[Cell], target
         np.abs(target_number - (up_n + down_n) / 2.0),
         np.nan,
     )
-    stacked = np.vstack([row_mid, col_mid])
+    row_single = np.where(
+        (left_n != -1) ^ (right_n != -1),
+        np.minimum(np.abs(target_number - left_n), np.abs(target_number - right_n)),
+        np.nan,
+    )
+    col_single = np.where(
+        (up_n != -1) ^ (down_n != -1),
+        np.minimum(np.abs(target_number - up_n), np.abs(target_number - down_n)),
+        np.nan,
+    )
+    stacked = np.vstack([row_mid, col_mid, row_single, col_single])
     valid = np.isfinite(stacked)
     count = valid.sum(axis=0)
     safe = np.where(valid, stacked, 0.0)
@@ -206,20 +272,25 @@ def skip_patterns_vectorized(board: Board, unopened_cells: List[Cell], target_nu
     score = np.full(rr.shape[0], 0.5, dtype=np.float64)
     for i, (r, c) in enumerate(zip(rr.tolist(), cc.tolist())):
         supports = []
+        observed = 0
         if c - 2 >= 0 and c + 2 < cols:
             a, m, z = b[r, c - 2], b[r, c - 1], b[r, c + 1]
             if a != -1 and m != -1 and z != -1:
                 step = m - a
                 pred = z + step
                 supports.append(1.0 / (1.0 + abs(pred - target_number)))
+                observed += 1
         if r - 2 >= 0 and r + 2 < rows:
             a, m, z = b[r - 2, c], b[r - 1, c], b[r + 1, c]
             if a != -1 and m != -1 and z != -1:
                 step = m - a
                 pred = z + step
                 supports.append(1.0 / (1.0 + abs(pred - target_number)))
+                observed += 1
         if supports:
             score[i] = float(np.mean(supports))
+        elif observed == 0:
+            score[i] = 0.5
     score = _clip01(score)
     return {cell: float(score[i]) for i, cell in enumerate(unopened_cells)}
 
@@ -231,7 +302,7 @@ def mirror_sequences_vectorized(board: Board, unopened_cells: List[Cell], target
     rows, cols = b.shape
     rr, cc = _unopened_indices(unopened_cells)
 
-    out = np.full(rr.shape[0], 0.4, dtype=np.float64)
+    out = np.full(rr.shape[0], 0.5, dtype=np.float64)
     for i, (r, c) in enumerate(zip(rr.tolist(), cc.tolist())):
         vals = []
         if cols > 1:

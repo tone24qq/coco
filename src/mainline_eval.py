@@ -183,7 +183,20 @@ def _rank_of_cell(candidates: Sequence[Dict[str, Any]], true_cell: Cell) -> Tupl
     raise ValueError("true cell not found in candidates")
 
 
-def aggregate_metrics(ranks: Sequence[int]) -> Dict[str, float]:
+def _zone_of_cell(rows: int, cols: int, cell: Cell) -> str:
+    r, c = cell
+    if r in (0, rows - 1) and c in (0, cols - 1):
+        return "corner"
+    if r in (0, rows - 1) or c in (0, cols - 1):
+        return "edge"
+    return "center"
+
+
+def aggregate_metrics(
+    ranks: Sequence[int],
+    zone_ranks: Dict[str, List[int]] | None = None,
+    top10_zone_counts: Dict[str, int] | None = None,
+) -> Dict[str, float]:
     if not ranks:
         return {
             "top1_hit_rate": 0.0,
@@ -194,15 +207,29 @@ def aggregate_metrics(ranks: Sequence[int]) -> Dict[str, float]:
             "median_rank": 0.0,
             "num_samples": 0,
         }
-    return {
+    out = {
         "top1_hit_rate": sum(1 for x in ranks if x <= 1) / len(ranks),
         "top3_hit_rate": sum(1 for x in ranks if x <= 3) / len(ranks),
         "top5_hit_rate": sum(1 for x in ranks if x <= 5) / len(ranks),
+        "top10_hit_rate": sum(1 for x in ranks if x <= 10) / len(ranks),
         "mrr": mean(1.0 / x for x in ranks),
         "mean_rank": mean(ranks),
         "median_rank": float(median(ranks)),
         "num_samples": len(ranks),
     }
+    for zone in ("corner", "edge", "center"):
+        zr = (zone_ranks or {}).get(zone, [])
+        out[f"{zone}_top1_hit_rate"] = (sum(1 for x in zr if x <= 1) / len(zr)) if zr else 0.0
+        out[f"{zone}_top3_hit_rate"] = (sum(1 for x in zr if x <= 3) / len(zr)) if zr else 0.0
+        out[f"{zone}_top5_hit_rate"] = (sum(1 for x in zr if x <= 5) / len(zr)) if zr else 0.0
+        out[f"{zone}_top10_hit_rate"] = (sum(1 for x in zr if x <= 10) / len(zr)) if zr else 0.0
+        out[f"{zone}_mean_true_rank"] = mean(zr) if zr else 0.0
+    top10_total = sum((top10_zone_counts or {}).values())
+    for zone in ("corner", "edge", "center"):
+        out[f"top10_{zone}_candidate_ratio"] = (
+            float((top10_zone_counts or {}).get(zone, 0)) / max(top10_total, 1)
+        )
+    return out
 
 
 def normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
@@ -232,6 +259,8 @@ def run_weighted_eval(
 ) -> Tuple[List[Dict[str, Any]], Dict[str, float]]:
     per_case: List[Dict[str, Any]] = []
     ranks: List[int] = []
+    zone_ranks: Dict[str, List[int]] = {"corner": [], "edge": [], "center": []}
+    top10_zone_counts: Dict[str, int] = {"corner": 0, "edge": 0, "center": 0}
     for board_idx, rec in enumerate(boards):
         for rep in range(repeats):
             masked, masked_cells = mask_full_board(rec.board, masking_ratio, seed + board_idx * 997 + rep)
@@ -246,6 +275,15 @@ def run_weighted_eval(
                 )
                 rank, score, confidence = _rank_of_cell(result["candidate_cells"], target_cell)
                 ranks.append(rank)
+                true_zone = _zone_of_cell(len(rec.board), len(rec.board[0]), target_cell)
+                zone_ranks[true_zone].append(rank)
+                for cand in result["candidate_cells"][:10]:
+                    cand_zone = _zone_of_cell(
+                        len(rec.board),
+                        len(rec.board[0]),
+                        (int(cand["row"]) - 1, int(cand["col"]) - 1),
+                    )
+                    top10_zone_counts[cand_zone] += 1
                 per_case.append(
                     {
                         "board_id": rec.board_id,
@@ -262,9 +300,11 @@ def run_weighted_eval(
                         "top1_hit": int(rank <= 1),
                         "top3_hit": int(rank <= 3),
                         "top5_hit": int(rank <= 5),
+                        "top10_hit": int(rank <= 10),
+                        "true_zone": true_zone,
                     }
                 )
-    return per_case, aggregate_metrics(ranks)
+    return per_case, aggregate_metrics(ranks, zone_ranks=zone_ranks, top10_zone_counts=top10_zone_counts)
 
 
 def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:

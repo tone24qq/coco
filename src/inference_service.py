@@ -34,6 +34,7 @@ from src.scoring_modules import (
     build_modules,
 )
 from src.scoring_modules import linear_sum_assignment
+from src.vector_modules import support_context
 
 
 @dataclass
@@ -144,6 +145,14 @@ def _get_informative_value(result: ModuleScoreResult, cell: Cell) -> float:
     return _clip(float(informative.get(cell, 1.0)))
 
 
+def _zone_numeric(zone: str) -> float:
+    if zone == "corner":
+        return 0.0
+    if zone == "edge":
+        return 1.0
+    return 2.0
+
+
 def _validate_committee_stage1_modules(weights: Dict[str, float]) -> None:
     stage1_modules = set(weights.keys())
     banned = {"global_assignment_prior", "pairwise_conditional_consistency", "prior_model"}
@@ -215,6 +224,7 @@ def score_candidates_raw(
     explanations: List[str] = []
     pairwise_name = "pairwise_conditional_consistency"
     candidate_cells = [c["cell"] for c in candidates]
+    support_by_cell = {cell: support_context(board, cell, local_radius=1) for cell in candidate_cells}
     for module_name, weight in weights.items():
         if module_name == pairwise_name:
             continue
@@ -232,6 +242,19 @@ def score_candidates_raw(
             c["module_scores"][module_name] = module_score
             if result.details:
                 c["module_details"][module_name] = result.details.get(cell, {})
+            detail = dict(c["module_details"].get(module_name, {}))
+            support_ctx = support_by_cell[cell]
+            detail.setdefault("available_support_count", float(support_ctx["available_support_count"]))
+            detail.setdefault("normalized_support", float(support_ctx["normalized_support"]))
+            detail.setdefault("local_support", float(support_ctx["local_support"]))
+            detail.setdefault("row_support", float(support_ctx["row_support"]))
+            detail.setdefault("col_support", float(support_ctx["col_support"]))
+            detail.setdefault("global_support", float(support_ctx["global_support"]))
+            detail.setdefault("coverage_ratio", float(support_ctx["coverage_ratio"]))
+            detail.setdefault("zone_type", _zone_numeric(str(support_ctx["zone_type"])))
+            detail.setdefault("raw_score_before_normalization", float(result.scores.get(cell, module_score)))
+            detail.setdefault("bias_corrected_score", float(module_score))
+            c["module_details"][module_name] = detail
             c["module_informative"][module_name] = _get_informative_value(result, cell)
             c["score"] += module_score * weight
 
@@ -303,6 +326,19 @@ def score_candidates_raw(
             c["module_scores"][pairwise_name] = module_score
             if result.details:
                 c["module_details"][pairwise_name] = result.details.get(cell, {})
+            detail = dict(c["module_details"].get(pairwise_name, {}))
+            support_ctx = support_by_cell[cell]
+            detail.setdefault("available_support_count", float(support_ctx["available_support_count"]))
+            detail.setdefault("normalized_support", float(support_ctx["normalized_support"]))
+            detail.setdefault("local_support", float(support_ctx["local_support"]))
+            detail.setdefault("row_support", float(support_ctx["row_support"]))
+            detail.setdefault("col_support", float(support_ctx["col_support"]))
+            detail.setdefault("global_support", float(support_ctx["global_support"]))
+            detail.setdefault("coverage_ratio", float(support_ctx["coverage_ratio"]))
+            detail.setdefault("zone_type", _zone_numeric(str(support_ctx["zone_type"])))
+            detail.setdefault("raw_score_before_normalization", float(result.scores.get(cell, module_score)))
+            detail.setdefault("bias_corrected_score", float(module_score))
+            c["module_details"][pairwise_name] = detail
             c.setdefault("module_informative", {})
             c["module_informative"][pairwise_name] = _get_informative_value(result, cell)
             c["score"] += module_score * float(weights[pairwise_name])
@@ -705,12 +741,24 @@ def apply_committee_weighted_sum(
         stage1_base = float(committee_score)
         stage2_score = stage1_base + assignment_delta - assignment_penalty
         stage3_score = stage2_score + pairwise_delta - pairwise_penalty
+        module_info_vals = [float(v) for v in cand.get("module_informative", {}).values()]
+        confidence = sum(module_info_vals) / max(len(module_info_vals), 1)
+        module_details = cand.get("module_details", {})
+        coverage_vals = []
+        for d in module_details.values():
+            if isinstance(d, dict) and "coverage_ratio" in d:
+                coverage_vals.append(float(d.get("coverage_ratio", 0.0)))
+        coverage = sum(coverage_vals) / max(len(coverage_vals), 1)
+        board_cov_adj = 1.0 - 0.20 * max(0.0, 0.5 - coverage)
         cand["stage1_base_score"] = stage1_base
         cand["stage2_assignment_adjusted_score"] = stage2_score
         cand["stage3_pairwise_adjusted_score"] = stage3_score
         cand["committee_score"] = stage1_base
         cand["final_score"] = stage3_score
         cand["score"] = stage3_score
+        cand["final_confidence"] = _clip(confidence * board_cov_adj)
+        cand["board_coverage_adjustment"] = board_cov_adj
+        cand["edge_bias_adjustment"] = 1.0
         cand["ranking_score"] = stage3_score
         cand["active_module_count"] = int(len(active_weights))
         cand["active_weight_sum"] = float(sum(active_weights.values()))
@@ -750,10 +798,10 @@ def finalize_candidate_ranking(
         candidates,
         key=lambda x: (
             float(x.get("final_score", x.get("score", 0.0))),
+            float(x.get("final_confidence", 0.0)),
             float(x.get("target_sensitive_score", stage_a["stage_a_score_by_cell"].get(x["cell"], 0.0))),
             float(x.get("support_score", stage_a["stage_a_score_by_cell"].get(x["cell"], 0.0))),
-            -int(x["cell"][0]),
-            -int(x["cell"][1]),
+            -int(stage_a["stage_a_rank_by_cell"].get(x["cell"], 0)),
         ),
         reverse=True,
     )
@@ -1216,6 +1264,7 @@ def _run_inference_detailed(
     preserve_diagnostics = bool(aggregator_cfg.get("preserve_diagnostics", True))
     for idx, cell in enumerate(ranked, start=1):
         score = round(float(cell["score"]), 6)
+        ctx = support_context(board, cell["cell"], local_radius=1)
         payload = {
                 "row": cell["cell"][0] + 1,
                 "col": cell["cell"][1] + 1,
@@ -1240,6 +1289,13 @@ def _run_inference_detailed(
                 "module_effective_weights": {
                     k: round(float(v), 6) for k, v in sorted(cell.get("module_effective_weights", {}).items())
                 },
+                "module_confidences": {
+                    k: round(float(v), 6) for k, v in sorted(cell.get("module_informative", {}).items())
+                },
+                "final_confidence": round(float(cell.get("final_confidence", 0.0)), 6),
+                "zone_type": str(ctx["zone_type"]),
+                "edge_bias_adjustment": round(float(cell.get("edge_bias_adjustment", 1.0)), 6),
+                "board_coverage_adjustment": round(float(cell.get("board_coverage_adjustment", 1.0)), 6),
                 "support_score": round(float(cell.get("support_score", score)), 6),
                 "contradiction_penalty": round(float(cell.get("contradiction_penalty", 0.0)), 6),
                 "gated_score": round(float(cell.get("gated_score", score)), 6),
