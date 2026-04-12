@@ -21,7 +21,9 @@ from src.fast_scoring import (
     prepare_fast_inputs,
     prior_model_fast,
 )
+from src.neighborhood_association import NeighborhoodAssociationModule
 from src.vector_modules import (
+    compute_local_tail_evidence,
     connectivity_heatmap_vectorized,
     difference_trend_vectorized,
     focus_score_vectorized,
@@ -45,6 +47,7 @@ class ModuleScoreResult:
     scores: Dict[Cell, float]
     explanation: str
     details: Dict[Cell, Dict[str, float]] = field(default_factory=dict)
+    informative_cells: Dict[Cell, float] = field(default_factory=dict)
 
 
 class ScoringModule(Protocol):
@@ -114,27 +117,28 @@ class PatternModelModule:
     name = "pattern_model"
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
-        rows, cols = len(board), len(board[0])
         result: Dict[Cell, float] = {}
-        target_tail = target_number % 10
+        details: Dict[Cell, Dict[str, float]] = {}
+        informative_cells: Dict[Cell, float] = {}
         for r, c in unopened_cells:
-            known_neighbors = 0
-            tail_matches = 0
-            for rr in range(max(0, r - 1), min(rows, r + 2)):
-                for cc in range(max(0, c - 1), min(cols, c + 2)):
-                    if rr == r and cc == c:
-                        continue
-                    val = board[rr][cc]
-                    if val == -1:
-                        continue
-                    known_neighbors += 1
-                    if (val % 10) == target_tail:
-                        tail_matches += 1
-            if known_neighbors == 0:
-                result[(r, c)] = 0.3
+            evidence = compute_local_tail_evidence(board, (r, c), target_number, window_size=3)
+            known_neighbors = int(evidence["known_neighbors"])
+            same_tail_neighbors = int(evidence["same_tail_neighbors"])
+            strong_tail_signal = bool(evidence["strong_tail_signal"] > 0.0)
+            if known_neighbors < 3 or not strong_tail_signal:
+                result[(r, c)] = 0.5
+                informative_cells[(r, c)] = 0.0
             else:
-                result[(r, c)] = (tail_matches + 1) / (known_neighbors + 1)
-        return ModuleScoreResult(result, "pattern_model: 使用局部尾數分佈與已開密度作啟發式評分")
+                raw = (same_tail_neighbors + 1.0) / (known_neighbors + 1.0)
+                result[(r, c)] = _clip(0.52 + 0.20 * _clip(raw))
+                informative_cells[(r, c)] = 1.0
+            details[(r, c)] = dict(evidence)
+        return ModuleScoreResult(
+            result,
+            "pattern_model: 使用局部尾數分佈與尾數證據 gate 評分",
+            details=details,
+            informative_cells=informative_cells,
+        )
 
 
 class PriorModelModule:
@@ -225,7 +229,18 @@ class TailAnalyzerModule:
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores = tail_analyzer_vectorized(board, unopened_cells, target_number, window_size=self.window_size)
-        return ModuleScoreResult(scores, "tail_analyzer: 尾數分布局部相容性")
+        informative_cells: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
+        for cell in unopened_cells:
+            evidence = compute_local_tail_evidence(board, cell, target_number, window_size=self.window_size)
+            informative_cells[cell] = 1.0 if evidence["strong_tail_signal"] > 0.0 else 0.0
+            details[cell] = dict(evidence)
+        return ModuleScoreResult(
+            scores,
+            "tail_analyzer: 尾數分布局部相容性（含局部尾數證據 gate）",
+            details=details,
+            informative_cells=informative_cells,
+        )
 
 
 def _clip(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -454,12 +469,7 @@ def _line_components(board: Board, candidate: Cell, target_number: int) -> Dict[
 def _cell_number_compatibility(board: Board, cell: Cell, number: int) -> float:
     directional = _directional_components(board, cell, number)["directional_consistency"]
     line = _line_components(board, cell, number)["line_consistency"]
-    rows, cols = len(board), len(board[0])
-    center_r = (rows - 1) / 2.0
-    center_c = (cols - 1) / 2.0
-    max_dist = max(center_r + center_c, 1.0)
-    prior = 1.0 - ((abs(cell[0] - center_r) + abs(cell[1] - center_c)) / max_dist)
-    return _clip(0.4 * directional + 0.4 * line + 0.2 * prior)
+    return _clip(0.5 * directional + 0.5 * line)
 
 
 def _cell_number_compatibility_cached(
@@ -539,6 +549,47 @@ class LineConsistencyModule:
             scores,
             "line_consistency: 以整行整列與對角殘差/單調性/分位吻合度評估",
             details=details,
+        )
+
+
+class StructuralConsistencyModule:
+    name = "structural_consistency"
+
+    def __init__(self, fast_enabled: bool = True) -> None:
+        self.directional_module = DirectionalConsistencyModule(fast_enabled=fast_enabled)
+        self.line_module = LineConsistencyModule(fast_enabled=fast_enabled)
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        directional = self.directional_module.score(board, unopened_cells, target_number)
+        line = self.line_module.score(board, unopened_cells, target_number)
+        scores: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
+        for cell in unopened_cells:
+            d_score = float(directional.scores.get(cell, NEUTRAL_SCORE))
+            l_score = float(line.scores.get(cell, NEUTRAL_SCORE))
+            combined = _clip(0.5 * d_score + 0.5 * l_score)
+            scores[cell] = combined
+            d_details = directional.details.get(cell, {}) if directional.details else {}
+            l_details = line.details.get(cell, {}) if line.details else {}
+            cell_details: Dict[str, float] = {
+                "structural_consistency": combined,
+                "directional_component_score": d_score,
+                "line_component_score": l_score,
+            }
+            cell_details.update({f"directional_{k}": float(v) for k, v in d_details.items()})
+            cell_details.update({f"line_{k}": float(v) for k, v in l_details.items()})
+            details[cell] = cell_details
+        return ModuleScoreResult(
+            scores,
+            "structural_consistency: 整合 directional 與 line 一次性結構一致性評分",
+            details=details,
+            informative_cells={
+                cell: min(
+                    float(directional.informative_cells.get(cell, 1.0)),
+                    float(line.informative_cells.get(cell, 1.0)),
+                )
+                for cell in unopened_cells
+            },
         )
 
 
@@ -627,11 +678,10 @@ class GlobalAssignmentPriorModule:
         anchor_details: Dict[Cell, Dict[str, float]] = {}
         directional_scores = DirectionalConsistencyModule().score(board, unopened_cells, target_number).scores
         line_scores = LineConsistencyModule().score(board, unopened_cells, target_number).scores
-        prior_scores = PriorModelModule().score(board, unopened_cells, target_number).scores
         pre_ranked = sorted(
             unopened_cells,
             key=lambda cell: (
-                directional_scores.get(cell, 0.5) + line_scores.get(cell, 0.5) + prior_scores.get(cell, 0.5)
+                directional_scores.get(cell, 0.5) + line_scores.get(cell, 0.5)
             ),
             reverse=True,
         )
@@ -720,6 +770,262 @@ class GlobalAssignmentPriorModule:
             scores,
             "global_assignment_prior: 固定 target 後估計剩餘數字全局唯一分配一致性",
             details=details,
+        )
+
+
+def _pairs(values: List[int]) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    for i in range(len(values)):
+        for j in range(i + 1, len(values)):
+            out.append((values[i], values[j]))
+    return out
+
+
+def _same_decade_family(a: int, b: int) -> bool:
+    return (a - 1) // 10 == (b - 1) // 10
+
+
+def _same_tail_family(a: int, b: int) -> bool:
+    return a % 10 == b % 10
+
+
+def _arithmetic_support_counts(values: List[int], target_number: int) -> Tuple[int, int, int]:
+    pair_list = _pairs(values)
+    midpoint = 0
+    continuation = 0
+    unique_steps: set[int] = set()
+    for a, b in pair_list:
+        if (2 * target_number) == (a + b):
+            midpoint += 1
+            unique_steps.add(abs(b - a))
+        d = b - a
+        if target_number == b + d or target_number == a - d:
+            continuation += 1
+            unique_steps.add(abs(d))
+    return midpoint, continuation, len([d for d in unique_steps if d > 0])
+
+
+def _gap_regularity(values: List[int]) -> float:
+    if len(values) < 3:
+        return NEUTRAL_SCORE
+    ordered = sorted(values)
+    gaps = [ordered[i + 1] - ordered[i] for i in range(len(ordered) - 1)]
+    if not gaps:
+        return NEUTRAL_SCORE
+    mean_gap = sum(abs(g) for g in gaps) / len(gaps)
+    if mean_gap <= 1e-9:
+        return NEUTRAL_SCORE
+    variance = sum((abs(g) - mean_gap) ** 2 for g in gaps) / len(gaps)
+    return _clip(1.0 / (1.0 + math.sqrt(variance)))
+
+
+class LocalArithmeticRelationModule:
+    name = "local_arithmetic_relation"
+
+    def __init__(
+        self,
+        near_value_deltas: Optional[List[int]] = None,
+        exact_near_deltas: Optional[List[int]] = None,
+        medium_near_deltas: Optional[List[int]] = None,
+        weak_score_floor: float = 0.52,
+    ) -> None:
+        self.near_value_deltas = sorted({abs(int(x)) for x in (near_value_deltas or [1, 2, 3, 5, 8, 10, 20])})
+        self.exact_near_deltas = sorted({abs(int(x)) for x in (exact_near_deltas or [1, 2, 3])})
+        self.medium_near_deltas = sorted({abs(int(x)) for x in (medium_near_deltas or [5, 8, 10])})
+        self.weak_score_floor = float(weak_score_floor)
+
+    def _seed_strength(self, value: int, target_number: int) -> float:
+        diff = abs(value - target_number)
+        near_strength = 0.0
+        if diff in self.exact_near_deltas:
+            near_strength = 1.0
+        elif diff in self.medium_near_deltas:
+            near_strength = 0.6
+        elif diff in self.near_value_deltas:
+            near_strength = 0.35
+        same_decade_bonus = 0.1 if _same_decade_family(value, target_number) else 0.0
+        return _clip(near_strength + same_decade_bonus)
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        rows, cols = len(board), len(board[0])
+        opened: List[Tuple[int, int, int]] = [
+            (r, c, board[r][c]) for r in range(rows) for c in range(cols) if board[r][c] != -1
+        ]
+        details: Dict[Cell, Dict[str, float]] = {}
+        scores: Dict[Cell, float] = {}
+        informative_cells: Dict[Cell, float] = {}
+        if len(opened) < 2:
+            for cell in unopened_cells:
+                scores[cell] = NEUTRAL_SCORE
+                details[cell] = {
+                    "seed_count_total": 0.0,
+                    "seed_count_near": 0.0,
+                    "seed_count_same_decade": 0.0,
+                    "seed_count_same_tail": 0.0,
+                    "local_row_midpoint_support_count": 0.0,
+                    "local_row_continuation_support_count": 0.0,
+                    "local_col_midpoint_support_count": 0.0,
+                    "local_col_continuation_support_count": 0.0,
+                    "local_window_midpoint_support_count": 0.0,
+                    "local_window_continuation_support_count": 0.0,
+                    "row_gap_improvement": 0.0,
+                    "col_gap_improvement": 0.0,
+                    "window_signal_density": 0.0,
+                    "nearest_seed_distance": -1.0,
+                    "target_near_seed_strength": 0.0,
+                    "arithmetic_abstain": 1.0,
+                    "opened_number_count": float(len(opened)),
+                    "effective_local_known_count": 0.0,
+                }
+                informative_cells[cell] = 0.0
+            return ModuleScoreResult(
+                scores=scores,
+                explanation="local_arithmetic_relation: opened numbers < 2, abstain with neutral score",
+                details=details,
+                informative_cells=informative_cells,
+            )
+
+        seeds = [(r, c, v, self._seed_strength(v, target_number)) for r, c, v in opened]
+        active_seeds = [(r, c, v, s) for r, c, v, s in seeds if s > 0.0]
+        seed_count_same_decade = sum(1 for _, _, v, _ in seeds if _same_decade_family(v, target_number))
+        seed_count_same_tail = sum(1 for _, _, v, _ in seeds if _same_tail_family(v, target_number))
+
+        for r, c in unopened_cells:
+            row_vals = [board[r][cc] for cc in range(cols) if board[r][cc] != -1]
+            col_vals = [board[rr][c] for rr in range(rows) if board[rr][c] != -1]
+            win_vals = [
+                board[rr][cc]
+                for rr in range(max(0, r - 1), min(rows, r + 2))
+                for cc in range(max(0, c - 1), min(cols, c + 2))
+                if (rr != r or cc != c) and board[rr][cc] != -1
+            ]
+            cross_vals = []
+            for rr in range(rows):
+                if rr != r and board[rr][c] != -1:
+                    cross_vals.append(board[rr][c])
+            for cc in range(cols):
+                if cc != c and board[r][cc] != -1:
+                    cross_vals.append(board[r][cc])
+            diag_vals = []
+            if rows == cols:
+                for i in range(rows):
+                    if i != r and i != c and board[i][i] != -1:
+                        diag_vals.append(board[i][i])
+                for i in range(rows):
+                    j = cols - 1 - i
+                    if (i != r or j != c) and board[i][j] != -1 and (i, j) not in {(r, c)}:
+                        diag_vals.append(board[i][j])
+            local_vals = row_vals + col_vals + win_vals + cross_vals + diag_vals
+            effective_local_known_count = float(len(local_vals))
+
+            row_mid, row_cont, _ = _arithmetic_support_counts(row_vals, target_number)
+            col_mid, col_cont, _ = _arithmetic_support_counts(col_vals, target_number)
+            win_mid, win_cont, win_steps = _arithmetic_support_counts(win_vals + cross_vals, target_number)
+            local_pairs = max(len(_pairs(win_vals + cross_vals)), 1)
+            local_midpoint_strength = _clip((row_mid + col_mid + win_mid) / max(local_pairs, 1))
+            local_continuation_strength = _clip((row_cont + col_cont + win_cont) / max(local_pairs, 1))
+
+            row_gap_before = _gap_regularity(row_vals)
+            row_gap_after = _gap_regularity(row_vals + [target_number])
+            col_gap_before = _gap_regularity(col_vals)
+            col_gap_after = _gap_regularity(col_vals + [target_number])
+            row_gap_improve = row_gap_after - row_gap_before
+            col_gap_improve = col_gap_after - col_gap_before
+            row_col_gap_improvement_strength = _clip(0.5 + 0.5 * (row_gap_improve + col_gap_improve))
+
+            density_pairs = max(len(win_vals + cross_vals), 1)
+            seed_related = 0
+            for v in win_vals + cross_vals:
+                if abs(v - target_number) in self.near_value_deltas or _same_decade_family(v, target_number):
+                    seed_related += 1
+            window_signal_density = _clip(seed_related / density_pairs)
+
+            if active_seeds:
+                distances = [abs(sr - r) + abs(sc - c) for sr, sc, _, _ in active_seeds]
+                nearest_seed_distance = float(min(distances))
+                weighted_seed = [
+                    s / (1.0 + abs(sr - r) + abs(sc - c))
+                    for sr, sc, _, s in active_seeds
+                ]
+                target_near_seed_strength = _clip(sum(weighted_seed) / max(len(weighted_seed), 1))
+            else:
+                nearest_seed_distance = -1.0
+                target_near_seed_strength = 0.0
+            seed_region_proximity_strength = (
+                0.0 if nearest_seed_distance < 0 else _clip(1.0 / (1.0 + nearest_seed_distance))
+            )
+
+            weak_closeness = 0.0
+            if local_vals:
+                weak_closeness = _clip(
+                    sum(1.0 / (1.0 + abs(v - target_number)) for v in local_vals) / len(local_vals)
+                )
+            tail_evidence = compute_local_tail_evidence(board, (r, c), target_number, window_size=3)
+            conditional_same_tail_bonus = 0.0
+            if (
+                tail_evidence["strong_tail_signal"] > 0.0
+                and target_near_seed_strength > 0.0
+                and effective_local_known_count >= 4
+            ):
+                conditional_same_tail_bonus = 0.04 * _clip(tail_evidence["local_tail_ratio"])
+
+            base_score = _clip(
+                0.28 * target_near_seed_strength
+                + 0.22 * local_midpoint_strength
+                + 0.18 * local_continuation_strength
+                + 0.16 * row_col_gap_improvement_strength
+                + 0.10 * window_signal_density
+                + 0.06 * seed_region_proximity_strength
+                + conditional_same_tail_bonus
+            )
+            signal_mass = (
+                target_near_seed_strength
+                + local_midpoint_strength
+                + local_continuation_strength
+                + abs(row_gap_improve)
+                + abs(col_gap_improve)
+                + window_signal_density
+            )
+            if signal_mass <= 1e-9 and weak_closeness <= 1e-9:
+                score = NEUTRAL_SCORE
+                informative = 0.0
+                abstain = 1.0
+            else:
+                informative = 1.0
+                abstain = 0.0
+                if base_score <= NEUTRAL_SCORE:
+                    score = _clip(self.weak_score_floor + 0.08 * weak_closeness)
+                else:
+                    score = base_score
+            scores[(r, c)] = score
+            informative_cells[(r, c)] = informative
+            details[(r, c)] = {
+                "seed_count_total": float(len(seeds)),
+                "seed_count_near": float(len(active_seeds)),
+                "seed_count_same_decade": float(seed_count_same_decade),
+                "seed_count_same_tail": float(seed_count_same_tail),
+                "local_row_midpoint_support_count": float(row_mid),
+                "local_row_continuation_support_count": float(row_cont),
+                "local_col_midpoint_support_count": float(col_mid),
+                "local_col_continuation_support_count": float(col_cont),
+                "local_window_midpoint_support_count": float(win_mid),
+                "local_window_continuation_support_count": float(win_cont),
+                "row_gap_improvement": float(row_gap_improve),
+                "col_gap_improvement": float(col_gap_improve),
+                "window_signal_density": float(window_signal_density),
+                "nearest_seed_distance": float(nearest_seed_distance),
+                "target_near_seed_strength": float(target_near_seed_strength),
+                "arithmetic_abstain": float(abstain),
+                "opened_number_count": float(len(opened)),
+                "effective_local_known_count": float(effective_local_known_count),
+                "arithmetic_unique_step_count": float(win_steps),
+                "conditional_same_tail_bonus": float(conditional_same_tail_bonus),
+            }
+        return ModuleScoreResult(
+            scores=scores,
+            explanation="local_arithmetic_relation: target-near local arithmetic support over row/col/window context",
+            details=details,
+            informative_cells=informative_cells,
         )
 
 
@@ -942,6 +1248,15 @@ MODULE_FACTORIES = {
     "logic_rule": lambda cfg: LogicRuleModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
     "pattern_model": lambda _cfg: PatternModelModule(),
     "prior_model": lambda cfg: PriorModelModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
+    "local_arithmetic_relation": lambda cfg: LocalArithmeticRelationModule(
+        near_value_deltas=list(cfg.get("near_value_deltas", [1, 2, 3, 5, 8, 10, 20])),
+        exact_near_deltas=list(cfg.get("exact_near_deltas", [1, 2, 3])),
+        medium_near_deltas=list(cfg.get("medium_near_deltas", [5, 8, 10])),
+        weak_score_floor=float(cfg.get("weak_score_floor", 0.52)),
+    ),
+    "structural_consistency": lambda cfg: StructuralConsistencyModule(
+        fast_enabled=bool(cfg.get("fast_enabled", True))
+    ),
     "directional_consistency": lambda cfg: DirectionalConsistencyModule(
         fast_enabled=bool(cfg.get("fast_enabled", True))
     ),
@@ -988,6 +1303,26 @@ MODULE_FACTORIES = {
     "skip_patterns": lambda _cfg: SkipPatternsModule(),
     "mirror_sequences": lambda _cfg: MirrorSequencesModule(),
     "tail_analyzer": lambda cfg: TailAnalyzerModule(window_size=int(cfg.get("window_size", 3))),
+    "neighborhood_association": lambda cfg: NeighborhoodAssociationModule(
+        radius=int(cfg.get("radius", 1)),
+        use_diagonal=bool(cfg.get("use_diagonal", True)),
+        min_seed_count=int(cfg.get("min_seed_count", 1)),
+        decay_by_distance=bool(cfg.get("decay_by_distance", True)),
+        distance_decay_power=float(cfg.get("distance_decay_power", 1.0)),
+        enabled_seed_families=list(cfg.get("enabled_seed_families", ["same_decade", "same_tail", "near_value"])),
+        near_value_deltas=list(cfg.get("near_value_deltas", [1, 2, 10, 20])),
+        enabled_neighbor_families=list(
+            cfg.get("enabled_neighbor_families", ["same_decade", "same_tail", "near_value"])
+        ),
+        neighbor_value_deltas=list(cfg.get("neighbor_value_deltas", [1, 2, 10, 20])),
+        score_mode=str(cfg.get("score_mode", "weighted_pattern_overlap")),
+        seed_aggregation=str(cfg.get("seed_aggregation", "mean")),
+        candidate_aggregation=str(cfg.get("candidate_aggregation", "mean")),
+        neutral_score_when_no_seed=float(cfg.get("neutral_score_when_no_seed", 0.5)),
+        floor_score=float(cfg.get("floor_score", 0.0)),
+        ceil_score=float(cfg.get("ceil_score", 1.0)),
+        relation_source=str(cfg.get("relation_source", "heuristic_family_profile_v1")),
+    ),
 }
 
 

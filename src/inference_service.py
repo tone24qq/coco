@@ -26,7 +26,13 @@ from src.competitive_fusion import (
 )
 from src.ranking_features import build_candidate_feature_rows
 from src.reranker import apply_reranker, load_reranker_artifact
-from src.scoring_modules import Cell, ModuleScoreResult, build_modules
+from src.scoring_modules import (
+    Cell,
+    GlobalAssignmentPriorModule,
+    ModuleScoreResult,
+    PairwiseConditionalConsistencyModule,
+    build_modules,
+)
 from src.scoring_modules import linear_sum_assignment
 
 
@@ -103,6 +109,7 @@ def build_cell_candidates(
             "score": 0.0,
             "module_scores": {},
             "module_details": {},
+            "module_informative": {},
         }
         for cell in unopened_cells
     ]
@@ -128,6 +135,27 @@ def _normalize_scores(raw_scores: Dict[Cell, float], mode: str = "disabled") -> 
 
 def _clip(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, v))
+
+
+def _get_informative_value(result: ModuleScoreResult, cell: Cell) -> float:
+    informative = getattr(result, "informative_cells", None)
+    if not informative:
+        return 1.0
+    return _clip(float(informative.get(cell, 1.0)))
+
+
+def _validate_committee_stage1_modules(weights: Dict[str, float]) -> None:
+    stage1_modules = set(weights.keys())
+    banned = {"global_assignment_prior", "pairwise_conditional_consistency", "prior_model"}
+    invalid = sorted(stage1_modules & banned)
+    if invalid:
+        raise InferenceError(f"committee stage-1 cannot include modules: {invalid}")
+    if "structural_consistency" in stage1_modules and (
+        "directional_consistency" in stage1_modules or "line_consistency" in stage1_modules
+    ):
+        raise InferenceError("structural_consistency cannot be enabled with directional_consistency/line_consistency")
+    if "directional_consistency" in stage1_modules or "line_consistency" in stage1_modules:
+        raise InferenceError("committee stage-1 must use structural_consistency instead of directional/line modules")
 
 
 def score_candidates_raw(
@@ -198,11 +226,13 @@ def score_candidates_raw(
         for c in candidates:
             c.setdefault("module_scores", {})
             c.setdefault("module_details", {})
+            c.setdefault("module_informative", {})
             cell = c["cell"]
             module_score = float(normalized.get(cell, 0.0))
             c["module_scores"][module_name] = module_score
             if result.details:
                 c["module_details"][module_name] = result.details.get(cell, {})
+            c["module_informative"][module_name] = _get_informative_value(result, cell)
             c["score"] += module_score * weight
 
     if pairwise_name in weights:
@@ -273,9 +303,94 @@ def score_candidates_raw(
             c["module_scores"][pairwise_name] = module_score
             if result.details:
                 c["module_details"][pairwise_name] = result.details.get(cell, {})
+            c.setdefault("module_informative", {})
+            c["module_informative"][pairwise_name] = _get_informative_value(result, cell)
             c["score"] += module_score * float(weights[pairwise_name])
 
     return candidates, weights, explanations
+
+
+def _apply_stage2_adjustment_signals(
+    board: List[List[int]],
+    candidates: List[Dict[str, object]],
+    target_number: int,
+    module_settings: Optional[Dict[str, Dict[str, object]]] = None,
+    stage1_weights: Optional[Dict[str, float]] = None,
+) -> None:
+    if not candidates:
+        return
+    settings = module_settings or {}
+    stage2_cfg = dict(settings.get("stage2_adjustments", {}))
+    if not stage2_cfg:
+        stage2_cfg = {
+            "global_assignment_enabled": True,
+            "pairwise_enabled": True,
+            "assignment_delta_scale": 0.08,
+            "assignment_penalty_scale": 0.08,
+            "pairwise_delta_scale": 0.06,
+            "pairwise_penalty_scale": 0.06,
+        }
+    candidate_cells = [c["cell"] for c in candidates]
+    for cand in candidates:
+        cand["assignment_delta"] = 0.0
+        cand["assignment_penalty"] = 0.0
+        cand["pairwise_delta"] = 0.0
+        cand["pairwise_penalty"] = 0.0
+        cand["assignment_diagnostics"] = {}
+        cand["pairwise_diagnostics"] = {}
+
+    if bool(stage2_cfg.get("global_assignment_enabled", True)):
+        assign_cfg = dict(settings.get("global_assignment_prior", {}))
+        assign_module = GlobalAssignmentPriorModule(
+            assignment_mode=str(assign_cfg.get("assignment_mode", "greedy")),
+            top_m_candidates=int(assign_cfg.get("top_m_candidates", 4)),
+            exact_max_candidates=int(assign_cfg.get("exact_max_candidates", 20)),
+        )
+        assign_res = assign_module.score(board, candidate_cells, target_number)
+        delta_scale = float(stage2_cfg.get("assignment_delta_scale", 0.08))
+        penalty_scale = float(stage2_cfg.get("assignment_penalty_scale", 0.08))
+        for cand in candidates:
+            cell = cand["cell"]
+            s = float(assign_res.scores.get(cell, 0.5))
+            cand["assignment_delta"] = max(0.0, s - 0.5) * delta_scale
+            cand["assignment_penalty"] = max(0.0, 0.5 - s) * penalty_scale
+            cand["assignment_diagnostics"] = assign_res.details.get(cell, {}) if assign_res.details else {}
+
+    if bool(stage2_cfg.get("pairwise_enabled", True)):
+        pair_cfg = dict(settings.get("pairwise_conditional_consistency", {}))
+        pair_module = PairwiseConditionalConsistencyModule(
+            anchor_top_k_cells=int(pair_cfg.get("anchor_top_k_cells", 5)),
+            anchor_top_k_values=int(pair_cfg.get("anchor_top_k_values", 5)),
+            max_pair_trials_per_candidate=int(pair_cfg.get("max_pair_trials_per_candidate", 20)),
+            gating_enabled=bool(pair_cfg.get("gating_enabled", True)),
+            contradiction_penalty_weight=float(pair_cfg.get("contradiction_penalty_weight", 1.0)),
+            hard_violation_threshold=float(pair_cfg.get("hard_violation_threshold", 2.0)),
+            hard_gate_multiplier=float(pair_cfg.get("hard_gate_multiplier", 0.05)),
+            soft_gate_floor=float(pair_cfg.get("soft_gate_floor", 0.25)),
+            runtime_mode=str(pair_cfg.get("runtime_mode", "fast")),
+            candidate_top_n=int(pair_cfg.get("candidate_top_n", 8)),
+            global_assignment_mode=str(pair_cfg.get("global_assignment_mode", "greedy")),
+            global_assignment_top_m_candidates=int(pair_cfg.get("global_assignment_top_m_candidates", 4)),
+        )
+        if stage1_weights:
+            ranked = sorted(
+                candidates,
+                key=lambda c: sum(
+                    float(c.get("module_scores", {}).get(m, 0.0)) * float(stage1_weights.get(m, 0.0))
+                    for m in stage1_weights
+                ),
+                reverse=True,
+            )
+            pair_module.set_seed_ranked_candidates([c["cell"] for c in ranked])
+        pair_res = pair_module.score(board, candidate_cells, target_number)
+        delta_scale = float(stage2_cfg.get("pairwise_delta_scale", 0.06))
+        penalty_scale = float(stage2_cfg.get("pairwise_penalty_scale", 0.06))
+        for cand in candidates:
+            cell = cand["cell"]
+            s = float(pair_res.scores.get(cell, 0.5))
+            cand["pairwise_delta"] = max(0.0, s - 0.5) * delta_scale
+            cand["pairwise_penalty"] = max(0.0, 0.5 - s) * penalty_scale
+            cand["pairwise_diagnostics"] = pair_res.details.get(cell, {}) if pair_res.details else {}
 
 
 def score_candidates(
@@ -341,8 +456,10 @@ def collect_module_outputs(
     module_norm: Dict[str, Dict[Cell, float]] = {}
     module_rank: Dict[str, Dict[Cell, int]] = {}
     module_vote: Dict[str, Dict[Cell, Dict[str, float]]] = {}
+    module_informative: Dict[str, Dict[Cell, float]] = {}
     for name in module_names:
         raw = {c["cell"]: float(c.get("module_scores", {}).get(name, 0.0)) for c in candidates}
+        informative = {c["cell"]: float(c.get("module_informative", {}).get(name, 1.0)) for c in candidates}
         norm = normalize_scores_per_module(raw, mode=normalization)
         rank = compute_dense_ranks(norm)
         vote = compute_vote_signals(rank)
@@ -350,6 +467,7 @@ def collect_module_outputs(
         module_norm[name] = norm
         module_rank[name] = rank
         module_vote[name] = vote
+        module_informative[name] = informative
     stage_a_score_by_cell = {
         cell: sum(float(module_norm[m][cell]) for m in module_names) / max(len(module_names), 1)
         for cell in cells
@@ -363,6 +481,7 @@ def collect_module_outputs(
         "module_norm_score_by_cell": module_norm,
         "module_rank_by_cell": module_rank,
         "module_vote_by_cell": module_vote,
+        "module_informative_by_cell": module_informative,
         "stage_a_score_by_cell": stage_a_score_by_cell,
         "stage_a_rank_by_cell": stage_a_rank_by_cell,
         "stage_a_top1_cell": stage_a_top1_cell,
@@ -480,6 +599,7 @@ def apply_meta_judge(
     weights: Dict[str, float],
     stage_a: Dict[str, object],
     aggregator_cfg: Dict[str, object],
+    use_for_primary_ranking: bool = True,
 ) -> Optional[str]:
     artifact_path = str(aggregator_cfg.get("judge_artifact_path", "artifacts/competitive_judge_artifact.json"))
     expected_schema_version = str(aggregator_cfg.get("judge_feature_schema_version", "competitive_features_v1"))
@@ -493,6 +613,8 @@ def apply_meta_judge(
                 f"judge schema mismatch: artifact={artifact_schema}, expected={expected_schema_version}"
             )
     except (FileNotFoundError, ValueError) as exc:
+        if not use_for_primary_ranking:
+            return f"meta_judge_fallback:{exc}"
         if fallback_mode == "weighted_rank_fusion":
             apply_weighted_rank_fusion(candidates, weights, stage_a, aggregator_cfg)
         elif fallback_mode == "vote_based_fusion":
@@ -510,17 +632,131 @@ def apply_meta_judge(
         c["gate_multiplier"] = 1.0
         c["vote_bonus"] = float(c.get("top1_vote_count", 0.0))
         c["gated_score"] = score
-        c["score"] = score
+        c["judge_score"] = score
+        if use_for_primary_ranking:
+            c["score"] = score
         c["judge_artifact_version"] = str(artifact.get("created_at", artifact.get("schema_version", "unknown")))
         c["judge_feature_schema_version"] = str(artifact.get("schema_version", "unknown"))
     return None
+
+
+def _normalize_active_weights(
+    module_names: List[str],
+    module_informative: Dict[str, float],
+    yaml_weights: Dict[str, float],
+    weighting_mode: str,
+) -> Dict[str, float]:
+    active = [m for m in module_names if float(module_informative.get(m, 0.0)) > 0.0]
+    if not active:
+        return {}
+    if weighting_mode == "equal_informative":
+        each = 1.0 / len(active)
+        return {m: each for m in active}
+    if weighting_mode == "yaml_normalized":
+        base_sum = sum(float(yaml_weights.get(m, 0.0)) for m in active)
+        if base_sum <= 0:
+            each = 1.0 / len(active)
+            return {m: each for m in active}
+        return {m: float(yaml_weights.get(m, 0.0)) / base_sum for m in active}
+    raise InferenceError(f"Unsupported weighting_mode: {weighting_mode}")
+
+
+def apply_committee_weighted_sum(
+    candidates: List[Dict[str, object]],
+    weights: Dict[str, float],
+    aggregator_cfg: Dict[str, object],
+) -> Dict[str, object]:
+    if not candidates:
+        return {}
+    module_names = sorted(weights.keys())
+    weighting_mode = str(aggregator_cfg.get("weighting_mode", "equal_informative"))
+    per_module_active_counts = {m: 0 for m in module_names}
+    no_info_any = False
+    for cand in candidates:
+        informative_map = {
+            m: float(cand.get("module_informative", {}).get(m, 1.0))
+            for m in module_names
+        }
+        active_weights = _normalize_active_weights(
+            module_names=module_names,
+            module_informative=informative_map,
+            yaml_weights=weights,
+            weighting_mode=weighting_mode,
+        )
+        for m in active_weights:
+            per_module_active_counts[m] += 1
+        if not active_weights:
+            committee_score = 0.5
+            no_info = True
+            no_info_any = True
+            assignment_delta = 0.0
+            assignment_penalty = 0.0
+            pairwise_delta = 0.0
+            pairwise_penalty = 0.0
+        else:
+            committee_score = sum(
+                float(cand.get("module_scores", {}).get(m, 0.0)) * float(active_weights[m]) for m in active_weights
+            )
+            no_info = False
+            assignment_delta = float(cand.get("assignment_delta", 0.0))
+            assignment_penalty = float(cand.get("assignment_penalty", 0.0))
+            pairwise_delta = float(cand.get("pairwise_delta", 0.0))
+            pairwise_penalty = float(cand.get("pairwise_penalty", 0.0))
+        stage1_base = float(committee_score)
+        stage2_score = stage1_base + assignment_delta - assignment_penalty
+        stage3_score = stage2_score + pairwise_delta - pairwise_penalty
+        cand["stage1_base_score"] = stage1_base
+        cand["stage2_assignment_adjusted_score"] = stage2_score
+        cand["stage3_pairwise_adjusted_score"] = stage3_score
+        cand["committee_score"] = stage1_base
+        cand["final_score"] = stage3_score
+        cand["score"] = stage3_score
+        cand["ranking_score"] = stage3_score
+        cand["active_module_count"] = int(len(active_weights))
+        cand["active_weight_sum"] = float(sum(active_weights.values()))
+        cand["module_effective_weights"] = dict(active_weights)
+        cand["committee_weighting_mode"] = weighting_mode
+        cand["top_decision_source"] = "stage3_pairwise_adjusted_score"
+        cand["score_chain"] = {
+            "stage1_base_score": stage1_base,
+            "assignment_delta": assignment_delta,
+            "assignment_penalty": assignment_penalty,
+            "stage2_assignment_adjusted_score": stage2_score,
+            "pairwise_delta": pairwise_delta,
+            "pairwise_penalty": pairwise_penalty,
+            "stage3_pairwise_adjusted_score": stage3_score,
+            "final_score": stage3_score,
+        }
+        cand["no_informative_modules"] = bool(no_info)
+    return {
+        "fusion_mode": "committee_weighted_sum",
+        "ranking_contract_version": "committee_weighted_sum_v1",
+        "committee_weighting_mode": weighting_mode,
+        "no_informative_modules": bool(no_info_any),
+        "active_module_names": [m for m, n in per_module_active_counts.items() if n > 0],
+        "inactive_module_names": [m for m, n in per_module_active_counts.items() if n == 0],
+        "per_module_participation_rate": {
+            m: (float(per_module_active_counts[m]) / max(len(candidates), 1)) for m in module_names
+        },
+        "final_top_determined_by": "score_chain_final_score",
+    }
 
 
 def finalize_candidate_ranking(
     candidates: List[Dict[str, object]],
     stage_a: Dict[str, object],
 ) -> List[Dict[str, object]]:
-    final_order = sorted(candidates, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    final_order = sorted(
+        candidates,
+        key=lambda x: (
+            float(x.get("final_score", x.get("score", 0.0))),
+            float(x.get("target_sensitive_score", stage_a["stage_a_score_by_cell"].get(x["cell"], 0.0))),
+            float(x.get("support_score", stage_a["stage_a_score_by_cell"].get(x["cell"], 0.0))),
+            -int(x["cell"][0]),
+            -int(x["cell"][1]),
+        ),
+        reverse=True,
+    )
     for idx, cand in enumerate(final_order, start=1):
         cand["stage_a_rank"] = int(stage_a["stage_a_rank_by_cell"].get(cand["cell"], idx))
         cand["final_rank_position"] = int(idx)
@@ -544,11 +780,73 @@ def aggregate_candidate_scores(
     weights: Dict[str, float],
     aggregator_cfg: Dict[str, object],
 ) -> Dict[str, float]:
-    if str(aggregator_cfg.get("type", "competitive_ensemble")) != "competitive_ensemble":
+    agg_type = str(aggregator_cfg.get("type", "competitive_ensemble"))
+    if agg_type == "committee_weighted_sum":
+        if not candidates:
+            return {}
+        stage_a = collect_module_outputs(candidates, weights, aggregator_cfg)
+        build_competitive_fusion_features(
+            candidates,
+            stage_a,
+            dict(
+                aggregator_cfg,
+                include_vote_features=bool(aggregator_cfg.get("diagnostics", {}).get("include_vote_features", True)),
+                include_rank_features=bool(aggregator_cfg.get("diagnostics", {}).get("include_rank_features", True)),
+                include_score_features=bool(aggregator_cfg.get("diagnostics", {}).get("include_score_features", True)),
+            ),
+        )
+        diag = apply_committee_weighted_sum(candidates, weights, aggregator_cfg)
+        judge_cfg = dict(aggregator_cfg.get("judge", {}))
+        fallback_reason = None
+        if bool(judge_cfg.get("enabled", False)):
+            fallback_reason = apply_meta_judge(
+                candidates,
+                weights,
+                stage_a,
+                {
+                    **aggregator_cfg,
+                    "judge_artifact_path": str(judge_cfg.get("artifact_path", "")),
+                    "fallback_mode": "weighted_rank_fusion",
+                },
+                use_for_primary_ranking=bool(judge_cfg.get("use_for_primary_ranking", False)),
+            )
+        final_order = finalize_candidate_ranking(candidates, stage_a)
+        final_scores = [float(c["score"]) for c in final_order]
+        raw_mean = sum(final_scores) / len(final_scores)
+        raw_var = sum((s - raw_mean) ** 2 for s in final_scores) / len(final_scores)
+        final_std = math.sqrt(raw_var)
+        top_sorted = sorted(final_scores, reverse=True)
+        top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
+        topk = top_sorted[: min(5, len(top_sorted))]
+        top1_top5_mean_gap = 0.0 if not topk else top_sorted[0] - (sum(topk) / len(topk))
+        tau = max(0.05, final_std)
+        exp_values = [math.exp((s - top_sorted[0]) / tau) for s in top_sorted]
+        z = sum(exp_values) or 1.0
+        probs = [x / z for x in exp_values]
+        entropy = -sum(p * math.log(max(p, 1e-12)) for p in probs)
+        max_entropy = math.log(max(len(probs), 1))
+        return {
+            "raw_score_min": min(final_scores),
+            "raw_score_max": max(final_scores),
+            "raw_score_std": final_std,
+            "final_score_min": min(final_scores),
+            "final_score_max": max(final_scores),
+            "final_score_std": final_std,
+            "top1_top2_margin": top1_top2_margin,
+            "top1_top5_mean_gap": top1_top5_mean_gap,
+            "score_entropy_like": entropy / max(max_entropy, 1e-12),
+            "collapsed_score_flag": final_std < 0.02 or top1_top2_margin < 0.01,
+            "stage_a_top1_cell": stage_a["stage_a_top1_cell"],
+            "final_top1_cell": final_order[0]["cell"],
+            "top1_changed_by_tiebreak": bool(stage_a["stage_a_top1_cell"] != final_order[0]["cell"]),
+            "fallback_reason": fallback_reason,
+            **diag,
+        }
+    if agg_type != "competitive_ensemble":
         return _aggregate_candidate_scores_legacy(
             candidates=candidates,
             weights=weights,
-            agg_type=str(aggregator_cfg.get("type", "weighted_average")),
+            agg_type=agg_type,
             gating_enabled=bool(aggregator_cfg.get("gating_enabled", True)),
             contradiction_weight=float(aggregator_cfg.get("contradiction_penalty_weight", 1.0)),
             hard_violation_threshold=float(aggregator_cfg.get("hard_violation_threshold", 2.0)),
@@ -874,6 +1172,15 @@ def _run_inference_detailed(
         module_settings=module_settings,
         normalization_mode=str(aggregator_cfg.get("normalization_mode", "disabled")),
     )
+    if str(aggregator_cfg.get("type", "")) == "committee_weighted_sum":
+        _validate_committee_stage1_modules(weights)
+    _apply_stage2_adjustment_signals(
+        board=board,
+        candidates=scored,
+        target_number=target_number,
+        module_settings=module_settings,
+        stage1_weights=weights,
+    )
     diagnostics = aggregate_candidate_scores(scored, weights, aggregator_cfg)
     ranked = rank_candidates(scored)
     best = ranked[0]
@@ -924,11 +1231,31 @@ def _run_inference_detailed(
                 "module_scores": {
                     k: round(float(v), 6) for k, v in sorted(cell["module_scores"].items())
                 },
+                "primitive_module_scores": {
+                    k: round(float(v), 6) for k, v in sorted(cell["module_scores"].items())
+                },
+                "module_informative": {
+                    k: round(float(v), 6) for k, v in sorted(cell.get("module_informative", {}).items())
+                },
+                "module_effective_weights": {
+                    k: round(float(v), 6) for k, v in sorted(cell.get("module_effective_weights", {}).items())
+                },
                 "support_score": round(float(cell.get("support_score", score)), 6),
                 "contradiction_penalty": round(float(cell.get("contradiction_penalty", 0.0)), 6),
                 "gated_score": round(float(cell.get("gated_score", score)), 6),
                 "ranking_score": round(float(cell.get("ranking_score", score)), 6),
                 "final_score": score,
+                "committee_score": round(float(cell.get("committee_score", score)), 6),
+                "stage1_base_score": round(float(cell.get("stage1_base_score", score)), 6),
+                "assignment_delta": round(float(cell.get("assignment_delta", 0.0)), 6),
+                "assignment_penalty": round(float(cell.get("assignment_penalty", 0.0)), 6),
+                "pairwise_delta": round(float(cell.get("pairwise_delta", 0.0)), 6),
+                "pairwise_penalty": round(float(cell.get("pairwise_penalty", 0.0)), 6),
+                "score_chain": cell.get("score_chain", {}),
+                "active_module_count": int(cell.get("active_module_count", len(weights))),
+                "active_weight_sum": round(float(cell.get("active_weight_sum", 1.0)), 6),
+                "committee_weighting_mode": str(cell.get("committee_weighting_mode", "")),
+                "top_decision_source": str(cell.get("top_decision_source", "")),
                 "gate_multiplier": round(float(cell.get("gate_multiplier", 1.0)), 6),
                 "vote_bonus": round(float(cell.get("vote_bonus", 0.0)), 6),
                 "target_sensitive_score": round(float(cell.get("target_sensitive_score", 0.0)), 6),
@@ -1049,8 +1376,16 @@ def _run_inference_detailed(
             "version": version,
             "aggregation_type": str(aggregator_cfg.get("type", "weighted_average")),
             "fusion_mode": str(aggregator_cfg.get("fusion_mode", "weighted_rank_fusion")),
+            "committee_weighting_mode": str(diagnostics.get("committee_weighting_mode", "")),
+            "no_informative_modules": bool(diagnostics.get("no_informative_modules", False)),
+            "active_module_names": diagnostics.get("active_module_names", []),
+            "inactive_module_names": diagnostics.get("inactive_module_names", []),
+            "per_module_participation_rate": diagnostics.get("per_module_participation_rate", {}),
+            "final_top_determined_by": str(diagnostics.get("final_top_determined_by", "")),
             "judge_model_type": str(aggregator_cfg.get("judge_model_type", "")),
-            "judge_artifact_path": str(aggregator_cfg.get("judge_artifact_path", "")),
+            "judge_artifact_path": str(
+                aggregator_cfg.get("judge_artifact_path", aggregator_cfg.get("judge", {}).get("artifact_path", ""))
+            ),
             "judge_artifact_version": str(diagnostics.get("judge_artifact_version", "unknown")),
             "judge_feature_schema_version": str(diagnostics.get("judge_feature_schema_version", "unknown")),
             "equal_start_enabled": bool(aggregator_cfg.get("type", "") == "competitive_ensemble"),
