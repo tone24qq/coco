@@ -12,6 +12,7 @@ class ModuleScoreResult:
     scores: Dict[Cell, float]
     explanation: str
     details: Dict[Cell, Dict[str, float]]
+    informative_cells: Dict[Cell, float]
 
 
 @dataclass
@@ -231,11 +232,17 @@ class NeighborhoodAssociationModule:
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         if not unopened_cells:
-            return ModuleScoreResult({}, "neighborhood_association: no unopened cells", details={})
+            return ModuleScoreResult(
+                {},
+                "neighborhood_association: no unopened cells",
+                details={},
+                informative_cells={},
+            )
 
         seeds = self._find_seeds(board, target_number)
         details: Dict[Cell, Dict[str, float]] = {}
         scores: Dict[Cell, float] = {}
+        informative_cells: Dict[Cell, float] = {}
 
         if len(seeds) < self.min_seed_count:
             for cell in unopened_cells:
@@ -252,11 +259,17 @@ class NeighborhoodAssociationModule:
                     "used_radius": float(self.radius),
                     "used_diagonal": float(self.use_diagonal),
                     "no_seed_fallback_used": 1.0,
+                    "abstain_flag": 1.0,
+                    "top_seed_row": -1.0,
+                    "top_seed_col": -1.0,
+                    "top_seed_value": -1.0,
                 }
+                informative_cells[cell] = 0.0
             return ModuleScoreResult(
                 scores,
                 "neighborhood_association: 無足夠 seed，回退中性分數",
                 details=details,
+                informative_cells=informative_cells,
             )
 
         seed_profiles: List[Tuple[SeedInfo, NeighborhoodProfile]] = []
@@ -314,13 +327,16 @@ class NeighborhoodAssociationModule:
                 "used_radius": float(self.radius),
                 "used_diagonal": float(self.use_diagonal),
                 "no_seed_fallback_used": 0.0,
+                "abstain_flag": 0.0,
                 "top_seed_row": float(top_seed.row + 1) if top_seed else -1.0,
                 "top_seed_col": float(top_seed.col + 1) if top_seed else -1.0,
                 "top_seed_value": float(top_seed.value) if top_seed else -1.0,
                 "top_seed_similarity": float(top_sim),
             }
+            informative_cells[cell] = 1.0
         return ModuleScoreResult(
             scores,
             "neighborhood_association: 以 target 關聯 family 的局部鄰域共現支持度評分",
             details=details,
+            informative_cells=informative_cells,
         )

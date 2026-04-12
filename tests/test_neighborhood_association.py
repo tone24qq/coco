@@ -20,6 +20,8 @@ def test_no_seed_returns_neutral_scores() -> None:
     out = module.score(board, unopened, target_number=27)
     assert all(abs(out.scores[cell] - 0.5) < 1e-9 for cell in unopened)
     assert all(out.details[cell]["no_seed_fallback_used"] == 1.0 for cell in unopened)
+    assert all(out.informative_cells[cell] == 0.0 for cell in unopened)
+    assert all(out.details[cell]["abstain_flag"] == 1.0 for cell in unopened)
 
 
 def test_same_tail_seed_affects_scores() -> None:
@@ -118,6 +120,10 @@ def test_details_fields_present() -> None:
         "used_radius",
         "used_diagonal",
         "no_seed_fallback_used",
+        "abstain_flag",
+        "top_seed_row",
+        "top_seed_col",
+        "top_seed_value",
     }
     assert required.issubset(out.details[(0, 2)].keys())
 

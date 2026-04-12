@@ -94,32 +94,22 @@ modules:
       ceil_score: 1.0
       relation_source: heuristic_family_profile_v1
   aggregator:
-    type: competitive_ensemble
-    fusion_mode: learned_meta_ranker
-    competitor_normalization: per_module_minmax
-    include_vote_features: true
-    include_rank_features: true
-    include_score_features: true
-    judge_model_type: logistic_ranker
-    judge_feature_schema_version: competitive_features_v1
-    judge_artifact_path: artifacts/competitive_judge_artifact.json
-    fallback_mode: weighted_rank_fusion
+    type: committee_weighted_sum
+    weighting_mode: equal_informative
+    allow_abstain: true
     preserve_diagnostics: true
-    rank_fusion_method: rrf
-    vote_top1_weight: 1.0
-    vote_top3_weight: 0.7
-    vote_top5_weight: 0.5
-    vote_rrf_weight: 0.8
-    vote_borda_weight: 0.6
-    vote_rrf_k: 10
-    gating_enabled: true
-    contradiction_penalty_weight: 1.0
-    hard_violation_threshold: 2.0
-    hard_gate_multiplier: 0.05
-    soft_gate_floor: 0.25
-    score_spread_enabled: true
-    score_spread_temperature: 0.2
-    elimination_version: v2
+    tie_break_order:
+      - target_sensitive_score
+      - support_score
+      - row_col_stable
+    diagnostics:
+      include_vote_features: true
+      include_rank_features: true
+      include_score_features: true
+    judge:
+      enabled: true
+      use_for_primary_ranking: false
+      artifact_path: artifacts/competitive_judge_artifact.json
 
 joint_assignment:
   enabled: true

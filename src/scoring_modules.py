@@ -46,6 +46,7 @@ class ModuleScoreResult:
     scores: Dict[Cell, float]
     explanation: str
     details: Dict[Cell, Dict[str, float]] = field(default_factory=dict)
+    informative_cells: Dict[Cell, float] = field(default_factory=dict)
 
 
 class ScoringModule(Protocol):
