@@ -21,6 +21,7 @@ from src.fast_scoring import (
     prepare_fast_inputs,
     prior_model_fast,
 )
+from src.neighborhood_association import NeighborhoodAssociationModule
 from src.vector_modules import (
     connectivity_heatmap_vectorized,
     difference_trend_vectorized,
@@ -988,6 +989,26 @@ MODULE_FACTORIES = {
     "skip_patterns": lambda _cfg: SkipPatternsModule(),
     "mirror_sequences": lambda _cfg: MirrorSequencesModule(),
     "tail_analyzer": lambda cfg: TailAnalyzerModule(window_size=int(cfg.get("window_size", 3))),
+    "neighborhood_association": lambda cfg: NeighborhoodAssociationModule(
+        radius=int(cfg.get("radius", 1)),
+        use_diagonal=bool(cfg.get("use_diagonal", True)),
+        min_seed_count=int(cfg.get("min_seed_count", 1)),
+        decay_by_distance=bool(cfg.get("decay_by_distance", True)),
+        distance_decay_power=float(cfg.get("distance_decay_power", 1.0)),
+        enabled_seed_families=list(cfg.get("enabled_seed_families", ["same_decade", "same_tail", "near_value"])),
+        near_value_deltas=list(cfg.get("near_value_deltas", [1, 2, 10, 20])),
+        enabled_neighbor_families=list(
+            cfg.get("enabled_neighbor_families", ["same_decade", "same_tail", "near_value"])
+        ),
+        neighbor_value_deltas=list(cfg.get("neighbor_value_deltas", [1, 2, 10, 20])),
+        score_mode=str(cfg.get("score_mode", "weighted_pattern_overlap")),
+        seed_aggregation=str(cfg.get("seed_aggregation", "mean")),
+        candidate_aggregation=str(cfg.get("candidate_aggregation", "mean")),
+        neutral_score_when_no_seed=float(cfg.get("neutral_score_when_no_seed", 0.5)),
+        floor_score=float(cfg.get("floor_score", 0.0)),
+        ceil_score=float(cfg.get("ceil_score", 1.0)),
+        relation_source=str(cfg.get("relation_source", "heuristic_family_profile_v1")),
+    ),
 }
 
 

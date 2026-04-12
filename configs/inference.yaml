@@ -13,6 +13,7 @@ modules:
     skip_patterns: true
     mirror_sequences: true
     tail_analyzer: true
+    neighborhood_association: true
   weights:
     logic_rule: 0.2
     pattern_model: 0.04
@@ -27,6 +28,7 @@ modules:
     skip_patterns: 0.05
     mirror_sequences: 0.01
     tail_analyzer: 0.02
+    neighborhood_association: 0.04
   settings:
     global_assignment_prior:
       assignment_mode: greedy
@@ -68,6 +70,29 @@ modules:
       decay_gamma: 0.35
     tail_analyzer:
       window_size: 3
+    neighborhood_association:
+      radius: 1
+      use_diagonal: true
+      min_seed_count: 1
+      decay_by_distance: true
+      distance_decay_power: 1.0
+      enabled_seed_families:
+        - same_decade
+        - same_tail
+        - near_value
+      near_value_deltas: [1, 2, 10, 20]
+      enabled_neighbor_families:
+        - same_decade
+        - same_tail
+        - near_value
+      neighbor_value_deltas: [1, 2, 10, 20]
+      score_mode: weighted_pattern_overlap
+      seed_aggregation: mean
+      candidate_aggregation: mean
+      neutral_score_when_no_seed: 0.5
+      floor_score: 0.0
+      ceil_score: 1.0
+      relation_source: heuristic_family_profile_v1
   aggregator:
     type: competitive_ensemble
     fusion_mode: learned_meta_ranker
