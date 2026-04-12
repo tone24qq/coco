@@ -146,7 +146,7 @@ def _get_informative_value(result: ModuleScoreResult, cell: Cell) -> float:
 
 def _validate_committee_stage1_modules(weights: Dict[str, float]) -> None:
     stage1_modules = set(weights.keys())
-    banned = {"global_assignment_prior", "pairwise_conditional_consistency"}
+    banned = {"global_assignment_prior", "pairwise_conditional_consistency", "prior_model"}
     invalid = sorted(stage1_modules & banned)
     if invalid:
         raise InferenceError(f"committee stage-1 cannot include modules: {invalid}")
@@ -689,17 +689,21 @@ def apply_committee_weighted_sum(
             committee_score = 0.5
             no_info = True
             no_info_any = True
+            assignment_delta = 0.0
+            assignment_penalty = 0.0
+            pairwise_delta = 0.0
+            pairwise_penalty = 0.0
         else:
             committee_score = sum(
                 float(cand.get("module_scores", {}).get(m, 0.0)) * float(active_weights[m]) for m in active_weights
             )
             no_info = False
+            assignment_delta = float(cand.get("assignment_delta", 0.0))
+            assignment_penalty = float(cand.get("assignment_penalty", 0.0))
+            pairwise_delta = float(cand.get("pairwise_delta", 0.0))
+            pairwise_penalty = float(cand.get("pairwise_penalty", 0.0))
         stage1_base = float(committee_score)
-        assignment_delta = float(cand.get("assignment_delta", 0.0))
-        assignment_penalty = float(cand.get("assignment_penalty", 0.0))
         stage2_score = stage1_base + assignment_delta - assignment_penalty
-        pairwise_delta = float(cand.get("pairwise_delta", 0.0))
-        pairwise_penalty = float(cand.get("pairwise_penalty", 0.0))
         stage3_score = stage2_score + pairwise_delta - pairwise_penalty
         cand["stage1_base_score"] = stage1_base
         cand["stage2_assignment_adjusted_score"] = stage2_score

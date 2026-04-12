@@ -2,7 +2,7 @@ modules:
   enabled:
     logic_rule: true
     pattern_model: true
-    prior_model: true
+    prior_model: false
     structural_consistency: true
     focus_score: true
     connectivity_heatmap: true
@@ -11,10 +11,11 @@ modules:
     mirror_sequences: true
     tail_analyzer: true
     neighborhood_association: true
+    local_arithmetic_relation: true
   weights:
     logic_rule: 0.2
     pattern_model: 0.04
-    prior_model: 0.03
+    prior_model: 0.0
     structural_consistency: 0.2
     focus_score: 0.02
     connectivity_heatmap: 0.02
@@ -23,6 +24,7 @@ modules:
     mirror_sequences: 0.01
     tail_analyzer: 0.02
     neighborhood_association: 0.04
+    local_arithmetic_relation: 0.06
   settings:
     global_assignment_prior:
       assignment_mode: greedy
@@ -53,6 +55,11 @@ modules:
       fast_enabled: true
     prior_model:
       fast_enabled: true
+    local_arithmetic_relation:
+      near_value_deltas: [1, 2, 3, 5, 8, 10, 20]
+      exact_near_deltas: [1, 2, 3]
+      medium_near_deltas: [5, 8, 10]
+      weak_score_floor: 0.52
     directional_consistency:
       fast_enabled: true
     line_consistency:

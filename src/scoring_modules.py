@@ -456,12 +456,7 @@ def _line_components(board: Board, candidate: Cell, target_number: int) -> Dict[
 def _cell_number_compatibility(board: Board, cell: Cell, number: int) -> float:
     directional = _directional_components(board, cell, number)["directional_consistency"]
     line = _line_components(board, cell, number)["line_consistency"]
-    rows, cols = len(board), len(board[0])
-    center_r = (rows - 1) / 2.0
-    center_c = (cols - 1) / 2.0
-    max_dist = max(center_r + center_c, 1.0)
-    prior = 1.0 - ((abs(cell[0] - center_r) + abs(cell[1] - center_c)) / max_dist)
-    return _clip(0.4 * directional + 0.4 * line + 0.2 * prior)
+    return _clip(0.5 * directional + 0.5 * line)
 
 
 def _cell_number_compatibility_cached(
@@ -670,11 +665,10 @@ class GlobalAssignmentPriorModule:
         anchor_details: Dict[Cell, Dict[str, float]] = {}
         directional_scores = DirectionalConsistencyModule().score(board, unopened_cells, target_number).scores
         line_scores = LineConsistencyModule().score(board, unopened_cells, target_number).scores
-        prior_scores = PriorModelModule().score(board, unopened_cells, target_number).scores
         pre_ranked = sorted(
             unopened_cells,
             key=lambda cell: (
-                directional_scores.get(cell, 0.5) + line_scores.get(cell, 0.5) + prior_scores.get(cell, 0.5)
+                directional_scores.get(cell, 0.5) + line_scores.get(cell, 0.5)
             ),
             reverse=True,
         )
@@ -763,6 +757,253 @@ class GlobalAssignmentPriorModule:
             scores,
             "global_assignment_prior: 固定 target 後估計剩餘數字全局唯一分配一致性",
             details=details,
+        )
+
+
+def _pairs(values: List[int]) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    for i in range(len(values)):
+        for j in range(i + 1, len(values)):
+            out.append((values[i], values[j]))
+    return out
+
+
+def _same_decade_family(a: int, b: int) -> bool:
+    return (a - 1) // 10 == (b - 1) // 10
+
+
+def _same_tail_family(a: int, b: int) -> bool:
+    return a % 10 == b % 10
+
+
+def _arithmetic_support_counts(values: List[int], target_number: int) -> Tuple[int, int, int]:
+    pair_list = _pairs(values)
+    midpoint = 0
+    continuation = 0
+    unique_steps: set[int] = set()
+    for a, b in pair_list:
+        if (2 * target_number) == (a + b):
+            midpoint += 1
+            unique_steps.add(abs(b - a))
+        d = b - a
+        if target_number == b + d or target_number == a - d:
+            continuation += 1
+            unique_steps.add(abs(d))
+    return midpoint, continuation, len([d for d in unique_steps if d > 0])
+
+
+def _gap_regularity(values: List[int]) -> float:
+    if len(values) < 3:
+        return NEUTRAL_SCORE
+    ordered = sorted(values)
+    gaps = [ordered[i + 1] - ordered[i] for i in range(len(ordered) - 1)]
+    if not gaps:
+        return NEUTRAL_SCORE
+    mean_gap = sum(abs(g) for g in gaps) / len(gaps)
+    if mean_gap <= 1e-9:
+        return NEUTRAL_SCORE
+    variance = sum((abs(g) - mean_gap) ** 2 for g in gaps) / len(gaps)
+    return _clip(1.0 / (1.0 + math.sqrt(variance)))
+
+
+class LocalArithmeticRelationModule:
+    name = "local_arithmetic_relation"
+
+    def __init__(
+        self,
+        near_value_deltas: Optional[List[int]] = None,
+        exact_near_deltas: Optional[List[int]] = None,
+        medium_near_deltas: Optional[List[int]] = None,
+        weak_score_floor: float = 0.52,
+    ) -> None:
+        self.near_value_deltas = sorted({abs(int(x)) for x in (near_value_deltas or [1, 2, 3, 5, 8, 10, 20])})
+        self.exact_near_deltas = sorted({abs(int(x)) for x in (exact_near_deltas or [1, 2, 3])})
+        self.medium_near_deltas = sorted({abs(int(x)) for x in (medium_near_deltas or [5, 8, 10])})
+        self.weak_score_floor = float(weak_score_floor)
+
+    def _seed_strength(self, value: int, target_number: int) -> float:
+        diff = abs(value - target_number)
+        near_strength = 0.0
+        if diff in self.exact_near_deltas:
+            near_strength = 1.0
+        elif diff in self.medium_near_deltas:
+            near_strength = 0.6
+        elif diff in self.near_value_deltas:
+            near_strength = 0.35
+        same_decade_bonus = 0.1 if _same_decade_family(value, target_number) else 0.0
+        same_tail_bonus = 0.08 if _same_tail_family(value, target_number) else 0.0
+        return _clip(near_strength + same_decade_bonus + same_tail_bonus)
+
+    def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
+        rows, cols = len(board), len(board[0])
+        opened: List[Tuple[int, int, int]] = [
+            (r, c, board[r][c]) for r in range(rows) for c in range(cols) if board[r][c] != -1
+        ]
+        details: Dict[Cell, Dict[str, float]] = {}
+        scores: Dict[Cell, float] = {}
+        informative_cells: Dict[Cell, float] = {}
+        if len(opened) < 2:
+            for cell in unopened_cells:
+                scores[cell] = NEUTRAL_SCORE
+                details[cell] = {
+                    "seed_count_total": 0.0,
+                    "seed_count_near": 0.0,
+                    "seed_count_same_decade": 0.0,
+                    "seed_count_same_tail": 0.0,
+                    "local_row_midpoint_support_count": 0.0,
+                    "local_row_continuation_support_count": 0.0,
+                    "local_col_midpoint_support_count": 0.0,
+                    "local_col_continuation_support_count": 0.0,
+                    "local_window_midpoint_support_count": 0.0,
+                    "local_window_continuation_support_count": 0.0,
+                    "row_gap_improvement": 0.0,
+                    "col_gap_improvement": 0.0,
+                    "window_signal_density": 0.0,
+                    "nearest_seed_distance": -1.0,
+                    "target_near_seed_strength": 0.0,
+                    "arithmetic_abstain": 1.0,
+                    "opened_number_count": float(len(opened)),
+                    "effective_local_known_count": 0.0,
+                }
+                informative_cells[cell] = 0.0
+            return ModuleScoreResult(
+                scores=scores,
+                explanation="local_arithmetic_relation: opened numbers < 2, abstain with neutral score",
+                details=details,
+                informative_cells=informative_cells,
+            )
+
+        seeds = [(r, c, v, self._seed_strength(v, target_number)) for r, c, v in opened]
+        active_seeds = [(r, c, v, s) for r, c, v, s in seeds if s > 0.0]
+        seed_count_same_decade = sum(1 for _, _, v, _ in seeds if _same_decade_family(v, target_number))
+        seed_count_same_tail = sum(1 for _, _, v, _ in seeds if _same_tail_family(v, target_number))
+
+        for r, c in unopened_cells:
+            row_vals = [board[r][cc] for cc in range(cols) if board[r][cc] != -1]
+            col_vals = [board[rr][c] for rr in range(rows) if board[rr][c] != -1]
+            win_vals = [
+                board[rr][cc]
+                for rr in range(max(0, r - 1), min(rows, r + 2))
+                for cc in range(max(0, c - 1), min(cols, c + 2))
+                if (rr != r or cc != c) and board[rr][cc] != -1
+            ]
+            cross_vals = []
+            for rr in range(rows):
+                if rr != r and board[rr][c] != -1:
+                    cross_vals.append(board[rr][c])
+            for cc in range(cols):
+                if cc != c and board[r][cc] != -1:
+                    cross_vals.append(board[r][cc])
+            diag_vals = []
+            if rows == cols:
+                for i in range(rows):
+                    if i != r and i != c and board[i][i] != -1:
+                        diag_vals.append(board[i][i])
+                for i in range(rows):
+                    j = cols - 1 - i
+                    if (i != r or j != c) and board[i][j] != -1 and (i, j) not in {(r, c)}:
+                        diag_vals.append(board[i][j])
+            local_vals = row_vals + col_vals + win_vals + cross_vals + diag_vals
+            effective_local_known_count = float(len(local_vals))
+
+            row_mid, row_cont, _ = _arithmetic_support_counts(row_vals, target_number)
+            col_mid, col_cont, _ = _arithmetic_support_counts(col_vals, target_number)
+            win_mid, win_cont, win_steps = _arithmetic_support_counts(win_vals + cross_vals, target_number)
+            local_pairs = max(len(_pairs(win_vals + cross_vals)), 1)
+            local_midpoint_strength = _clip((row_mid + col_mid + win_mid) / max(local_pairs, 1))
+            local_continuation_strength = _clip((row_cont + col_cont + win_cont) / max(local_pairs, 1))
+
+            row_gap_before = _gap_regularity(row_vals)
+            row_gap_after = _gap_regularity(row_vals + [target_number])
+            col_gap_before = _gap_regularity(col_vals)
+            col_gap_after = _gap_regularity(col_vals + [target_number])
+            row_gap_improve = row_gap_after - row_gap_before
+            col_gap_improve = col_gap_after - col_gap_before
+            row_col_gap_improvement_strength = _clip(0.5 + 0.5 * (row_gap_improve + col_gap_improve))
+
+            density_pairs = max(len(win_vals + cross_vals), 1)
+            seed_related = 0
+            for v in win_vals + cross_vals:
+                if abs(v - target_number) in self.near_value_deltas or _same_decade_family(v, target_number):
+                    seed_related += 1
+            window_signal_density = _clip(seed_related / density_pairs)
+
+            if active_seeds:
+                distances = [abs(sr - r) + abs(sc - c) for sr, sc, _, _ in active_seeds]
+                nearest_seed_distance = float(min(distances))
+                weighted_seed = [
+                    s / (1.0 + abs(sr - r) + abs(sc - c))
+                    for sr, sc, _, s in active_seeds
+                ]
+                target_near_seed_strength = _clip(sum(weighted_seed) / max(len(weighted_seed), 1))
+            else:
+                nearest_seed_distance = -1.0
+                target_near_seed_strength = 0.0
+            seed_region_proximity_strength = (
+                0.0 if nearest_seed_distance < 0 else _clip(1.0 / (1.0 + nearest_seed_distance))
+            )
+
+            weak_closeness = 0.0
+            if local_vals:
+                weak_closeness = _clip(
+                    sum(1.0 / (1.0 + abs(v - target_number)) for v in local_vals) / len(local_vals)
+                )
+
+            base_score = _clip(
+                0.28 * target_near_seed_strength
+                + 0.22 * local_midpoint_strength
+                + 0.18 * local_continuation_strength
+                + 0.16 * row_col_gap_improvement_strength
+                + 0.10 * window_signal_density
+                + 0.06 * seed_region_proximity_strength
+            )
+            signal_mass = (
+                target_near_seed_strength
+                + local_midpoint_strength
+                + local_continuation_strength
+                + abs(row_gap_improve)
+                + abs(col_gap_improve)
+                + window_signal_density
+            )
+            if signal_mass <= 1e-9 and weak_closeness <= 1e-9:
+                score = NEUTRAL_SCORE
+                informative = 0.0
+                abstain = 1.0
+            else:
+                informative = 1.0
+                abstain = 0.0
+                if base_score <= NEUTRAL_SCORE:
+                    score = _clip(self.weak_score_floor + 0.08 * weak_closeness)
+                else:
+                    score = base_score
+            scores[(r, c)] = score
+            informative_cells[(r, c)] = informative
+            details[(r, c)] = {
+                "seed_count_total": float(len(seeds)),
+                "seed_count_near": float(len(active_seeds)),
+                "seed_count_same_decade": float(seed_count_same_decade),
+                "seed_count_same_tail": float(seed_count_same_tail),
+                "local_row_midpoint_support_count": float(row_mid),
+                "local_row_continuation_support_count": float(row_cont),
+                "local_col_midpoint_support_count": float(col_mid),
+                "local_col_continuation_support_count": float(col_cont),
+                "local_window_midpoint_support_count": float(win_mid),
+                "local_window_continuation_support_count": float(win_cont),
+                "row_gap_improvement": float(row_gap_improve),
+                "col_gap_improvement": float(col_gap_improve),
+                "window_signal_density": float(window_signal_density),
+                "nearest_seed_distance": float(nearest_seed_distance),
+                "target_near_seed_strength": float(target_near_seed_strength),
+                "arithmetic_abstain": float(abstain),
+                "opened_number_count": float(len(opened)),
+                "effective_local_known_count": float(effective_local_known_count),
+                "arithmetic_unique_step_count": float(win_steps),
+            }
+        return ModuleScoreResult(
+            scores=scores,
+            explanation="local_arithmetic_relation: target-near local arithmetic support over row/col/window context",
+            details=details,
+            informative_cells=informative_cells,
         )
 
 
@@ -985,6 +1226,12 @@ MODULE_FACTORIES = {
     "logic_rule": lambda cfg: LogicRuleModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
     "pattern_model": lambda _cfg: PatternModelModule(),
     "prior_model": lambda cfg: PriorModelModule(fast_enabled=bool(cfg.get("fast_enabled", True))),
+    "local_arithmetic_relation": lambda cfg: LocalArithmeticRelationModule(
+        near_value_deltas=list(cfg.get("near_value_deltas", [1, 2, 3, 5, 8, 10, 20])),
+        exact_near_deltas=list(cfg.get("exact_near_deltas", [1, 2, 3])),
+        medium_near_deltas=list(cfg.get("medium_near_deltas", [5, 8, 10])),
+        weak_score_floor=float(cfg.get("weak_score_floor", 0.52)),
+    ),
     "structural_consistency": lambda cfg: StructuralConsistencyModule(
         fast_enabled=bool(cfg.get("fast_enabled", True))
     ),

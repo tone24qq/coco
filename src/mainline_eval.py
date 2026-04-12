@@ -18,7 +18,6 @@ CORE_MODULES = [
     "logic_rule",
     "structural_consistency",
     "pattern_model",
-    "prior_model",
     "focus_score",
     "connectivity_heatmap",
     "difference_trend",
@@ -26,6 +25,7 @@ CORE_MODULES = [
     "mirror_sequences",
     "tail_analyzer",
     "neighborhood_association",
+    "local_arithmetic_relation",
 ]
 
 
