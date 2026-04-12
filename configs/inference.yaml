@@ -16,15 +16,15 @@ modules:
     logic_rule: 0.2
     pattern_model: 0.04
     prior_model: 0.0
-    structural_consistency: 0.2
-    focus_score: 0.02
-    connectivity_heatmap: 0.02
-    difference_trend: 0.06
-    skip_patterns: 0.05
-    mirror_sequences: 0.01
-    tail_analyzer: 0.02
+    structural_consistency: 0.26
+    focus_score: 0.04
+    connectivity_heatmap: 0.03
+    difference_trend: 0.08
+    skip_patterns: 0.07
+    mirror_sequences: 0.02
+    tail_analyzer: 0.03
     neighborhood_association: 0.04
-    local_arithmetic_relation: 0.06
+    local_arithmetic_relation: 0.07
   settings:
     global_assignment_prior:
       assignment_mode: greedy
@@ -86,12 +86,10 @@ modules:
       distance_decay_power: 1.0
       enabled_seed_families:
         - same_decade
-        - same_tail
         - near_value
       near_value_deltas: [1, 2, 10, 20]
       enabled_neighbor_families:
         - same_decade
-        - same_tail
         - near_value
       neighbor_value_deltas: [1, 2, 10, 20]
       score_mode: weighted_pattern_overlap
@@ -103,7 +101,7 @@ modules:
       relation_source: heuristic_family_profile_v1
   aggregator:
     type: committee_weighted_sum
-    weighting_mode: equal_informative
+    weighting_mode: yaml_normalized
     allow_abstain: true
     preserve_diagnostics: true
     tie_break_order:

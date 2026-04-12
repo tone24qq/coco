@@ -5,7 +5,10 @@ import pytest
 from src.inference_service import InferenceError, _run_inference_detailed
 from src.scoring_modules import (
     GlobalAssignmentPriorModule,
+    LocalArithmeticRelationModule,
+    PatternModelModule,
     PriorModelModule,
+    TailAnalyzerModule,
     _cell_number_compatibility,
     _directional_components,
     _line_components,
@@ -125,3 +128,66 @@ def test_no_position_bias_when_all_modules_abstain() -> None:
     scores = {c["score"] for c in out["candidate_cells"]}
     assert scores == {0.5}
     assert out["metadata"]["no_informative_modules"] is True
+
+
+def test_weak_same_tail_scatter_should_abstain() -> None:
+    board = [
+        [11, -1, 23, -1],
+        [-1, 45, -1, 67],
+        [89, -1, 14, -1],
+        [-1, 38, -1, 52],
+    ]
+    cells = [(0, 1), (0, 3), (1, 0), (1, 2), (2, 1), (2, 3), (3, 0), (3, 2)]
+    target = 31
+    pattern = PatternModelModule().score(board, cells, target)
+    tail = TailAnalyzerModule(window_size=3).score(board, cells, target)
+    assert all(pattern.informative_cells[c] == 0.0 for c in cells)
+    assert all(tail.informative_cells[c] == 0.0 for c in cells)
+    assert all(abs(pattern.scores[c] - 0.5) < 1e-9 for c in cells)
+    assert all(abs(tail.scores[c] - 0.5) < 1e-9 for c in cells)
+
+
+def test_strong_local_tail_signal_should_still_help() -> None:
+    board = [
+        [21, 31, -1],
+        [2, -1, 41],
+        [-1, 11, -1],
+    ]
+    cells = [(0, 2), (1, 1), (2, 0), (2, 2)]
+    target = 1
+    pattern = PatternModelModule().score(board, cells, target)
+    tail = TailAnalyzerModule(window_size=3).score(board, cells, target)
+    assert pattern.informative_cells[(1, 1)] == 1.0
+    assert tail.informative_cells[(1, 1)] == 1.0
+    assert 0.52 <= pattern.scores[(1, 1)] <= 0.72
+    assert 0.50 <= tail.scores[(1, 1)] <= 0.72
+
+
+def test_local_arithmetic_prefers_near_value_structure_over_same_tail_only() -> None:
+    module = LocalArithmeticRelationModule()
+    board = [
+        [11, -1, 31],
+        [45, -1, 55],
+        [57, -1, 59],
+    ]
+    cells = [(0, 1), (1, 1), (2, 1)]
+    res = module.score(board, cells, target_number=58)
+    assert res.scores[(2, 1)] > res.scores[(0, 1)]
+
+
+def test_committee_weighting_reduces_tail_only_dominance() -> None:
+    out = _run_inference_detailed(
+        [[7, 8, -1], [2, -1, 9], [-1, 1, -1]],
+        3,
+        source="t",
+        apply_reranker_stage=False,
+        module_weights={"structural_consistency": 0.8, "tail_analyzer": 0.2},
+        aggregator_config={
+            **_committee_cfg(),
+            "weighting_mode": "yaml_normalized",
+        },
+    )
+    cell = out["candidate_cells"][0]
+    weights = cell["module_effective_weights"]
+    if "tail_analyzer" in weights and "structural_consistency" in weights:
+        assert weights["tail_analyzer"] < weights["structural_consistency"]

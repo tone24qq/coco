@@ -23,6 +23,7 @@ from src.fast_scoring import (
 )
 from src.neighborhood_association import NeighborhoodAssociationModule
 from src.vector_modules import (
+    compute_local_tail_evidence,
     connectivity_heatmap_vectorized,
     difference_trend_vectorized,
     focus_score_vectorized,
@@ -116,27 +117,28 @@ class PatternModelModule:
     name = "pattern_model"
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
-        rows, cols = len(board), len(board[0])
         result: Dict[Cell, float] = {}
-        target_tail = target_number % 10
+        details: Dict[Cell, Dict[str, float]] = {}
+        informative_cells: Dict[Cell, float] = {}
         for r, c in unopened_cells:
-            known_neighbors = 0
-            tail_matches = 0
-            for rr in range(max(0, r - 1), min(rows, r + 2)):
-                for cc in range(max(0, c - 1), min(cols, c + 2)):
-                    if rr == r and cc == c:
-                        continue
-                    val = board[rr][cc]
-                    if val == -1:
-                        continue
-                    known_neighbors += 1
-                    if (val % 10) == target_tail:
-                        tail_matches += 1
-            if known_neighbors == 0:
-                result[(r, c)] = 0.3
+            evidence = compute_local_tail_evidence(board, (r, c), target_number, window_size=3)
+            known_neighbors = int(evidence["known_neighbors"])
+            same_tail_neighbors = int(evidence["same_tail_neighbors"])
+            strong_tail_signal = bool(evidence["strong_tail_signal"] > 0.0)
+            if known_neighbors < 3 or not strong_tail_signal:
+                result[(r, c)] = 0.5
+                informative_cells[(r, c)] = 0.0
             else:
-                result[(r, c)] = (tail_matches + 1) / (known_neighbors + 1)
-        return ModuleScoreResult(result, "pattern_model: 使用局部尾數分佈與已開密度作啟發式評分")
+                raw = (same_tail_neighbors + 1.0) / (known_neighbors + 1.0)
+                result[(r, c)] = _clip(0.52 + 0.20 * _clip(raw))
+                informative_cells[(r, c)] = 1.0
+            details[(r, c)] = dict(evidence)
+        return ModuleScoreResult(
+            result,
+            "pattern_model: 使用局部尾數分佈與尾數證據 gate 評分",
+            details=details,
+            informative_cells=informative_cells,
+        )
 
 
 class PriorModelModule:
@@ -227,7 +229,18 @@ class TailAnalyzerModule:
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         scores = tail_analyzer_vectorized(board, unopened_cells, target_number, window_size=self.window_size)
-        return ModuleScoreResult(scores, "tail_analyzer: 尾數分布局部相容性")
+        informative_cells: Dict[Cell, float] = {}
+        details: Dict[Cell, Dict[str, float]] = {}
+        for cell in unopened_cells:
+            evidence = compute_local_tail_evidence(board, cell, target_number, window_size=self.window_size)
+            informative_cells[cell] = 1.0 if evidence["strong_tail_signal"] > 0.0 else 0.0
+            details[cell] = dict(evidence)
+        return ModuleScoreResult(
+            scores,
+            "tail_analyzer: 尾數分布局部相容性（含局部尾數證據 gate）",
+            details=details,
+            informative_cells=informative_cells,
+        )
 
 
 def _clip(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -831,8 +844,7 @@ class LocalArithmeticRelationModule:
         elif diff in self.near_value_deltas:
             near_strength = 0.35
         same_decade_bonus = 0.1 if _same_decade_family(value, target_number) else 0.0
-        same_tail_bonus = 0.08 if _same_tail_family(value, target_number) else 0.0
-        return _clip(near_strength + same_decade_bonus + same_tail_bonus)
+        return _clip(near_strength + same_decade_bonus)
 
     def score(self, board: Board, unopened_cells: List[Cell], target_number: int) -> ModuleScoreResult:
         rows, cols = len(board), len(board[0])
@@ -948,6 +960,14 @@ class LocalArithmeticRelationModule:
                 weak_closeness = _clip(
                     sum(1.0 / (1.0 + abs(v - target_number)) for v in local_vals) / len(local_vals)
                 )
+            tail_evidence = compute_local_tail_evidence(board, (r, c), target_number, window_size=3)
+            conditional_same_tail_bonus = 0.0
+            if (
+                tail_evidence["strong_tail_signal"] > 0.0
+                and target_near_seed_strength > 0.0
+                and effective_local_known_count >= 4
+            ):
+                conditional_same_tail_bonus = 0.04 * _clip(tail_evidence["local_tail_ratio"])
 
             base_score = _clip(
                 0.28 * target_near_seed_strength
@@ -956,6 +976,7 @@ class LocalArithmeticRelationModule:
                 + 0.16 * row_col_gap_improvement_strength
                 + 0.10 * window_signal_density
                 + 0.06 * seed_region_proximity_strength
+                + conditional_same_tail_bonus
             )
             signal_mass = (
                 target_near_seed_strength
@@ -998,6 +1019,7 @@ class LocalArithmeticRelationModule:
                 "opened_number_count": float(len(opened)),
                 "effective_local_known_count": float(effective_local_known_count),
                 "arithmetic_unique_step_count": float(win_steps),
+                "conditional_same_tail_bonus": float(conditional_same_tail_bonus),
             }
         return ModuleScoreResult(
             scores=scores,
