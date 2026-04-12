@@ -104,6 +104,22 @@ modules:
     weighting_mode: yaml_normalized
     allow_abstain: true
     preserve_diagnostics: true
+    spatial_postprocess:
+      enabled: false
+      method: spatial_penalty
+      distance_metric: hybrid
+      top_m: 5
+      penalty_d1: 0.10
+      penalty_d2: 0.04
+      score_gap_gate: 0.06
+      mmr_lambda: 0.35
+      mmr_distance_scale: 0.08
+      mmr_d2_weight: 0.5
+      protect_target_sensitive_threshold: 0.65
+      protect_structure_threshold: 0.62
+      protect_adjustment_threshold: 0.03
+      protect_multiplier: 0.5
+      max_penalty_per_candidate: 0.08
     tie_break_order:
       - target_sensitive_score
       - support_score
