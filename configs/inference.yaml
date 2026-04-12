@@ -2,31 +2,29 @@ modules:
   enabled:
     logic_rule: true
     pattern_model: true
-    prior_model: true
-    directional_consistency: true
-    line_consistency: true
-    global_assignment_prior: true
-    pairwise_conditional_consistency: true
+    prior_model: false
+    structural_consistency: true
     focus_score: true
     connectivity_heatmap: true
     difference_trend: true
     skip_patterns: true
     mirror_sequences: true
     tail_analyzer: true
+    neighborhood_association: true
+    local_arithmetic_relation: true
   weights:
-    logic_rule: 0.2
+    logic_rule: 0.20
     pattern_model: 0.04
-    prior_model: 0.03
-    directional_consistency: 0.2
-    line_consistency: 0.2
-    global_assignment_prior: 0.03
-    pairwise_conditional_consistency: 0.12
-    focus_score: 0.02
-    connectivity_heatmap: 0.02
-    difference_trend: 0.06
-    skip_patterns: 0.05
-    mirror_sequences: 0.01
-    tail_analyzer: 0.02
+    prior_model: 0.0
+    structural_consistency: 0.26
+    focus_score: 0.04
+    connectivity_heatmap: 0.03
+    difference_trend: 0.08
+    skip_patterns: 0.07
+    mirror_sequences: 0.02
+    tail_analyzer: 0.03
+    neighborhood_association: 0.04
+    local_arithmetic_relation: 0.07
   settings:
     global_assignment_prior:
       assignment_mode: greedy
@@ -57,6 +55,11 @@ modules:
       fast_enabled: true
     prior_model:
       fast_enabled: true
+    local_arithmetic_relation:
+      near_value_deltas: [1, 2, 3, 5, 8, 10, 20]
+      exact_near_deltas: [1, 2, 3]
+      medium_near_deltas: [5, 8, 10]
+      weak_score_floor: 0.52
     directional_consistency:
       fast_enabled: true
     line_consistency:
@@ -68,33 +71,51 @@ modules:
       decay_gamma: 0.35
     tail_analyzer:
       window_size: 3
+    stage2_adjustments:
+      global_assignment_enabled: true
+      pairwise_enabled: true
+      assignment_delta_scale: 0.08
+      assignment_penalty_scale: 0.08
+      pairwise_delta_scale: 0.06
+      pairwise_penalty_scale: 0.06
+    neighborhood_association:
+      radius: 1
+      use_diagonal: true
+      min_seed_count: 1
+      decay_by_distance: true
+      distance_decay_power: 1.0
+      enabled_seed_families:
+        - same_decade
+        - near_value
+      near_value_deltas: [1, 2, 10, 20]
+      enabled_neighbor_families:
+        - same_decade
+        - near_value
+      neighbor_value_deltas: [1, 2, 10, 20]
+      score_mode: weighted_pattern_overlap
+      seed_aggregation: mean
+      candidate_aggregation: mean
+      neutral_score_when_no_seed: 0.5
+      floor_score: 0.0
+      ceil_score: 1.0
+      relation_source: heuristic_family_profile_v1
   aggregator:
-    type: competitive_ensemble
-    fusion_mode: learned_meta_ranker
-    competitor_normalization: per_module_minmax
-    include_vote_features: true
-    include_rank_features: true
-    include_score_features: true
-    judge_model_type: logistic_ranker
-    judge_feature_schema_version: competitive_features_v1
-    judge_artifact_path: artifacts/competitive_judge_artifact.json
-    fallback_mode: weighted_rank_fusion
+    type: committee_weighted_sum
+    weighting_mode: yaml_normalized
+    allow_abstain: true
     preserve_diagnostics: true
-    rank_fusion_method: rrf
-    vote_top1_weight: 1.0
-    vote_top3_weight: 0.7
-    vote_top5_weight: 0.5
-    vote_rrf_weight: 0.8
-    vote_borda_weight: 0.6
-    vote_rrf_k: 10
-    gating_enabled: true
-    contradiction_penalty_weight: 1.0
-    hard_violation_threshold: 2.0
-    hard_gate_multiplier: 0.05
-    soft_gate_floor: 0.25
-    score_spread_enabled: true
-    score_spread_temperature: 0.2
-    elimination_version: v2
+    tie_break_order:
+      - target_sensitive_score
+      - support_score
+      - row_col_stable
+    diagnostics:
+      include_vote_features: true
+      include_rank_features: true
+      include_score_features: true
+    judge:
+      enabled: true
+      use_for_primary_ranking: false
+      artifact_path: artifacts/competitive_judge_artifact.json
 
 joint_assignment:
   enabled: true
