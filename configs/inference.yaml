@@ -151,3 +151,7 @@ fast_path:
   global_assignment_top_m_candidates: 4
   exact_max_candidates: 20
   details_top_k: 10
+
+trained_ranker:
+  enabled: true
+  strict_missing_artifact: true
