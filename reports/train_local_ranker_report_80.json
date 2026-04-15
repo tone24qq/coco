@@ -1,0 +1,39 @@
+{
+  "hardware_profile": {
+    "cpu_logical": 12,
+    "cpu_physical": 6,
+    "total_ram_gb": 8.0,
+    "available_ram_gb": 4.0,
+    "cuda_available": false,
+    "mps_available": false,
+    "platform": "Windows-AMD64"
+  },
+  "training_plan": {
+    "backend": "sklearn",
+    "n_jobs": 8,
+    "num_workers": 8,
+    "batch_size": 8192,
+    "shard_size": 500000,
+    "prefetch": 8
+  },
+  "backend_used": "sklearn_hgb_classifier",
+  "train_rows": 128000,
+  "holdout_rows": 64000,
+  "per_size_counts_train": {
+    "8x10": 128000
+  },
+  "per_size_counts_holdout": {
+    "8x10": 64000
+  },
+  "eta_seconds": 3.457180976867676,
+  "samples_per_sec": 37024.38514398294,
+  "holdout_auc": 0.9917840882120253,
+  "holdout_ranking": {
+    "top1": 0.82375,
+    "top3": 0.9175,
+    "top5": 0.95375,
+    "top10": 0.9825,
+    "mean_rank": 1.69875,
+    "mrr": 0.8780183240177435
+  }
+}
