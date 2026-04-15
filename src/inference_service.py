@@ -444,6 +444,337 @@ def rank_candidates(candidates: List[Dict[str, object]]) -> List[Dict[str, objec
     return sorted(candidates, key=lambda item: item["score"], reverse=True)
 
 
+def _score_sorted(candidates: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    return sorted(candidates, key=lambda item: float(item.get("score", 0.0)), reverse=True)
+
+
+def _safe_top_m(value: object, default: int = 5) -> int:
+    try:
+        top_m = int(value)
+    except (TypeError, ValueError):
+        top_m = default
+    return max(3, min(10, top_m))
+
+
+def _distance_penalty_weight(anchor: Cell, candidate: Cell, metric: str, d1: float, d2: float) -> float:
+    manhattan = abs(anchor[0] - candidate[0]) + abs(anchor[1] - candidate[1])
+    chebyshev = max(abs(anchor[0] - candidate[0]), abs(anchor[1] - candidate[1]))
+    if metric == "manhattan":
+        if manhattan == 1:
+            return d1
+        if manhattan == 2:
+            return d2
+        return 0.0
+    if metric == "chebyshev":
+        if chebyshev == 1:
+            return d1
+        if chebyshev == 2:
+            return d2
+        return 0.0
+    # hybrid: use chebyshev for immediate neighborhood, then manhattan for distance-2 ring.
+    if chebyshev == 1:
+        return d1
+    if manhattan == 2:
+        return d2
+    return 0.0
+
+
+def _candidate_evidence_protection_factor(cand: Dict[str, object], spatial_cfg: Dict[str, object]) -> float:
+    protect_sensitive_threshold = float(spatial_cfg.get("protect_target_sensitive_threshold", 0.65))
+    protect_structure_threshold = float(spatial_cfg.get("protect_structure_threshold", 0.62))
+    protect_adjustment_threshold = float(spatial_cfg.get("protect_adjustment_threshold", 0.03))
+    protect_multiplier = _clip(float(spatial_cfg.get("protect_multiplier", 0.5)), lo=0.1, hi=1.0)
+    cand_score = float(cand.get("score", 0.0))
+    target_sensitive_score = float(cand.get("target_sensitive_score", cand_score))
+    module_scores = cand.get("module_scores", {}) if isinstance(cand.get("module_scores", {}), dict) else {}
+    structural_score = max(
+        float(module_scores.get("structural_consistency", 0.0)),
+        float(module_scores.get("directional_consistency", 0.0)),
+        float(module_scores.get("line_consistency", 0.0)),
+    )
+    positive_adjustment = max(0.0, float(cand.get("assignment_delta", 0.0))) + max(
+        0.0, float(cand.get("pairwise_delta", 0.0))
+    )
+    if (
+        target_sensitive_score >= protect_sensitive_threshold
+        or structural_score >= protect_structure_threshold
+        or positive_adjustment >= protect_adjustment_threshold
+    ):
+        return protect_multiplier
+    return 1.0
+
+
+def _apply_spatial_cluster_penalty(
+    ranked: List[Dict[str, object]],
+    spatial_cfg: Dict[str, object],
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    enabled = bool(spatial_cfg.get("enabled", False))
+    metric = str(spatial_cfg.get("distance_metric", "hybrid")).lower()
+    if metric not in {"manhattan", "chebyshev", "hybrid"}:
+        metric = "hybrid"
+    top_m = _safe_top_m(spatial_cfg.get("top_m", 5), default=5)
+    if not enabled or not ranked:
+        return ranked, {
+            "enabled": enabled,
+            "applied": False,
+            "distance_metric": metric,
+            "top_m": top_m,
+            "affected_count": 0,
+            "total_penalty": 0.0,
+        }
+
+    d1 = max(0.0, float(spatial_cfg.get("penalty_d1", 0.10)))
+    d2 = max(0.0, float(spatial_cfg.get("penalty_d2", 0.04)))
+    score_gap_gate = max(0.0, float(spatial_cfg.get("score_gap_gate", 0.06)))
+    max_penalty_per_candidate = _clip(float(spatial_cfg.get("max_penalty_per_candidate", 0.08)), lo=0.0, hi=0.2)
+
+    top_limit = min(top_m, len(ranked))
+    updated = list(ranked)
+    affected = 0
+    total_penalty = 0.0
+    for idx in range(top_limit):
+        cand = updated[idx]
+        cand["spatial_cluster_penalty"] = 0.0
+        cand["spatial_cluster_penalty_sources"] = []
+
+    for idx in range(1, top_limit):
+        cand = updated[idx]
+        cand_score = float(cand.get("score", 0.0))
+        per_candidate_penalty = 0.0
+        sources: List[Dict[str, object]] = []
+        for aid in range(idx):
+            anchor = updated[aid]
+            anchor_score = float(anchor.get("score", 0.0))
+            score_gap = anchor_score - cand_score
+            if score_gap < 0.0 or score_gap > score_gap_gate:
+                continue
+            weight = _distance_penalty_weight(
+                anchor=anchor["cell"],
+                candidate=cand["cell"],
+                metric=metric,
+                d1=d1,
+                d2=d2,
+            )
+            if weight <= 0.0:
+                continue
+            near_gap_boost = 1.0 - _clip(score_gap / max(score_gap_gate, 1e-9))
+            penalty = weight * near_gap_boost
+            penalty *= _candidate_evidence_protection_factor(cand, spatial_cfg)
+            penalty = min(penalty, max_penalty_per_candidate - per_candidate_penalty)
+            if penalty <= 0.0:
+                continue
+            per_candidate_penalty += penalty
+            sources.append(
+                {
+                    "anchor_cell": anchor["cell"],
+                    "score_gap": round(score_gap, 6),
+                    "penalty": round(penalty, 6),
+                }
+            )
+            if per_candidate_penalty >= max_penalty_per_candidate:
+                break
+        if per_candidate_penalty <= 0.0:
+            continue
+        affected += 1
+        total_penalty += per_candidate_penalty
+        cand["spatial_cluster_penalty"] = round(per_candidate_penalty, 6)
+        cand["spatial_cluster_penalty_sources"] = sources
+        new_score = cand_score - per_candidate_penalty
+        cand["score"] = new_score
+        cand["final_score"] = new_score
+        cand["ranking_score"] = new_score
+
+    resorted = _score_sorted(updated)
+    for pos, cand in enumerate(resorted, start=1):
+        cand["final_rank_position"] = pos
+    return resorted, {
+        "enabled": True,
+        "applied": bool(affected > 0),
+        "distance_metric": metric,
+        "top_m": top_m,
+        "affected_count": affected,
+        "total_penalty": round(total_penalty, 6),
+    }
+
+
+def _apply_mmr_diversify_penalty(
+    ranked: List[Dict[str, object]],
+    spatial_cfg: Dict[str, object],
+    evidence_aware: bool,
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    enabled = bool(spatial_cfg.get("enabled", False))
+    metric = str(spatial_cfg.get("distance_metric", "hybrid")).lower()
+    if metric not in {"manhattan", "chebyshev", "hybrid"}:
+        metric = "hybrid"
+    top_m = _safe_top_m(spatial_cfg.get("top_m", 5), default=5)
+    if not enabled or not ranked:
+        return ranked, {
+            "enabled": enabled,
+            "applied": False,
+            "distance_metric": metric,
+            "top_m": top_m,
+            "affected_count": 0,
+            "total_penalty": 0.0,
+        }
+    top_limit = min(top_m, len(ranked))
+    if top_limit <= 1:
+        return ranked, {
+            "enabled": enabled,
+            "applied": False,
+            "distance_metric": metric,
+            "top_m": top_m,
+            "affected_count": 0,
+            "total_penalty": 0.0,
+        }
+
+    score_gap_gate = max(0.0, float(spatial_cfg.get("score_gap_gate", 0.06)))
+    mmr_lambda = _clip(float(spatial_cfg.get("mmr_lambda", 0.35)), lo=0.0, hi=1.0)
+    mmr_distance_scale = max(0.0, float(spatial_cfg.get("mmr_distance_scale", 0.08)))
+    max_penalty_per_candidate = _clip(float(spatial_cfg.get("max_penalty_per_candidate", 0.08)), lo=0.0, hi=0.2)
+    d1 = 1.0
+    d2 = float(spatial_cfg.get("mmr_d2_weight", 0.5))
+
+    top = [dict(c) for c in ranked[:top_limit]]
+    tail = [dict(c) for c in ranked[top_limit:]]
+    selected: List[Dict[str, object]] = [top[0]]
+    remaining = top[1:]
+    top_score = float(top[0].get("score", 0.0))
+
+    while remaining:
+        best_idx = 0
+        best_obj = -1e18
+        for idx, cand in enumerate(remaining):
+            score = float(cand.get("score", 0.0))
+            max_sim = 0.0
+            for sel in selected:
+                sim = _distance_penalty_weight(sel["cell"], cand["cell"], metric=metric, d1=d1, d2=d2)
+                max_sim = max(max_sim, sim)
+            gap = max(0.0, top_score - score)
+            gap_multiplier = 1.0 if gap <= score_gap_gate else 0.3
+            protection = _candidate_evidence_protection_factor(cand, spatial_cfg) if evidence_aware else 1.0
+            adjusted_sim = max_sim * gap_multiplier * protection
+            objective = score - mmr_lambda * adjusted_sim
+            if objective > best_obj:
+                best_obj = objective
+                best_idx = idx
+        selected.append(remaining.pop(best_idx))
+
+    affected = 0
+    total_penalty = 0.0
+    for idx, cand in enumerate(selected):
+        cand["spatial_cluster_penalty"] = 0.0
+        cand["spatial_cluster_penalty_sources"] = []
+        if idx == 0:
+            continue
+        score = float(cand.get("score", 0.0))
+        max_sim = 0.0
+        best_anchor: Optional[Cell] = None
+        for sel in selected[:idx]:
+            sim = _distance_penalty_weight(sel["cell"], cand["cell"], metric=metric, d1=d1, d2=d2)
+            if sim > max_sim:
+                max_sim = sim
+                best_anchor = sel["cell"]
+        gap = max(0.0, top_score - score)
+        gap_multiplier = 1.0 if gap <= score_gap_gate else 0.3
+        protection = _candidate_evidence_protection_factor(cand, spatial_cfg) if evidence_aware else 1.0
+        penalty = min(max_penalty_per_candidate, mmr_distance_scale * max_sim * gap_multiplier * protection)
+        if penalty <= 0.0:
+            continue
+        affected += 1
+        total_penalty += penalty
+        cand["spatial_cluster_penalty"] = round(penalty, 6)
+        cand["spatial_cluster_penalty_sources"] = (
+            [{"anchor_cell": best_anchor, "score_gap": round(gap, 6), "penalty": round(penalty, 6)}]
+            if best_anchor is not None
+            else []
+        )
+        new_score = score - penalty
+        cand["score"] = new_score
+        cand["final_score"] = new_score
+        cand["ranking_score"] = new_score
+
+    merged = selected + tail
+    resorted = _score_sorted(merged)
+    for pos, cand in enumerate(resorted, start=1):
+        cand["final_rank_position"] = pos
+    return resorted, {
+        "enabled": True,
+        "applied": bool(affected > 0),
+        "distance_metric": metric,
+        "top_m": top_m,
+        "affected_count": affected,
+        "total_penalty": round(total_penalty, 6),
+    }
+
+
+def _apply_spatial_postprocess(
+    ranked: List[Dict[str, object]],
+    spatial_cfg: Dict[str, object],
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    method = str(spatial_cfg.get("method", "spatial_penalty")).lower()
+    if method == "disabled":
+        return ranked, {
+            "enabled": bool(spatial_cfg.get("enabled", False)),
+            "applied": False,
+            "distance_metric": str(spatial_cfg.get("distance_metric", "hybrid")),
+            "top_m": _safe_top_m(spatial_cfg.get("top_m", 5), default=5),
+            "affected_count": 0,
+            "total_penalty": 0.0,
+            "method": method,
+        }
+    if method == "mmr_diversify":
+        out, diag = _apply_mmr_diversify_penalty(ranked, spatial_cfg, evidence_aware=False)
+    elif method == "evidence_aware_mmr":
+        out, diag = _apply_mmr_diversify_penalty(ranked, spatial_cfg, evidence_aware=True)
+    else:
+        out, diag = _apply_spatial_cluster_penalty(ranked, spatial_cfg)
+        method = "spatial_penalty"
+    diag["method"] = method
+    return out, diag
+
+
+def _refresh_distribution_diagnostics(
+    diagnostics: Dict[str, Any],
+    ranked: List[Dict[str, object]],
+) -> Dict[str, Any]:
+    if not ranked:
+        return diagnostics
+    final_scores = [float(c.get("score", 0.0)) for c in ranked]
+    raw_mean = sum(final_scores) / len(final_scores)
+    raw_var = sum((s - raw_mean) ** 2 for s in final_scores) / len(final_scores)
+    final_std = math.sqrt(raw_var)
+    top_sorted = sorted(final_scores, reverse=True)
+    top1_top2_margin = 0.0 if len(top_sorted) < 2 else top_sorted[0] - top_sorted[1]
+    topk = top_sorted[: min(5, len(top_sorted))]
+    top1_top5_mean_gap = 0.0 if not topk else top_sorted[0] - (sum(topk) / len(topk))
+    tau = max(0.05, final_std)
+    exp_values = [math.exp((s - top_sorted[0]) / tau) for s in top_sorted]
+    z = sum(exp_values) or 1.0
+    probs = [x / z for x in exp_values]
+    entropy = -sum(p * math.log(max(p, 1e-12)) for p in probs)
+    max_entropy = math.log(max(len(probs), 1))
+    diagnostics.update(
+        {
+            "raw_score_min": min(final_scores),
+            "raw_score_max": max(final_scores),
+            "raw_score_std": final_std,
+            "final_score_min": min(final_scores),
+            "final_score_max": max(final_scores),
+            "final_score_std": final_std,
+            "top1_top2_margin": top1_top2_margin,
+            "top1_top5_mean_gap": top1_top5_mean_gap,
+            "score_entropy_like": entropy / max(max_entropy, 1e-12),
+            "collapsed_score_flag": final_std < 0.02 or top1_top2_margin < 0.01,
+            "final_top1_cell": ranked[0]["cell"],
+            "top1_changed_by_tiebreak": bool(
+                diagnostics.get("stage_a_top1_cell") is not None
+                and diagnostics.get("stage_a_top1_cell") != ranked[0]["cell"]
+            ),
+        }
+    )
+    return diagnostics
+
+
 def map_score_to_confidence_1_100(
     margin_to_top2: float,
     effective_candidate_count: int,
@@ -1208,6 +1539,10 @@ def _run_inference_detailed(
     )
     diagnostics = aggregate_candidate_scores(scored, weights, aggregator_cfg)
     ranked = rank_candidates(scored)
+    spatial_cfg = dict(aggregator_cfg.get("spatial_postprocess", {}))
+    ranked, spatial_diag = _apply_spatial_postprocess(ranked, spatial_cfg)
+    diagnostics = _refresh_distribution_diagnostics(diagnostics, ranked)
+    diagnostics["spatial_postprocess"] = dict(spatial_diag)
     best = ranked[0]
 
     margin_to_top2 = 0.0 if len(ranked) <= 1 else max(
@@ -1325,6 +1660,8 @@ def _run_inference_detailed(
                 "zone_type": cell_profile["zone_type"],
                 "edge_bias_adjustment": edge_bias_adjustment,
                 "board_coverage_adjustment": board_coverage_adjustment,
+                "spatial_cluster_penalty": round(float(cell.get("spatial_cluster_penalty", 0.0)), 6),
+                "spatial_cluster_penalty_sources": cell.get("spatial_cluster_penalty_sources", []),
         }
         if preserve_diagnostics:
             for key in (
@@ -1452,6 +1789,13 @@ def _run_inference_detailed(
             "runtime_mode": runtime_mode,
             "fallback_reason": diagnostics.get("fallback_reason"),
             "elimination_version": str(aggregator_cfg.get("elimination_version", "v1")),
+            "spatial_postprocess_enabled": bool(spatial_diag.get("enabled", False)),
+            "spatial_postprocess_applied": bool(spatial_diag.get("applied", False)),
+            "spatial_postprocess_top_m": int(spatial_diag.get("top_m", 5)),
+            "spatial_postprocess_distance_metric": str(spatial_diag.get("distance_metric", "hybrid")),
+            "spatial_postprocess_method": str(spatial_diag.get("method", "spatial_penalty")),
+            "spatial_postprocess_affected_count": int(spatial_diag.get("affected_count", 0)),
+            "spatial_postprocess_total_penalty": round(float(spatial_diag.get("total_penalty", 0.0)), 6),
             "ranking_stage": rerank_meta["ranking_stage"],
             "reranker_version": rerank_meta["reranker_version"],
             "reranker_feature_schema_version": rerank_meta["reranker_feature_schema_version"],
