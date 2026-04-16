@@ -2,8 +2,8 @@
   "hardware_profile": {
     "cpu_logical": 12,
     "cpu_physical": 6,
-    "total_ram_gb": 8.0,
-    "available_ram_gb": 4.0,
+    "total_ram_gb": 15.117382049560547,
+    "available_ram_gb": 7.363056182861328,
     "cuda_available": false,
     "mps_available": false,
     "platform": "Windows-AMD64"
@@ -12,28 +12,35 @@
     "backend": "sklearn",
     "n_jobs": 8,
     "num_workers": 8,
-    "batch_size": 8192,
-    "shard_size": 500000,
+    "batch_size": 12288,
+    "shard_size": 750000,
     "prefetch": 8
   },
   "backend_used": "sklearn_hgb_classifier",
-  "train_rows": 128000,
-  "holdout_rows": 64000,
+  "train_rows": 105600,
+  "holdout_rows": 12800,
+  "train_group_count": 2640,
+  "holdout_group_count": 320,
   "per_size_counts_train": {
-    "8x10": 128000
+    "8x10": 105600
   },
   "per_size_counts_holdout": {
-    "8x10": 64000
+    "8x10": 12800
   },
-  "eta_seconds": 3.457180976867676,
-  "samples_per_sec": 37024.38514398294,
-  "holdout_auc": 0.9917840882120253,
+  "elapsed_seconds": 2.7354438304901123,
+  "samples_per_sec": 38604.338653548424,
+  "holdout_auc": 0.4984259815705129,
   "holdout_ranking": {
-    "top1": 0.82375,
-    "top3": 0.9175,
-    "top5": 0.95375,
-    "top10": 0.9825,
-    "mean_rank": 1.69875,
-    "mrr": 0.8780183240177435
+    "top1": 0.021875,
+    "top3": 0.084375,
+    "top5": 0.128125,
+    "top10": 0.246875,
+    "mean_rank": 20.525,
+    "mrr": 0.1092022949150867
+  },
+  "filtering": {
+    "feasible_only": true,
+    "require_single_positive_per_group": true,
+    "min_group_size": 2
   }
 }

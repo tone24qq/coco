@@ -1,777 +1,804 @@
 {
   "status": "ok",
-  "output": "data\\full_boards\\full_board_corpus_80.jsonl",
-  "preview_dir": "reports\\root_xlsx_previews",
-  "board_count": 1,
-  "size_counts": {
-    "8x10": 1
-  },
-  "sheets": [
+  "files_checked": [
+    "刮刮卡製作 1.xlsx",
+    "樣本1.xlsx",
+    "樣本2.xlsx",
+    "轉Excel 2025-06-03 15.04.xlsx",
+    "隨機不重複亂數表.xlsx"
+  ],
+  "accepted": [
+    {
+      "file": "刮刮卡製作 1.xlsx",
+      "sheet": "80刮",
+      "top": 3,
+      "left": 2,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:刮刮卡製作 1:80刮:3:2:8x10",
+      "preview": "reports\\root_xlsx_previews\\_1__80___r3_c2__8x10.txt"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet22",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本1:Sheet22:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_1__Sheet22__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet23",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本1:Sheet23:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_1__Sheet23__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet24",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本1:Sheet24:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_1__Sheet24__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet1",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet1:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet1__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet2",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet2:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet2__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet3",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet3:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet3__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet4",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet4:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet4__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet5",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet5:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet5__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet6",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet6:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet6__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet7",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet7:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet7__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet8",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet8:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet8__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet9",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet9:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet9__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet10",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet10:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet10__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet11",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet11:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet11__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet12",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet12:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet12__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet13",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet13:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet13__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet14",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet14:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet14__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet15",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet15:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet15__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet16",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet16:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet16__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet17",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet17:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet17__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet18",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet18:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet18__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet19",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet19:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet19__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet20",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet20:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet20__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet26",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet26:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet26__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet27",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet27:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet27__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet28",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet28:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet28__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet29",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet29:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet29__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet30",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet30:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet30__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet31",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet31:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet31__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet32",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet32:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet32__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet34",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet34:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet34__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet36",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet36:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet36__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet37",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet37:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet37__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet38",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet38:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet38__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet39",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet39:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet39__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet40",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet40:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet40__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet41",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet41:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet41__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet42",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet42:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet42__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet43",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet43:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet43__r2_c1__8x10.txt"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet45",
+      "top": 2,
+      "left": 1,
+      "rows": 8,
+      "cols": 10,
+      "board_id": "xlsx:樣本2:Sheet45:2:1:8x10",
+      "preview": "reports\\root_xlsx_previews\\_2__Sheet45__r2_c1__8x10.txt"
+    }
+  ],
+  "rejected": [
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "160刮",
-      "rows": 10,
-      "cols": 24,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 316
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            14
-          ],
-          "match_type": "near_miss",
-          "score": 324
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "20刮",
-      "rows": 10,
-      "cols": 12,
-      "status": "no_80_board_found",
-      "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 candidate found",
-      "found_windows": []
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "40刮",
-      "rows": 10,
-      "cols": 12,
-      "status": "no_80_board_found",
-      "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 candidate found",
-      "found_windows": []
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "60刮",
-      "rows": 10,
-      "cols": 12,
-      "status": "no_80_board_found",
-      "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 candidate found",
-      "found_windows": []
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "120刮",
-      "rows": 12,
-      "cols": 13,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            3,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 360
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 352
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "100刮",
-      "rows": 12,
-      "cols": 12,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            3,
-            4
-          ],
-          "match_type": "near_miss",
-          "score": 372
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 374
-        }
-      ]
-    },
-    {
-      "file": "刮刮卡製作 1.xlsx",
-      "sheet": "80刮",
-      "rows": 10,
-      "cols": 12,
-      "status": "ok",
-      "format_loss": false,
-      "message": "found exact 8x10/10x8 permutation 1..80 window(s)",
-      "found_windows": [
-        {
-          "board_id": "刮刮卡製作 1:80刮:2:1",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            2
-          ],
-          "match_type": "exact",
-          "score": null
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "隨機產生號碼",
-      "rows": 160,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            9,
-            5
-          ],
-          "match_type": "near_miss",
-          "score": 182
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            5
-          ],
-          "match_type": "near_miss",
-          "score": 180
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet1",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet2",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet3",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet4",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet5",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet6",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet7",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet8",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet9",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet10",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet11",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet12",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet13",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet14",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet15",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet16",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet17",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet18",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet19",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet20",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet21",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet25",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet26",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet27",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet28",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet29",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet30",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet31",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet32",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet33",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet34",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet35",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet36",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet37",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet38",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet39",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本1.xlsx",
+      "sheet": "Sheet40",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet21",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet22",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet23",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet24",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet25",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet33",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet35",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
+    },
+    {
+      "file": "樣本2.xlsx",
+      "sheet": "Sheet44",
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet1",
-      "rows": 11,
-      "cols": 12,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 346
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 348
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet2",
-      "rows": 11,
-      "cols": 12,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 350
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 348
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet3",
-      "rows": 11,
-      "cols": 12,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 350
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 348
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet4",
-      "rows": 12,
-      "cols": 12,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            3
-          ],
-          "match_type": "near_miss",
-          "score": 344
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            3
-          ],
-          "match_type": "near_miss",
-          "score": 346
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet5",
-      "rows": 12,
-      "cols": 12,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            4
-          ],
-          "match_type": "near_miss",
-          "score": 342
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 346
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet6",
-      "rows": 23,
-      "cols": 8,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 320
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet7",
-      "rows": 23,
-      "cols": 8,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 320
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet8",
-      "rows": 23,
-      "cols": 8,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 320
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet9",
-      "rows": 23,
-      "cols": 8,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 320
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet10",
-      "rows": 23,
-      "cols": 8,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 320
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet11",
-      "rows": 23,
-      "cols": 8,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 320
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂1",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            6
-          ],
-          "match_type": "near_miss",
-          "score": 344
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            4
-          ],
-          "match_type": "near_miss",
-          "score": 344
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂2",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 338
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            4
-          ],
-          "match_type": "near_miss",
-          "score": 342
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂3",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            6
-          ],
-          "match_type": "near_miss",
-          "score": 342
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 346
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂4",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 344
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 346
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂5",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            6
-          ],
-          "match_type": "near_miss",
-          "score": 348
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            4
-          ],
-          "match_type": "near_miss",
-          "score": 354
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂6",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            3
-          ],
-          "match_type": "near_miss",
-          "score": 354
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            3
-          ],
-          "match_type": "near_miss",
-          "score": 356
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂7",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 338
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            3,
-            3
-          ],
-          "match_type": "near_miss",
-          "score": 338
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂8",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            6
-          ],
-          "match_type": "near_miss",
-          "score": 344
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            2
-          ],
-          "match_type": "near_miss",
-          "score": 348
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂9",
-      "rows": 11,
-      "cols": 14,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 344
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 342
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂10",
-      "rows": 11,
-      "cols": 15,
-      "status": "near_miss",
-      "format_loss": false,
-      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
-      "found_windows": [
-        {
-          "board_id": "",
-          "size_class": "10x8",
-          "window_top_left_1_based": [
-            2,
-            1
-          ],
-          "match_type": "near_miss",
-          "score": 336
-        },
-        {
-          "board_id": "",
-          "size_class": "8x10",
-          "window_top_left_1_based": [
-            4,
-            3
-          ],
-          "match_type": "near_miss",
-          "score": 340
-        }
-      ]
+      "reason": "no_8x10_or_10x8_full_permutation_found"
     }
-  ]
+  ],
+  "size_counts": {
+    "8x10": 41
+  },
+  "errors": [
+    {
+      "file": "轉Excel 2025-06-03 15.04.xlsx",
+      "error": "no_valid_80_board_found_in_file"
+    },
+    {
+      "file": "隨機不重複亂數表.xlsx",
+      "error": "no_valid_80_board_found_in_file"
+    }
+  ],
+  "board_count": 41,
+  "output": "data\\full_boards\\full_board_corpus_80.jsonl"
 }

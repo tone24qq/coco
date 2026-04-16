@@ -5,18 +5,18 @@
     "cols": 10,
     "feature_means": {
       "tail_entropy": 3.3219280948873626,
-      "same_tail_adjacency_rate": 0.09154929577464789,
-      "same_decade_proximity_rate": 0.1056338028169014,
-      "consecutive_neighbor_rate": 0.028169014084507043,
+      "same_tail_adjacency_rate": 0.08685446009389672,
+      "same_decade_proximity_rate": 0.11011523687580026,
+      "consecutive_neighbor_rate": 0.02240717029449424,
       "row_known_entropy": 0.0,
       "col_known_entropy": 0.0,
       "edge_center_balance": 0.4
     },
     "feature_stds": {
       "tail_entropy": 1e-06,
-      "same_tail_adjacency_rate": 1e-06,
-      "same_decade_proximity_rate": 1e-06,
-      "consecutive_neighbor_rate": 1e-06,
+      "same_tail_adjacency_rate": 0.02400175390354672,
+      "same_decade_proximity_rate": 0.02305330222075356,
+      "consecutive_neighbor_rate": 0.014238862413668184,
       "row_known_entropy": 1e-06,
       "col_known_entropy": 1e-06,
       "edge_center_balance": 1e-06

@@ -36,5 +36,6 @@
   ],
   "artifact": "artifacts/main_ranker.pkl",
   "schema_path": "artifacts/feature_schema.json",
-  "strict_missing_artifact": true
+  "strict_missing_artifact": true,
+  "feasible_only_training": true
 }
