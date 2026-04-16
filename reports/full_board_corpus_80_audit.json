@@ -12,10 +12,31 @@
       "sheet": "160刮",
       "rows": 10,
       "cols": 24,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            3,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 316
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            3,
+            14
+          ],
+          "match_type": "near_miss",
+          "score": 324
+        }
+      ]
     },
     {
       "file": "刮刮卡製作 1.xlsx",
@@ -24,7 +45,7 @@
       "cols": 12,
       "status": "no_80_board_found",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
+      "message": "sheet restored successfully, but no 8x10/10x8 candidate found",
       "found_windows": []
     },
     {
@@ -34,7 +55,7 @@
       "cols": 12,
       "status": "no_80_board_found",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
+      "message": "sheet restored successfully, but no 8x10/10x8 candidate found",
       "found_windows": []
     },
     {
@@ -44,7 +65,7 @@
       "cols": 12,
       "status": "no_80_board_found",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
+      "message": "sheet restored successfully, but no 8x10/10x8 candidate found",
       "found_windows": []
     },
     {
@@ -52,20 +73,62 @@
       "sheet": "120刮",
       "rows": 12,
       "cols": 13,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            3,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 360
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            3,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 352
+        }
+      ]
     },
     {
       "file": "刮刮卡製作 1.xlsx",
       "sheet": "100刮",
       "rows": 12,
       "cols": 12,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            3,
+            4
+          ],
+          "match_type": "near_miss",
+          "score": 372
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 374
+        }
+      ]
     },
     {
       "file": "刮刮卡製作 1.xlsx",
@@ -74,7 +137,7 @@
       "cols": 12,
       "status": "ok",
       "format_loss": false,
-      "message": "ok",
+      "message": "found exact 8x10/10x8 permutation 1..80 window(s)",
       "found_windows": [
         {
           "board_id": "刮刮卡製作 1:80刮:2:1",
@@ -82,7 +145,9 @@
           "window_top_left_1_based": [
             3,
             2
-          ]
+          ],
+          "match_type": "exact",
+          "score": null
         }
       ]
     },
@@ -91,220 +156,622 @@
       "sheet": "隨機產生號碼",
       "rows": 160,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            9,
+            5
+          ],
+          "match_type": "near_miss",
+          "score": 182
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            3,
+            5
+          ],
+          "match_type": "near_miss",
+          "score": 180
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet1",
       "rows": 11,
       "cols": 12,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 346
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 348
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet2",
       "rows": 11,
       "cols": 12,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 350
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 348
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet3",
       "rows": 11,
       "cols": 12,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 350
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 348
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet4",
       "rows": 12,
       "cols": 12,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            3
+          ],
+          "match_type": "near_miss",
+          "score": 344
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            3
+          ],
+          "match_type": "near_miss",
+          "score": 346
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet5",
       "rows": 12,
       "cols": 12,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            4
+          ],
+          "match_type": "near_miss",
+          "score": 342
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 346
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet6",
       "rows": 23,
       "cols": 8,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 320
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet7",
       "rows": 23,
       "cols": 8,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 320
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet8",
       "rows": 23,
       "cols": 8,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 320
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet9",
       "rows": 23,
       "cols": 8,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 320
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet10",
       "rows": 23,
       "cols": 8,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 320
+        }
+      ]
     },
     {
       "file": "轉Excel 2025-06-03 15.04.xlsx",
       "sheet": "Sheet11",
       "rows": 23,
       "cols": 8,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 320
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂1",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            6
+          ],
+          "match_type": "near_miss",
+          "score": 344
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            3,
+            4
+          ],
+          "match_type": "near_miss",
+          "score": 344
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂2",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 338
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            4
+          ],
+          "match_type": "near_miss",
+          "score": 342
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂3",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            6
+          ],
+          "match_type": "near_miss",
+          "score": 342
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 346
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂4",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 344
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 346
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂5",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            6
+          ],
+          "match_type": "near_miss",
+          "score": 348
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            4
+          ],
+          "match_type": "near_miss",
+          "score": 354
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂6",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            3
+          ],
+          "match_type": "near_miss",
+          "score": 354
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            3
+          ],
+          "match_type": "near_miss",
+          "score": 356
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂7",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 338
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            3,
+            3
+          ],
+          "match_type": "near_miss",
+          "score": 338
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂8",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            6
+          ],
+          "match_type": "near_miss",
+          "score": 344
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            2
+          ],
+          "match_type": "near_miss",
+          "score": 348
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂9",
       "rows": 11,
       "cols": 14,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 344
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 342
+        }
+      ]
     },
     {
       "file": "隨機不重複亂數表.xlsx",
       "sheet": "刮刮樂10",
       "rows": 11,
       "cols": 15,
-      "status": "no_80_board_found",
+      "status": "near_miss",
       "format_loss": false,
-      "message": "sheet restored successfully, but no 8x10/10x8 permutation-1..80 window found",
-      "found_windows": []
+      "message": "no exact board found, but found candidate window(s) close to valid 1..80 board",
+      "found_windows": [
+        {
+          "board_id": "",
+          "size_class": "10x8",
+          "window_top_left_1_based": [
+            2,
+            1
+          ],
+          "match_type": "near_miss",
+          "score": 336
+        },
+        {
+          "board_id": "",
+          "size_class": "8x10",
+          "window_top_left_1_based": [
+            4,
+            3
+          ],
+          "match_type": "near_miss",
+          "score": 340
+        }
+      ]
     }
   ]
 }
