@@ -4,12 +4,16 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import joblib
+
+from src.inference_config import load_trained_ranker_config
 from src.ranking_features import FEATURE_SCHEMA_VERSION, feature_columns_from_rows
 
 ARTIFACTS_DIR = Path("artifacts")
 WEIGHTS_PATH = ARTIFACTS_DIR / "reranker_weights.json"
 FEATURE_COLUMNS_PATH = ARTIFACTS_DIR / "reranker_feature_columns.json"
 MODEL_PATH = ARTIFACTS_DIR / "reranker_model.txt"
+MAIN_RANKER_PATH = ARTIFACTS_DIR / "main_ranker.pkl"
 
 
 DEFAULT_FALLBACK_REASON = "reranker_artifact_missing"
@@ -30,6 +34,40 @@ def apply_reranker(
     candidates: List[Dict[str, Any]],
     feature_rows: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    trained_cfg = load_trained_ranker_config()
+    if trained_cfg.get("enabled", True):
+        if not MAIN_RANKER_PATH.exists():
+            if bool(trained_cfg.get("strict_missing_artifact", True)):
+                raise ValueError("trained ranker artifact missing: artifacts/main_ranker.pkl")
+            return candidates, {
+                "ranking_stage": "baseline_only",
+                "reranker_version": None,
+                "reranker_feature_schema_version": FEATURE_SCHEMA_VERSION,
+                "reranker_fallback_reason": "trained_ranker_artifact_missing",
+            }
+        artifact = joblib.load(MAIN_RANKER_PATH)
+        model = artifact["model"]
+        feature_columns = artifact.get("feature_columns", [])
+        if not feature_columns:
+            raise ValueError("trained ranker artifact has empty feature_columns")
+        matrix = [[float(row.get(col, 0.0)) for col in feature_columns] for row in feature_rows]
+        if hasattr(model, "predict_proba"):
+            scores = model.predict_proba(matrix)[:, 1]
+        else:
+            scores = model.predict(matrix)
+        rescored = []
+        for cand, score in zip(candidates, scores):
+            merged = dict(cand)
+            merged["reranker_score"] = float(score)
+            rescored.append(merged)
+        rescored.sort(key=lambda x: x["reranker_score"], reverse=True)
+        return rescored, {
+            "ranking_stage": "trained_ranker_applied",
+            "reranker_version": artifact.get("backend", "main_ranker"),
+            "reranker_feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "reranker_fallback_reason": None,
+        }
+
     artifact, reason = load_reranker_artifact()
     if artifact is None:
         return candidates, {

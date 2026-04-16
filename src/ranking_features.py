@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.board_geometry import anti_diagonal_cells, cell_on_anti_diagonal, cell_on_main_diagonal, main_diagonal_cells
+from src.whole_board_features import (
+    compute_board_state_features,
+    compute_candidate_delta_features,
+    merge_feature_layers,
+)
 
 FEATURE_SCHEMA_VERSION = "ranking_features_v4"
 TOP_KS = (1, 3, 5)
@@ -57,6 +62,10 @@ def build_candidate_feature_rows(
     col_to_indices: Dict[int, List[int]] = {}
     main_diag_indices: List[int] = []
     anti_diag_indices: List[int] = []
+    board_state_features: Optional[Dict[str, float]] = None
+    if board is not None and target_number is not None:
+        board_state_features = compute_board_state_features(board, target_number)
+
     for idx, candidate in enumerate(candidates):
         row = int(candidate["row"])
         col = int(candidate["col"])
@@ -170,6 +179,15 @@ def build_candidate_feature_rows(
             "relative_rank_within_diag": diag_rel,
             "label": int(true_cell_1_based == (row, col)) if true_cell_1_based else None,
         }
+        if board is not None and target_number is not None and board_state_features is not None:
+            candidate_delta = compute_candidate_delta_features(
+                board=board,
+                target_number=target_number,
+                cand_row=row - 1,
+                cand_col=col - 1,
+                board_state_features=board_state_features,
+            )
+            feature.update(merge_feature_layers(board_state_features, candidate_delta))
 
         candidate_score_values = [float(module_scores.get(m, 0.0)) for m in module_names]
         candidate_rank_values = [int(module_ranks[m][idx]) for m in module_names]

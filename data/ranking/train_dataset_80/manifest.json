@@ -1,0 +1,7 @@
+{
+  "files": [
+    "data\\ranking\\train_dataset_80\\shard_00000.parquet",
+    "data\\ranking\\train_dataset_80\\shard_00001.parquet",
+    "data\\ranking\\train_dataset_80\\shard_00002.parquet"
+  ]
+}

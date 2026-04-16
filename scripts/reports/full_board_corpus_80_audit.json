@@ -1,0 +1,8 @@
+{
+  "status": "ok",
+  "output": "data\\full_boards\\full_board_corpus_80.jsonl",
+  "preview_dir": "reports\\root_xlsx_previews",
+  "board_count": 0,
+  "size_counts": {},
+  "sheets": []
+}
