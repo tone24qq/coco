@@ -152,3 +152,7 @@ def write_model_registry(registry: Dict[str, Any], path: Path = REGISTRY_PATH) -
     registry = dict(registry)
     registry.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     path.write_text(json.dumps(registry, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _normalize_artifact_path(raw: str) -> Path:
+
+    return Path(str(raw).replace("\\", "/"))
