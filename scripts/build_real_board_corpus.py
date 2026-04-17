@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.safe_io import SafeWriteConfig, write_jsonl_records_safe
+from src.safe_io import SafeWriteConfig, write_jsonl_records_safe  # noqa: E402
 
 
 def validate_grid(rows: int, cols: int, grid: List[List[Optional[int]]]) -> Tuple[bool, str]:
@@ -74,10 +74,14 @@ def scan_xlsx(path: Path) -> List[Dict[str, Any]]:
     wb = load_workbook(path, data_only=True, read_only=True)
     records: List[Dict[str, Any]] = []
     for ws in wb.worksheets:
+        max_row = int(ws.max_row or 0)
+        max_col = int(ws.max_column or 0)
+        if max_row <= 0 or max_col <= 0:
+            continue
         grid: List[List[Optional[int]]] = []
-        for r in range(1, ws.max_row + 1):
+        for r in range(1, max_row + 1):
             row_vals: List[Optional[int]] = []
-            for c in range(1, ws.max_column + 1):
+            for c in range(1, max_col + 1):
                 row_vals.append(_to_int_or_none(ws.cell(r, c).value))
             grid.append(row_vals)
 

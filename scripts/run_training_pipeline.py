@@ -2,21 +2,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import Dict
 
-from src.main_ranker import write_model_registry
-from src.safe_io import read_dataset_auto
+import sys
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.main_ranker import write_model_registry  # noqa: E402
+from src.safe_io import read_dataset_auto  # noqa: E402
 
 
 def _run(cmd: list[str]) -> None:
     print("$", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT)
+    subprocess.run(cmd, check=True, env=env)
 
 
-def _train_one(train: Path, valid: Path, holdout: Path, out_dir: Path, size_class: str, max_workers: int) -> Dict[str, str]:
+def _train_one(
+    train: Path,
+    valid: Path,
+    holdout: Path,
+    out_dir: Path,
+    size_class: str,
+    max_workers: int,
+) -> Dict[str, str]:
     _run(
         [
             "python",
@@ -84,9 +100,6 @@ def main() -> None:
             str(full),
             "--max-file-mb",
             str(args.max_file_mb),
-            "--valid-real-only",
-            "--holdout-real-only",
-            "--exclude-synth-from-valid",
         ]
     )
     if args.generate_synthetic:
@@ -118,9 +131,6 @@ def main() -> None:
             args.mask_ratios,
             "--max-file-mb",
             str(args.max_file_mb),
-            "--valid-real-only",
-            "--holdout-real-only",
-            "--exclude-synth-from-valid",
         ]
     )
     _run(
@@ -170,7 +180,6 @@ def main() -> None:
 
     write_model_registry(registry, artifacts / "model_registry.json")
 
-
     split_summary_path = split_root / "split_summary.json"
     split_summary = json.loads(split_summary_path.read_text(encoding="utf-8")) if split_summary_path.exists() else {}
     synth_count = 0
@@ -187,10 +196,16 @@ def main() -> None:
         "synthetic_board_count": synth_count,
         "split": split_summary,
         "model_strategy": registry.get("model_strategy"),
-        "global_model_present": bool(Path(registry["global"]["artifact_path"]).exists()) if registry.get("global") else False,
-        "per_size_model_present": {k: bool(Path(v["artifact_path"]).exists()) for k, v in registry.get("per_size", {}).items()},
+        "global_model_present": bool(Path(registry["global"]["artifact_path"]).exists())
+        if registry.get("global")
+        else False,
+        "per_size_model_present": {
+            k: bool(Path(v["artifact_path"]).exists()) for k, v in registry.get("per_size", {}).items()
+        },
         "inference_strict_missing_artifact": True,
-        "ready_for_runtime": bool(registry.get("global")) and bool(split_summary.get("valid_real_rows", 0) > 0) and bool(split_summary.get("holdout_real_rows", 0) > 0),
+        "ready_for_runtime": bool(registry.get("global"))
+        and bool(split_summary.get("valid_real_rows", 0) > 0)
+        and bool(split_summary.get("holdout_real_rows", 0) > 0),
     }
     rep_path = root / "reports/runtime_readiness_report.json"
     rep_path.parent.mkdir(parents=True, exist_ok=True)
