@@ -155,3 +155,5 @@ fast_path:
 trained_ranker:
   enabled: true
   strict_missing_artifact: true
+  model_registry_path: artifacts/model_registry.json
+  apply_heuristic_rerank_after_model: true

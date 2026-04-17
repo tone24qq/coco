@@ -1,0 +1,29 @@
+{
+  "real_full_board_count": 41,
+  "per_size_real_board_count": {
+    "8x10": 41
+  },
+  "synthetic_board_count": 0,
+  "split": {
+    "split_mode": "by_lineage",
+    "train_real_rows": 144768,
+    "train_synth_rows": 0,
+    "valid_real_rows": 14976,
+    "valid_synth_rows": 0,
+    "holdout_real_rows": 44928,
+    "holdout_synth_rows": 0,
+    "train_real_groups": 5104,
+    "valid_real_groups": 528,
+    "holdout_real_groups": 1584,
+    "valid_real_only": true,
+    "holdout_real_only": true,
+    "exclude_synth_from_valid": true
+  },
+  "model_strategy": "size_specific_with_global_fallback",
+  "global_model_present": true,
+  "per_size_model_present": {
+    "8x10": true
+  },
+  "inference_strict_missing_artifact": true,
+  "ready_for_runtime": true
+}

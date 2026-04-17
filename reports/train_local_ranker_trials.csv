@@ -1,0 +1,2 @@
+trial_id,backend,params_json,train_rows,valid_rows,valid_group_count,group_count,top1,top3,top5,top10,mean_rank,mrr,candidate_count_mean,normalized_mean_rank_gain,objective_score,elapsed_sec,model_size_mb
+0,lightgbm,"{""n_estimators"": 300, ""learning_rate"": 0.05, ""num_leaves"": 31, ""min_child_samples"": 20}",144768,14976,528,528,0.05303030303030303,0.13446969696969696,0.23106060606060605,0.42803030303030304,14.842803030303031,0.16149000926954818,28.363636363636363,0.4941168327796235,0.05303030303030303,0.0,1.0021514892578125
