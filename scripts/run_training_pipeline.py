@@ -91,15 +91,15 @@ def main() -> None:
     _run(
         [
             "python",
-            "scripts/build_real_board_corpus.py",
+            "scripts/build_root_xlsx_corpus_80.py",
             "--input-dir",
             args.input_dir,
-            "--glob",
-            args.glob,
             "--output",
             str(full),
-            "--max-file-mb",
-            str(args.max_file_mb),
+            "--audit",
+            str(root / "reports/full_board_corpus_80_audit.json"),
+            "--preview-dir",
+            str(root / "reports/root_xlsx_previews_80"),
         ]
     )
     if args.generate_synthetic:
