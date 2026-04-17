@@ -6,6 +6,7 @@ import random
 from pathlib import Path
 from typing import Any, Dict, List
 
+from src.safe_io import SafeWriteConfig, write_jsonl_records_safe
 from src.synthetic_generator import SizeClassProfile, generate_synthetic_from_seed
 
 
@@ -25,6 +26,7 @@ def main() -> None:
     parser.add_argument("--output", default="data/full_boards/synthetic_board_corpus.jsonl")
     parser.add_argument("--per-real", type=int, default=12)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-file-mb", type=int, default=100)
     args = parser.parse_args()
 
     real_boards = read_jsonl(Path(args.real_corpus))
@@ -48,6 +50,7 @@ def main() -> None:
             out_rows.append(
                 {
                     "board_id": f"synth::{rec['board_id']}::{idx:03d}",
+                    "lineage_id": str(rec["board_id"]),
                     "rows": rec["rows"],
                     "cols": rec["cols"],
                     "size_class": size_class,
@@ -59,17 +62,18 @@ def main() -> None:
                     "is_real": False,
                     "realism_score": float(realism),
                     "group_id": f"synth::{rec['board_id']}",
-                    "issue_id": rec["issue_id"],
+                    "issue_id": rec.get("issue_id", rec["board_id"]),
                     "source_file": rec.get("source_file", ""),
                     "order_index": idx,
                 }
             )
 
     out_path = Path(args.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("w", encoding="utf-8") as fh:
-        for row in out_rows:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    write_jsonl_records_safe(
+        out_rows,
+        out_path,
+        config=SafeWriteConfig(max_file_mb=args.max_file_mb, producer_script="scripts/generate_synthetic_boards.py"),
+    )
     print(f"generated {len(out_rows)} synthetic boards -> {out_path}")
 
 
