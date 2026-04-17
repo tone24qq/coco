@@ -114,6 +114,13 @@ def main() -> None:
         valid_df = valid_df[valid_df["size_class"] == args.size_class].copy()
         holdout_df = holdout_df[holdout_df["size_class"] == args.size_class].copy()
 
+    valid_real_df = valid_df[valid_df["source_type"] == "real"].copy() if "source_type" in valid_df.columns else valid_df.copy()
+    holdout_real_df = holdout_df[holdout_df["source_type"] == "real"].copy() if "source_type" in holdout_df.columns else holdout_df.copy()
+    if valid_real_df.empty:
+        raise ValueError("valid split has no real groups")
+    if holdout_real_df.empty:
+        raise ValueError("holdout split has no real groups")
+
     report_dir = Path(args.report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
     trials_csv = report_dir / "tuning_trials.csv"
@@ -143,7 +150,7 @@ def main() -> None:
             continue
         t0 = time.time()
         try:
-            _, _, run = train_once(train_df, valid_df, holdout_df, backend, params, args.max_workers)
+            _, _, run = train_once(train_df, valid_real_df, holdout_real_df, backend, params, args.max_workers)
         except Exception:
             if args.strict:
                 raise
@@ -191,7 +198,7 @@ def main() -> None:
     valid_for_train = valid_df.copy()
     valid_for_train["group_id"] = valid_for_train["group_id"].map(lambda x: f"valid::{x}")
     train_valid = pd.concat([train_df, valid_for_train], ignore_index=True)
-    model, feature_columns, final_run = train_once(train_valid, valid_df, holdout_df, backend, best_params, args.max_workers)
+    model, feature_columns, final_run = train_once(train_valid, valid_real_df, holdout_real_df, backend, best_params, args.max_workers)
 
     artifacts_dir = Path(args.artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +243,19 @@ def main() -> None:
             "mrr": best["mrr"],
             "objective_score": best["objective_score"],
         },
+        "best_valid_real_metrics": {
+            "top1": best["top1"],
+            "top3": best["top3"],
+            "top5": best["top5"],
+            "top10": best["top10"],
+            "mean_rank": best["mean_rank"],
+            "mrr": best["mrr"],
+            "objective_score": best["objective_score"],
+        },
         "final_holdout_metrics": final_run["metrics"]["holdout"],
+        "final_holdout_real_metrics": final_run["metrics"]["holdout"],
+        "valid_contains_synth": bool(("source_type" in valid_df.columns) and (valid_df["source_type"] == "synthetic").any()),
+        "holdout_contains_synth": bool(("source_type" in holdout_df.columns) and (holdout_df["source_type"] == "synthetic").any()),
         "size_class": args.size_class or "global",
         "backend_used": backend,
         "interrupted": INTERRUPTED,

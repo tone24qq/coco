@@ -56,7 +56,7 @@ def main() -> None:
     parser.add_argument("--per-real", type=int, default=12)
     parser.add_argument("--mask-ratios", default="0.1,0.2,0.3,0.5")
     parser.add_argument("--holdout-ratio", type=float, default=0.2)
-    parser.add_argument("--split-mode", choices=["by_board", "by_lineage"], default="by_board")
+    parser.add_argument("--split-mode", choices=["by_board", "by_lineage"], default="by_lineage")
     parser.add_argument("--model-strategy", choices=["auto", "per_size", "global_only"], default="auto")
     parser.add_argument("--min-real-boards-per-size", type=int, default=5)
     parser.add_argument("--max-file-mb", type=int, default=100)
@@ -84,6 +84,9 @@ def main() -> None:
             str(full),
             "--max-file-mb",
             str(args.max_file_mb),
+            "--valid-real-only",
+            "--holdout-real-only",
+            "--exclude-synth-from-valid",
         ]
     )
     if args.generate_synthetic:
@@ -115,6 +118,9 @@ def main() -> None:
             args.mask_ratios,
             "--max-file-mb",
             str(args.max_file_mb),
+            "--valid-real-only",
+            "--holdout-real-only",
+            "--exclude-synth-from-valid",
         ]
     )
     _run(
@@ -131,6 +137,9 @@ def main() -> None:
             args.split_mode,
             "--max-file-mb",
             str(args.max_file_mb),
+            "--valid-real-only",
+            "--holdout-real-only",
+            "--exclude-synth-from-valid",
         ]
     )
 
@@ -160,6 +169,32 @@ def main() -> None:
                 registry["per_size"][size_class] = _train_one(train, valid, holdout, out, size_class, args.max_workers)
 
     write_model_registry(registry, artifacts / "model_registry.json")
+
+
+    split_summary_path = split_root / "split_summary.json"
+    split_summary = json.loads(split_summary_path.read_text(encoding="utf-8")) if split_summary_path.exists() else {}
+    synth_count = 0
+    if synth.exists():
+        try:
+            synth_df = read_dataset_auto(synth)
+            synth_count = int(len(synth_df))
+        except Exception:
+            synth_count = 0
+
+    readiness = {
+        "real_full_board_count": int(len(full_df)),
+        "per_size_real_board_count": dict(real_size_counts),
+        "synthetic_board_count": synth_count,
+        "split": split_summary,
+        "model_strategy": registry.get("model_strategy"),
+        "global_model_present": bool(Path(registry["global"]["artifact_path"]).exists()) if registry.get("global") else False,
+        "per_size_model_present": {k: bool(Path(v["artifact_path"]).exists()) for k, v in registry.get("per_size", {}).items()},
+        "inference_strict_missing_artifact": True,
+        "ready_for_runtime": bool(registry.get("global")) and bool(split_summary.get("valid_real_rows", 0) > 0) and bool(split_summary.get("holdout_real_rows", 0) > 0),
+    }
+    rep_path = root / "reports/runtime_readiness_report.json"
+    rep_path.parent.mkdir(parents=True, exist_ok=True)
+    rep_path.write_text(json.dumps(readiness, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if args.enable_inference:
         cfg_path = Path("configs/inference.yaml")

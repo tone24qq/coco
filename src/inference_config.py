@@ -83,7 +83,7 @@ def load_trained_ranker_config(config_path: Path = DEFAULT_CONFIG_PATH) -> Dict[
         raise ValueError("trained_ranker must be a mapping")
     out = dict(cfg)
     out.setdefault("enabled", True)
-    out.setdefault("strict_missing_artifact", False)
+    out.setdefault("strict_missing_artifact", True)
     out.setdefault("model_registry_path", "artifacts/model_registry.json")
     out.setdefault("apply_heuristic_rerank_after_model", True)
     return out

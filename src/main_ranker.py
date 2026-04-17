@@ -141,6 +141,8 @@ def score_candidates_with_ranker(
         "fallback_used": resolved.fallback_used,
         "fallback_reason": resolved.fallback_reason,
         "backend": resolved.backend,
+        "registry_path": str(registry_path),
+        "artifact_path": str(resolved.artifact_path),
     }
     return [float(s) for s in scores], meta
 
