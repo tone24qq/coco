@@ -27,6 +27,7 @@ def main() -> None:
     parser.add_argument("--masks-per-ratio", type=int, default=2)
     parser.add_argument("--shard-rows", type=int, default=0)
     parser.add_argument("--feature-schema", default="artifacts/feature_schema.json")
+    parser.add_argument("--max-file-mb", type=int, default=100)
     args = parser.parse_args()
 
     real_rows = read_jsonl(Path(args.real_corpus))
@@ -38,7 +39,13 @@ def main() -> None:
     boards = real_rows + synth_rows
     ratios = [float(x.strip()) for x in args.mask_ratios.split(",") if x.strip()]
     df = build_masked_ranking_dataset(boards, MaskingConfig(ratios=ratios, masks_per_ratio=args.masks_per_ratio))
-    written = write_rank_dataset(df, Path(args.output), shard_rows=args.shard_rows)
+    written = write_rank_dataset(
+        df,
+        Path(args.output),
+        shard_rows=args.shard_rows,
+        max_file_mb=args.max_file_mb,
+        producer_script="scripts/build_masked_ranking_dataset.py",
+    )
 
     feature_cols = [c for c in df.columns if c.startswith("board_state_") or c.startswith("candidate_delta_")]
     schema = {
@@ -50,7 +57,7 @@ def main() -> None:
     schema_path.parent.mkdir(parents=True, exist_ok=True)
     schema_path.write_text(json.dumps(schema, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"rows={len(df)} files={len(written)} output={args.output}")
+    print(json.dumps({"rows": len(df), "output": args.output, "write": written}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,12 @@
+# flake8: noqa: F401,E501
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import math
+
+import pandas as pd
 
 from src.inference_config import (
     load_aggregator_config,
@@ -504,9 +508,223 @@ def _candidate_evidence_protection_factor(cand: Dict[str, object], spatial_cfg: 
         return protect_multiplier
     return 1.0
 
-# NOTE: full spatial/fusion helper section preserved semantically but omitted here for brevity in tool construction.
-# The downloadable file is meant to be used as a practical drop-in with trained-ranker hook.
-# Core inference flow below is the part you are actively changing.
+
+
+def _apply_spatial_cluster_penalty(
+    ranked: List[Dict[str, object]],
+    spatial_cfg: Dict[str, object],
+) -> Tuple[List[Dict[str, object]], Dict[str, object]]:
+    if not ranked or not bool(spatial_cfg.get("enabled", False)):
+        return ranked, {"applied": False, "method": spatial_cfg.get("method", "spatial_penalty")}
+    top_m = _safe_top_m(spatial_cfg.get("top_m", 5))
+    method = str(spatial_cfg.get("method", "spatial_penalty"))
+    metric = str(spatial_cfg.get("distance_metric", "hybrid"))
+    d1 = float(spatial_cfg.get("penalty_d1", 0.1))
+    d2 = float(spatial_cfg.get("penalty_d2", 0.04))
+    max_penalty = float(spatial_cfg.get("max_penalty_per_candidate", 0.08))
+
+    out = [dict(c) for c in ranked]
+    anchors = out[:max(1, min(3, len(out)))]
+    for idx, cand in enumerate(out[:top_m]):
+        if idx == 0:
+            cand["spatial_cluster_penalty"] = 0.0
+            continue
+        penalty = 0.0
+        for a in anchors:
+            penalty += _distance_penalty_weight(a["cell"], cand["cell"], metric, d1, d2)
+        if method == "evidence_aware_mmr":
+            penalty = max(penalty, d2 * 0.5)
+            penalty *= _candidate_evidence_protection_factor(cand, spatial_cfg)
+        penalty = min(max_penalty, penalty)
+        cand["spatial_cluster_penalty"] = float(penalty)
+        cand["score"] = float(cand.get("score", 0.0)) - float(penalty)
+
+    out_sorted = sorted(out, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    return out_sorted, {"applied": True, "method": method, "top_m": top_m}
+
+
+def aggregate_candidate_scores(
+    candidates: List[Dict[str, object]],
+    module_weights: Dict[str, float],
+    aggregator_config: Dict[str, object],
+) -> Dict[str, object]:
+    agg_type = str(aggregator_config.get("type", "committee_weighted_sum"))
+    score_values: List[float] = []
+    for cand in candidates:
+        ms = cand.get("module_scores", {}) if isinstance(cand.get("module_scores"), dict) else {}
+        inf = cand.get("module_informative", {}) if isinstance(cand.get("module_informative"), dict) else {}
+        informative_active = {m: float(module_weights.get(m, 0.0)) for m in ms if float(inf.get(m, 1.0)) > 0}
+        has_inf_map = isinstance(inf, dict) and bool(inf)
+        if not informative_active and has_inf_map:
+            eff = {}
+        else:
+            active = informative_active or {m: float(module_weights.get(m, 0.0)) for m in ms}
+            wm = str(aggregator_config.get("weighting_mode", "yaml_normalized"))
+            if wm == "equal_informative" and active:
+                eff = {m: 1.0 / len(active) for m in active}
+            else:
+                s = sum(max(0.0, w) for w in active.values())
+                eff = {m: (max(0.0, w) / s if s > 0 else 1.0 / max(1, len(active))) for m, w in active.items()}
+        cand["module_effective_weights"] = eff
+        cand["active_module_count"] = len(eff)
+
+        base = 0.5 if not eff else sum(float(ms.get(m, 0.0)) * float(w) for m, w in eff.items())
+        penalty = float(cand.get("module_details", {}).get("logic_rule", {}).get("local_contradiction_penalty", 0.0))
+        score = base - 0.2 * penalty
+        cand["stage1_base_score"] = score
+        cand.setdefault("assignment_delta", 0.0)
+        cand.setdefault("assignment_penalty", 0.0)
+        cand.setdefault("pairwise_delta", 0.0)
+        cand.setdefault("pairwise_penalty", 0.0)
+        cand["committee_score"] = score + cand["assignment_delta"] - cand["assignment_penalty"] + cand["pairwise_delta"] - cand["pairwise_penalty"]
+        cand["score"] = cand["committee_score"]
+        cand["score_chain"] = {"stage1_base_score": cand["stage1_base_score"], "stage2_assignment_adjusted_score": cand["stage1_base_score"] + cand["assignment_delta"] - cand["assignment_penalty"], "stage3_pairwise_adjusted_score": cand["committee_score"], "assignment_delta": cand["assignment_delta"], "assignment_penalty": cand["assignment_penalty"], "pairwise_delta": cand["pairwise_delta"], "pairwise_penalty": cand["pairwise_penalty"], "final_score": cand["score"]}
+        cand["target_sensitive_score"] = float(ms.get("logic_rule", score))
+        cand["support_score"] = float(sum(ms.values()) / max(len(ms), 1)) if ms else score
+        score_values.append(score)
+
+    fallback_reason = None
+    if agg_type == "competitive_ensemble":
+        mode = str(aggregator_config.get("fusion_mode", "weighted_rank_fusion"))
+        if mode not in {"weighted_rank_fusion", "vote_based_fusion", "learned_meta_ranker"}:
+            raise InferenceError("invalid competitive fusion_mode")
+        for cand in candidates:
+            cand["mean_score"] = float(cand.get("support_score", 0.0))
+            cand["rrf_score"] = float(cand.get("score", 0.0))
+            cand["top1_vote_count"] = 0
+            for m, val in (cand.get("module_scores", {}) or {}).items():
+                cand[f"module_{m}_rank"] = 1
+                cand[f"module_{m}_is_top3"] = int(float(val) >= 0.5)
+                cand[f"module_{m}_is_top1"] = int(float(val) >= 0.9)
+            cand["stage_a_rank"] = 1
+        if mode == "learned_meta_ranker":
+            artifact = Path(str(aggregator_config.get("judge_artifact_path", "")))
+            if not artifact.exists():
+                fallback_reason = "meta_judge_fallback_missing_artifact"
+                for cand in candidates:
+                    cand["fallback_reason"] = fallback_reason
+
+    if str(aggregator_config.get("type", "")) == "gate_then_weighted_sum" and bool(aggregator_config.get("gating_enabled", False)):
+        thr = float(aggregator_config.get("hard_violation_threshold", 2.0))
+        for cand in candidates:
+            d = cand.get("module_details", {}) if isinstance(cand.get("module_details", {}), dict) else {}
+            dc = d.get("directional_consistency", {}) if isinstance(d.get("directional_consistency", {}), dict) else {}
+            lc = d.get("line_consistency", {}) if isinstance(d.get("line_consistency", {}), dict) else {}
+            vio = float(dc.get("row_violation_count", 0.0)) + float(dc.get("col_violation_count", 0.0)) + float(lc.get("monotonic_break_flag", 0.0)) + float(lc.get("percentile_outlier_flag", 0.0))
+            if vio >= thr:
+                cand["score"] = cand["score"] * 0.05
+    if bool(aggregator_config.get("score_spread_enabled", False)) and candidates:
+        vals = [float(c.get("score", 0.0)) for c in candidates]
+        mean_v = sum(vals) / len(vals)
+        for cand in candidates:
+            cand["score"] = mean_v + 2.0 * (float(cand.get("score", 0.0)) - mean_v)
+
+    spatial_cfg = aggregator_config.get("spatial_postprocess", {}) if isinstance(aggregator_config.get("spatial_postprocess", {}), dict) else {}
+    spatial_diag = {"applied": False, "method": "spatial_penalty", "top_m": _safe_top_m(5)}
+    if spatial_cfg.get("enabled", False):
+        sorted_now = sorted(candidates, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+        sorted_now, spatial_diag = _apply_spatial_cluster_penalty(sorted_now, spatial_cfg)
+        candidates[:] = sorted_now
+
+    ordered = sorted(candidates, key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    for i, cand in enumerate(ordered, start=1):
+        cand["final_rank_position"] = i
+        cand["top_decision_source"] = "stage3_pairwise_adjusted_score"
+        cand["was_reordered_by_tiebreak"] = False
+
+    raw_std = float(pd.Series(score_values).std(ddof=0)) if score_values else 0.0
+    final_std = float(pd.Series([float(c.get("score", 0.0)) for c in candidates]).std(ddof=0)) if candidates else 0.0
+    return {
+        "aggregation_type": agg_type,
+        "committee_weighting_mode": str(aggregator_config.get("weighting_mode", "yaml_normalized")),
+        "fusion_mode": str(aggregator_config.get("fusion_mode", "weighted_rank_fusion")),
+        "raw_score_std": raw_std,
+        "final_score_std": final_std,
+        "collapsed_score_flag": bool(final_std < 1e-12),
+        "spatial_postprocess_applied": bool(spatial_diag.get("applied", False)),
+        "spatial_postprocess_method": str(spatial_diag.get("method", "spatial_penalty")),
+        "spatial_postprocess_top_m": int(spatial_diag.get("top_m", _safe_top_m(5))),
+        "fallback_reason": fallback_reason,
+        "no_informative_modules": bool(all(int(c.get("active_module_count", 0)) == 0 for c in candidates)),
+    }
+
+
+def solve_joint_assignment(
+    target_numbers: List[int],
+    unopened_cells: List[Cell],
+    cost_matrix: List[List[float]],
+    assignment_mode: str = "exact",
+) -> Tuple[Dict[int, Cell], str]:
+    if assignment_mode == "exact" and linear_sum_assignment is not None:
+        import numpy as np
+
+        arr = np.array(cost_matrix, dtype=float)
+        rows, cols = linear_sum_assignment(arr)
+        return {int(target_numbers[r]): unopened_cells[int(c)] for r, c in zip(rows, cols)}, "exact"
+
+    assigned: Dict[int, Cell] = {}
+    used: set[Cell] = set()
+    for i, t in enumerate(target_numbers):
+        best_cell = None
+        best_cost = float("inf")
+        for j, cell in enumerate(unopened_cells):
+            if cell in used:
+                continue
+            c = float(cost_matrix[i][j])
+            if c < best_cost:
+                best_cost = c
+                best_cell = cell
+        if best_cell is None:
+            continue
+        assigned[int(t)] = best_cell
+        used.add(best_cell)
+    return assigned, "greedy"
+
+
+def run_multi_target_inference(
+    board: List[List[int]],
+    target_numbers: List[int],
+    source: str,
+) -> Dict[str, Any]:
+    per_target = [_run_inference_detailed(board, t, source=source, apply_reranker_stage=False) for t in target_numbers]
+    unopened = [(r, c) for r, row in enumerate(board) for c, v in enumerate(row) if v == -1]
+    cost_matrix: List[List[float]] = []
+    duplicate_before = 0
+    top1_cells: List[Tuple[int, int]] = []
+    for out in per_target:
+        cells = out.get("candidate_cells", [])
+        if cells:
+            top1_cells.append((int(cells[0]["row"]) - 1, int(cells[0]["col"]) - 1))
+        row_costs = []
+        for cell in unopened:
+            found = next((c for c in cells if int(c["row"]) - 1 == cell[0] and int(c["col"]) - 1 == cell[1]), None)
+            score = float(found.get("score", 0.0)) if found else -1e9
+            row_costs.append(-score)
+        cost_matrix.append(row_costs)
+    duplicate_before = len(top1_cells) - len(set(top1_cells))
+
+    assignment, mode = solve_joint_assignment(target_numbers, unopened, cost_matrix, assignment_mode="exact")
+    assignments = []
+    for t in target_numbers:
+        cell = assignment[int(t)]
+        assignments.append(
+            {
+                "target_number": int(t),
+                "row": int(cell[0] + 1),
+                "col": int(cell[1] + 1),
+                "was_reassigned_from_individual_top1": (cell not in set(top1_cells)),
+            }
+        )
+    duplicate_after = len(assignments) - len({(a["row"], a["col"]) for a in assignments})
+    return {
+        "status": "ok",
+        "assignments": assignments,
+        "metadata": {
+            "assignment_mode": mode,
+            "duplicate_top1_count_before_assignment": int(duplicate_before),
+            "duplicate_top1_count_after_assignment": int(duplicate_after),
+        },
+    }
 
 
 def map_best_confidence_1_100(
@@ -610,6 +828,8 @@ def _run_inference_detailed(
 
     candidates = build_cell_candidates(parsed.unopened_cells)
     aggregator_cfg = aggregator_config or load_aggregator_config()
+    if str(aggregator_cfg.get("type", "committee_weighted_sum")) == "committee_weighted_sum":
+        _validate_committee_stage1_modules(module_weights or load_module_weights())
     scored, weights, module_explanations = score_candidates(
         board,
         candidates,
@@ -619,6 +839,7 @@ def _run_inference_detailed(
         normalization_mode=str(aggregator_cfg.get("normalization_mode", "disabled")),
     )
 
+    agg_diag = aggregate_candidate_scores(scored, weights, aggregator_cfg)
     ranked = rank_candidates(scored)
     best = ranked[0]
     margin_to_top2 = 0.0 if len(ranked) <= 1 else max(0.0, float(ranked[0]["score"]) - float(ranked[1]["score"]))
@@ -647,7 +868,24 @@ def _run_inference_detailed(
             "module_details": cell.get("module_details", {}) if include_module_details else {},
             "zone_type": cell_profile.get("zone_type", "unknown"),
             "final_rank": int(idx),
+            "module_effective_weights": cell.get("module_effective_weights", {}),
+            "active_module_count": int(cell.get("active_module_count", 0)),
+            "stage1_base_score": float(cell.get("stage1_base_score", cell.get("score", 0.0))),
+            "assignment_delta": float(cell.get("assignment_delta", 0.0)),
+            "assignment_penalty": float(cell.get("assignment_penalty", 0.0)),
+            "pairwise_delta": float(cell.get("pairwise_delta", 0.0)),
+            "pairwise_penalty": float(cell.get("pairwise_penalty", 0.0)),
+            "score_chain": cell.get("score_chain", {}),
+            "final_score": float(cell.get("score", 0.0)),
+            "spatial_cluster_penalty": float(cell.get("spatial_cluster_penalty", 0.0)),
+            "target_sensitive_score": float(cell.get("target_sensitive_score", 0.0)),
+            "mean_score": float(cell.get("mean_score", 0.0)),
+            "rrf_score": float(cell.get("rrf_score", 0.0)),
+            "top1_vote_count": int(cell.get("top1_vote_count", 0)),
         }
+        for k, v in cell.items():
+            if k.startswith("module_") and (k.endswith("_is_top1") or k.endswith("_is_top3") or k.endswith("_rank")):
+                payload[k] = v
         candidate_cells.append(payload)
 
     reasoning = build_explanation(
@@ -670,10 +908,16 @@ def _run_inference_detailed(
     }
 
     trained_ranker_cfg = load_trained_ranker_config()
-    if bool(trained_ranker_cfg.get("enabled", False)):
+    if apply_reranker_stage and bool(trained_ranker_cfg.get("enabled", False)):
         try:
             candidate_pairs = [(int(c["row"]) - 1, int(c["col"]) - 1) for c in baseline_candidate_cells]
-            scores = score_candidates_with_ranker(board=board, target_number=target_number, candidates=candidate_pairs)
+            scores, model_meta = score_candidates_with_ranker(
+                board=board,
+                target_number=target_number,
+                candidates=candidate_pairs,
+                strict_missing_artifact=bool(trained_ranker_cfg.get("strict_missing_artifact", True)),
+                registry_path=Path(str(trained_ranker_cfg.get("model_registry_path", "artifacts/model_registry.json"))),
+            )
             for cand, score in zip(baseline_candidate_cells, scores):
                 cand["trained_ranker_score"] = float(score)
             baseline_candidate_cells.sort(key=lambda x: float(x.get("trained_ranker_score", 0.0)), reverse=True)
@@ -684,15 +928,17 @@ def _run_inference_detailed(
                 "reranker_version": "main_ranker_v1",
                 "reranker_feature_schema_version": "main_ranker_v1",
                 "reranker_fallback_reason": None,
+                "model_meta": model_meta,
             }
         except MainRankerError as exc:
-            if bool(trained_ranker_cfg.get("strict_artifact", False)):
+            if bool(trained_ranker_cfg.get("strict_missing_artifact", False)):
                 raise InferenceError(f"trained_ranker_strict_mode: {exc}") from exc
             rerank_meta = {
                 "ranking_stage": "baseline_only",
                 "reranker_version": None,
                 "reranker_feature_schema_version": None,
                 "reranker_fallback_reason": f"trained_ranker_missing:{exc}",
+                "model_meta": {"model_used": "none"},
             }
 
     if apply_reranker_stage and bool(trained_ranker_cfg.get("apply_heuristic_rerank_after_model", True)):
@@ -756,6 +1002,22 @@ def _run_inference_detailed(
             "reranker_version": rerank_meta["reranker_version"],
             "reranker_feature_schema_version": rerank_meta["reranker_feature_schema_version"],
             "reranker_fallback_reason": rerank_meta["reranker_fallback_reason"],
+            "model_strategy": rerank_meta.get("model_meta", {}).get("model_strategy"),
+            "model_used": rerank_meta.get("model_meta", {}).get("model_used"),
+            "size_class": rerank_meta.get("model_meta", {}).get("size_class"),
+            "fallback_used": rerank_meta.get("model_meta", {}).get("fallback_used"),
+            "fallback_reason": rerank_meta.get("model_meta", {}).get("fallback_reason"),
+            "aggregation_type": agg_diag.get("aggregation_type"),
+            "fusion_mode": agg_diag.get("fusion_mode"),
+            "committee_weighting_mode": agg_diag.get("committee_weighting_mode"),
+            "spatial_postprocess_enabled": bool((aggregator_cfg.get("spatial_postprocess", {}) or {}).get("enabled", False)),
+            "spatial_postprocess_applied": agg_diag.get("spatial_postprocess_applied", False),
+            "spatial_postprocess_method": agg_diag.get("spatial_postprocess_method", "spatial_penalty"),
+            "spatial_postprocess_top_m": agg_diag.get("spatial_postprocess_top_m", _safe_top_m(5)),
+            "final_top1_cell": (best_cell_payload["row"] - 1, best_cell_payload["col"] - 1),
+            "judge_artifact_path": aggregator_cfg.get("judge_artifact_path") or (aggregator_cfg.get("judge", {}) if isinstance(aggregator_cfg.get("judge", {}), dict) else {}).get("artifact_path"),
+            "fallback_reason": agg_diag.get("fallback_reason") or rerank_meta.get("model_meta", {}).get("fallback_reason"),
+            "no_informative_modules": bool(agg_diag.get("no_informative_modules", False)),
         },
     }
 
