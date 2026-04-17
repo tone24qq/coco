@@ -1,0 +1,15 @@
+{
+  "split_mode": "by_lineage",
+  "train_real_rows": 144768,
+  "train_synth_rows": 0,
+  "valid_real_rows": 14976,
+  "valid_synth_rows": 0,
+  "holdout_real_rows": 44928,
+  "holdout_synth_rows": 0,
+  "train_real_groups": 5104,
+  "valid_real_groups": 528,
+  "holdout_real_groups": 1584,
+  "valid_real_only": true,
+  "holdout_real_only": true,
+  "exclude_synth_from_valid": true
+}

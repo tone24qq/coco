@@ -19,11 +19,12 @@ from src.safe_io import read_dataset_auto  # noqa: E402
 
 
 def _run(cmd: list[str]) -> None:
+    if cmd and cmd[0] == "python":
+        cmd = [sys.executable, *cmd[1:]]
     print("$", " ".join(cmd))
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    subprocess.run(cmd, check=True, env=env)
-
+    subprocess.run(cmd, check=True, env=env, cwd=str(ROOT))
 
 def _train_one(
     train: Path,

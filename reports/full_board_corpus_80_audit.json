@@ -16,7 +16,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:刮刮卡製作 1:80刮:3:2:8x10",
-      "preview": "reports\\root_xlsx_previews\\_1__80___r3_c2__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_1__80___r3_c2__8x10.txt"
     },
     {
       "file": "樣本1.xlsx",
@@ -26,7 +26,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本1:Sheet22:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_1__Sheet22__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_1__Sheet22__r2_c1__8x10.txt"
     },
     {
       "file": "樣本1.xlsx",
@@ -36,7 +36,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本1:Sheet23:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_1__Sheet23__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_1__Sheet23__r2_c1__8x10.txt"
     },
     {
       "file": "樣本1.xlsx",
@@ -46,7 +46,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本1:Sheet24:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_1__Sheet24__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_1__Sheet24__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -56,7 +56,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet1:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet1__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet1__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -66,7 +66,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet2:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet2__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet2__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -76,7 +76,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet3:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet3__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet3__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -86,7 +86,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet4:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet4__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet4__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -96,7 +96,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet5:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet5__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet5__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -106,7 +106,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet6:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet6__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet6__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -116,7 +116,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet7:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet7__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet7__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -126,7 +126,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet8:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet8__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet8__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -136,7 +136,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet9:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet9__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet9__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -146,7 +146,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet10:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet10__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet10__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -156,7 +156,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet11:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet11__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet11__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -166,7 +166,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet12:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet12__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet12__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -176,7 +176,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet13:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet13__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet13__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -186,7 +186,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet14:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet14__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet14__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -196,7 +196,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet15:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet15__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet15__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -206,7 +206,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet16:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet16__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet16__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -216,7 +216,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet17:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet17__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet17__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -226,7 +226,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet18:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet18__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet18__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -236,7 +236,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet19:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet19__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet19__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -246,7 +246,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet20:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet20__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet20__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -256,7 +256,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet26:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet26__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet26__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -266,7 +266,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet27:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet27__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet27__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -276,7 +276,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet28:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet28__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet28__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -286,7 +286,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet29:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet29__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet29__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -296,7 +296,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet30:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet30__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet30__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -306,7 +306,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet31:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet31__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet31__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -316,7 +316,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet32:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet32__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet32__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -326,7 +326,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet34:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet34__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet34__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -336,7 +336,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet36:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet36__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet36__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -346,7 +346,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet37:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet37__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet37__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -356,7 +356,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet38:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet38__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet38__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -366,7 +366,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet39:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet39__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet39__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -376,7 +376,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet40:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet40__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet40__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -386,7 +386,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet41:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet41__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet41__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -396,7 +396,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet42:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet42__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet42__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -406,7 +406,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet43:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet43__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet43__r2_c1__8x10.txt"
     },
     {
       "file": "樣本2.xlsx",
@@ -416,7 +416,7 @@
       "rows": 8,
       "cols": 10,
       "board_id": "xlsx:樣本2:Sheet45:2:1:8x10",
-      "preview": "reports\\root_xlsx_previews\\_2__Sheet45__r2_c1__8x10.txt"
+      "preview": "reports\\root_xlsx_previews_80\\_2__Sheet45__r2_c1__8x10.txt"
     }
   ],
   "rejected": [
@@ -800,5 +800,5 @@
     }
   ],
   "board_count": 41,
-  "output": "data\\full_boards\\full_board_corpus_80.jsonl"
+  "output": "data\\full_boards\\full_board_corpus.jsonl"
 }
