@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import joblib
 
 from src.ranking_features import build_candidate_feature_rows
+from src.whole_board_features import is_dynamic_optional_feature_column
 
 
 class MainRankerError(ValueError):
@@ -132,9 +133,10 @@ def score_candidates_with_ranker(
         target_number=target_number,
     )
     missing = sorted({col for row in feat_rows for col in feature_columns if col not in row})
-    if missing:
-        raise MainRankerError(f"feature schema mismatch: missing columns {missing[:8]}")
-    x = [[float(row[col]) for col in feature_columns] for row in feat_rows]
+    hard_missing = [c for c in missing if not is_dynamic_optional_feature_column(c)]
+    if hard_missing:
+        raise MainRankerError(f"feature schema mismatch: missing columns {hard_missing[:8]}")
+    x = [[float(row.get(col, 0.0)) for col in feature_columns] for row in feat_rows]
 
     if hasattr(model, "predict_proba"):
         scores = model.predict_proba(x)[:, 1].tolist()

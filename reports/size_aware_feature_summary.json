@@ -1,0 +1,11 @@
+{
+  "schema_strategy": "unified_schema_with_dynamic_optional_bins",
+  "size_class_summary": {
+    "8x10": {
+      "rows": 369408,
+      "candidate_groups": 13024,
+      "effective_feature_count": 172
+    }
+  },
+  "primary_feature_count": 172
+}
