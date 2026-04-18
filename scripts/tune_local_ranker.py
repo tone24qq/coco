@@ -94,6 +94,7 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--max-file-mb", type=int, default=100)
     parser.add_argument("--trial-timeout-sec", type=int, default=0)
+    parser.add_argument("--feature-schema", default="")
     args = parser.parse_args()
     print("[調參進度 5%] 參數解析完成，準備初始化調參流程。")
 
@@ -154,7 +155,9 @@ def main() -> None:
             continue
         t0 = time.time()
         try:
-            _, _, run = train_once(train_df, valid_real_df, holdout_real_df, backend, params, args.max_workers)
+            _, _, run = train_once(
+                train_df, valid_real_df, holdout_real_df, backend, params, args.max_workers, args.feature_schema
+            )
         except Exception:
             if args.strict:
                 raise
@@ -204,7 +207,15 @@ def main() -> None:
     valid_for_train = valid_df.copy()
     valid_for_train["group_id"] = valid_for_train["group_id"].map(lambda x: f"valid::{x}")
     train_valid = pd.concat([train_df, valid_for_train], ignore_index=True)
-    model, feature_columns, final_run = train_once(train_valid, valid_real_df, holdout_real_df, backend, best_params, args.max_workers)
+    model, feature_columns, final_run = train_once(
+        train_valid,
+        valid_real_df,
+        holdout_real_df,
+        backend,
+        best_params,
+        args.max_workers,
+        args.feature_schema,
+    )
 
     artifacts_dir = Path(args.artifacts_dir)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -215,6 +226,8 @@ def main() -> None:
     meta = {
         "size_class": args.size_class or "global",
         "backend": backend,
+        "feature_schema_version": "whole_board_features_v3_refactored",
+        "new_primary_feature_count": len(feature_columns),
         "feature_columns": feature_columns,
         "params": best_params,
         "train_rows": int(len(train_valid)),
@@ -264,6 +277,7 @@ def main() -> None:
         "holdout_contains_synth": bool(("source_type" in holdout_df.columns) and (holdout_df["source_type"] == "synthetic").any()),
         "size_class": args.size_class or "global",
         "backend_used": backend,
+        "new_primary_feature_count": len(feature_columns),
         "interrupted": INTERRUPTED,
     }
     (report_dir / "tuning_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

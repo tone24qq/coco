@@ -8,8 +8,8 @@ def test_whole_board_features_have_expected_keys() -> None:
     board = [[1, -1], [3, 4]]
     state = compute_board_state_features(board, target_number=2)
     delta = compute_candidate_delta_features(board, target_number=2, cand_row=0, cand_col=1, board_state_features=state)
-    assert "known_ratio" in state
-    assert "delta_known_ratio" in delta
+    assert "residue_global_entropy" in state
+    assert "residue_same_tail_count_local5x5" in delta
     assert delta["is_feasible"] == 1.0
 
 
