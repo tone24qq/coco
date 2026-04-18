@@ -5,12 +5,13 @@ import json
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from openpyxl import load_workbook
 
-ALLOWED_SHAPES: Tuple[Tuple[int, int], ...] = ((8, 10), (10, 8))
 DIGIT_RE = re.compile(r"^\d+$")
+SIZE_HINT_RE = re.compile(r"(?<!\d)(\d{1,2})\s*[xX]\s*(\d{1,2})(?!\d)")
+COMMON_SHAPES: Tuple[Tuple[int, int], ...] = ((4, 5), (6, 10), (8, 10), (10, 10), (10, 12), (10, 16))
 
 
 def read_sheet_as_strings(ws) -> List[List[str]]:
@@ -23,17 +24,12 @@ def read_sheet_as_strings(ws) -> List[List[str]]:
     return [r + [""] * (width - len(r)) for r in table]
 
 
-
 def normalize_token(raw: str) -> str:
-    s = (raw or "")
-    s = s.strip().upper()
+    s = (raw or "").strip().upper()
     s = s.replace("O", "0").replace("I", "1")
-    if s.endswith(".0"):
-        head = s[:-2]
-        if DIGIT_RE.fullmatch(head):
-            s = head
+    if s.endswith(".0") and DIGIT_RE.fullmatch(s[:-2]):
+        s = s[:-2]
     return s
-
 
 
 def parse_int_token(raw: str) -> Optional[int]:
@@ -46,10 +42,23 @@ def parse_int_token(raw: str) -> Optional[int]:
         return None
 
 
+def board_signature(grid: Sequence[Sequence[int]]) -> str:
+    return ",".join(str(v) for row in grid for v in row)
 
-def is_full_permutation(flat: Sequence[int], n: int) -> bool:
-    return len(flat) == n and sorted(flat) == list(range(1, n + 1))
 
+def validate_full_permutation(flat: Sequence[int], n: int) -> Tuple[bool, str]:
+    if len(flat) != n:
+        return False, "length_mismatch"
+    missing = sorted(set(range(1, n + 1)) - set(flat))
+    duplicates = sorted(v for v, cnt in Counter(flat).items() if cnt > 1)
+    out_of_range = sorted(v for v in flat if v < 1 or v > n)
+    if out_of_range:
+        return False, f"out_of_range_values:{out_of_range[:8]}"
+    if duplicates:
+        return False, f"duplicate_values:{duplicates[:8]}"
+    if missing:
+        return False, f"missing_values:{missing[:8]}"
+    return True, "ok"
 
 
 def matrix_to_visual(table: Sequence[Sequence[str]]) -> str:
@@ -76,60 +85,123 @@ def matrix_to_visual(table: Sequence[Sequence[str]]) -> str:
     return "\n".join(lines)
 
 
-
 def extract_submatrix(table: Sequence[Sequence[str]], top: int, left: int, rows: int, cols: int) -> List[List[str]]:
-    return [list(r[left:left + cols]) for r in table[top:top + rows]]
+    return [list(r[left : left + cols]) for r in table[top : top + rows]]
 
 
-
-def try_parse_board(sub: Sequence[Sequence[str]], rows: int, cols: int) -> Optional[List[List[int]]]:
+def try_parse_board(sub: Sequence[Sequence[str]], rows: int, cols: int) -> Tuple[Optional[List[List[int]]], str]:
     if len(sub) != rows:
-        return None
+        return None, "rows_mismatch"
     out: List[List[int]] = []
-    for row in sub:
+    non_int_cells: List[str] = []
+    for ridx, row in enumerate(sub, start=1):
         if len(row) != cols:
-            return None
+            return None, "cols_mismatch"
         parsed_row: List[int] = []
-        for cell in row:
+        for cidx, cell in enumerate(row, start=1):
             value = parse_int_token(cell)
             if value is None:
-                return None
+                non_int_cells.append(f"R{ridx}C{cidx}")
+                parsed_row.append(-999999)
+                continue
             parsed_row.append(value)
         out.append(parsed_row)
+
+    if non_int_cells:
+        return None, f"non_integer_cells:{non_int_cells[:6]}"
+
     flat = [v for row in out for v in row]
-    if not is_full_permutation(flat, rows * cols):
-        return None
+    ok, reason = validate_full_permutation(flat, rows * cols)
+    if not ok:
+        return None, reason
+    return out, "ok"
+
+
+def _factor_shapes(n: int) -> List[Tuple[int, int]]:
+    out: List[Tuple[int, int]] = []
+    if n <= 0:
+        return out
+    for r in range(2, int(n**0.5) + 1):
+        if n % r == 0:
+            c = n // r
+            out.append((r, c))
+            out.append((c, r))
     return out
 
 
+def _shapes_from_filename(name: str) -> List[Tuple[int, int]]:
+    found: List[Tuple[int, int]] = []
+    for m in SIZE_HINT_RE.finditer(name):
+        shape = (int(m.group(1)), int(m.group(2)))
+        if shape not in found:
+            found.append(shape)
+    return found
 
-def scan_sheet_for_boards(table: Sequence[Sequence[str]], shapes: Sequence[Tuple[int, int]]) -> Iterable[Tuple[int, int, int, int, List[List[int]]]]:
+
+def _infer_shapes(table: Sequence[Sequence[str]], filename: str) -> List[Tuple[int, int]]:
+    sheet_rows = len(table)
+    sheet_cols = max((len(r) for r in table), default=0)
+
+    int_values: List[int] = []
+    for row in table:
+        for cell in row:
+            v = parse_int_token(cell)
+            if v is not None and v > 0:
+                int_values.append(v)
+
+    inferred: List[Tuple[int, int]] = []
+    for n in {max(int_values) if int_values else 0, len(int_values)}:
+        for shape in _factor_shapes(n):
+            if shape not in inferred:
+                inferred.append(shape)
+
+    merged: List[Tuple[int, int]] = []
+    for shape in _shapes_from_filename(filename) + list(COMMON_SHAPES) + inferred:
+        r, c = shape
+        if r < 2 or c < 2:
+            continue
+        if r > sheet_rows or c > sheet_cols:
+            continue
+        if shape not in merged:
+            merged.append(shape)
+    return merged
+
+
+def scan_sheet_for_boards(
+    table: Sequence[Sequence[str]],
+    shapes: Sequence[Tuple[int, int]],
+) -> Tuple[List[Tuple[int, int, int, int, List[List[int]]]], Counter[str]]:
     if not table:
-        return
+        return [], Counter({"empty_sheet": 1})
+
     total_rows = len(table)
     total_cols = max(len(r) for r in table)
     seen_grids = set()
+    found: List[Tuple[int, int, int, int, List[List[int]]]] = []
+    rejects: Counter[str] = Counter()
+
     for rows, cols in shapes:
         if total_rows < rows or total_cols < cols:
             continue
         for top in range(total_rows - rows + 1):
             for left in range(total_cols - cols + 1):
                 sub = extract_submatrix(table, top, left, rows, cols)
-                parsed = try_parse_board(sub, rows, cols)
+                parsed, reason = try_parse_board(sub, rows, cols)
                 if parsed is None:
+                    rejects[f"{rows}x{cols}:{reason}"] += 1
                     continue
-                key = tuple(tuple(r) for r in parsed)
+                key = (rows, cols, board_signature(parsed))
                 if key in seen_grids:
+                    rejects[f"{rows}x{cols}:duplicate_within_sheet"] += 1
                     continue
                 seen_grids.add(key)
-                yield top, left, rows, cols, parsed
-
+                found.append((top, left, rows, cols, parsed))
+    return found, rejects
 
 
 def preview_filename(xlsx_name: str, sheet_name: str, top: int, left: int, rows: int, cols: int) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", f"{Path(xlsx_name).stem}__{sheet_name}__r{top+1}_c{left+1}__{rows}x{cols}")
     return safe + ".txt"
-
 
 
 def build_corpus(input_dir: Path, preview_dir: Optional[Path]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -143,6 +215,7 @@ def build_corpus(input_dir: Path, preview_dir: Optional[Path]) -> Tuple[List[Dic
         "rejected": [],
         "size_counts": {},
         "errors": [],
+        "files": [],
     }
     seen_board_keys = set()
 
@@ -157,6 +230,8 @@ def build_corpus(input_dir: Path, preview_dir: Optional[Path]) -> Tuple[List[Dic
             continue
 
         file_hits = 0
+        file_report: Dict[str, Any] = {"file": xlsx_path.name, "sheets": [], "accepted_total": 0, "rejected_total": 0}
+
         for sheet_index, sheet_name in enumerate(wb.sheetnames, start=1):
             ws = wb[sheet_name]
             try:
@@ -165,18 +240,25 @@ def build_corpus(input_dir: Path, preview_dir: Optional[Path]) -> Tuple[List[Dic
                 audit["errors"].append({"file": xlsx_path.name, "sheet": sheet_name, "error": f"read_failed: {exc}"})
                 continue
 
+            inferred_shapes = _infer_shapes(table, xlsx_path.name)
+            found_boards, reject_reasons = scan_sheet_for_boards(table, inferred_shapes)
             sheet_hits = 0
-            for top, left, rows, cols, grid in scan_sheet_for_boards(table, ALLOWED_SHAPES):
-                board_key = tuple(tuple(r) for r in grid)
+            sheet_rejects = int(sum(reject_reasons.values()))
+
+            for top, left, rows, cols, grid in found_boards:
+                board_key = (rows, cols, board_signature(grid))
                 if board_key in seen_board_keys:
+                    sheet_rejects += 1
                     continue
                 seen_board_keys.add(board_key)
+
                 board_id = f"xlsx:{xlsx_path.stem}:{sheet_name}:{top+1}:{left+1}:{rows}x{cols}"
                 record = {
                     "board_id": board_id,
                     "rows": rows,
                     "cols": cols,
                     "size_class": f"{rows}x{cols}",
+                    "board_size": rows * cols,
                     "grid": grid,
                     "source": "root_xlsx_import",
                     "source_file": xlsx_path.name,
@@ -219,24 +301,39 @@ def build_corpus(input_dir: Path, preview_dir: Optional[Path]) -> Tuple[List[Dic
                     {
                         "file": xlsx_path.name,
                         "sheet": sheet_name,
-                        "reason": "no_8x10_or_10x8_full_permutation_found",
+                        "reason": "no_valid_full_permutation_found_for_inferred_shapes",
+                        "inferred_shapes": [f"{r}x{c}" for r, c in inferred_shapes],
+                        "top_rejected_reasons": reject_reasons.most_common(10),
                     }
                 )
 
+            file_report["sheets"].append(
+                {
+                    "sheet_name": sheet_name,
+                    "inferred_shapes": [f"{r}x{c}" for r, c in inferred_shapes],
+                    "accepted_boards": sheet_hits,
+                    "rejected_windows": sheet_rejects,
+                    "top_rejected_reasons": reject_reasons.most_common(10),
+                }
+            )
+            file_report["accepted_total"] += sheet_hits
+            file_report["rejected_total"] += sheet_rejects
+
         if file_hits == 0:
-            audit["errors"].append({"file": xlsx_path.name, "error": "no_valid_80_board_found_in_file"})
+            audit["errors"].append({"file": xlsx_path.name, "error": "no_valid_permutation_board_found_in_file"})
+
+        audit["files"].append(file_report)
 
     audit["size_counts"] = dict(size_counts)
     audit["board_count"] = len(records)
     return records, audit
 
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build 80-scratch-board corpus from root xlsx files.")
+    parser = argparse.ArgumentParser(description="Build multi-size board corpus from root xlsx files.")
     parser.add_argument("--input-dir", default=".")
     parser.add_argument("--output", default="data/full_boards/full_board_corpus_80.jsonl")
-    parser.add_argument("--audit", default="reports/full_board_corpus_80_audit.json")
+    parser.add_argument("--audit", default="reports/full_board_corpus_audit.json")
     parser.add_argument("--preview-dir", default="reports/root_xlsx_previews")
     args = parser.parse_args()
 
