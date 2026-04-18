@@ -165,6 +165,102 @@ def _validate_committee_stage1_modules(weights: Dict[str, float]) -> None:
         raise InferenceError("committee stage-1 must use structural_consistency instead of directional/line modules")
 
 
+def _aggregation_policy(config: Optional[Dict[str, object]]) -> Dict[str, object]:
+    cfg = dict(config or {})
+    contribution_mode = str(cfg.get("contribution_mode", cfg.get("type", "committee_weighted_sum")))
+    if contribution_mode == "committee_weighted_sum":
+        contribution_mode = "weighted_sum"
+    use_centered = bool(cfg.get("use_centered_score", False)) or contribution_mode == "centered_weighted_sum"
+    return {
+        "contribution_mode": "centered_weighted_sum" if use_centered else "weighted_sum",
+        "weighting_mode": str(cfg.get("weighting_mode", "yaml_normalized")),
+        "confidence_gate_threshold": float(cfg.get("confidence_gate_threshold", 0.5)),
+        "low_confidence_weight_multiplier": float(cfg.get("low_confidence_weight_multiplier", 0.2)),
+        "abstain_below_threshold": bool(cfg.get("abstain_below_threshold", False)),
+        "use_centered_score": bool(use_centered),
+    }
+
+
+def _normalize_effective_weights(active: Dict[str, float], weighting_mode: str) -> Dict[str, float]:
+    if not active:
+        return {}
+    if weighting_mode == "equal_informative":
+        return {m: 1.0 / len(active) for m in active}
+    total = sum(max(0.0, w) for w in active.values())
+    return {m: (max(0.0, w) / total if total > 0 else 1.0 / max(1, len(active))) for m, w in active.items()}
+
+
+def _compute_stage1_from_modules(
+    module_scores: Dict[str, object],
+    module_informative: Dict[str, object],
+    module_weights: Dict[str, float],
+    aggregator_config: Optional[Dict[str, object]],
+    allowed_modules: Optional[List[str]] = None,
+) -> Dict[str, object]:
+    policy = _aggregation_policy(aggregator_config)
+    considered_scores = {
+        m: float(module_scores.get(m, 0.0))
+        for m in module_scores
+        if allowed_modules is None or m in set(allowed_modules)
+    }
+    informative_active = {
+        m: float(module_weights.get(m, 0.0))
+        for m in considered_scores
+        if float(module_informative.get(m, 1.0)) > 0
+    }
+    has_inf_map = isinstance(module_informative, dict) and bool(module_informative)
+    if not informative_active and has_inf_map:
+        base_active: Dict[str, float] = {}
+    else:
+        base_active = informative_active or {
+            m: float(module_weights.get(m, 0.0))
+            for m in considered_scores
+        }
+
+    thr = float(policy["confidence_gate_threshold"])
+    low_mult = float(policy["low_confidence_weight_multiplier"])
+    abstain = bool(policy["abstain_below_threshold"])
+    gating_mode = "hard" if abstain else ("soft" if low_mult < 1.0 and thr > 0 else "none")
+    eligible = dict(base_active)
+    abstained_modules: List[str] = []
+    if gating_mode == "hard":
+        eligible = {m: w for m, w in base_active.items() if float(considered_scores.get(m, 0.0)) > thr}
+        abstained_modules = sorted(set(base_active.keys()) - set(eligible.keys()))
+
+    eff = _normalize_effective_weights(eligible, str(policy["weighting_mode"]))
+    contribution_map: Dict[str, float] = {}
+    active_count = 0
+    if eff:
+        for m, w in eff.items():
+            s = float(considered_scores.get(m, 0.0))
+            effective_w = float(w)
+            if gating_mode == "soft" and s <= thr:
+                effective_w *= low_mult
+            if bool(policy["use_centered_score"]):
+                contribution = (s - 0.5) * effective_w
+            else:
+                contribution = s * effective_w
+            contribution_map[m] = float(contribution)
+            if abs(contribution) > 1e-12:
+                active_count += 1
+
+    if bool(policy["use_centered_score"]):
+        base_score = 0.5 + float(sum(contribution_map.values()))
+    else:
+        base_score = 0.5 if not contribution_map else float(sum(contribution_map.values()))
+
+    return {
+        "base_score": float(base_score),
+        "effective_weights": eff,
+        "contribution_map": contribution_map,
+        "active_module_count": int(active_count),
+        "abstain_module_count": int(len(abstained_modules)),
+        "considered_module_count": int(len(base_active)),
+        "abstained_modules": abstained_modules,
+        "policy": policy,
+    }
+
+
 def score_candidates_raw(
     board: List[List[int]],
     candidates: List[Dict[str, object]],
@@ -172,6 +268,7 @@ def score_candidates_raw(
     module_weights: Optional[Dict[str, float]] = None,
     module_settings: Optional[Dict[str, Dict[str, object]]] = None,
     normalization_mode: str = "disabled",
+    aggregator_config: Optional[Dict[str, object]] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, float], List[str]]:
     weights = module_weights or load_module_weights()
     settings = module_settings if module_settings is not None else load_module_settings()
@@ -297,16 +394,19 @@ def score_candidates_raw(
         missing_seed_modules = [m for m in pairwise_seed_modules if m not in known_modules]
         if missing_seed_modules:
             raise InferenceError(f"pairwise_seed_modules contain unknown modules: {missing_seed_modules}")
-        seed_weight_sum = sum(float(weights.get(m, 0.0)) for m in pairwise_seed_modules)
         seed_scores: Dict[Cell, float] = {}
         for c in candidates:
             cell = c["cell"]
-            v = 0.0
-            for m in pairwise_seed_modules:
-                v += float(c["module_scores"].get(m, 0.0)) * float(weights.get(m, 0.0))
-            seed_scores[cell] = v / max(seed_weight_sum, 1e-12)
+            agg = _compute_stage1_from_modules(
+                module_scores=(c.get("module_scores", {}) if isinstance(c.get("module_scores", {}), dict) else {}),
+                module_informative=(c.get("module_informative", {}) if isinstance(c.get("module_informative", {}), dict) else {}),
+                module_weights={m: float(weights.get(m, 0.0)) for m in pairwise_seed_modules},
+                aggregator_config=aggregator_config,
+                allowed_modules=pairwise_seed_modules,
+            )
+            seed_scores[cell] = float(agg["base_score"])
         seed_ranked = [cell for cell, _ in sorted(seed_scores.items(), key=lambda x: x[1], reverse=True)]
-        if seed_weight_sum > 0:
+        if pairwise_seed_modules:
             seed_top_n = int(settings.get(pairwise_name, {}).get("pairwise_seed_top_n", len(seed_ranked)))
             seed_ranked = seed_ranked[: max(1, seed_top_n)]
         else:
@@ -349,6 +449,7 @@ def _apply_stage2_adjustment_signals(
     target_number: int,
     module_settings: Optional[Dict[str, Dict[str, object]]] = None,
     stage1_weights: Optional[Dict[str, float]] = None,
+    aggregator_config: Optional[Dict[str, object]] = None,
 ) -> None:
     if not candidates:
         return
@@ -408,9 +509,13 @@ def _apply_stage2_adjustment_signals(
         if stage1_weights:
             ranked = sorted(
                 candidates,
-                key=lambda c: sum(
-                    float(c.get("module_scores", {}).get(m, 0.0)) * float(stage1_weights.get(m, 0.0))
-                    for m in stage1_weights
+                key=lambda c: float(
+                    _compute_stage1_from_modules(
+                        module_scores=(c.get("module_scores", {}) if isinstance(c.get("module_scores", {}), dict) else {}),
+                        module_informative=(c.get("module_informative", {}) if isinstance(c.get("module_informative", {}), dict) else {}),
+                        module_weights=stage1_weights,
+                        aggregator_config=aggregator_config,
+                    )["base_score"]
                 ),
                 reverse=True,
             )
@@ -433,6 +538,7 @@ def score_candidates(
     module_weights: Optional[Dict[str, float]] = None,
     module_settings: Optional[Dict[str, Dict[str, object]]] = None,
     normalization_mode: str = "disabled",
+    aggregator_config: Optional[Dict[str, object]] = None,
 ) -> Tuple[List[Dict[str, object]], Dict[str, float], List[str]]:
     return score_candidates_raw(
         board=board,
@@ -441,6 +547,7 @@ def score_candidates(
         module_weights=module_weights,
         module_settings=module_settings,
         normalization_mode=normalization_mode,
+        aggregator_config=aggregator_config,
     )
 
 
@@ -550,25 +657,22 @@ def aggregate_candidate_scores(
 ) -> Dict[str, object]:
     agg_type = str(aggregator_config.get("type", "committee_weighted_sum"))
     score_values: List[float] = []
+    abstain_total = 0
+    considered_total = 0
+    active_counts: List[int] = []
     for cand in candidates:
         ms = cand.get("module_scores", {}) if isinstance(cand.get("module_scores"), dict) else {}
         inf = cand.get("module_informative", {}) if isinstance(cand.get("module_informative"), dict) else {}
-        informative_active = {m: float(module_weights.get(m, 0.0)) for m in ms if float(inf.get(m, 1.0)) > 0}
-        has_inf_map = isinstance(inf, dict) and bool(inf)
-        if not informative_active and has_inf_map:
-            eff = {}
-        else:
-            active = informative_active or {m: float(module_weights.get(m, 0.0)) for m in ms}
-            wm = str(aggregator_config.get("weighting_mode", "yaml_normalized"))
-            if wm == "equal_informative" and active:
-                eff = {m: 1.0 / len(active) for m in active}
-            else:
-                s = sum(max(0.0, w) for w in active.values())
-                eff = {m: (max(0.0, w) / s if s > 0 else 1.0 / max(1, len(active))) for m, w in active.items()}
+        stage1 = _compute_stage1_from_modules(ms, inf, module_weights, aggregator_config)
+        eff = dict(stage1["effective_weights"])
         cand["module_effective_weights"] = eff
-        cand["active_module_count"] = len(eff)
+        cand["module_contributions"] = dict(stage1["contribution_map"])
+        cand["active_module_count"] = int(stage1["active_module_count"])
+        cand["abstain_module_count"] = int(stage1["abstain_module_count"])
+        cand["considered_module_count"] = int(stage1["considered_module_count"])
+        cand["abstained_modules"] = list(stage1["abstained_modules"])
 
-        base = 0.5 if not eff else sum(float(ms.get(m, 0.0)) * float(w) for m, w in eff.items())
+        base = float(stage1["base_score"])
         penalty = float(cand.get("module_details", {}).get("logic_rule", {}).get("local_contradiction_penalty", 0.0))
         score = base - 0.2 * penalty
         cand["stage1_base_score"] = score
@@ -582,6 +686,9 @@ def aggregate_candidate_scores(
         cand["target_sensitive_score"] = float(ms.get("logic_rule", score))
         cand["support_score"] = float(sum(ms.values()) / max(len(ms), 1)) if ms else score
         score_values.append(score)
+        abstain_total += int(cand["abstain_module_count"])
+        considered_total += int(cand["considered_module_count"])
+        active_counts.append(int(cand["active_module_count"]))
 
     fallback_reason = None
     if agg_type == "competitive_ensemble":
@@ -634,12 +741,23 @@ def aggregate_candidate_scores(
 
     raw_std = float(pd.Series(score_values).std(ddof=0)) if score_values else 0.0
     final_std = float(pd.Series([float(c.get("score", 0.0)) for c in candidates]).std(ddof=0)) if candidates else 0.0
+    active_mean = float(sum(active_counts) / max(len(active_counts), 1))
+    abstain_rate = float(abstain_total / max(considered_total, 1))
+    no_info_rate = float(sum(1 for c in candidates if int(c.get("active_module_count", 0)) == 0) / max(len(candidates), 1))
+    policy = _aggregation_policy(aggregator_config)
     return {
         "aggregation_type": agg_type,
         "committee_weighting_mode": str(aggregator_config.get("weighting_mode", "yaml_normalized")),
+        "contribution_mode": str(policy.get("contribution_mode", "weighted_sum")),
+        "confidence_gate_threshold": float(policy.get("confidence_gate_threshold", 0.5)),
+        "low_confidence_weight_multiplier": float(policy.get("low_confidence_weight_multiplier", 0.2)),
+        "abstain_below_threshold": bool(policy.get("abstain_below_threshold", False)),
         "fusion_mode": str(aggregator_config.get("fusion_mode", "weighted_rank_fusion")),
         "raw_score_std": raw_std,
         "final_score_std": final_std,
+        "active_module_count_mean": active_mean,
+        "abstain_rate": abstain_rate,
+        "no_informative_modules_rate": no_info_rate,
         "collapsed_score_flag": bool(final_std < 1e-12),
         "spatial_postprocess_applied": bool(spatial_diag.get("applied", False)),
         "spatial_postprocess_method": str(spatial_diag.get("method", "spatial_penalty")),
@@ -837,6 +955,7 @@ def _run_inference_detailed(
         module_weights=module_weights,
         module_settings=module_settings,
         normalization_mode=str(aggregator_cfg.get("normalization_mode", "disabled")),
+        aggregator_config=aggregator_cfg,
     )
 
     agg_diag = aggregate_candidate_scores(scored, weights, aggregator_cfg)
@@ -1008,8 +1127,17 @@ def _run_inference_detailed(
             "fallback_used": rerank_meta.get("model_meta", {}).get("fallback_used"),
             "fallback_reason": rerank_meta.get("model_meta", {}).get("fallback_reason"),
             "aggregation_type": agg_diag.get("aggregation_type"),
+            "contribution_mode": agg_diag.get("contribution_mode"),
             "fusion_mode": agg_diag.get("fusion_mode"),
             "committee_weighting_mode": agg_diag.get("committee_weighting_mode"),
+            "confidence_gate_threshold": agg_diag.get("confidence_gate_threshold"),
+            "low_confidence_weight_multiplier": agg_diag.get("low_confidence_weight_multiplier"),
+            "abstain_below_threshold": agg_diag.get("abstain_below_threshold"),
+            "active_module_count_mean": agg_diag.get("active_module_count_mean"),
+            "abstain_rate": agg_diag.get("abstain_rate"),
+            "no_informative_modules_rate": agg_diag.get("no_informative_modules_rate"),
+            "score_std": agg_diag.get("raw_score_std"),
+            "final_score_std": agg_diag.get("final_score_std"),
             "spatial_postprocess_enabled": bool((aggregator_cfg.get("spatial_postprocess", {}) or {}).get("enabled", False)),
             "spatial_postprocess_applied": agg_diag.get("spatial_postprocess_applied", False),
             "spatial_postprocess_method": agg_diag.get("spatial_postprocess_method", "spatial_penalty"),

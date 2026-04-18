@@ -1,0 +1,7 @@
+{
+  "threshold_std_eps": 1e-08,
+  "threshold_dominant_ratio": 0.999,
+  "near_constant_features": [
+    "candidate_delta_local5x5_same_tail_and_same_decade_count"
+  ]
+}
