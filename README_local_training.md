@@ -1,5 +1,10 @@
 # Local Multi-Size Training Pipeline（一條指令重訓）
 
+## Python 版本建議
+- 建議使用 **Python 3.11**（主線已驗證）。
+- `scripts/run_training_pipeline.py` 對 Python 3.14+ 預設會 fail-fast。
+- 若你要強制嘗試未驗證版本，可加：`--allow-unsupported-python`。
+
 ## 一條指令
 ```bash
 python scripts/run_training_pipeline.py \

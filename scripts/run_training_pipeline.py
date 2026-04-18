@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import json
 import os
 import subprocess
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict
 
@@ -17,11 +18,60 @@ from src.main_ranker import write_model_registry  # noqa: E402
 from src.safe_io import read_dataset_auto  # noqa: E402
 
 
-def _run(cmd: list[str]) -> None:
+STACK_OVERFLOW_CODES = {3221225725, -1073741571}
+
+
+def _enable_fault_handler() -> None:
+    os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+    try:
+        faulthandler.enable()
+    except Exception:
+        pass
+
+
+def _check_python_supported(allow_unsupported_python: bool) -> None:
+    current = sys.version_info
+    if (current.major, current.minor) >= (3, 14) and not allow_unsupported_python:
+        raise RuntimeError(
+            "training pipeline is not validated on Python 3.14+. "
+            "Please use Python 3.11 virtualenv, or pass --allow-unsupported-python to bypass."
+        )
+
+
+def _decode_exit_message(return_code: int) -> str:
+    if return_code in STACK_OVERFLOW_CODES:
+        return f"exit_code={return_code} (0xC00000FD stack overflow)"
+    return f"exit_code={return_code}"
+
+
+def _run(cmd: list[str], stage: str, debug_crash_report: bool, crash_state: Dict[str, Any]) -> None:
     print("$", " ".join(cmd))
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
-    subprocess.run(cmd, check=True, env=env)
+    env.setdefault("PYTHONFAULTHANDLER", "1")
+    res = subprocess.run(cmd, check=False, env=env, capture_output=True, text=True)
+    if res.stdout:
+        print(res.stdout, end="" if res.stdout.endswith("\n") else "\n")
+    if res.stderr:
+        print(res.stderr, end="" if res.stderr.endswith("\n") else "\n", file=sys.stderr)
+    if res.returncode != 0:
+        msg = f"[pipeline:{stage}] failed: {_decode_exit_message(res.returncode)}"
+        if debug_crash_report:
+            print(
+                json.dumps(
+                    {
+                        "stage": stage,
+                        "command": cmd,
+                        "crash_state": crash_state,
+                        "return_code": res.returncode,
+                        "decoded": _decode_exit_message(res.returncode),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                file=sys.stderr,
+            )
+        raise RuntimeError(msg)
 
 
 def _train_one(
@@ -32,6 +82,8 @@ def _train_one(
     size_class: str,
     max_workers: int,
     feature_schema: Path,
+    debug_crash_report: bool,
+    crash_state: Dict[str, Any],
 ) -> Dict[str, Any]:
     _run(
         [
@@ -51,7 +103,10 @@ def _train_one(
             str(max_workers),
             "--feature-schema",
             str(feature_schema),
-        ]
+        ],
+        stage=f"train:{size_class or 'global'}",
+        debug_crash_report=debug_crash_report,
+        crash_state=crash_state,
     )
     meta = json.loads((out_dir / "main_ranker_meta.json").read_text(encoding="utf-8"))
     return {
@@ -107,9 +162,14 @@ def main() -> None:
     parser.add_argument("--max-file-mb", type=int, default=100)
     parser.add_argument("--enable-inference", action="store_true")
     parser.add_argument("--max-workers", type=int, default=1)
+    parser.add_argument("--allow-unsupported-python", action="store_true")
+    parser.add_argument("--debug-crash-report", action="store_true")
     args = parser.parse_args()
+    _enable_fault_handler()
+    _check_python_supported(args.allow_unsupported_python)
 
     print("[主線訓練進度 5%] 參數解析完成，準備啟動資料建置。")
+    crash_state: Dict[str, Any] = {"stage": "bootstrap"}
 
     root = Path(args.output_root)
     full = root / "data/full_boards/full_board_corpus.jsonl"
@@ -120,6 +180,7 @@ def main() -> None:
     reports = root / "reports"
     feature_schema = artifacts / "feature_schema_residue.json"
 
+    crash_state["stage"] = "build_root_xlsx_corpus"
     _run(
         [
             "python",
@@ -132,12 +193,16 @@ def main() -> None:
             str(reports / "full_board_corpus_audit.json"),
             "--preview-dir",
             str(reports / "root_xlsx_previews"),
-        ]
+        ],
+        stage="build_root_xlsx_corpus",
+        debug_crash_report=args.debug_crash_report,
+        crash_state=crash_state,
     )
     print("[主線訓練進度 20%] 多尺寸真實盤面語料建置完成。")
 
     if args.generate_synthetic:
         profile = artifacts / "synthetic_generator_profile.json"
+        crash_state["stage"] = "fit_synthetic_profile"
         _run(
             [
                 "python",
@@ -146,8 +211,12 @@ def main() -> None:
                 str(full),
                 "--output",
                 str(profile),
-            ]
+            ],
+            stage="fit_synthetic_profile",
+            debug_crash_report=args.debug_crash_report,
+            crash_state=crash_state,
         )
+        crash_state["stage"] = "generate_synthetic"
         _run(
             [
                 "python",
@@ -162,27 +231,37 @@ def main() -> None:
                 str(args.per_real),
                 "--max-file-mb",
                 str(args.max_file_mb),
-            ]
+            ],
+            stage="generate_synthetic",
+            debug_crash_report=args.debug_crash_report,
+            crash_state=crash_state,
         )
         print("[主線訓練進度 30%] 合成盤面語料建置完成。")
 
+    crash_state["stage"] = "build_masked_ranking_dataset"
+    mask_cmd = [
+        "python",
+        "scripts/build_masked_ranking_dataset.py",
+        "--real-corpus",
+        str(full),
+        "--synthetic-corpus",
+        str(synth),
+        "--output",
+        str(rank),
+        "--mask-ratios",
+        args.mask_ratios,
+        "--feature-schema",
+        str(feature_schema),
+        "--max-file-mb",
+        str(args.max_file_mb),
+    ]
+    if args.debug_crash_report:
+        mask_cmd.append("--debug-crash-report")
     _run(
-        [
-            "python",
-            "scripts/build_masked_ranking_dataset.py",
-            "--real-corpus",
-            str(full),
-            "--synthetic-corpus",
-            str(synth),
-            "--output",
-            str(rank),
-            "--mask-ratios",
-            args.mask_ratios,
-            "--feature-schema",
-            str(feature_schema),
-            "--max-file-mb",
-            str(args.max_file_mb),
-        ]
+        mask_cmd,
+        stage="build_masked_ranking_dataset",
+        debug_crash_report=args.debug_crash_report,
+        crash_state=crash_state,
     )
     print("[主線訓練進度 45%] ranking dataset 建置完成。")
 
@@ -203,7 +282,13 @@ def main() -> None:
         "--holdout-real-only",
         "--exclude-synth-from-valid",
     ]
-    _run(split_cmd)
+    crash_state["stage"] = "split_dataset"
+    _run(
+        split_cmd,
+        stage="split_dataset",
+        debug_crash_report=args.debug_crash_report,
+        crash_state=crash_state,
+    )
     print("[主線訓練進度 55%] train/valid/holdout 切分完成。")
 
     train = split_root / "train.parquet"
@@ -230,7 +315,12 @@ def main() -> None:
             str(args.max_file_mb),
             "--include-synth-in-holdout",
         ]
-        _run(relaxed_cmd)
+        _run(
+            relaxed_cmd,
+            stage="split_dataset_relaxed",
+            debug_crash_report=args.debug_crash_report,
+            crash_state=crash_state,
+        )
         split_summary = json.loads(split_summary_path.read_text(encoding="utf-8"))
 
     registry = {
@@ -242,7 +332,18 @@ def main() -> None:
         "train_stats": {"real_size_counts": dict(real_size_counts)},
     }
 
-    global_info = _train_one(train, valid, holdout, artifacts / "global", "", args.max_workers, feature_schema)
+    crash_state.update({"stage": "train_global", "split_summary": split_summary})
+    global_info = _train_one(
+        train,
+        valid,
+        holdout,
+        artifacts / "global",
+        "",
+        args.max_workers,
+        feature_schema,
+        args.debug_crash_report,
+        crash_state,
+    )
     registry["global"] = global_info
     print("[主線訓練進度 75%] global 模型訓練完成。")
     per_size_splits = split_summary.get("per_size", {})
@@ -272,6 +373,8 @@ def main() -> None:
             size_class,
             args.max_workers,
             feature_schema,
+            args.debug_crash_report,
+            crash_state,
         )
         print(f"[主線訓練進度 85%] size={size_class} 模型訓練完成。")
 

@@ -4,7 +4,7 @@ import hashlib
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
@@ -111,8 +111,17 @@ def build_masked_ranking_dataset(
     boards: Iterable[Dict[str, object]],
     config: MaskingConfig,
 ) -> pd.DataFrame:
-    rows_out: List[Dict[str, object]] = []
-    for board in boards:
+    return pd.DataFrame(iter_masked_ranking_rows(boards, config))
+
+
+def iter_masked_ranking_rows(
+    boards: Iterable[Dict[str, object]],
+    config: MaskingConfig,
+    progress_hook: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Iterator[Dict[str, object]]:
+    board_index = -1
+    total_rows = 0
+    for board_index, board in enumerate(boards):
         grid = board.get("grid")
         if not grid:
             continue
@@ -123,8 +132,40 @@ def build_masked_ranking_dataset(
                 masked = create_masked_board(grid, float(ratio), rng)
                 for target in range(1, max_value + 1):
                     group_id = f"{board['board_id']}::r{int(ratio * 100)}::m{mask_idx:03d}::t{target:03d}"
-                    rows_out.extend(build_rows_for_group(board, masked, group_id, float(ratio), target))
-    return pd.DataFrame(rows_out)
+                    batch = build_rows_for_group(board, masked, group_id, float(ratio), target)
+                    for row in batch:
+                        total_rows += 1
+                        yield row
+                    if progress_hook is not None:
+                        progress_hook(
+                            {
+                                "board_index": board_index,
+                                "board_id": str(board.get("board_id")),
+                                "size_class": str(board.get("size_class", "")),
+                                "ratio": float(ratio),
+                                "mask_idx": int(mask_idx),
+                                "target": int(target),
+                                "rows_emitted": int(total_rows),
+                            }
+                        )
+
+
+def iter_masked_ranking_dataset_chunks(
+    boards: Iterable[Dict[str, object]],
+    config: MaskingConfig,
+    chunk_rows: int,
+    progress_hook: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> Iterator[pd.DataFrame]:
+    if chunk_rows <= 0:
+        raise ValueError("chunk_rows must be > 0")
+    rows_out: List[Dict[str, object]] = []
+    for row in iter_masked_ranking_rows(boards, config, progress_hook=progress_hook):
+        rows_out.append(row)
+        if len(rows_out) >= chunk_rows:
+            yield pd.DataFrame(rows_out)
+            rows_out = []
+    if rows_out:
+        yield pd.DataFrame(rows_out)
 
 
 def write_rank_dataset(
