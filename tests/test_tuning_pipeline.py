@@ -22,8 +22,8 @@ def _make_dataset(path: Path, size_class: str = "2x2") -> None:
                     "cand_col": 1,
                     "label": 1 if cand == 0 else 0,
                     "is_feasible": 1,
-                    "board_state_a": float(cand),
-                    "candidate_delta_a": float(3 - cand),
+                    "board_state_residue_global_entropy": float(cand),
+                    "candidate_delta_residue_same_tail_count_local5x5": float(3 - cand),
                 }
             )
     pd.DataFrame(rows).to_parquet(path, index=False)

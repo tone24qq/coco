@@ -1,0 +1,40 @@
+{
+  "baseline_current_residue_multiple10_features": {
+    "top1": 0.04292929292929293,
+    "top3": 0.12247474747474747,
+    "top5": 0.21148989898989898,
+    "top10": 0.42297979797979796,
+    "mean_rank": 15.010732323232324,
+    "mrr": 0.15445481356619564
+  },
+  "refactored_residue_multiple10_features": {
+    "top1": 0.05176767676767677,
+    "top3": 0.14772727272727273,
+    "top5": 0.2380050505050505,
+    "top10": 0.45012626262626265,
+    "mean_rank": 14.215909090909092,
+    "mrr": 0.17044297961455404
+  },
+  "feature_counts": {
+    "before_primary_feature_count": 133,
+    "after_primary_feature_count": 172,
+    "removed_count": 1,
+    "merged_count": 4,
+    "renamed_count": 5
+  },
+  "delta": {
+    "delta_top1": 0.00883838383838384,
+    "delta_top3": 0.025252525252525262,
+    "delta_top5": 0.02651515151515152,
+    "delta_top10": 0.027146464646464696,
+    "delta_mrr": 0.0159881660483584
+  },
+  "size_class_effective_feature_count": {
+    "8x10": {
+      "rows": 369408,
+      "candidate_groups": 13024,
+      "effective_feature_count": 172
+    }
+  },
+  "conclusion": "整理後指標提升"
+}

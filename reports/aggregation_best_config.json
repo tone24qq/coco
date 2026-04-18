@@ -1,0 +1,20 @@
+{
+  "scheme": "hard_gate_050",
+  "top1": 0.033203125,
+  "top3": 0.08984375,
+  "top5": 0.15625,
+  "top10": 0.296875,
+  "mean_rank": 17.6640625,
+  "mrr": 0.1239284646364995,
+  "case_count": 512,
+  "active_module_count_mean": 3.827262369791667,
+  "abstain_rate": 0.6201770963495111,
+  "no_informative_modules_rate": 0.0,
+  "score_std": 0.07462213495476702,
+  "final_score_std": 0.07462213495476702,
+  "delta_top1": 0.0078125,
+  "delta_top3": 0.005859375,
+  "delta_top5": 0.001953125,
+  "delta_top10": -0.005859375,
+  "delta_mrr": 0.004574635854314335
+}

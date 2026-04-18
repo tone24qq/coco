@@ -102,6 +102,11 @@ modules:
   aggregator:
     type: committee_weighted_sum
     weighting_mode: yaml_normalized
+    contribution_mode: weighted_sum
+    confidence_gate_threshold: 0.5
+    low_confidence_weight_multiplier: 0.2
+    use_centered_score: false
+    abstain_below_threshold: false
     allow_abstain: true
     preserve_diagnostics: true
     spatial_postprocess:
