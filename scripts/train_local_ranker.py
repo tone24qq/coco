@@ -12,6 +12,7 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 from src.safe_io import SafeWriteConfig, read_dataset_auto, write_dataframe_safe
+from src.whole_board_features import is_primary_feature_column
 
 
 def _filter_training_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -31,11 +32,15 @@ def _filter_training_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _feature_columns(df: pd.DataFrame) -> List[str]:
-    cols = [c for c in df.columns if c.startswith("board_state_") or c.startswith("candidate_delta_")]
+def _feature_columns(df: pd.DataFrame) -> Tuple[List[str], List[str]]:
+    all_candidate_cols = [
+        c for c in df.columns if c.startswith("board_state_") or c.startswith("candidate_delta_")
+    ]
+    cols = [c for c in all_candidate_cols if is_primary_feature_column(c)]
+    deprecated = [c for c in all_candidate_cols if c not in cols]
     if not cols:
-        raise ValueError("no feature columns")
-    return cols
+        raise ValueError("no primary residue/multiple10 feature columns")
+    return cols, deprecated
 
 
 def _metrics(df: pd.DataFrame, scores: np.ndarray) -> Dict[str, float]:
@@ -99,7 +104,7 @@ def train_once(
     valid_df = _filter_training_rows(valid_df).sort_values(["group_id", "cand_row", "cand_col"]).reset_index(drop=True)
     holdout_df = _filter_training_rows(holdout_df).sort_values(["group_id", "cand_row", "cand_col"]).reset_index(drop=True)
 
-    features = _feature_columns(train_df)
+    features, deprecated = _feature_columns(train_df)
     x_train = train_df[features].fillna(0.0).to_numpy(dtype=np.float32)
     y_train = train_df["label"].astype(int).to_numpy()
     groups = train_df.groupby("group_id", sort=False).size().tolist()
@@ -117,6 +122,7 @@ def train_once(
         "holdout": _metrics(holdout_df, _pred(holdout_df)),
     }
     return model, features, {
+        "deprecated_features": deprecated,
         "train_rows": int(len(train_df)),
         "valid_rows": int(len(valid_df)),
         "holdout_rows": int(len(holdout_df)),
@@ -177,6 +183,9 @@ def main() -> None:
     joblib.dump({"model": model, "feature_columns": feature_columns, "backend": args.backend}, model_path)
 
     meta = {
+        "feature_schema_version": "whole_board_features_v2_residue_multiple10",
+        "new_primary_feature_count": len(feature_columns),
+        "deprecated_features": run.get("deprecated_features", []),
         "backend": args.backend,
         "feature_columns": feature_columns,
         "size_class": args.size_class or "global",
@@ -191,6 +200,8 @@ def main() -> None:
     (artifacts_dir / "main_ranker_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report = {
+        "new_primary_feature_count": len(feature_columns),
+        "deprecated_features": run.get("deprecated_features", []),
         "backend_used": args.backend,
         "size_class": args.size_class or "global",
         "params": params,

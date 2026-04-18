@@ -215,6 +215,8 @@ def main() -> None:
     meta = {
         "size_class": args.size_class or "global",
         "backend": backend,
+        "feature_schema_version": "whole_board_features_v2_residue_multiple10",
+        "new_primary_feature_count": len(feature_columns),
         "feature_columns": feature_columns,
         "params": best_params,
         "train_rows": int(len(train_valid)),
@@ -264,6 +266,7 @@ def main() -> None:
         "holdout_contains_synth": bool(("source_type" in holdout_df.columns) and (holdout_df["source_type"] == "synthetic").any()),
         "size_class": args.size_class or "global",
         "backend_used": backend,
+        "new_primary_feature_count": len(feature_columns),
         "interrupted": INTERRUPTED,
     }
     (report_dir / "tuning_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

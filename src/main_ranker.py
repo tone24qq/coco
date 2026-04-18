@@ -131,7 +131,10 @@ def score_candidates_with_ranker(
         board=board,
         target_number=target_number,
     )
-    x = [[float(row.get(col, 0.0)) for col in feature_columns] for row in feat_rows]
+    missing = sorted({col for row in feat_rows for col in feature_columns if col not in row})
+    if missing:
+        raise MainRankerError(f"feature schema mismatch: missing columns {missing[:8]}")
+    x = [[float(row[col]) for col in feature_columns] for row in feat_rows]
 
     if hasattr(model, "predict_proba"):
         scores = model.predict_proba(x)[:, 1].tolist()

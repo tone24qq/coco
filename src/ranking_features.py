@@ -9,7 +9,7 @@ from src.whole_board_features import (
     merge_feature_layers,
 )
 
-FEATURE_SCHEMA_VERSION = "ranking_features_v4"
+FEATURE_SCHEMA_VERSION = "ranking_features_v5"
 TOP_KS = (1, 3, 5)
 
 

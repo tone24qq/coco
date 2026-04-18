@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from src.masking_dataset import MaskingConfig, build_masked_ranking_dataset, write_rank_dataset
+from src.whole_board_features import DEPRECATED_FEATURE_PREFIXES, is_primary_feature_column
 
 
 def read_jsonl(path: Path) -> List[Dict[str, Any]]:
@@ -47,10 +48,18 @@ def main() -> None:
         producer_script="scripts/build_masked_ranking_dataset.py",
     )
 
-    feature_cols = [c for c in df.columns if c.startswith("board_state_") or c.startswith("candidate_delta_")]
+    feature_cols = [c for c in df.columns if is_primary_feature_column(c)]
+    deprecated = [
+        c
+        for c in df.columns
+        if c.startswith("board_state_") or c.startswith("candidate_delta_")
+        if not is_primary_feature_column(c)
+    ]
     schema = {
-        "version": "whole_board_features_v1",
+        "version": "whole_board_features_v2_residue_multiple10",
         "feature_columns": feature_cols,
+        "deprecated_features": deprecated,
+        "deprecated_feature_prefixes": list(DEPRECATED_FEATURE_PREFIXES),
         "row_columns": list(df.columns),
     }
     schema_path = Path(args.feature_schema)

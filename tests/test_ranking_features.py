@@ -55,7 +55,7 @@ def test_feature_schema_stable() -> None:
     assert "line_score" in rows[0]
     assert "global_assignment_score" in rows[0]
     assert rows[1]["label"] == 1
-    assert FEATURE_SCHEMA_VERSION.startswith("ranking_features_")
+    assert FEATURE_SCHEMA_VERSION == "ranking_features_v5"
 
 
 def test_relative_rank_dense_with_duplicate_scores() -> None:

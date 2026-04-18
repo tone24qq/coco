@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 
+from src.whole_board_features import is_primary_feature_column
+
 
 def _read(path: Path) -> pd.DataFrame:
     if path.is_dir() and (path / "manifest.json").exists():
@@ -49,7 +51,13 @@ def _metrics(df: pd.DataFrame, scores: np.ndarray) -> Dict[str, float]:
 
 
 def _train_score(train_df: pd.DataFrame, holdout_df: pd.DataFrame) -> Dict[str, object]:
-    feats = [c for c in train_df.columns if c.startswith("board_state_") or c.startswith("candidate_delta_")]
+    feats = [
+        c
+        for c in train_df.columns
+        if (c.startswith("board_state_") or c.startswith("candidate_delta_")) and is_primary_feature_column(c)
+    ]
+    if not feats:
+        raise ValueError("no primary residue/multiple10 features found")
     model = HistGradientBoostingClassifier(max_depth=8, max_iter=250, learning_rate=0.08)
     model.fit(train_df[feats].fillna(0.0), train_df["label"].astype(int))
     scores = model.predict_proba(holdout_df[feats].fillna(0.0))[:, 1]
