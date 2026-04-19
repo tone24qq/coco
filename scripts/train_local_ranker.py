@@ -240,6 +240,8 @@ def main() -> None:
         valid_df = valid_df[valid_df["size_class"] == args.size_class].copy()
         holdout_df = holdout_df[holdout_df["size_class"] == args.size_class].copy()
         print(f"[訓練進度 40%] 已套用 size_class={args.size_class} 篩選。")
+        if train_df.empty or valid_df.empty or holdout_df.empty:
+            raise ValueError(f"insufficient rows after size filter: size_class={args.size_class}")
 
     model, feature_columns, run = train_once(
         train_df,

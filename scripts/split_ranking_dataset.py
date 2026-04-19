@@ -40,6 +40,10 @@ def split_df(
             assignments[key] = "train"
             continue
         assignments[key] = "holdout" if _bucket(key, seed) < holdout_ratio else "train"
+    if keys.shape[0] > 0 and all(v != "holdout" for v in assignments.values()):
+        real_keys = keys[keys["source_type"] == "real"][key_col].tolist()
+        fallback_key = str(real_keys[0]) if real_keys else str(keys.iloc[0][key_col])
+        assignments[fallback_key] = "holdout"
 
     out = df.copy()
     out["split"] = out[key_col].map(assignments)
@@ -75,6 +79,20 @@ def _stats(frame: pd.DataFrame) -> Dict[str, int]:
     }
 
 
+def _per_size_stats(frame: pd.DataFrame) -> Dict[str, Dict[str, int]]:
+    out: Dict[str, Dict[str, int]] = {}
+    if "size_class" not in frame.columns:
+        return out
+    for size, sub in frame.groupby("size_class"):
+        real = sub[sub["source_type"] == "real"] if "source_type" in sub.columns else sub.iloc[0:0]
+        out[str(size)] = {
+            "rows": int(len(sub)),
+            "real_rows": int(len(real)),
+            "groups": int(sub["group_id"].nunique()) if "group_id" in sub.columns else 0,
+        }
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-path", required=True)
@@ -83,9 +101,9 @@ def main() -> None:
     parser.add_argument("--split-mode", choices=["by_board", "by_lineage"], default="by_lineage")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--include-synth-in-holdout", action="store_true")
-    parser.add_argument("--valid-real-only", action="store_true", default=True)
-    parser.add_argument("--holdout-real-only", action="store_true", default=True)
-    parser.add_argument("--exclude-synth-from-valid", action="store_true", default=True)
+    parser.add_argument("--valid-real-only", action="store_true")
+    parser.add_argument("--holdout-real-only", action="store_true")
+    parser.add_argument("--exclude-synth-from-valid", action="store_true")
     parser.add_argument("--max-file-mb", type=int, default=100)
     args = parser.parse_args()
 
@@ -105,13 +123,19 @@ def main() -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     info = {}
     for name, frame in splits.items():
-        meta = write_dataframe_safe(
-            frame,
-            out_root / f"{name}.parquet",
-            fmt="parquet",
-            config=SafeWriteConfig(max_file_mb=args.max_file_mb, producer_script="scripts/split_ranking_dataset.py"),
-            shard_rows=0,
-        )
+        out_path = out_root / f"{name}.parquet"
+        if frame.empty:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            frame.to_parquet(out_path, index=False)
+            meta = {"type": "file", "path": str(out_path), "size_mb": 0.0, "row_count": 0, "columns": list(frame.columns)}
+        else:
+            meta = write_dataframe_safe(
+                frame,
+                out_path,
+                fmt="parquet",
+                config=SafeWriteConfig(max_file_mb=args.max_file_mb, producer_script="scripts/split_ranking_dataset.py"),
+                shard_rows=0,
+            )
         st = _stats(frame)
         info[name] = {"meta": meta, **st}
 
@@ -129,6 +153,7 @@ def main() -> None:
         "valid_real_only": args.valid_real_only,
         "holdout_real_only": args.holdout_real_only,
         "exclude_synth_from_valid": args.exclude_synth_from_valid,
+        "per_size": {name: _per_size_stats(frame) for name, frame in splits.items()},
     }
     (out_root / "split_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
