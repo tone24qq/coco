@@ -161,6 +161,67 @@ def write_jsonl_records_safe(
     return write_dataframe_safe(df, output, "jsonl", config=config, shard_rows=shard_rows)
 
 
+def write_dataframe_chunks_safe(
+    chunks: Iterable[pd.DataFrame],
+    output: Path,
+    fmt: str,
+    config: SafeWriteConfig,
+    on_chunk: Any = None,
+) -> Dict[str, Any]:
+    if fmt not in {"parquet", "csv", "csv.gz", "jsonl"}:
+        raise SafeIOError(f"unsupported format: {fmt}")
+    output.mkdir(parents=True, exist_ok=True)
+    shards: List[Dict[str, Any]] = []
+    total_rows = 0
+    all_columns: List[str] = []
+
+    def _write(path: Path, frame: pd.DataFrame) -> None:
+        if fmt == "parquet":
+            frame.to_parquet(path, index=False)
+        elif fmt == "csv":
+            frame.to_csv(path, index=False)
+        elif fmt == "csv.gz":
+            frame.to_csv(path, index=False, compression="gzip")
+        else:
+            frame.to_json(path, orient="records", lines=True, force_ascii=False)
+
+    suffix = {"parquet": ".parquet", "csv": ".csv", "csv.gz": ".csv.gz", "jsonl": ".jsonl"}[fmt]
+    for idx, chunk in enumerate(chunks):
+        if chunk is None or chunk.empty:
+            continue
+        if on_chunk is not None:
+            on_chunk(chunk)
+        for c in chunk.columns:
+            if c not in all_columns:
+                all_columns.append(c)
+        shard_path = output / f"shard_{idx:05d}{suffix}"
+        _write(shard_path, chunk)
+        _assert_under_limit(shard_path, config.max_file_mb)
+        rows = int(len(chunk))
+        total_rows += rows
+        shards.append({"path": str(shard_path), "rows": rows})
+
+    if not shards:
+        raise SafeIOError("no chunk data to write")
+
+    payload = _manifest_payload(
+        fmt=fmt,
+        shards=shards,
+        row_count=total_rows,
+        columns=all_columns,
+        producer_script=config.producer_script,
+    )
+    manifest = _write_manifest(output, payload, config.max_file_mb)
+    return {
+        "type": "dataset_dir",
+        "path": str(output),
+        "manifest": str(manifest),
+        "row_count": int(total_rows),
+        "columns": all_columns,
+        "shard_count": len(shards),
+    }
+
+
 def read_dataset_auto(path: Path) -> pd.DataFrame:
     if path.is_file():
         if path.suffix == ".parquet":

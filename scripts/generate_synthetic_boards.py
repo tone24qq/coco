@@ -21,6 +21,7 @@ def read_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--size-class", choices=["4x5", "6x10", "8x10", "10x10", "10x12", "10x16"], default="")
     parser.add_argument("--real-corpus", default="data/full_boards/full_board_corpus.jsonl")
     parser.add_argument("--profile", default="artifacts/synthetic_generator_profile.json")
     parser.add_argument("--output", default="data/full_boards/synthetic_board_corpus.jsonl")
@@ -30,6 +31,11 @@ def main() -> None:
     args = parser.parse_args()
 
     real_boards = read_jsonl(Path(args.real_corpus))
+    before_count = len(real_boards)
+    if args.size_class:
+        real_boards = [r for r in real_boards if str(r.get("size_class", "")) == args.size_class]
+    if not real_boards:
+        raise ValueError(f"no real boards for size_class={args.size_class or 'ALL'}")
     profile_data = json.loads(Path(args.profile).read_text(encoding="utf-8"))
     profiles = {k: SizeClassProfile(**v) for k, v in profile_data.items()}
 
@@ -74,7 +80,18 @@ def main() -> None:
         out_path,
         config=SafeWriteConfig(max_file_mb=args.max_file_mb, producer_script="scripts/generate_synthetic_boards.py"),
     )
-    print(f"generated {len(out_rows)} synthetic boards -> {out_path}")
+    print(
+        json.dumps(
+            {
+                "selected_size_class": args.size_class or "ALL",
+                "real_board_count_before_filter": before_count,
+                "real_board_count_after_filter": len(real_boards),
+                "synthetic_board_count": len(out_rows),
+                "output": str(out_path),
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":

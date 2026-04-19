@@ -1,69 +1,57 @@
-# Local Training Pipeline (Real-First + Synthetic + Holdout)
+# Local Multi-Size Training Pipeline（一條指令重訓）
 
-## 1) 從真盤建庫
+## Python 版本建議
+- 建議使用 **Python 3.11**（主線已驗證）。
+- `scripts/run_training_pipeline.py` 對 Python 3.14+ 預設會 fail-fast。
+- 若你要強制嘗試未驗證版本，可加：`--allow-unsupported-python`。
+
+## 一條指令
 ```bash
-python scripts/build_real_board_corpus.py \
-  --output data/full_boards/full_board_corpus.jsonl \
-  --audit reports/full_board_corpus_audit.json
+python scripts/run_training_pipeline.py \
+  --input-dir . \
+  --generate-synthetic \
+  --enable-inference
 ```
 
-## 2) 生成 synthetic profile + boards
+單尺寸訓練範例：
 ```bash
-python scripts/fit_real_board_generator.py \
-  --real-corpus data/full_boards/full_board_corpus.jsonl \
-  --output artifacts/synthetic_generator_profile.json
-
-python scripts/generate_synthetic_boards.py \
-  --real-corpus data/full_boards/full_board_corpus.jsonl \
-  --profile artifacts/synthetic_generator_profile.json \
-  --output data/full_boards/synthetic_board_corpus.jsonl \
-  --per-real 12
+python scripts/run_training_pipeline.py --input-dir . --size-class 10x10 --max-workers 6 --model-strategy global_only
 ```
 
-## 3) build masking ranking dataset
-```bash
-python scripts/build_masked_ranking_dataset.py \
-  --real-corpus data/full_boards/full_board_corpus.jsonl \
-  --synthetic-corpus data/full_boards/synthetic_board_corpus.jsonl \
-  --mask-ratios 0.1,0.2,0.3,0.5 \
-  --masks-per-ratio 2 \
-  --output data/ranking/ranking_dataset.parquet \
-  --feature-schema artifacts/feature_schema.json
-```
+此命令會依序完成：
+1. 掃描 `--input-dir` 下所有 `.xlsx`（支援多尺寸，優先從檔名抓 `10x12` 這類 hint，否則回退內容推斷）。
+2. 驗證每個候選子矩陣是否為 `1..N` 的完整 permutation（缺值/重複/越界會 rejected 並寫進 audit）。
+3. 產出多尺寸 corpus（每筆含 `rows/cols/size_class/board_size/source_file/sheet_name/board_id`）。
+4. 建 ranking dataset。
+5. split train/valid/holdout（保留 per-size 統計）。
+6. 訓練 global 模型。
+7. 依 `size_class` 訓練 per-size 模型（資料不足會跳過，runtime 用 global fallback）。
+8. 寫出 model registry + readiness 報告。
 
-> 若資料量過大可加 `--shard-rows 2000000` 產生 shard+manifest。
+## 主要輸出檔案
+- `data/full_boards/full_board_corpus.jsonl`
+- `reports/full_board_corpus_audit.json`
+- `reports/multisize_corpus_summary.json`
+- `data/ranking/ranking_dataset.parquet`
+- `data/ranking/splits/train.parquet`
+- `data/ranking/splits/valid.parquet`
+- `data/ranking/splits/holdout.parquet`
+- `data/ranking/splits/split_summary.json`
+- `artifacts/global/main_ranker.pkl`
+- `artifacts/sizes/<size_class>/main_ranker.pkl`
+- `artifacts/model_registry.json`
+- `reports/multisize_training_summary.json`
+- `reports/runtime_readiness_report.json`
 
-## 4) 本地訓練
-```bash
-python scripts/train_local_ranker.py \
-  --train-real-path data/ranking/train_real.parquet \
-  --train-synth-path data/ranking/train_synth.parquet \
-  --holdout-real-path data/ranking/holdout_real.parquet \
-  --device auto \
-  --max-workers auto
-```
+## Runtime 選模規則
+- `src/main_ranker.py` 會先用盤面大小（`rows x cols`）組成 `size_class`。
+- 若 registry 有對應 `per_size[size_class]` 且 artifact 存在，就用該模型。
+- 否則 fallback 到 `global` 模型。
+- 若 `strict_missing_artifact=true` 且 global/per-size 都不存在，會 fail-fast。
 
-輸出：
-- `artifacts/main_ranker.pkl`
-- `artifacts/main_ranker_meta.json`
-- `reports/train_local_ranker_report.json`
-
-## 5) 跑 real holdout backtest
-```bash
-python scripts/run_real_holdout_backtest.py \
-  --train-real data/ranking/train_real.parquet \
-  --train-synth data/ranking/train_synth.parquet \
-  --holdout-real data/ranking/holdout_real.parquet \
-  --output reports/real_holdout_backtest_summary.json
-```
-
-## 6) 推理啟用新模型
-`configs/inference.yaml`:
-```yaml
-trained_ranker:
-  enabled: true
-  strict_missing_artifact: true
-```
-
-- 啟用時會走：`feasibility gate -> trained ranker -> (可選) existing reranker`。
-- 若 `artifacts/main_ranker.pkl` 缺失且 `strict_missing_artifact=true`，推理會 fail-fast。
+## 常用參數
+- `--model-strategy auto|per_size|global_only`
+- `--min-real-boards-per-size 5`
+- `--mask-ratios 0.1,0.2,0.3,0.5`
+- `--holdout-ratio 0.2`
+- `--max-workers 1`
