@@ -1,0 +1,16 @@
+enabled: true
+random_state: 42
+weights: [0.00, 0.02, 0.05, 0.08, 0.10, 0.15, 0.20]
+ensemble_weights:
+  residue_tail_signal: 0.30
+  geometry_low_signal: 0.25
+  neighbor_residual_signal: 0.25
+  module_disagreement_signal: 0.20
+normalization:
+  global_minmax: true
+  group_minmax: true
+guardrails:
+  require_one_positive_label_per_group: true
+  forbid_label_in_signal: true
+  reject_nan_inf: true
+  require_no_lineage_leakage: true
