@@ -1,0 +1,44 @@
+{
+  "accepted": false,
+  "best_weight": 0.0,
+  "baseline": {
+    "top1": 0.5625,
+    "top3": 0.640625,
+    "top5": 0.66875,
+    "top10": 0.728125,
+    "mrr": 0.6257431524035664,
+    "mean_rank": 7.7125,
+    "normalized_mean_rank_gain": 0.7965909090909091
+  },
+  "best": {
+    "top1": 0.5625,
+    "top3": 0.640625,
+    "top5": 0.66875,
+    "top10": 0.728125,
+    "mrr": 0.6257431524035664,
+    "mean_rank": 7.7125,
+    "normalized_mean_rank_gain": 0.7965909090909091
+  },
+  "delta": {
+    "top1": 0.0,
+    "top3": 0.0,
+    "top5": 0.0,
+    "top10": 0.0,
+    "mrr": 0.0,
+    "mean_rank": 0.0,
+    "normalized_mean_rank_gain": 0.0
+  },
+  "guardrails": {
+    "top1_not_degraded": true,
+    "top3_not_degraded": true,
+    "mrr_improved": false,
+    "mean_rank_improved": true,
+    "not_single_size_only": true,
+    "no_nan_inf": true,
+    "group_integrity_passed": true,
+    "lineage_or_board_leakage_guard_passed": true
+  },
+  "weak_signal_all_zero": false,
+  "baseline_source": "temp_model_predict",
+  "reason": "missing_model_artifact;no_positive_labels"
+}
