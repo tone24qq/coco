@@ -1207,3 +1207,64 @@ def run_inference(
         include_module_details=False,
     )
     return compact_top10_response(detailed)
+
+
+def _build_number_bucket_target_set(
+    *,
+    target_number: int,
+    bucket_size: int,
+    n_total: int,
+    opened_numbers: Dict[int, Cell],
+    exclude_opened: bool,
+) -> List[int]:
+    if bucket_size <= 0:
+        raise InferenceError("bucket_size must be positive")
+    bucket_start = (target_number // bucket_size) * bucket_size
+    bucket_end = bucket_start + bucket_size - 1
+    target_set = [x for x in range(1, n_total + 1) if bucket_start <= x <= bucket_end]
+    if exclude_opened:
+        opened = set(opened_numbers.keys())
+        target_set = [x for x in target_set if x not in opened]
+    return target_set
+
+
+def run_number_bucket_inference(
+    board: List[List[int]],
+    target_number: int,
+    bucket_size: int = 10,
+    exclude_opened: bool = True,
+    source: str = "manual",
+) -> Dict[str, Any]:
+    parsed = parse_board_input(board)
+    n_total = parsed.rows * parsed.cols
+    if not (1 <= target_number <= n_total):
+        raise InferenceError("target_number out of range 1..N")
+
+    target_set = _build_number_bucket_target_set(
+        target_number=target_number,
+        bucket_size=bucket_size,
+        n_total=n_total,
+        opened_numbers=parsed.opened_numbers,
+        exclude_opened=exclude_opened,
+    )
+    if not target_set:
+        raise InferenceError("target_set is empty after applying board range/exclude_opened")
+
+    aggregated: Dict[Tuple[int, int], List[float]] = {}
+    for t in target_set:
+        out = _run_inference_detailed(board=board, target_number=t, source=source, apply_reranker_stage=True)
+        for cand in out.get("candidate_cells", []):
+            key = (int(cand["row"]), int(cand["col"]))
+            aggregated.setdefault(key, []).append(float(cand.get("score", 0.0)))
+
+    if not aggregated:
+        raise InferenceError("no candidate cells available for number bucket inference")
+
+    merged = []
+    for (row, col), scores in aggregated.items():
+        sorted_scores = sorted(scores, reverse=True)
+        top3 = sorted_scores[:3]
+        final_score = 0.7 * max(sorted_scores) + 0.3 * (sum(top3) / len(top3))
+        merged.append({"row": row, "col": col, "confidence_1_to_100": round(final_score * 100.0, 2)})
+    merged.sort(key=lambda x: float(x["confidence_1_to_100"]), reverse=True)
+    return compact_top10_response({"candidate_cells": merged})
