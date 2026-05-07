@@ -62,6 +62,26 @@ class InferMultiTargetPositionRequest(BaseModel):
         return value
 
 
+class InferNumberBucketPositionRequest(BaseModel):
+    board: List[List[int]]
+    target_number: int
+    bucket_size: int = 10
+    exclude_opened: bool = True
+    source: str = "manual"
+
+    @field_validator("board")
+    @classmethod
+    def validate_board_non_empty(cls, value: List[List[int]]) -> List[List[int]]:
+        return InferTargetPositionRequest.validate_board_non_empty(value)
+
+    @field_validator("bucket_size")
+    @classmethod
+    def validate_bucket_size(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("bucket_size must be positive")
+        return value
+
+
 class Top10Cell(BaseModel):
     row: int
     col: int

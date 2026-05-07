@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from src.inference_facade import infer_multi_target_positions, infer_target_position
+from src.inference_facade import infer_multi_target_positions, infer_number_bucket_position, infer_target_position
 from src.inference_models import (
+    InferNumberBucketPositionRequest,
     InferMultiTargetPositionRequest,
     InferMultiTargetPositionResponse,
     InferTargetPositionRequest,
@@ -41,5 +42,20 @@ def infer_multi_target_positions_api(payload: InferMultiTargetPositionRequest) -
             source=payload.source,
         )
         return InferMultiTargetPositionResponse(**result)
+    except InferenceError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/infer_number_bucket_position", response_model=InferTargetPositionResponse)
+def infer_number_bucket_position_api(payload: InferNumberBucketPositionRequest) -> InferTargetPositionResponse:
+    try:
+        result = infer_number_bucket_position(
+            board=payload.board,
+            target_number=payload.target_number,
+            bucket_size=payload.bucket_size,
+            exclude_opened=payload.exclude_opened,
+            source=payload.source,
+        )
+        return InferTargetPositionResponse(**result)
     except InferenceError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

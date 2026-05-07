@@ -34,6 +34,24 @@ def infer_multi_target_positions(
     return compact_top10_response({"candidate_cells": pseudo_candidates})
 
 
+def infer_number_bucket_position(
+    board: List[List[int]],
+    target_number: int,
+    bucket_size: int = 10,
+    exclude_opened: bool = True,
+    source: str = "manual",
+) -> Dict[str, Any]:
+    from src.inference_service import run_number_bucket_inference
+
+    return run_number_bucket_inference(
+        board=board,
+        target_number=target_number,
+        bucket_size=bucket_size,
+        exclude_opened=exclude_opened,
+        source=source,
+    )
+
+
 def map_score_to_confidence_1_100(score: float, min_score: float, max_score: float) -> float:
     if max_score - min_score < 1e-12:
         return 50.0
